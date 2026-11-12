@@ -68,6 +68,7 @@ import warnings
 from dataclasses import dataclass
 
 from .mapping import PauliSum
+from ..resources import native_context
 
 #: Value of the ``mandacaru.format`` metadata key identifying these files.
 FORMAT_TAG = "mandacaru-qubit-hamiltonian"
@@ -301,8 +302,7 @@ def save_hamiltonian(path, hamiltonian: PauliSum, *, mapping: str = "jordan_wign
                   for label, coeff in sorted(simplified.terms.items())],
     }
     path = os.fspath(path)
-    from .._native import Context
-    snapshot = Context(**dict(resources or {})).parse_snapshot(
+    snapshot = native_context(resources).parse_snapshot(
         json.dumps(payload, allow_nan=False, default=str), FORMAT_TAG)
     if format == "json":
         snapshot.save(path)
@@ -359,8 +359,7 @@ def load_hamiltonian(path, format: str | None = None, *,
     if not os.path.exists(path):
         raise FileNotFoundError(f'no such Hamiltonian file: {path!r}')
     _checked_format(path, format)
-    from .._native import Context
-    snapshot = Context(**dict(resources or {})).read_snapshot(path, FORMAT_TAG)
+    snapshot = native_context(resources).read_snapshot(path, FORMAT_TAG)
     payload = json.loads(snapshot.json)
     n_qubits = int(payload["num_qubits"])
     from .._native import pauli_term_sum
@@ -412,8 +411,7 @@ def read_hamiltonian_header(path, format: str | None = None, *,
     if not os.path.exists(path):
         raise FileNotFoundError(f"no such Hamiltonian file: {path!r}")
     _checked_format(path, format)
-    from .._native import Context
-    snapshot = Context(**dict(resources or {})).read_snapshot_header(path, FORMAT_TAG)
+    snapshot = native_context(resources).read_snapshot_header(path, FORMAT_TAG)
     payload = json.loads(snapshot.json)
     n_orbitals = payload["n_spatial_orbitals"]
     return HamiltonianHeader(

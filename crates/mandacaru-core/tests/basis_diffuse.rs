@@ -221,3 +221,19 @@ fn the_face_distance_is_the_perpendicular_distance_to_the_nearest_face() {
     assert!(diffuse::face_distance([0.; 3], [[0.; 3]; 3], [5; 3], [1.; 3]).is_err());
     assert!(diffuse::face_distance([0.; 3], step, [1, 5, 5], [1.; 3]).is_err());
 }
+
+#[test]
+fn an_energy_ranked_truncation_of_a_diffuse_basis_is_refused_and_nothing_else_is() {
+    assert!(diffuse::refuse_energy_ranking("energy", 2, 10, 6).is_err());
+    assert!(diffuse::refuse_energy_ranking("energy", 2, 10, 10).is_ok());
+    assert!(diffuse::refuse_energy_ranking("energy", 0, 10, 6).is_ok());
+    assert!(diffuse::refuse_energy_ranking("mp2", 2, 10, 6).is_ok());
+}
+
+#[test]
+fn the_default_diffuse_sizing_is_the_published_one() {
+    assert_eq!(diffuse::DEFAULT_RMS_RATIO, 2.5);
+    assert_eq!(diffuse::DEFAULT_CUTOFF_NORM, 1e-4);
+    assert_eq!(diffuse::MAX_CUTOFF_NORM, 1e-2);
+    assert_eq!(diffuse::default_shell_ratio(), 3.5f64.sqrt());
+}

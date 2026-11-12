@@ -348,3 +348,20 @@ pub fn modulus_squared(re: f64, im: f64) -> f64 {
 pub fn pulse_bound(tau: f64, norm_bound: f64) -> f64 {
     derived::pulse_bound(tau, norm_bound)
 }
+
+/// `numerators / denominators`, element by element (`derived::quotients`).
+#[pyfunction]
+pub fn quotients<'py>(
+    py: Python<'py>,
+    numerators: numpy::PyReadonlyArray1<'py, f64>,
+    denominators: numpy::PyReadonlyArray1<'py, f64>,
+) -> PyResult<Bound<'py, numpy::PyArray1<f64>>> {
+    let out = derived::quotients(numerators.as_slice()?, denominators.as_slice()?).map_err(error)?;
+    Ok(out.into_pyarray(py))
+}
+
+/// `round(sum(values))` as Python computes it (`derived::rounded_total`).
+#[pyfunction]
+pub fn rounded_total(values: Vec<f64>) -> i64 {
+    derived::rounded_total(&values)
+}

@@ -61,8 +61,8 @@ impl<'a> Medium<'a> {
     pub fn workers(&self) -> usize {
         if self.ctx.pool().is_some() {
             self.workers
-                .unwrap_or(self.ctx.threads())
-                .clamp(1, self.ctx.threads())
+                .unwrap_or(self.ctx.width())
+                .clamp(1, self.ctx.width())
         } else {
             1
         }

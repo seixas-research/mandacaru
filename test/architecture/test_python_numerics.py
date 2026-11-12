@@ -392,10 +392,10 @@ def test_an_unlisted_zero_tier_module_is_budgeted_at_zero(tmp_path):
     assert any("models/new.py: np 1 > budget 0" in line for line in found)
 
 
-def test_the_two_core_modules_and_paw_integrations_are_in_the_zero_tier():
+def test_the_paw_integrations_are_in_the_zero_tier():
     tier = GATE["tier_of"]
     assert {tier(m) for m in (
-        "core/symmetry.py", "core/spin_orbit.py", "integrations/paw.py",
+        "integrations/paw.py",
         "integrations/paw_molecular.py", "pseudopotentials/paw.py", "basis/hao.py",
         "integrals/grid.py", "models/basis.py")} == {"zero"}
     assert tier("core/mapping.py") == "q" and tier("workflows/qpe.py") == "q"
@@ -498,14 +498,14 @@ def test_the_closed_category_waivers_of_the_seed_are_all_scalar_helpers():
 
 
 def test_an_allowed_import_is_named_by_its_row_and_must_be_used(tmp_path):
-    files = {"core/symmetry.py": "import psutil\nx = 1\n"}
+    files = {"integrals/probe.py": "import psutil\nx = 1\n"}
     row = {"sloc": 2, "imp": 0, "wave": "3b", "dies": "2027-05-07"}
     assert any("imp 1 > budget 0" in line for line in failures(
-        tmp_path, files, modules={"core/symmetry.py": {k: v for k, v in row.items() if k != "imp"}}, zero_sloc=2))
+        tmp_path, files, modules={"integrals/probe.py": {k: v for k, v in row.items() if k != "imp"}}, zero_sloc=2))
     allowed = {**row, "allow_imports": ["psutil"]}
-    assert failures(tmp_path, files, modules={"core/symmetry.py": allowed}, zero_sloc=2) == []
+    assert failures(tmp_path, files, modules={"integrals/probe.py": allowed}, zero_sloc=2) == []
     unused = {**row, "allow_imports": ["psutil", "scipy.spatial"]}
-    found = failures(tmp_path, files, modules={"core/symmetry.py": unused}, zero_sloc=2)
+    found = failures(tmp_path, files, modules={"integrals/probe.py": unused}, zero_sloc=2)
     assert any("scipy.spatial" in line for line in found)
 
 
@@ -554,14 +554,18 @@ def test_the_date_check_warns_thirty_days_ahead_and_fails_past_it():
 def test_architecture_check_runs_the_date_check(capsys):
     assert CHECKS["check_numerics_dates"](datetime.date(2026, 10, 30)) == []
     late = CHECKS["check_numerics_dates"](datetime.date(2099, 1, 1))
-    assert late and all("past" in line for line in late)
+    # Every dated row or exception fails past its date; with none left (every row a closed
+    # category) there is nothing to fail.
+    budget = GATE["load_budget"]()
+    dated = [e for e in [*budget["module"].values(), *budget["exception"]] if e.get("dies")]
+    assert bool(late) == bool(dated) and all("past" in line for line in late)
 
 
 def test_every_date_in_the_budget_is_at_least_a_stage_away():
     """The seed is dated stage end plus 28 days; nothing is due before 2026-12-11."""
     rows = GATE["load_budget"]()
     dates = [r["dies"] for r in rows["module"].values() if r.get("dies")]
-    assert dates and min(dates) >= "2026-12-11"
+    assert min(dates, default="2026-12-11") >= "2026-12-11"
 
 
 # ---------------------------------------------------------------------------

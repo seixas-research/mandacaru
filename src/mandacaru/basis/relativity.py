@@ -111,6 +111,8 @@ from __future__ import annotations
 
 import numpy as np
 
+from .. import _native
+
 #: Speed of light in atomic units -- the inverse fine-structure constant.
 #: CODATA 2022: ``1/alpha = 137.035999177(21)``.
 SPEED_OF_LIGHT = 137.035999177
@@ -139,41 +141,28 @@ MASS_FLOOR = 1e-3
 # --------------------------------------------------------------------------- #
 
 def kappa_of(l: int, j: float) -> int:
-    r"""The Dirac quantum number :math:`\kappa` of ``(l, j)``."""
-    l = int(l)
-    if abs(j - (l + 0.5)) < 1e-9:
-        return -(l + 1)
-    if abs(j - (l - 0.5)) < 1e-9 and l > 0:
-        return l
-    raise ValueError(f"j must be l +/- 1/2 (and positive); got l={l}, j={j}")
+    """Dirac quantum number of the ``(l, j)`` subshell (``j = l +/- 1/2``), from the engine."""
+    return int(_native.relativity_kappa_of(int(l), float(j)))
 
 
 def l_of(kappa: int) -> int:
-    r"""The orbital angular momentum belonging to :math:`\kappa`."""
-    kappa = int(kappa)
-    if kappa == 0:
-        raise ValueError("kappa = 0 is not a Dirac quantum number")
-    return -kappa - 1 if kappa < 0 else kappa
+    """Orbital angular momentum of a Dirac quantum number, from the engine."""
+    return int(_native.relativity_l_of(int(kappa)))
 
 
 def j_of(kappa: int) -> float:
-    r"""The total angular momentum belonging to :math:`\kappa`."""
-    return abs(int(kappa)) - 0.5
+    """Total angular momentum ``j = |kappa| - 1/2``, from the engine."""
+    return float(_native.relativity_j_of(int(kappa)))
 
 
 def kappa_values(l: int) -> list[int]:
-    r"""The :math:`\kappa` values of a subshell, ordered by increasing ``j``.
-
-    ``[l, -(l+1)]`` for ``l > 0`` (that is, :math:`j = l-\tfrac12` then
-    :math:`j = l+\tfrac12`) and ``[-1]`` for an s shell.
-    """
-    l = int(l)
-    return [-1] if l == 0 else [l, -(l + 1)]
+    """The Dirac quantum numbers of a subshell, by increasing ``j``, from the engine."""
+    return list(_native.relativity_kappa_values(int(l)))
 
 
 def degeneracy(kappa: int) -> int:
-    """``2j + 1``: how many electrons the ``(l, j)`` subshell holds."""
-    return int(round(2 * j_of(kappa) + 1))
+    """``2j + 1``, from the engine."""
+    return int(_native.relativity_degeneracy(int(kappa)))
 
 
 def j_average(values: dict, l: int) -> float:
@@ -184,31 +173,13 @@ def j_average(values: dict, l: int) -> float:
     reproduces, and the one a spin-orbit-free pseudopotential must be built
     from.
     """
-    from .. import _native
     return float(_native.relativity_j_average(dict(values), int(l)))
 
 
 def spin_orbit_difference(values: dict, l: int) -> float:
-    r"""The spin-orbit combination :math:`\frac{2}{2l+1}(X_{l+1/2}-X_{l-1/2})`.
+    """``2/(2l+1) (eps_{l+1/2} - eps_{l-1/2})`` of ``{kappa: eps}``, from the engine."""
+    return float(_native.relativity_spin_orbit_difference(dict(values), int(l)))
 
-    Zero for ``l = 0``.  This is the coefficient of :math:`\mathbf{L}\cdot
-    \mathbf{S}` that reproduces the two ``j`` channels when added to the
-    :func:`j_average`: with :math:`\langle\mathbf{L}\cdot\mathbf{S}\rangle =
-    l/2` for :math:`j = l+\tfrac12` and :math:`-(l+1)/2` for
-    :math:`j = l-\tfrac12`, the pair
-    :math:`X^{\text{avg}} + X^{\text{SO}}\,\mathbf{L}\cdot\mathbf{S}` returns
-    :math:`X_{l\pm1/2}` exactly.
-    """
-    if int(l) == 0:
-        return 0.0
-    up = values[-(l + 1)]        # j = l + 1/2
-    down = values[l]             # j = l - 1/2
-    return float(2.0 / (2 * l + 1) * (up - down))
-
-
-# --------------------------------------------------------------------------- #
-# The closed-form hydrogenic spectrum (the test oracle).
-# --------------------------------------------------------------------------- #
 
 def hydrogenic_dirac_energy(atomic_number: float, n: int, kappa: int,
                             c: float = SPEED_OF_LIGHT) -> float:
@@ -225,7 +196,6 @@ def hydrogenic_dirac_energy(atomic_number: float, n: int, kappa: int,
     :math:`c\to\infty`.  It depends on :math:`n` and :math:`j` only -- the
     Dirac degeneracy of :math:`2p_{1/2}` with :math:`2s_{1/2}`.
     """
-    from .. import _native
     return float(_native.relativity_hydrogenic_dirac_energy(
         float(atomic_number), int(n), int(kappa), float(c)
     ))
@@ -249,7 +219,6 @@ def potential_derivatives(r, potential, atomic_number: float = 0.0):
     them once per potential and reuses them across every state and every step
     of the :math:`M(\varepsilon)` iteration.
     """
-    from .. import _native
     return _native.relativity_potential_derivatives(
         np.ascontiguousarray(r, dtype=float),
         np.ascontiguousarray(potential, dtype=float),
@@ -264,7 +233,6 @@ def mass_factor(r, potential, energy: float, atomic_number: float = 0.0,
     ``derivatives`` is an already-computed ``(V', V'')`` from
     :func:`potential_derivatives`; it is recomputed when omitted.
     """
-    from .. import _native
     derivs = ((np.ascontiguousarray(derivatives[0], dtype=float),
               np.ascontiguousarray(derivatives[1], dtype=float))
              if derivatives is not None else None)
@@ -299,7 +267,6 @@ def darwin_spin_orbit_term(r, potential, kappa, M, atomic_number=0.0,
     rather than shrank -- while every :math:`l > 0` channel, whose wave is
     suppressed where the cancellation is bad, converged cleanly at rate 4.
     """
-    from .. import _native
     return _native.relativity_darwin_spin_orbit(
         np.ascontiguousarray(r, dtype=float),
         np.ascontiguousarray(potential, dtype=float),
@@ -326,7 +293,6 @@ def relativistic_f(r, potential, l: int, kappa: int, energy: float,
     :math:`W`; multiply by :math:`M^{1/2}` for :math:`P = rg`
     (:func:`large_component`).
     """
-    from .. import _native
     return _native.relativity_f_evaluate(
         np.ascontiguousarray(r, dtype=float),
         np.ascontiguousarray(potential, dtype=float),
@@ -369,7 +335,6 @@ def spin_orbit_radial(r, potential, atomic_number: float = 0.0,
     :func:`potential_derivatives`, so ``atomic_number`` should say how much of
     ``potential`` is :math:`-Z/r`.
     """
-    from .. import _native
     return _native.relativity_spin_orbit_radial(
         np.ascontiguousarray(r, dtype=float),
         np.ascontiguousarray(potential, dtype=float),
@@ -382,7 +347,6 @@ def spin_orbit_radial(r, potential, atomic_number: float = 0.0,
 
 def large_component(w, M):
     r""":math:`P = M^{1/2}W` -- what the rest of the code calls ``u``."""
-    from .. import _native
     return _native.relativity_large_component(
         np.ascontiguousarray(w, dtype=float), np.ascontiguousarray(M, dtype=float))
 
@@ -392,7 +356,6 @@ def small_component(r, P, kappa: int, M, c: float = SPEED_OF_LIGHT):
 
     Exact given :math:`P`; the derivative is taken on the grid.
     """
-    from .. import _native
     return _native.relativity_small_component(
         np.ascontiguousarray(r, dtype=float), np.ascontiguousarray(P, dtype=float),
         int(kappa), np.ascontiguousarray(M, dtype=float), float(c))
@@ -458,8 +421,6 @@ def solve_radial_relativistic(r, potential, l: int, n_nodes: int,
     origin); it overstates oxygen's 1s shift by about a factor of three.  That is the
     accuracy the pseudopotential generators are built on, so it is kept.
     """
-    from .. import _native
-
     return _native.Context(threads=1).solve_radial(
         np.ascontiguousarray(r, dtype=float),
         np.ascontiguousarray(potential, dtype=float), int(l), int(n_nodes),

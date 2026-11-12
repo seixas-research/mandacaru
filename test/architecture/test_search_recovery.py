@@ -14,7 +14,7 @@ def calculator(**options):
     settings = dict(method="vasqa", hamiltonian=operator,
                     n_spatial_orbitals=2, num_particles=(1, 0),
                     max_steps=40, max_length=4, seed=7, atomic_units=True,
-                    profile=False, resources={"threads": 1})
+                    profile=False, parallelization={"threads": 1})
     settings.update(options)
     return Mandacaru(**settings)
 

@@ -14,6 +14,7 @@ as usable.
 native_engine
 dft
 dft_u
+excited_states
 pseudopotentials
 basis_sets
 nao_ae
@@ -28,6 +29,7 @@ finite_size
 
 forces_relaxation
 charges
+berry
 polarizability
 interaction_energy
 dry_run

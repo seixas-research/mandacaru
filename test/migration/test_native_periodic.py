@@ -382,6 +382,17 @@ def test_wilson_loop_ssh_phase_is_invariant_under_local_gauges(hopping,expected)
         ctx.wilson_loop(links)
 
 
+@pytest.mark.parametrize('center',[.2,-.15,.37])
+def test_wilson_loop_returns_the_berry_phase_of_a_localized_center(center):
+    # u_k = exp(-i k x0) (a = 1): each link is exp(-i b x0), so gamma = -sum arg det = 2 pi x0.
+    # The primitive moved to periodic::berry::links::string_phase, which fixes this sign.
+    n=16
+    links=np.full((n,1,1),np.exp(-1j*2*np.pi/n*center))
+    berry,singular=_native.Context().wilson_loop(links)
+    assert abs(np.angle(np.exp(1j*(berry-2*np.pi*center))))<1e-12
+    assert abs(singular-1.)<1e-12
+
+
 def test_cached_validation_failure_budget_and_result_ownership(tmp_path):
     payload=synthetic()
     for mutate in [lambda p:p.update(energy_unit='eV'),lambda p:p['kpoints'][0].update(weight=.5),

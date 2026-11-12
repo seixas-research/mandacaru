@@ -10,7 +10,6 @@ use mandacaru_core::{
     quantum::C64,
     Context,
 };
-use std::f64::consts::PI;
 
 #[test]
 fn archived_periodic_state_preserves_energy_and_projected_dos_weight() {
@@ -281,31 +280,4 @@ fn reciprocal_mesh_reduction_preserves_orbit_weights() {
     assert!(mesh.points.len() < 9);
     assert!((mesh.weights.iter().sum::<f64>() - 1.).abs() < 1e-14);
     assert!(spectrum::mesh(&ctx, [2, 3, 1], false, &[rotation], true).is_err());
-}
-#[test]
-fn wilson_phase_detects_topological_winding_and_singular_links() {
-    let ctx = Context::new(Some(1), 1024 * 1024).unwrap();
-    let n = 300;
-    for (hopping, topological) in [(0.5, true), (1.5, false)] {
-        let states: Vec<_> = (0..n)
-            .map(|i| {
-                let k = 2. * PI * i as f64 / n as f64;
-                let phase = (C64::new(hopping, 0.) + C64::from_polar(1., k)).arg();
-                [
-                    -C64::from_polar(1. / 2f64.sqrt(), phase),
-                    C64::new(1. / 2f64.sqrt(), 0.),
-                ]
-            })
-            .collect();
-        let links: Vec<_> = (0..n)
-            .map(|i| {
-                states[i][0].conj() * states[(i + 1) % n][0]
-                    + states[i][1].conj() * states[(i + 1) % n][1]
-            })
-            .collect();
-        let (phase, minimum) = analysis::wilson_loop(&ctx, &links, n, 1, 1e-10).unwrap();
-        assert!((phase.abs() - if topological { PI } else { 0. }).abs() < 1e-10);
-        assert!(minimum > 0.99);
-    }
-    assert!(analysis::wilson_loop(&ctx, &[C64::default()], 1, 1, 1e-10).is_err());
 }

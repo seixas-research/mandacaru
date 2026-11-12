@@ -14,7 +14,7 @@ def test_unconfined_beryllium_recovers_existing_atomic_valence_reference():
     dataset = get_paw("Be", paw_dataset=default_library_folder("lda"))
     with Mandacaru(method="dft", xc="lda", atoms=atoms, atomic_units=True,
                    basis={"name": "PAW-LCAO", "size": "SZ", "energy_shift": None},
-                   grid_spacing=.2, resources={"threads": 1}) as calc:
+                   grid_spacing=.2, parallelization={"threads": 1}) as calc:
         result = calc.run()
         assert result.success
         assert result.energy_hartree == pytest.approx(dataset.energies["reference_valence"], abs=3e-3)
@@ -26,7 +26,7 @@ def test_paw_ks_spectrum_and_quantum_export_are_distinct_energy_functionals(func
     atoms = Atoms("H2", positions=[[2.5, 2.5, 2.13], [2.5, 2.5, 2.87]], cell=[5.] * 3)
     with Mandacaru(method="dft", xc=functional, atoms=atoms, atomic_units=True,
                    basis={"name": "PAW-LCAO", "size": "DZ"}, grid_spacing=.4,
-                   resources={"threads": 1}) as calc:
+                   parallelization={"threads": 1}) as calc:
         result = calc.run()
         assert result.success
         assert not calc.native_reference.has_model

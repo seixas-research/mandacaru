@@ -40,7 +40,7 @@ use std::collections::BTreeMap;
 use crate::paw::invalid;
 use crate::{Buffer, Reservation, Result};
 
-pub use files::{tree_cost, Parts, WriteSpec, TREE_BYTES_PER_MEMBER, TREE_BYTES_PER_VALUE};
+pub use files::{reload_errors, tree_cost, Parts, RELOAD_LEVEL_TOLERANCE, WriteSpec, TREE_BYTES_PER_MEMBER, TREE_BYTES_PER_VALUE};
 pub use values::LocalPotential;
 
 /// `format` of every dataset file.

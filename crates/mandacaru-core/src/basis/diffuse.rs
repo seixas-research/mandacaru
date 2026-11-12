@@ -10,6 +10,39 @@ use crate::{
     Context, Result,
 };
 
+/// The rms radius of the first diffuse shell over the free-atom valence rms radius of its `l` (the
+/// default recipe), the ratio between the rms radii of successive shells of one channel (the Gaussian
+/// families' exponent ratio 3.5 as a length), the squared norm of the uncut Gaussian left beyond
+/// `r_cut` and the largest `cutoff_norm` accepted.
+pub const DEFAULT_RMS_RATIO: f64 = 2.5;
+pub const DEFAULT_CUTOFF_NORM: f64 = 1e-4;
+pub const MAX_CUTOFF_NORM: f64 = 1e-2;
+/// Default successive-shell ratio, `3.5^(1/2)`.
+pub fn default_shell_ratio() -> f64 {
+    3.5f64.powf(0.5)
+}
+
+/// Refuse an `"energy"`-ranked truncation of a basis with diffuse shells: they make the lowest
+/// virtual orbitals, and the energy ranking keeps the lowest first, so a truncated register fills
+/// with orbitals that carry almost none of the correlation.
+pub fn refuse_energy_ranking(
+    method: &str,
+    n_diffuse: usize,
+    n_virtual: usize,
+    n_virtual_kept: usize,
+) -> Result<()> {
+    if n_diffuse > 0 && method == "energy" && n_virtual_kept < n_virtual {
+        return Err(invalid(format!(
+            "the basis has {n_diffuse} diffuse function(s) and the active_space keeps \
+             {n_virtual_kept} of {n_virtual} virtual orbitals ranked by 'energy': diffuse shells \
+             make the lowest virtual orbitals, so that ranking fills the register with them \
+             whatever they contribute.  Rank the virtuals by occupation with 'method': 'mp2' or \
+             'dlpno-mp2', or keep every virtual orbital"
+        )));
+    }
+    Ok(())
+}
+
 /// Samples of the unit-`alpha` rms-radius integral.
 const UNIT_SAMPLES: usize = 20_001;
 

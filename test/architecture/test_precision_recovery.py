@@ -14,7 +14,7 @@ def test_native_precision_changes_sample_storage_and_preserves_total_energy():
     samples = []
     for precision, dtype in (("float64", np.float64), ("float32", np.float32)):
         with Mandacaru(method="rhf", atoms=atoms, basis="HAO", precision=precision,
-                       grid_spacing=.5, resources={"threads": 1}) as calc:
+                       grid_spacing=.5, parallelization={"threads": 1}) as calc:
             energies.append(atoms.get_potential_energy())
             snapshot = calc.integrals.snapshot(include_samples=True)
             assert snapshot["precision"] == precision
@@ -48,7 +48,7 @@ def test_periodic_float32_precision_and_repeated_ase_cell_updates():
     atoms = bulk("Al", "fcc", a=4.05)
     with Mandacaru(method="dft", xc="lda", atoms=atoms, basis="PAW-LCAO",
                    grid_spacing=.8, precision="float32",
-                   resources={"threads": 1}) as calc:
+                   parallelization={"threads": 1}) as calc:
         original = atoms.get_potential_energy()
         assert calc.result.success
         assert calc.periodic_problem.precision == "float32"
@@ -88,7 +88,7 @@ class TestRouteRefusals:
     def test_forces_of_a_quantum_method_are_refused_before_anything_runs(self, monkeypatch):
         atoms = _h2()
         calc = Mandacaru(method="vqe", precision="float32", shots=100,
-                         resources={"threads": 1})
+                         parallelization={"threads": 1})
         ran = []
         monkeypatch.setattr(calc, "run", lambda *a, **k: ran.append(a))
         monkeypatch.setattr(calc, "_mean_field", lambda *a, **k: ran.append(a))
@@ -101,7 +101,7 @@ class TestRouteRefusals:
         """The refusal precedes the cached-result lookup."""
         atoms = _h2()
         atoms.calc = Mandacaru(method="vqe", precision="float32", shots=100,
-                               resources={"threads": 1})
+                               parallelization={"threads": 1})
         atoms.calc.result = object()
         atoms.calc.results = {"energy": 0.0}
         with pytest.raises(ValueError, match="quantum-method forces"):
@@ -109,7 +109,7 @@ class TestRouteRefusals:
 
     def test_float32_forces_of_a_mean_field_paw_molecule_are_not_refused(self, monkeypatch):
         calc = Mandacaru(method="rhf", basis={"name": "PAW-LCAO"}, precision="float32",
-                         grid_spacing=.5, resources={"threads": 1})
+                         grid_spacing=.5, parallelization={"threads": 1})
         reached = []
 
         def stop(*args, **kwargs):
@@ -123,7 +123,7 @@ class TestRouteRefusals:
 
     def test_float64_forces_pass_the_refusal(self, monkeypatch):
         calc = Mandacaru(method="rhf", basis={"name": "PAW-LCAO"}, precision="float64",
-                         grid_spacing=.5, resources={"threads": 1})
+                         grid_spacing=.5, parallelization={"threads": 1})
         reached = []
 
         def stop(*args, **kwargs):
@@ -219,7 +219,7 @@ class TestQuantumStateVector:
         for precision in ("float64", "float32"):
             atoms = Atoms("H2", positions=[[0, 0, 0], [0, 0, .74]], cell=[6.] * 3)
             with Mandacaru(method="vqe", basis="HAO", grid_spacing=.35,
-                           precision=precision, resources={"threads": 1}) as calc:
+                           precision=precision, parallelization={"threads": 1}) as calc:
                 atoms.calc = calc
                 energies[precision] = atoms.get_potential_energy() / HARTREE_TO_EV
                 assert calc.problem.precision == precision
@@ -229,7 +229,7 @@ class TestQuantumStateVector:
 
     def test_forces_of_a_state_vector_method_are_refused_before_the_scf(self, monkeypatch):
         atoms = _h2()
-        calc = Mandacaru(method="vqe", precision="float32", resources={"threads": 1})
+        calc = Mandacaru(method="vqe", precision="float32", parallelization={"threads": 1})
         ran = []
         monkeypatch.setattr(calc, "run", lambda *a, **k: ran.append(a))
         with pytest.raises(ValueError, match="quantum-method forces"):
@@ -247,7 +247,7 @@ def files(tmp_path_factory):
         atoms = bulk("Al", "fcc", a=4.05)
         with Mandacaru(method="dft", xc="lda", atoms=atoms, basis="PAW-LCAO",
                        grid_spacing=.8, precision=precision, save_crystal=path,
-                       resources={"threads": 1}):
+                       parallelization={"threads": 1}):
             atoms.get_potential_energy()
         paths[precision] = path
     return paths
@@ -260,7 +260,7 @@ class TestCrystalFilePrecision:
                                                ("float64", "float32")])
     def test_a_mismatch_raises_naming_both_values(self, files, stored, asked):
         with Mandacaru(method="dft", load_crystal=files[stored], precision=asked,
-                       resources={"threads": 1}) as calc:
+                       parallelization={"threads": 1}) as calc:
             with pytest.raises(ValueError) as raised:
                 calc.run()
             message = str(raised.value)
@@ -270,7 +270,7 @@ class TestCrystalFilePrecision:
     @pytest.mark.parametrize("name", ["float64", "float32"])
     def test_the_matching_precision_loads_and_solves(self, files, name):
         with Mandacaru(method="dft", load_crystal=files[name], precision=name,
-                       resources={"threads": 1}) as calc:
+                       parallelization={"threads": 1}) as calc:
             calc.run()
             assert calc.result.success
             assert calc.periodic_problem.precision == name
@@ -285,7 +285,7 @@ class TestMemoryBudget:
         atoms.center(vacuum=4.0)
         with Mandacaru(method="rhf", basis={"name": "NAO", "size": "DZ"},
                        grid_spacing=.25, precision=precision,
-                       resources={"threads": 2, "memory_limit_bytes": limit}) as calc:
+                       parallelization={"threads": 2}, resources={"memory_limit_bytes": limit}) as calc:
             atoms.calc = calc
             energy = atoms.get_potential_energy()
             return energy / HARTREE_TO_EV, calc.context.memory_peak_bytes

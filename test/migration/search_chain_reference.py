@@ -87,7 +87,7 @@ def run_h2(case, threads, store=None, view=None):
     options["record"] = store if options["record"] else False
     atoms = Atoms("H2", positions=[[2.5, 2.5, 2.1], [2.5, 2.5, 2.9]], cell=[5.] * 3)
     with Mandacaru(atoms=atoms, basis="HAO", pool="qeb", grid_spacing=.5,
-                   resources={"threads": threads}, **options) as calc:
+                   parallelization={"threads": threads}, **options) as calc:
         atoms.get_potential_energy()
         first = calc.result.energy_hartree
         if not options["transfer"]:

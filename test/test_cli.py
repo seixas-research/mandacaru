@@ -31,7 +31,7 @@ H2 = {
     "positions": [[2.5, 2.5, 2.13], [2.5, 2.5, 2.87]],
     "cell": [[5.0, 0, 0], [0, 5.0, 0], [0, 0, 5.0]],
 }
-QUICK = ["--method", "rhf", "--grid-spacing", "0.5", "--threads", "1"]
+QUICK = ["--method", "rhf", "--grid-spacing", "0.5", "--parallelization", "threads=1"]
 
 
 @pytest.fixture
@@ -90,8 +90,9 @@ class TestForwardedOptions:
         options = recorder.instances[0].options
         assert options["method"] == "dft" and options["xc"] == "lda"
         assert options["basis"] == "HAO" and options["grid_spacing"] == 0.2
-        assert options["resources"] == {"threads": None,
-                                        "memory_limit_bytes": 32768 * 1024**2}
+        assert options["resources"] == {"memory_limit_bytes": 32768 * 1024**2}
+        # Absent, the calculator's own default worker count applies.
+        assert "parallelization" not in options
         assert options["load_hamiltonian"] is None
         assert options["save_hamiltonian"] is None
         assert options["load_crystal"] is None
@@ -99,13 +100,14 @@ class TestForwardedOptions:
 
     def test_every_option_given_is_forwarded(self, recorder, h2_json):
         assert main([h2_json, "--method", "dft", "--xc", "pbe", "--basis",
-                     "NAO", "--grid-spacing", "0.3", "--threads", "2",
+                     "NAO", "--grid-spacing", "0.3", "--parallelization",
+                     "kpts=2,threads=3",
                      "--memory-mb", "64", "--save-hamiltonian", "h.parquet"]) == 0
         options = recorder.instances[0].options
         assert (options["xc"], options["basis"]) == ("pbe", "NAO")
         assert options["grid_spacing"] == 0.3
-        assert options["resources"] == {"threads": 2,
-                                        "memory_limit_bytes": 64 * 1024**2}
+        assert options["parallelization"] == {"kpts": 2, "threads": 3}
+        assert options["resources"] == {"memory_limit_bytes": 64 * 1024**2}
         assert options["save_hamiltonian"] == "h.parquet"
 
     def test_crystal_orbitals_are_forwarded_only_when_given(self, recorder, h2_json):
@@ -184,7 +186,10 @@ class TestRefusals:
         assert "provide geometry or a cached problem" in capsys.readouterr().err
 
     @pytest.mark.parametrize("argv", [["--method", "ccsd"], ["--xc", "nope"],
-                                      ["--threads", "many"],
+                                      ["--parallelization", "threads=many"],
+                                      ["--parallelization", "threads"],
+                                      ["--parallelization", "kpts=2,kpts=3"],
+                                      ["--threads", "2"],
                                       ["--precision", "single"],
                                       ["--precision", "double"],
                                       ["--precision", "Float32"]])
@@ -222,7 +227,7 @@ class TestHelp:
         text = " ".join(capsys.readouterr().out.split())
         assert "--precision {float64,float32}" in text
         assert "complex64" in text and "stay float64" in text
-        precision_help = text.rsplit("--precision {float64,float32}", 1)[1].split("--threads")[0]
+        precision_help = text.rsplit("--precision {float64,float32}", 1)[1].split("--parallelization")[0]
         assert "%" not in precision_help
         # Present tense: the Poisson workspace and the Cholesky factors are
         # float64 in this build, so the help lists them on the float64 side.
@@ -236,7 +241,7 @@ class TestAgainstTheEntryPoint:
 
     def _direct(self, **extra):
         options = dict(method="rhf", grid_spacing=0.5,
-                       resources={"threads": 1}, **extra)
+                       parallelization={"threads": 1}, **extra)
         return Mandacaru(**options)
 
     def test_the_energy_is_the_calculators(self, h2_json, capsys):

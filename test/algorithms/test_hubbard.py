@@ -142,7 +142,7 @@ def frozen_cuh(spec, shift=0.0, *, spin=False):
     atoms.calc = Mandacaru(
         method="dft", xc="lda", basis=SZ, grid=grid, grid_spacing=0.3, hubbard_u=spec,
         project_translation=False, scf_options={"tolerance": 1e-10}, trace=False,
-        resources={"threads": 2}, **options,
+        parallelization={"threads": 2}, **options,
     )
     return atoms
 

@@ -16,7 +16,14 @@ use crate::{basis::filter, Context, Error, Result};
 
 /// The default energy shift (eV) and confining wall `(amplitude Ha, r_i / r_c)` of the basis.
 pub const DEFAULT_ENERGY_SHIFT: f64 = 0.1;
-pub const DEFAULT_WALL: (f64, f64) = (12., 0.6);
+pub const DEFAULT_WALL: (f64, f64) = (
+    crate::basis::confinement::AMPLITUDE,
+    crate::basis::confinement::INNER_FRACTION,
+);
+/// The smallest `energy_shift` (eV) accepted: below it the cutoff radius runs past the end of the
+/// radial table and the request is indistinguishable from "no confinement", which has its own
+/// spelling (`null`).
+pub const MIN_ENERGY_SHIFT: f64 = 1e-3;
 /// Diffuse shells: the highest `l` a `"present"` recipe covers, how far past the widest support
 /// their grid reaches, and the squared-norm residual below which one is dropped as dependent.
 pub const DIFFUSE_PRESENT_L_MAX: usize = 2;
@@ -145,8 +152,8 @@ impl Recipe {
         if !(amplitude.is_finite() && amplitude > 0. && inner > 0. && inner < 1.) {
             return Err(invalid("the confinement potential needs a positive amplitude and r_i / r_c in (0, 1)"));
         }
-        if self.energy_shift.is_some_and(|x| !(x.is_finite() && x >= 1e-3)) {
-            return Err(invalid("an energy_shift must be at least 1e-3 eV"));
+        if self.energy_shift.is_some_and(|x| !(x.is_finite() && x >= MIN_ENERGY_SHIFT)) {
+            return Err(invalid(format!("an energy_shift must be at least {MIN_ENERGY_SHIFT:e} eV")));
         }
         if !(self.split_norm > 0. && self.split_norm < 1.)
             || self.tail_norms.as_ref().is_some_and(|t| t.is_empty() || t.iter().any(|x| !(*x > 0. && *x < 1.)))
@@ -217,14 +224,13 @@ pub fn species(ctx: &Context, ds: &PawDataset, recipe: &Recipe) -> Result<(Vec<S
     let mut valence = std::collections::BTreeMap::new();
     let mut cutoffs = std::collections::BTreeMap::new();
     let mut first_radials = std::collections::BTreeMap::new();
-    for (l, state, empty) in states {
+    for BasisState { l, state, n, semicore, empty, .. } in states {
         let lu = l as usize;
-        let n = ds.channels[&l].n as usize + state;
         let radial = match recipe.energy_shift {
             Some(shift) => {
                 let confined = confined_orbital(ctx, ds, l, state, shift, recipe.wall)?;
                 let radial = confined.radial.clone();
-                if !is_semicore(ds, n, l) {
+                if !semicore {
                     cutoffs.insert((l, state), confined.r_c);
                 }
                 report.confined.push(Confined { n, l: lu, state, orbital: confined });
@@ -235,7 +241,6 @@ pub fn species(ctx: &Context, ds: &PawDataset, recipe: &Recipe) -> Result<(Vec<S
                 .ok_or_else(|| invalid("occupied state has no pseudo wave"))?
                 .as_slice().to_vec(),
         };
-        let semicore = is_semicore(ds, n, l);
         if !semicore {
             valence.insert(l, state);
             first_radials.entry(l).or_insert_with(|| radial.clone());
@@ -332,8 +337,8 @@ fn add_diffuse(
 ) -> Result<()> {
     let r = ds.r.as_slice();
     let mut reference = std::collections::BTreeMap::<usize, f64>::new();
-    for (l, state, empty) in basis_states(ctx, ds)? {
-        if is_semicore(ds, ds.channels[&l].n as usize + state, l) {
+    for BasisState { l, state, semicore, empty, .. } in basis_states(ctx, ds)? {
+        if semicore {
             continue;
         }
         let radial = if empty {
@@ -371,14 +376,31 @@ fn add_diffuse(
     Ok(())
 }
 
-/// The basis states `(l, state, empty)`: every occupied reference state, then the bound level of
-/// every empty channel that has one (Li and Be keep their p channel for scattering only).
-fn basis_states(ctx: &Context, ds: &PawDataset) -> Result<Vec<(u32, usize, bool)>> {
+/// One state a dataset's basis is built on: channel `l`, its partial wave `state`, its principal
+/// number `n`, whether it is semicore and, for the bound level of an empty channel (calcium's 3d),
+/// `empty` and that `level` (Hartree).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BasisState {
+    pub l: u32,
+    pub state: usize,
+    pub n: usize,
+    pub semicore: bool,
+    pub empty: bool,
+    pub level: Option<f64>,
+}
+
+/// The basis states: every occupied reference state, then the bound level of every empty channel
+/// that has one (Li and Be keep their p channel for scattering only).
+pub fn basis_states(ctx: &Context, ds: &PawDataset) -> Result<Vec<BasisState>> {
     let mut states = Vec::new();
+    let state_of = |l: u32, state: usize, level: Option<f64>| {
+        let n = ds.channels[&l].n as usize + state;
+        BasisState { l, state, n, semicore: is_semicore(ds, n, l), empty: level.is_some(), level }
+    };
     for (&l, channel) in &ds.channels {
         for (state, &occupation) in channel.occupations.data().iter().enumerate() {
             if occupation > 0. {
-                states.push((l, state, false));
+                states.push(state_of(l, state, None));
             }
         }
     }
@@ -388,8 +410,9 @@ fn basis_states(ctx: &Context, ds: &PawDataset) -> Result<Vec<(u32, usize, bool)
         {
             continue;
         }
-        if empty_channel_level(ctx, ds, l)? < -1e-3 {
-            states.push((l, 0, true));
+        let level = empty_channel_level(ctx, ds, l)?;
+        if level < -1e-3 {
+            states.push(state_of(l, 0, Some(level)));
         }
     }
     Ok(states)

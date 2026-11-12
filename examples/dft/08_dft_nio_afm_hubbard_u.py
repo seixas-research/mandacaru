@@ -44,7 +44,7 @@ def calculate(hubbard_u, log):
                            smearing={"method": "fermi-dirac", "width": 0.05},
                            spin=True,
                            hubbard_u=hubbard_u,
-                           resources={"threads": 2},
+                           parallelization={"threads": 2},
                            txt=os.path.join(DATA, log))
     energy = atoms.get_potential_energy()
     return atoms.calc, energy

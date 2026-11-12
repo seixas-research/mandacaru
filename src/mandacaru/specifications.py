@@ -34,6 +34,7 @@ METHODS = {
     "valsqa": Capability(True, True, True, "fermionic"),
 }
 from ._native import FUNCTIONALS as _FUNCTIONALS
+from .resources import native_context
 
 FUNCTIONALS = tuple(_FUNCTIONALS)
 MAPPINGS = ("jordan_wigner", "parity", "bravyi_kitaev", "parity_reduced")
@@ -131,12 +132,11 @@ class QubitEstimate:
 def estimate_qubits(atoms, *, basis="HAO", mapping="jordan_wigner", resources=None):
     """Count the native basis without constructing molecular integrals."""
     import json
-    from . import _native
     from .structure import geometry_value
 
     if mapping not in MAPPINGS:
         raise ValueError(f"expected a canonical mapping in {MAPPINGS}")
-    context = _native.Context(**dict(resources or {}))
+    context = native_context(resources)
     count = context.basis_size(
         geometry_value(atoms).native(),
         basis_spec=json.dumps(basis_specification(basis)),

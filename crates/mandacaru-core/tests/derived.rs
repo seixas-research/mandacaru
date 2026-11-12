@@ -180,3 +180,12 @@ fn workflow_values_are_the_numbers_a_spectrum_and_an_echo_report() {
     assert_eq!([1e16, 1., 1., -1e16].iter().sum::<f64>(), 0.);
     assert_eq!(derived::python_sum(&[]), 0.);
 }
+
+#[test]
+fn quotients_divide_element_by_element_and_the_total_rounds_half_to_even() {
+    assert_eq!(derived::quotients(&[1., 3., -2.], &[2., 4., 0.5]).unwrap(), vec![0.5, 0.75, -4.]);
+    assert!(derived::quotients(&[1.], &[1., 2.]).is_err());
+    assert_eq!(derived::rounded_total(&[0.5, 1.0]), 2);
+    assert_eq!(derived::rounded_total(&[0.5, 2.0]), 2);
+    assert_eq!(derived::rounded_total(&[1.0, 1.0, 1e-9]), 2);
+}

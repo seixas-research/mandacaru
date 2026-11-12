@@ -80,7 +80,7 @@ checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
 
 [[package]]
 name = "mandacaru-core"
-version = "26.11.18"
+version = "26.11.19"
 dependencies = [
  "libm",
  "mandacaru-kernels",
@@ -94,11 +94,11 @@ dependencies = [
 
 [[package]]
 name = "mandacaru-kernels"
-version = "26.11.18"
+version = "26.11.19"
 
 [[package]]
 name = "mandacaru-python"
-version = "26.11.18"
+version = "26.11.19"
 dependencies = [
  "mandacaru-core",
  "nalgebra",

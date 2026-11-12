@@ -39,6 +39,7 @@ labels* and combines counts -- so any SDK backend (see
 from __future__ import annotations
 
 from ..core.mapping import PauliSum
+from ..resources import native_context
 
 
 #: Instructions that occupy wires without being gates, so they never count.
@@ -350,8 +351,7 @@ def resilience_multipliers(provider) -> tuple[int, int, int]:
 
 def _context(resources, context):
     """The caller's native context, or one built from ``resources``."""
-    from .._native import Context
-    return Context(**dict(resources or {})) if context is None else context
+    return native_context(resources) if context is None else context
 
 
 def qwc_partition(labels, weights=None, *, resources=None, context=None) -> list[tuple[str, list[int]]]:

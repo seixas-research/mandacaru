@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import numpy as np
 from .. import _native
+from ..resources import native_context
 IMAGINARY_TOLERANCE=1e-8
 def _real(array, what: str) -> np.ndarray:
     """``array`` as a real array, refusing a non-negligible imaginary part.
@@ -91,8 +92,7 @@ def mp2_natural_orbitals(h_mo: np.ndarray, eri_mo: np.ndarray, n_occ: int, *, re
     is the classic frozen-natural-orbital scheme, and it is deliberately the
     conservative half of it.
     """
-    from .._native import Context
-    return MP2Result(**Context(**dict(resources or {})).mp2(np.ascontiguousarray(h_mo, dtype=complex), np.ascontiguousarray(eri_mo, dtype=complex), n_occ))
+    return MP2Result(**native_context(resources).mp2(np.ascontiguousarray(h_mo, dtype=complex), np.ascontiguousarray(eri_mo, dtype=complex), n_occ))
 
 def mp2_natural_orbitals_from_block(oovv: np.ndarray, energies: np.ndarray, n_occ: int, canonical: np.ndarray, *, resources=None) -> MP2Result:
     """:func:`mp2_natural_orbitals` from the only integrals it reads.
@@ -104,5 +104,4 @@ def mp2_natural_orbitals_from_block(oovv: np.ndarray, energies: np.ndarray, n_oc
     integral-direct build forms without the :math:`M^4` tensor (the native
     ``active_space={"method": "mp2"}`` selection does so); the arithmetic is :func:`mp2_energy` and :func:`mp2_density` on it.
     """
-    from .._native import Context
-    return MP2Result(**Context(**dict(resources or {})).mp2_from_block(np.ascontiguousarray(_real(oovv, 'MP2 block')), np.ascontiguousarray(_real(energies, 'orbital energies')), n_occ, np.ascontiguousarray(_real(canonical, 'canonical rotation'))))
+    return MP2Result(**native_context(resources).mp2_from_block(np.ascontiguousarray(_real(oovv, 'MP2 block')), np.ascontiguousarray(_real(energies, 'orbital energies')), n_occ, np.ascontiguousarray(_real(canonical, 'canonical rotation'))))

@@ -31,9 +31,6 @@ import numpy as np
 
 from .. import _native
 from ..units import to_bohr
-from ..basis._angular import sample_dtype as _dtype
-from ..basis._angular import (radial_angular_gradient, spherical_coords,
-                              spherical_harmonic)
 from ..basis.base import BasisFunction
 from .native_context import context as _context
 
@@ -80,8 +77,8 @@ class _RadialTabulated(BasisFunction):
         """Interpolated radial function; zero beyond the tabulated range.
 
         Below the first table point the function continues as
-        ``R(r_0) (r / r_0)^l``, as :meth:`~mandacaru.basis.multizeta.
-        TabulatedOrbital.radial` does.  A constant continuation would leave an
+        ``R(r_0) (r / r_0)^l``, as the engine's orbital evaluator
+        (``_native.radial_orbital_evaluate``) does.  A constant continuation would leave an
         ``l > 0`` function finite at its own nucleus, where the angular factor
         is undefined: a grid node on the nucleus then sampled ``R(r_0)``
         times a direction set by round-off, and the same Bloch sum came out
@@ -95,21 +92,20 @@ class _RadialTabulated(BasisFunction):
         point."""
         return self._table(r, True)
 
+    def _sample(self, x, y, z, gradient: bool) -> np.ndarray:
+        """``R(r) Y_lm`` (or its gradient) at the points, sampled by the native orbital routine."""
+        flat = [np.ascontiguousarray(a, dtype=np.float64).ravel() for a in (x, y, z)]
+        return _native.radial_orbital_sample(
+            _context(), self._r, self._values, self.l, self.m, *flat,
+            [float(c) for c in self.center], self.real, gradient)
+
     def evaluate(self, x, y, z) -> np.ndarray:
         """Sample the function on Cartesian coordinates (Bohr)."""
-        r, theta, phi = spherical_coords(x, y, z, self.center)
-        return np.asarray(self.radial(r)
-                          * spherical_harmonic(self.l, self.m, theta, phi,
-                                               real=self.real),
-                          dtype=_dtype(self.real))
+        return self._sample(x, y, z, False).reshape(np.shape(x))
 
     def gradient(self, x, y, z, delta: float = 1e-3) -> np.ndarray:
-        """Analytic gradient (``delta`` is unused)."""
-        return radial_angular_gradient(
-            self.radial, self.radial_slope, self.l, self.m,
-            np.asarray(x, dtype=float) - self.center[0],
-            np.asarray(y, dtype=float) - self.center[1],
-            np.asarray(z, dtype=float) - self.center[2], real=self.real)
+        """Analytic gradient, ``(3, n)`` (``delta`` is unused)."""
+        return self._sample(x, y, z, True)
 
 
 class PseudoAtomicOrbital(_RadialTabulated):
@@ -309,84 +305,18 @@ class OccupiedState:
     level: float | None = None
 
 
-#: An empty channel's lowest level is a bound state below this (Hartree);
-#: above it the level belongs to the box (potassium's d: +0.004).
-BOUND_LEVEL = -1e-3
-
-#: ``(id(dataset), l) -> (dataset, lowest level)``.
-_LEVEL_CACHE: dict = {}
-
-
-def _spectrum_box(pp, l: int) -> float:
-    """The radius of the box channel ``l``'s spectrum is solved in (Bohr): the engine's rule
-    (``paw::diagnose::spectrum::extent``), asked of the dataset's record."""
-    from .record import record_of
-    return float(_native.paw_spectrum_box(_context(), *record_of(pp), int(l)))
-
-
-def _lowest_level(pp, l: int) -> float:
-    entry = _LEVEL_CACHE.get((id(pp), int(l)))
-    if entry is None or entry[0] is not pp:
-        from .confinement import channel_arrays
-        level = _native.pao_bound_level(
-            _context(), *channel_arrays(pp, int(l)), _spectrum_box(pp, int(l)))
-        entry = (pp, float(level))
-        _LEVEL_CACHE[(id(pp), int(l))] = entry
-    return entry[1]
-
-
-def bound_radial(pp, l: int) -> np.ndarray:
-    """``R(r)`` on ``pp.r`` of channel ``l``'s lowest eigenstate in the
-    dataset's own operator, zero past the box it was solved in."""
-    from .confinement import channel_arrays
-    radial, _level = _native.pao_bound_radial(
-        _context(), *channel_arrays(pp, int(l)), _spectrum_box(pp, int(l)))
-    return radial
-
-
-#: Empty channels that carry projectors for their scattering only: their
-#: bound level stays out of the basis.  Lithium's p channel binds a 2p at
-#: -0.042 Ha; as a basis state it would make the minimal LiH basis five
-#: orbitals instead of two, and at DZP it moved bcc Li, Li2, LiH and LiF by
-#: -0.5, +1.4, -1.6 and +1.3 % against the polarization shell it replaces
-#: (HISTORY.md, 2026-10-07).  Beryllium's p channel (2p bound at about
-#: -0.08 Ha) likewise, so a minimal Be basis stays one orbital.
-SCATTERING_ONLY_CHANNELS = {"Li": (1,), "Be": (1,)}
-
-
 def basis_states(pp) -> list[OccupiedState]:
-    """:func:`occupied_states` plus the bound level of every empty channel
-    that has one (but :data:`SCATTERING_ONLY_CHANNELS`).  Calcium's d
-    channel binds a 3d at -0.078 Ha that the crystal fills; without it in
-    the basis fcc Ca came out 7-9 % too large with every zeta and
-    polarization count (HISTORY.md, 2026-10-06)."""
-    states = occupied_states(pp)
-    held = {s.l for s in states} | set(SCATTERING_ONLY_CHANNELS.get(str(pp.symbol), ()))
-    items = sorted(pp.channels.items())
-    for l, channel in items:
-        lvl = _lowest_level(pp, l) if int(l) not in held else 0.0
-        if int(l) not in held and lvl < BOUND_LEVEL:
-            states.append(OccupiedState(int(l), 0, int(channel.n), False,
-                                        empty=True, level=lvl))
-    return states
-
-
-def occupied_states(pp) -> list[OccupiedState]:
-    """Every occupied reference state of a dataset, channel by channel: one
-    per occupied channel, two in a semicore one (sodium's 2s and 3s; the
-    second is one shell up)."""
-    semicore = {tuple(o) for o in getattr(pp, "semicore_subshells", ())}
-    out, items = [], sorted(pp.channels.items())
-    for l, channel in items:
-        for i, occ in enumerate(getattr(channel, "occupations", None)
-                               or [channel.occupation]):
-            if occ > 0.0:
-                n = int(channel.n) + i
-                out.append(OccupiedState(int(l), i, n,
-                                         (n, int(l)) in semicore))
-    return out
+    """The states the basis of dataset ``pp`` is built on, from the engine's recipe
+    (``paw::basis_recipe``): every occupied reference state (two in a semicore channel) and the
+    bound level of every empty channel that has one, below -1e-3 Ha (calcium's 3d binds at
+    -0.078 Ha and the crystal fills it; lithium's and beryllium's p channels carry projectors for
+    scattering only and stay out)."""
+    from .record import record_of
+    return [OccupiedState(int(l), int(index), int(n), bool(semicore), bool(empty), level)
+            for l, index, n, semicore, empty, level
+            in _native.paw_basis_states(_context(), *record_of(pp))]
 
 
 def valence_electrons(symbols, potentials) -> float:
     """Total valence charge -- the electron count a PP calculation carries."""
-    return float(sum(potentials[symbol].valence_charge for symbol in symbols))
+    return float(_native.total([potentials[symbol].valence_charge for symbol in symbols]))

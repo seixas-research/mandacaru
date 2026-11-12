@@ -17,7 +17,7 @@ from mandacaru import Mandacaru
 def test_dft_molecule_unpolarized_analytic_forces():
     """Unpolarized H2 with DFT (PBE): analytic forces match numerical finite difference."""
     atoms = Atoms("H2", positions=[[0.0, 0.0, 0.0], [0.0, 0.0, 0.74]], cell=[6.0] * 3)
-    calc = Mandacaru(method="dft", xc="pbe", basis="HAO", grid_spacing=0.5, resources={"threads": 1})
+    calc = Mandacaru(method="dft", xc="pbe", basis="HAO", grid_spacing=0.5, parallelization={"threads": 1})
     atoms.calc = calc
     analytic_forces = atoms.get_forces()
     assert "analytic" in calc.result.force_details["scheme"].lower()
@@ -28,7 +28,7 @@ def test_dft_molecule_unpolarized_analytic_forces():
     grid = calc.integrals.grid
     def energy_at(z):
         m = Atoms("H2", positions=[[0.0, 0.0, 0.0], [0.0, 0.0, z]], cell=[6.0] * 3)
-        m.calc = Mandacaru(method="dft", xc="pbe", basis="HAO", grid=grid, grid_spacing=0.5, resources={"threads": 1})
+        m.calc = Mandacaru(method="dft", xc="pbe", basis="HAO", grid=grid, grid_spacing=0.5, parallelization={"threads": 1})
         return m.get_potential_energy()
 
     num_force_z = -(energy_at(0.74 + h) - energy_at(0.74 - h)) / (2 * h)
@@ -39,7 +39,7 @@ def test_dft_molecule_spin_polarized_analytic_forces():
     """Spin-polarized OH radical with DFT (PBE, spin=True): analytic forces match finite difference."""
     atoms = Atoms("OH", positions=[[0.0, 0.0, 0.0], [0.0, 0.0, 1.0]], cell=[6.0] * 3)
     atoms.set_initial_magnetic_moments([1.0, 0.0])
-    calc = Mandacaru(method="dft", xc="pbe", spin=True, basis="HAO", grid_spacing=0.5, project_translation=False, resources={"threads": 1})
+    calc = Mandacaru(method="dft", xc="pbe", spin=True, basis="HAO", grid_spacing=0.5, project_translation=False, parallelization={"threads": 1})
     atoms.calc = calc
     analytic_forces = atoms.get_forces()
     assert "analytic" in calc.result.force_details["scheme"].lower()
@@ -50,7 +50,7 @@ def test_dft_molecule_spin_polarized_analytic_forces():
     def energy_at(z):
         m = Atoms("OH", positions=[[0.0, 0.0, 0.0], [0.0, 0.0, z]], cell=[6.0] * 3)
         m.set_initial_magnetic_moments([1.0, 0.0])
-        m.calc = Mandacaru(method="dft", xc="pbe", spin=True, basis="HAO", grid=grid, grid_spacing=0.5, project_translation=False, resources={"threads": 1})
+        m.calc = Mandacaru(method="dft", xc="pbe", spin=True, basis="HAO", grid=grid, grid_spacing=0.5, project_translation=False, parallelization={"threads": 1})
         return m.get_potential_energy()
 
     num_force_z = -(energy_at(1.0 + h) - energy_at(1.0 - h)) / (2 * h)
@@ -152,7 +152,7 @@ def _paw_h2(method, z, grid=None, **options):
     """H2 on a coarse PAW-LCAO grid in its two lowest orbitals (the analytic variational force)."""
     atoms = Atoms("H2", positions=[[0.0, 0.0, 0.0], [0.0, 0.0, z]], cell=[5.0] * 3)
     atoms.calc = Mandacaru(method=method, basis="PAW-LCAO", grid=grid, grid_spacing=0.4,
-                           active_space={"orbitals": 2}, resources={"threads": 1}, **options)
+                           active_space={"orbitals": 2}, parallelization={"threads": 1}, **options)
     return atoms
 
 
@@ -214,7 +214,7 @@ def _h2_chain(method, options):
     atoms.calc = Mandacaru(method=method, crystal_orbitals="real-space", basis="HAO",
                            grid_spacing=0.3, kpts={"size": (2, 1, 1), "gamma": True},
                            optimizer={"method": "SLSQP", "maxiter": 1000, "tol": 1e-12},
-                           resources={"threads": 1}, trace=False, **options)
+                           parallelization={"threads": 1}, trace=False, **options)
     return atoms
 
 

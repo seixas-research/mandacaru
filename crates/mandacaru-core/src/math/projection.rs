@@ -193,7 +193,12 @@ impl<'a> ComplexProjector<'a, [C64]> {
 }
 impl<'a, S: ComplexTiles + ?Sized> ComplexProjector<'a, S> {
     /// A projector over any tiled stack, row-major `(orbitals, points)`: resident or on disk.
-    pub fn streaming(ctx: &Context, samples: &'a S, orbitals: usize, points: usize) -> Result<Self> {
+    pub fn streaming(
+        ctx: &Context,
+        samples: &'a S,
+        orbitals: usize,
+        points: usize,
+    ) -> Result<Self> {
         if orbitals == 0
             || points == 0
             || samples.len() != product(&[orbitals, points])?
@@ -306,6 +311,13 @@ pub struct ComplexProjectorWorkspace {
     _packing: Reservation,
 }
 impl ComplexProjectorWorkspace {
+    /// The bytes [`ComplexProjectorWorkspace::new`] allocates and reserves.
+    pub fn bytes(orbitals: usize, points: usize) -> Result<usize> {
+        let tile = points.min(TILE);
+        product(&[orbitals, tile, 48])?
+            .checked_add(product(&[orbitals, orbitals, 32])?)
+            .ok_or(Error::Overflow)
+    }
     pub fn new(ctx: &Context, orbitals: usize, points: usize) -> Result<Self> {
         if orbitals == 0 || points == 0 {
             return Err(Error::Invalid(
@@ -329,7 +341,11 @@ impl ComplexProjectorWorkspace {
     }
 
     /// Column-major matrix `sum_k conj(phi[a,k]) field[k] phi[b,k]`.
-    pub fn project<S: ComplexTiles + ?Sized>(&mut self, samples: &S, field: &[f64]) -> Result<&[C64]> {
+    pub fn project<S: ComplexTiles + ?Sized>(
+        &mut self,
+        samples: &S,
+        field: &[f64],
+    ) -> Result<&[C64]> {
         if field.len() != self.points {
             return Err(Error::Invalid(
                 "local field does not match the complex orbital grid".into(),
@@ -435,14 +451,48 @@ pub fn hermitian_density_tiles_accumulate<S: ComplexTiles + ?Sized>(
     weight: f64,
     out: &mut [f64],
 ) -> Result<()> {
+    if out.len() != points {
+        return Err(Error::Invalid(
+            "complex density projection has invalid dimensions or values".into(),
+        ));
+    }
+    hermitian_density_tiles_accumulate_range(ctx, samples, matrix, points, weight, 0, out)
+}
+
+/// The tile width of a grid of `points`: the unit [`hermitian_density_tiles_accumulate_range`]
+/// splits the grid by.
+pub fn density_tile(points: usize) -> usize {
+    points.min(TILE)
+}
+
+/// [`hermitian_density_tiles_accumulate`] on the points `first..first + out.len()` of the grid
+/// only, `out` holding those points. The range is made of whole tiles of the grid
+/// ([`density_tile`]), each computed exactly as the whole-grid call computes it: a grid split
+/// into ranges gets the same values, bit for bit, as the grid in one call.
+pub fn hermitian_density_tiles_accumulate_range<S: ComplexTiles + ?Sized>(
+    ctx: &Context,
+    samples: &S,
+    matrix: &DMatrix<C64>,
+    points: usize,
+    weight: f64,
+    first: usize,
+    out: &mut [f64],
+) -> Result<()> {
     let m = matrix.nrows();
+    let end = first.checked_add(out.len()).ok_or(Error::Overflow)?;
+    let whole_tiles = points > 0
+        && first % density_tile(points) == 0
+        && (end == points || out.len() % density_tile(points) == 0);
     if m == 0
         || matrix.ncols() != m
         || points == 0
         || samples.len() != product(&[m, points])?
         || !samples.finite()
-        || matrix.iter().any(|v| !v.re.is_finite() || !v.im.is_finite())
-        || out.len() != points
+        || matrix
+            .iter()
+            .any(|v| !v.re.is_finite() || !v.im.is_finite())
+        || end > points
+        || !whole_tiles
     {
         return Err(Error::Invalid(
             "complex density projection has invalid dimensions or values".into(),
@@ -471,7 +521,7 @@ pub fn hermitian_density_tiles_accumulate<S: ComplexTiles + ?Sized>(
     }
     let imaginary_matrix = b.as_slice().iter().any(|v| *v != 0.);
     let _packing = ctx.reserve(product(&[m, tile, 16])?)?;
-    for start in (0..points).step_by(tile) {
+    for start in (first..end).step_by(tile) {
         let count = tile.min(points - start);
         let block = samples.tile(m, points, start, count, staged.as_mut_slice())?;
         let mut imaginary_samples = false;
@@ -519,7 +569,8 @@ pub fn hermitian_density_tiles_accumulate<S: ComplexTiles + ?Sized>(
                 0.,
             )?;
             for j in 0..count {
-                out[start + j] += weight * factor
+                out[start - first + j] += weight
+                    * factor
                     * (0..m)
                         .map(|i| contraction[i + j * m] * work.as_slice()[i + j * m])
                         .sum::<f64>();
@@ -528,6 +579,9 @@ pub fn hermitian_density_tiles_accumulate<S: ComplexTiles + ?Sized>(
     }
     Ok(())
 }
+/// Tiles per fixed group of [`RealProjector::project`]: the unit whose partial sums are added in
+/// order, independent of the worker count.
+pub const PROJECTION_GROUP_TILES: usize = 4;
 impl<'a, T: Sample> RealProjector<'a, T> {
     pub fn new(ctx: &Context, samples: &'a [T], orbitals: usize, points: usize) -> Result<Self> {
         if orbitals == 0 || points == 0 || samples.len() != product(&[orbitals, points])? {
@@ -545,9 +599,11 @@ impl<'a, T: Sample> RealProjector<'a, T> {
         let per_worker = product(&[orbitals, tile, 32])?
             .checked_add(product(&[orbitals, orbitals, 8])?)
             .ok_or(Error::Overflow)?;
+        // The worker count (the width, the groups, half of the free budget) only sets the speed:
+        // the groups and their order of addition are fixed (`project`).
         let count = if orbitals >= 32 && points >= 8192 {
-            ctx.threads()
-                .min(points.div_ceil(tile))
+            ctx.width()
+                .min(points.div_ceil(tile * PROJECTION_GROUP_TILES))
                 .min((ctx.memory_limit() - ctx.memory_used()) / per_worker / 2)
                 .max(1)
         } else {
@@ -603,46 +659,62 @@ impl<'a, T: Sample> RealProjector<'a, T> {
                 begin: 0,
                 end: self.points,
             };
-            if self.workers.len() == 1 {
-                self.workers[0].compute(input)?;
-            } else {
-                let count = self.workers.len();
-                let tiles = self.points.div_ceil(self.tile);
-                std::thread::scope(|scope| {
-                    let mut handles = Vec::with_capacity(count);
-                    for (i, worker) in self.workers.iter_mut().enumerate() {
-                        let begin = (i * tiles / count) * self.tile;
-                        let end = (((i + 1) * tiles / count) * self.tile).min(self.points);
-                        handles.push(mandacaru_kernels::runtime::spawn(scope, move || {
-                            worker.compute(RealTile {
-                                begin,
-                                end,
-                                ..input
-                            })
-                        }));
-                    }
-                    let mut outcome = Ok(());
-                    for handle in handles {
-                        let result = handle
-                            .join()
-                            .map_err(|_| Error::Kernel("local projection worker panicked".into()))
-                            .and_then(|r| r);
-                        if outcome.is_ok() {
-                            outcome = result;
-                        }
-                    }
-                    outcome
-                })?;
-            }
+            // The tiles form fixed groups of `PROJECTION_GROUP_TILES`, whatever the number of
+            // workers: each group sums from zero into a worker's partial and the partials are
+            // added in group order, so the matrix does not depend on the thread count or on how
+            // many workers the memory budget allowed. A grid of one group is summed as one
+            // worker always summed it.
+            let span = self.tile * PROJECTION_GROUP_TILES;
+            let groups = self.points.div_ceil(span);
             self.matrix.as_mut_slice().fill(0.);
-            for worker in &self.workers {
-                for (to, from) in self
-                    .matrix
-                    .as_mut_slice()
-                    .iter_mut()
-                    .zip(worker.matrix.as_slice())
-                {
-                    *to += from;
+            let count = self.workers.len();
+            for wave in (0..groups).step_by(count) {
+                let last = (wave + count).min(groups);
+                let range = |group: usize| (group * span, ((group + 1) * span).min(self.points));
+                if last - wave == 1 {
+                    let (begin, end) = range(wave);
+                    self.workers[0].compute(RealTile {
+                        begin,
+                        end,
+                        ..input
+                    })?;
+                } else {
+                    std::thread::scope(|scope| {
+                        let mut handles = Vec::with_capacity(last - wave);
+                        for (group, worker) in (wave..last).zip(self.workers.iter_mut()) {
+                            let (begin, end) = range(group);
+                            handles.push(mandacaru_kernels::runtime::spawn(scope, move || {
+                                worker.compute(RealTile {
+                                    begin,
+                                    end,
+                                    ..input
+                                })
+                            }));
+                        }
+                        let mut outcome = Ok(());
+                        for handle in handles {
+                            let result = handle
+                                .join()
+                                .map_err(|_| {
+                                    Error::Kernel("local projection worker panicked".into())
+                                })
+                                .and_then(|r| r);
+                            if outcome.is_ok() {
+                                outcome = result;
+                            }
+                        }
+                        outcome
+                    })?;
+                }
+                for worker in &self.workers[..last - wave] {
+                    for (to, from) in self
+                        .matrix
+                        .as_mut_slice()
+                        .iter_mut()
+                        .zip(worker.matrix.as_slice())
+                    {
+                        *to += from;
+                    }
                 }
             }
             Ok(())

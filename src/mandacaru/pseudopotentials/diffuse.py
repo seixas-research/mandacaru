@@ -95,41 +95,20 @@ DIFFUSE_L_LIMIT = 3
 
 _L_LETTERS = "spdf"
 
-#: rms radius of the first diffuse shell over the free-atom valence rms radius
-#: of its ``l`` (the default recipe).  Measured on DZP (HISTORY.md, "Diffuse
-#: functions: the option, Phases 1-4"): 2.5 against 2.0 gives the F UHF
-#: affinity 1.17 against 1.00 eV (all-electron 1.18), H- 0.59 against 0.54 eV,
-#: water's RHF alpha 8.58 against 8.54 a.u. and twice the smallest overlap
-#: eigenvalue; 3.0 opens a hole between the valence orbital and the shell
-#: (Cl 2.25 against 2.36 eV).  2.0 is better on the hydrogen-rich H2 and CH4
-#: (hydrogen's p shell, sized from its 1s, comes out wide); over six molecules
-#: the PBE alpha error has the same mean at both and a lower median at 2.5.  The aug-cc-pVDZ diffuse primitives sit at
-#: 2.2-2.8 times the same free-atom radii.  The price is the box: 7.2 A of
-#: vacuum around hydrogen instead of 5.8.
-DEFAULT_RMS_RATIO = 2.5
+#: The defaults of the diffuse recipe, one definition each, in Rust (``basis::diffuse``): the rms
+#: radius of the first shell over the free-atom valence rms radius of its ``l`` (2.5: measured on
+#: DZP, F UHF affinity 1.17 against 1.00 eV, all-electron 1.18; the price is the box, 7.2 A of vacuum
+#: around hydrogen), the ratio between successive rms radii of one channel (the Gaussian families'
+#: exponent ratio 3.5 as a length), the uncut Gaussian's squared norm left beyond ``r_cut`` and the
+#: largest ``cutoff_norm`` accepted.
+DEFAULT_RMS_RATIO = _native.DEFAULT_RMS_RATIO
+DEFAULT_SHELL_RATIO = _native.DEFAULT_SHELL_RATIO
+DEFAULT_CUTOFF_NORM = _native.DEFAULT_CUTOFF_NORM
+MAX_CUTOFF_NORM = _native.MAX_CUTOFF_NORM
 
-#: Ratio between successive rms radii of one channel (``count > 1``): the
-#: Gaussian families' exponent ratio 3.5 as a length.
-DEFAULT_SHELL_RATIO = 3.5 ** 0.5
-
-#: The uncut Gaussian's squared norm left beyond ``r_cut``.  1e-4 instead of
-#: the filter's 1e-6 shortens every support by 14-15 % (the box needed by as
-#: much); measured, it moved water's alpha by 0.01 a.u. (Phase 0) and the F
-#: and H- affinities by 7 and 10 meV.
-DEFAULT_CUTOFF_NORM = 1e-4
-
-#: Largest ``cutoff_norm`` accepted: beyond it the cut removes a visible part
-#: of the function.
-MAX_CUTOFF_NORM = 1e-2
-
-#: One-center Gram-Schmidt: a shell keeping less than this squared norm
-#: after its atom's same-``l`` functions are projected out is dropped.
-LINEAR_DEPENDENCE_TOL = 1e-4
-
-
-#: A function whose norm on the real-space grid falls below ``1 - BOX_TOL``
-#: of its radial norm is cut by the box: warned about.
-BOX_TOL = 1e-4
+#: One-center Gram-Schmidt: a shell keeping less than this squared norm after its atom's same-``l``
+#: functions are projected out is dropped.
+LINEAR_DEPENDENCE_TOL = _native.LINEAR_DEPENDENCE_TOL
 
 
 @dataclass(frozen=True)
@@ -364,89 +343,31 @@ def is_diffuse(function) -> bool:
     return bool(getattr(function, "diffuse", False))
 
 
-def refuse_energy_ranking(method, n_diffuse: int, n_virtual: int,
-                          n_virtual_kept: int) -> None:
-    """Refuse an ``"energy"``-ranked truncation of a basis with diffuse shells.
-
-    Diffuse shells make the lowest virtual orbitals, and the ``"energy"``
-    ranking keeps the lowest first: a truncated register then fills with
-    orbitals that carry almost none of the correlation.
-    """
-    if (n_diffuse and str(method) == "energy"
-            and int(n_virtual_kept) < int(n_virtual)):
-        raise ValueError(
-            f"the basis has {n_diffuse} diffuse function(s) and the "
-            f"active_space keeps {n_virtual_kept} of {n_virtual} virtual "
-            "orbitals ranked by 'energy': diffuse shells make the lowest "
-            "virtual orbitals, so that ranking fills the register with them "
-            "whatever they contribute.  Rank the virtuals by occupation with "
-            "'method': 'mp2' (or 'natural' for an open-shell reference), or "
-            "keep every virtual orbital")
-
-
-def box_diagnostic(grid_norms, basis_fns, atom_of_orbital, symbols, grid,
-                   shells: dict | None = None):
-    """``(ratios, rows)`` for the diffuse functions of a molecule.
-
-    ``grid_norms[i]`` is basis function ``i``'s squared norm sampled on the
-    real-space ``grid`` (``grid.X``/``Y``/``Z``, ``step`` rows in Bohr and
-    ``shape``).  ``ratios[i]`` is that over the function's radial norm
-    (``nan`` for a function that is not diffuse); a ratio below ``1 -
-    BOX_TOL`` is warned about -- the cell, which is a molecule's whole box,
-    cuts the tail.  ``rows`` are one per atom with diffuse shells: its
-    largest ``r_cut`` against the distance from the atom to the nearest face
-    of the grid, and the smallest ratio among its functions.
-    """
-    ratios: dict = {}
-    for i, fn in enumerate(basis_fns):
-        if is_diffuse(fn):
-            ratios[i] = float(grid_norms[i]) / _native.diffuse_radial_norm(
-                _array(fn.table.r), _array(fn.table.values))
-    origin = [float(grid.X.flat[0]), float(grid.Y.flat[0]),
-              float(grid.Z.flat[0])]
-    step = _array(grid.step).tolist()
-    shape = [int(n) for n in grid.shape]
-    owners = [int(o) for o in atom_of_orbital]
-    rows = []
-    active_atoms = sorted({owners[i] for i in ratios})
-    for atom in active_atoms:
-        mine = [i for i in ratios if owners[i] == atom]
-        face = _native.diffuse_face_distance(
-            origin, step, shape, _array(basis_fns[mine[0]].center).tolist())
-        symbol = symbols[atom]
-        r_cut = None
-        for s in (shells or {}).get(symbol, ()):
-            if s.accepted and (r_cut is None or s.r_cut > r_cut):
-                r_cut = s.r_cut
-        min_ratio = float("inf")
-        for i in mine:
-            if ratios[i] < min_ratio:
-                min_ratio = ratios[i]
-        rows.append((atom, symbol, float("nan") if r_cut is None else r_cut,
-                     face, min_ratio))
-    short = [i for i, r in ratios.items() if r < 1.0 - BOX_TOL]
-    if short:
-        worst = min(short, key=ratios.__getitem__)
+def warn_if_cut(box) -> None:
+    """Warn when the cell cuts diffuse functions: ``box`` is the engine's box diagnostic
+    (``_native.paw_diffuse_box``, ``paw::molecular::Setup::diffuse_box``), whose ``worst`` function
+    keeps less than ``1 - BOX_TOL`` of its norm on the grid."""
+    if box["short"]:
+        function, atom, ratio = box["worst"]
         warnings.warn(
-            f"the cell cuts {len(short)} diffuse basis function(s): the "
-            f"worst keeps {ratios[worst]:.6f} of its norm on the grid "
-            f"(function {worst}, on atom {owners[worst]}).  A "
+            f"the cell cuts {box['short']} diffuse basis function(s): the "
+            f"worst keeps {ratio:.6f} of its norm on the grid "
+            f"(function {function}, on atom {atom}).  A "
             "molecule's box is its cell; enlarge the vacuum until every "
             "atom's diffuse r_cut fits inside it (the [BASIS] diffuse_box "
             "table lists r_cut against each atom's distance to the cell "
-            "face)", RuntimeWarning, stacklevel=3)
-    out_ratios = [ratios.get(i, float("nan")) for i in range(len(basis_fns))]
-    return out_ratios, rows
+            "face)", RuntimeWarning, stacklevel=2)
 
 
-def box_table(rows) -> list:
-    """The ``[BASIS]`` ``diffuse_box`` table from :func:`box_diagnostic`'s
-    rows (lengths in Bohr and Angstrom)."""
+def box_table(box, symbols) -> list:
+    """The ``[BASIS]`` ``diffuse_box`` table from the engine's box diagnostic (``box["rows"]``:
+    atom, largest accepted ``r_cut``, distance to the nearest face of the cell, smallest grid norm;
+    lengths in Bohr and Angstrom)."""
     return [("atom", "symbol", "r_cut_Bohr", "r_cut_Angstrom",
              "face_distance_Bohr", "face_distance_Angstrom", "grid_norm")] + [
-        (atom, symbol, f"{r_cut:.4f}", f"{to_angstrom(r_cut):.4f}",
+        (atom, symbols[atom], f"{r_cut:.4f}", f"{to_angstrom(r_cut):.4f}",
          f"{face:.4f}", f"{to_angstrom(face):.4f}", f"{ratio:.6f}")
-        for atom, symbol, r_cut, face, ratio in rows]
+        for atom, r_cut, face, ratio in box["rows"]]
 
 
 def shells_table(shells: dict) -> list:

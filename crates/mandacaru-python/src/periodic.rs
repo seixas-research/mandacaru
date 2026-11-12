@@ -494,6 +494,43 @@ impl PyPeriodicResult {
         out.set_item("volume", stress.volume)?;
         Ok(out)
     }
+    /// Berry phases and Wilson loops of the strings along `G_direction` of the mesh `size`
+    /// (`periodic::berry::strings`); `bands` is `None` (an insulator's occupied bands) or a
+    /// half-open `(lo, hi)`. Radians, fractional centers, Bohr.
+    #[pyo3(signature=(direction, size, *, bands=None))]
+    fn berry_phase<'py>(
+        &self,
+        py: Python<'py>,
+        direction: usize,
+        size: [usize; 3],
+        bands: Option<(usize, usize)>,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        super::berry::berry_phase(self, py, direction, size, bands)
+    }
+    /// The Berry curvature and Chern number of the plane normal to `G_normal`
+    /// (`periodic::berry::curvature`) on the in-plane entries of the mesh `size` (the entry along
+    /// the normal is not used), at the fractional `offset` along the normal. Radians, Bohr^2.
+    #[pyo3(signature=(normal, size, *, offset=0.0, bands=None))]
+    fn berry_curvature<'py>(
+        &self,
+        py: Python<'py>,
+        normal: usize,
+        size: [usize; 3],
+        offset: f64,
+        bands: Option<(usize, usize)>,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        super::berry::berry_curvature(self, py, normal, size, offset, bands)
+    }
+    /// The Berry-phase polarization of an insulator from the string mesh `size`
+    /// (`periodic::berry::polarization`), e/Bohr^2.
+    fn polarization<'py>(&self, py: Python<'py>, size: [usize; 3]) -> PyResult<Bound<'py, PyDict>> {
+        super::berry::polarization(self, py, size)
+    }
+    /// The Chern numbers of the three plane families of the mesh `size` and the Hall
+    /// conductivity of an insulator (`periodic::berry::hall`), e^2/(hbar Bohr).
+    fn anomalous_hall<'py>(&self, py: Python<'py>, size: [usize; 3]) -> PyResult<Bound<'py, PyDict>> {
+        super::berry::anomalous_hall(self, py, size)
+    }
     #[getter]
     fn spin_orbit_energy(&self) -> Option<f64> {
         self.inner.spin_orbit_energy

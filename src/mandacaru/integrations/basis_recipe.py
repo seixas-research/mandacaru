@@ -99,6 +99,7 @@ def basis_entries(symbols, tables_of, hold):
             if (symbol, index) not in held:
                 held[(symbol, index)] = hold(shell.r), hold(shell.values)
             r_key, values_key = held[(symbol, index)]
-            entries.extend(dict(atom=atom, l=int(shell.l), m=int(m), r=r_key, values=values_key)
+            entries.extend(dict(atom=atom, l=int(shell.l), m=int(m), r=r_key, values=values_key,
+                                diffuse=bool(shell.diffuse))
                            for m in range(-shell.l, shell.l + 1))
     return entries

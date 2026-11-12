@@ -8,8 +8,7 @@
 
 """Basis-function contract of the tabulated radial shells.
 
-The functions that survive in Python are the tabulated radial shells of the PAW-LCAO and
-multiple-zeta tables (:class:`~mandacaru.basis.multizeta.TabulatedOrbital` and the pseudopotential
+The functions that survive in Python are the tabulated radial shells of the PAW-LCAO basis (:class:`~mandacaru.pseudopotentials.orbitals.PseudoShell` and the pseudopotential
 shells); every basis the calculation samples is built and evaluated by the Rust engine. A shell
 meets this contract by evaluating its value and its gradient at Cartesian points.
 """

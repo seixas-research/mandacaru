@@ -11,15 +11,15 @@
 The variational drivers (:class:`~mandacaru.algorithms.vqe.VQE`,
 :class:`~mandacaru.algorithms.adapt_vqe.ADAPTVQE`) and the real-space integral
 engine record how long each stage takes, the peak process memory, and how many
-cores the native backend used, then surface them in the standard-output summary.
+processors the calculation runs on, then surface them in the standard-output summary.
 
 * **Time** -- wall-clock seconds via :func:`time.perf_counter`, accumulated per
   named stage (a stage can be timed repeatedly, e.g. once per ADAPT iteration).
 * **Memory** -- the process peak resident set size (RSS) via
   :func:`resource.getrusage`; a whole-process high-water mark, so it includes the
   memory the native kernels allocate (grid fields, ERI tensor), not just NumPy arrays.
-* **Cores** -- the number of threads the Rust integral kernels run with
-  (``None`` when the count was not recorded).
+* **Processors** -- the calculation's processor layout
+  (``kpts 4 x bands 1 x threads 2 (8 workers)``, ``None`` when not recorded).
 """
 
 from __future__ import annotations
@@ -83,11 +83,8 @@ def current_memory_mb() -> float:
 
 
 def cpu_count() -> int | None:
-    """Logical CPUs visible to this process (``None`` if undetectable).
-
-    What the machine offers, against which the Rust kernels' thread count
-    (:func:`backend_cores`) says how much is actually used.
-    """
+    """Logical CPUs visible to this process (``None`` if undetectable): what the machine
+    offers, beside the processors the calculation's layout uses."""
     try:
         count = len(os.sched_getaffinity(0))     # Linux: the allowed set
     except AttributeError:
@@ -95,36 +92,19 @@ def cpu_count() -> int | None:
     return None if not count else int(count)
 
 
-def backend_cores() -> int | None:
-    """Thread count of the native engine, or ``None`` when it cannot be read."""
-    try:
-        from .. import _native
-        return int(_native.num_threads())
-    except Exception:
-        return None
-
-
-def backend_label() -> str:
-    """Label of the active native engine (``"Rust (N threads)"``), or ``"unavailable"``."""
-    threads = backend_cores()
-    if threads is None:
-        return "unavailable"
-    return f"Rust ({threads} threads)" if threads > 1 else "Rust (serial)"
-
-
 class Timings:
     """Ordered accumulator of named stage wall-times, with memory/core context.
 
     Use :meth:`time` as a context manager to time a stage (accumulating across
     repeated calls), or :meth:`add` to fold in an externally measured duration.
-    :attr:`peak_memory_mb` and :attr:`n_cores` capture the resource context for
+    :attr:`peak_memory_mb` and :attr:`parallelization` (the calculation's processor layout,
+    as :func:`mandacaru.resources.layout_label` writes it) capture the resource context for
     the summary.
     """
 
-    def __init__(self, n_cores: int | None = None, backend: str | None = None):
+    def __init__(self, parallelization: str | None = None):
         self.stages: "OrderedDict[str, float]" = OrderedDict()
-        self.n_cores = n_cores
-        self.backend = backend
+        self.parallelization = parallelization
         self.wall_time: float | None = None      # end-to-end wall time (optional)
         self._peak_mb = peak_memory_mb()
         self._frames = []
@@ -182,37 +162,29 @@ class Timings:
             "total_s": self.total,
             "wall_time_s": self.wall_time,
             "peak_memory_mb": self.peak_memory_mb,
-            "n_cores": self.n_cores,
-            "backend": self.backend,
+            "parallelization": self.parallelization,
         }
 
     def resources(self) -> dict:
         """The machine context for a performance report.
 
-        ``threads`` is what the native integral backend
-        actually used and ``cpu_count`` what the machine offers; ``mpi`` records
-        that there is no distributed parallelism at all (Mandacaru is a single process --
-        shared-memory threads inside the native kernels), which is worth stating
-        rather than leaving to be inferred.
+        ``parallelization`` is the calculation's processor layout and ``cpu_count`` what the
+        machine offers; ``mpi`` records that there is no distributed parallelism at all
+        (Mandacaru is a single process, shared-memory threads inside the native kernels),
+        which is worth stating rather than leaving to be inferred.
         """
-        backend = self.backend or backend_label()
-        cores = self.n_cores if self.n_cores is not None else backend_cores()
-        is_rust = "Rust" in backend
-        threads_key = "threads" if is_rust else "openmp_threads"
-        mpi_desc = ("not used (single process, shared-memory scoped threads)"
-                    if is_rust else "not used (single process, shared-memory OpenMP)")
-        res = {
-            "integration_backend": backend,
-            threads_key: cores,
+        return {
+            "integration_backend": "Rust",
+            "parallelization": ("n/a (not recorded)" if self.parallelization is None
+                                else self.parallelization),
             "cpu_count": cpu_count(),
-            "mpi": mpi_desc,
+            "mpi": "not used (single process, shared-memory scoped threads)",
             "peak_memory_MiB": self.peak_memory_mb,
             "resident_memory_MiB": current_memory_mb(),
         }
-        return res
 
     def format_report(self, indent: str = "  ", width: int = 30) -> str:
-        """Multi-line report of stage times, cores and peak memory."""
+        """Multi-line report of stage times, the processor layout and peak memory."""
         lines = ["Timings (wall-clock):"]
         for name, secs in self.stages.items():
             lines.append(f"{indent}{name:<{width}s} {secs:>10.4f} s")
@@ -221,11 +193,9 @@ class Timings:
         if self.wall_time is not None:
             lines.append(f"{indent}{'total wall time':<{width}s} "
                          f"{self.wall_time:>10.4f} s")
-        cores = "n/a (not recorded)" if self.n_cores is None else str(self.n_cores)
-        backend = self.backend or "unavailable"
+        layout = "n/a (not recorded)" if self.parallelization is None else self.parallelization
         lines.append("Resources:")
-        lines.append(f"{indent}{'integration backend':<{width}s} {backend}")
-        lines.append(f"{indent}{'cores (OpenMP threads)':<{width}s} {cores}")
+        lines.append(f"{indent}{'parallelization':<{width}s} {layout}")
         lines.append(f"{indent}{'peak memory':<{width}s} "
                      f"{self.peak_memory_mb:>10.1f} MiB")
         return "\n".join(lines)

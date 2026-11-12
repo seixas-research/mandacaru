@@ -2,12 +2,12 @@
 use super::*;
 use nalgebra::{DMatrix, DVector};
 
-pub(super) fn minimize(
+pub(super) fn minimize<'p>(
     ctx: &Context,
     initial: &[f64],
     options: &Options,
     start: Option<&[f64]>,
-    mut objective: impl FnMut(&[f64]) -> Result<(f64, Vec<f64>)>,
+    mut objective: impl FnMut(&[f64]) -> Result<Probe<'p>>,
 ) -> Result<Outcome> {
     let n = initial.len();
     let _work = ctx.reserve(
@@ -17,8 +17,9 @@ pub(super) fn minimize(
     )?;
     let _history = ctx.reserve(product(&[options.max_evaluations, 8])?)?;
     let mut x = initial.to_vec();
-    let (mut energy, mut gradient) = objective(&x)?;
-    validate(energy, &gradient, n)?;
+    let first = objective(&x)?;
+    let mut energy = first.checked_energy()?;
+    let mut gradient = first.checked_gradient(n)?;
     let mut history = vec![energy];
     let mut hessian = match start {
         None => DMatrix::<f64>::identity(n, n),
@@ -67,12 +68,14 @@ pub(super) fn minimize(
                 .zip(direction.iter())
                 .map(|(x, p)| x + alpha * p)
                 .collect();
-            let (value, g) = objective(&next)?;
-            validate(value, &g, n)?;
+            let probe = objective(&next)?;
+            let value = probe.checked_energy()?;
             history.push(value);
             let roundoff = 4. * f64::EPSILON * energy.abs().max(1.);
+            // The test reads the energy alone: only an accepted point's gradient is computed, and
+            // a rejected trial's state is dropped here, before the next one is prepared.
             if value <= energy + 0.1 * alpha * slope + roundoff {
-                accepted = Some((next, value, g));
+                accepted = Some((next, value, probe.checked_gradient(n)?));
                 break;
             }
             alpha *= 0.5;

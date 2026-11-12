@@ -394,7 +394,6 @@ class CalculationResult:
     @property
     def timings(self):
         return {
-            "threads": self.context.threads,
             "memory_peak_bytes": self.context.memory_peak_bytes,
             "solve_seconds": self._raw.get("elapsed_seconds", 0.0),
             "termination": self._raw.get(

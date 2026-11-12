@@ -3,7 +3,7 @@ use mandacaru_core::paw::multipole::{
     angular_grid, gaunt, gaunt_grid, multipole_range, shape_function, shape_norm, shape_potential,
 };
 use mandacaru_core::paw::multipole_pairs::{
-    radial_moments, radial_remainder, smooth_waves, ChannelWaves, Pair,
+    pair_cut, radial_moments, radial_remainder, smooth_waves, ChannelWaves, Pair,
 };
 use mandacaru_core::Context;
 use std::f64::consts::PI;
@@ -154,4 +154,11 @@ fn identical_waves_leave_no_moment_and_no_remainder() {
         "{delta} vs {direct}"
     );
     assert_eq!(ctx.memory_used(), 0);
+}
+
+#[test]
+fn a_pair_integrates_over_the_larger_of_its_two_cutoffs() {
+    assert_eq!(pair_cut(0.77, 2.78), 2.78);
+    assert_eq!(pair_cut(2.78, 0.77), 2.78);
+    assert_eq!(pair_cut(1.5, 1.5), 1.5);
 }

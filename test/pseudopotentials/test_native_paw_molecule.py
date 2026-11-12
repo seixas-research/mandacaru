@@ -32,7 +32,7 @@ def test_lithium_closed_1s_exchange_preserves_the_existing_energy_reference(
         basis="PAW-LCAO",
         atoms=atoms,
         grid_spacing=0.30,
-        resources={"threads": 1},
+        parallelization={"threads": 1},
     ) as calc:
         energy = atoms.get_potential_energy() / HARTREE_TO_EV
         assert energy == pytest.approx(expected, abs=3e-6)
@@ -66,7 +66,7 @@ def test_projector_coordinate_changes_preserve_energy_and_augmented_overlap():
             atoms=atoms,
             basis={"name": "PAW-LCAO", "size": "DZP", "projector_basis": basis},
             grid_spacing=0.25,
-            resources={"threads": 1},
+            parallelization={"threads": 1},
         ) as calc:
             energies.append(atoms.get_potential_energy())
             natural = calc.natural_orbitals()
@@ -91,7 +91,7 @@ def test_retained_paw_result_keeps_its_basis_and_correct_nuclear_charges(tmp_pat
         basis="PAW-LCAO",
         atoms=atoms,
         grid_spacing=0.30,
-        resources={"threads": 1},
+        parallelization={"threads": 1},
     ) as calc:
         atoms.get_potential_energy()
         result = calc.result

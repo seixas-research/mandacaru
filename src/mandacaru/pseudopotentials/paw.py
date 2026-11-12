@@ -25,7 +25,7 @@ Everything numerical about one is native (``mandacaru-core``):
 
 What stays here is the :class:`PAWDataset` / :class:`PAWChannel` view (arrays by channel, the
 local potential through the engine's spline), the library readers and writers
-(:func:`get_paw`, :func:`get_upaw`, :func:`build_paw_library`, :func:`build_upaw_library`),
+(:func:`get_paw`, :func:`get_upaw`; the libraries are written by ``mandacaru-build``),
 the projector blocks the periodic setup reads (:func:`paw_projectors` and its block builders,
 which die with the periodic setup) and the registration of the two families.
 
@@ -390,35 +390,7 @@ def get_paw(symbol: str, paw_dataset=None, xc: str = DEFAULT_XC) -> PAWDataset:
 
     return load_library_dataset(
         symbol, paw_library_path(paw_dataset, xc), FAMILY, _CACHE,
-        label="PAW-LCAO", noun="dataset", builder="build_paw_library")
-
-
-def build_paw_library(elements=("H", "Li", "C", "N", "O", "F"),
-                      paw_dataset=None, *, verbose: bool = True,
-                      format: str | None = None, stride: int | None = None,
-                      **generation_options):
-    """Generate and save PAW-LCAO datasets for ``elements``; returns the paths."""
-    from .io import DEFAULT_FORMAT, STRIDE, library_file, save_pseudopotential
-
-    folder = paw_library_path(
-        paw_dataset, generation_options.get("xc", DEFAULT_XC), must_exist=False,
-        relativity=generation_options.get("relativity", "scalar"))
-    os.makedirs(folder, exist_ok=True)
-    format = DEFAULT_FORMAT if format is None else format
-    stride = STRIDE if stride is None else int(stride)
-    written = []
-    for symbol in elements:
-        pp = generate_paw(symbol, **generation_options)
-        path = save_pseudopotential(pp, library_file(symbol, folder, format),
-                                    format=format, stride=stride)
-        written.append(path)
-        if verbose:
-            chs = [f"l{l}: rc={pp.channels[l].r_cut:.2f} q11={pp.channels[l].overlap_correction[0, 0]:+.4f}"
-                   for l in range(8) if l in pp.channels]
-            print(f"  {symbol:>2}  Z_ion={pp.valence_charge:>4.0f}  "
-                  + "  ".join(chs) + f"  E1c={pp.one_center_energy:+.4f}  -> {os.path.basename(path)}")
-    _CACHE.clear()
-    return written
+        label="PAW-LCAO", noun="dataset")
 
 
 def upaw_library_path(paw_dataset=None, xc: str = DEFAULT_XC,
@@ -439,7 +411,7 @@ def get_upaw(symbol: str, paw_dataset=None, xc: str = DEFAULT_XC) -> PAWDataset:
     option can be tried at all would make it unusable.  Generation is a few
     seconds per element (H 0.4 s, O 2.2 s, measured) and the result is cached
     for the process, so a small molecule pays that once.  Build a library with
-    :func:`build_upaw_library` to skip it, and it is used whenever it exists.
+    ``mandacaru-build --pp UPAW`` to skip it, and it is used whenever it exists.
     """
     from .io import library_file, load_pseudopotential
 
@@ -459,48 +431,17 @@ def get_upaw(symbol: str, paw_dataset=None, xc: str = DEFAULT_XC) -> PAWDataset:
         if paw_dataset is not None:
             raise FileNotFoundError(
                 f"no UPAW-LCAO dataset for {symbol!r} at {path!r}; build one with "
-                f"build_upaw_library([{symbol!r}], paw_dataset={paw_dataset!r})")
+                f"mandacaru-build --pp UPAW --element {symbol} --output {paw_dataset!r}")
         where = ("MANDACARU_UPAW_PATH is not set" if folder is None
                  else f"no library at {folder!r}")
         warnings.warn(
             f"generating a UPAW-LCAO dataset for {symbol} ({where}); it is "
             f"cached for this process.  Build one once with "
-            f"mandacaru.pseudopotentials.paw.build_upaw_library([...]) to skip "
+            f"mandacaru-build --pp UPAW --element {symbol} --install to skip "
             f"this.", RuntimeWarning, stacklevel=2)
         pp = generate_upaw(symbol, xc=xc)
     _CACHE[key] = pp
     return pp
-
-
-def build_upaw_library(elements=("H", "Li", "C", "N", "O", "F"),
-                       paw_dataset=None, *, verbose: bool = True,
-                       format: str | None = None, stride: int | None = None,
-                       **generation_options):
-    """Generate and save UPAW-LCAO datasets for ``elements``; returns the paths."""
-    from .io import DEFAULT_FORMAT, STRIDE, library_file, save_pseudopotential
-
-    folder = upaw_library_path(
-        paw_dataset, generation_options.get("xc", DEFAULT_XC),
-        generation_options.get("relativity", "scalar"))
-    if folder is None:
-        from .environment import repository_path
-        repository_path(UPAW_FAMILY)     # raises the "not set" explanation
-    os.makedirs(folder, exist_ok=True)
-    format = DEFAULT_FORMAT if format is None else format
-    stride = STRIDE if stride is None else int(stride)
-    written = []
-    for symbol in elements:
-        pp = generate_upaw(symbol, **generation_options)
-        path = save_pseudopotential(pp, library_file(symbol, folder, format),
-                                    format=format, stride=stride)
-        written.append(path)
-        if verbose:
-            chs = [f"l{l}: rc={pp.channels[l].r_cut:.2f} |q|={(-float(pp.channels[l].overlap_correction[0, 0]) if float(pp.channels[l].overlap_correction[0, 0]) < 0.0 else float(pp.channels[l].overlap_correction[0, 0])):.1e}"
-                   for l in range(8) if l in pp.channels]
-            print(f"  {symbol:>2}  Z_ion={pp.valence_charge:>4.0f}  "
-                  + "  ".join(chs) + f"  E1c={pp.one_center_energy:+.4f}  -> {os.path.basename(path)}")
-    _CACHE.clear()
-    return written
 
 
 # --------------------------------------------------------------------------- #

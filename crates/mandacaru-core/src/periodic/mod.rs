@@ -1,5 +1,6 @@
 //! Periodic engine and portable crystal snapshots. Atomic units throughout.
 pub mod analysis;
+pub mod berry;
 pub mod description;
 pub mod ewald;
 pub mod exchange_state;

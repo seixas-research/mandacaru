@@ -23,7 +23,7 @@ def silicon():
     atoms = bulk("Si", "diamond", a=5.43)
     atoms.calc = Mandacaru(method="dft", xc="lda", basis={"name": "PAW-LCAO", "size": "SZ"},
                            grid_spacing=0.25, kpts={"size": (4, 4, 4), "gamma": True},
-                           resources={"threads": 2})
+                           parallelization={"threads": 2})
     atoms.get_potential_energy()
     fermi = atoms.calc.get_fermi_level()
     wannier = atoms.calc.wannier(8, guess="sp3",
@@ -95,7 +95,7 @@ def test_antiferromagnetic_nio_has_a_spin_resolved_model_with_the_fock_identity_
     atoms.calc = Mandacaru(method="dft", xc="lda", basis={"name": "PAW-LCAO", "size": "SZ"},
                            grid_spacing=0.35, kpts={"size": (2, 2, 1), "gamma": True},
                            smearing={"method": "fermi-dirac", "width": 0.01}, trace=False,
-                           resources={"threads": 2})
+                           parallelization={"threads": 2})
     atoms.get_potential_energy()
     fermi = atoms.calc.get_fermi_level()
     wannier = atoms.calc.wannier(guess={"Ni": "d"}, windows={"outer": (fermi - 5.0, fermi + 5.0)})

@@ -25,27 +25,30 @@ do not carry.
 ## What the flags do not say
 
 **Forces.** A `yes` in the forces column is necessary, not sufficient.
-`get_forces()` is available only for a molecular (non-periodic) geometry, with
-`kinetic="spectral"` and no circuit execution (`shots > 0`, a non-default `device`
-or `execute_circuits=True`). Otherwise it raises `PropertyNotImplementedError` or
-`NotImplementedError`. The remaining conditions per family:
+`get_forces()` needs `kinetic="spectral"` on a molecule and a state the guide lists
+as having a force; otherwise it raises `PropertyNotImplementedError` or
+`NotImplementedError`. [Forces, geometry optimization and molecular
+dynamics](#forces-available) owns the full list; the conditions per family:
 
 - All-electron HF and Kohn-Sham: analytic stationary forces on the frozen grid.
-- PAW-LCAO RHF, UHF and semilocal Kohn-Sham (`lda`, `pbe`, `r2scan`): the force is
-  a Richardson difference of the total energy at fixed orbital-frame densities.
-  Hartree-Fock GHF, rVV10 functionals, `precision="float32"` and an unconverged
-  state raise.
+- PAW-LCAO RHF, UHF and Kohn-Sham (`lda`, `pbe`, `r2scan`, `hse06` and the rVV10
+  pairings): the analytic gradient of the converged state, in Rust, with no
+  displaced SCF ([PAW-LCAO forces](#forces-paw-lcao)). `precision="float32"` is
+  accepted. GHF and an unconverged state raise.
 - PAW-LCAO `dft` on a spin-orbit dataset (`paw_dataset="lda-fr"` or `"pbe-fr"`):
   spinor Kohn-Sham with analytic forces in Rust for `lda`, `pbe`, `pbe+rvv10`,
   `r2scan` and `hse06`. A molecule on such a dataset runs only `dft`: every other
   method raises `NotImplementedError` ("a molecule with a spin-orbit dataset
   needs method='dft' (spinor Kohn-Sham)"). Its stress raises
   `PropertyNotImplementedError`, and `hubbard_u` raises.
-- The quantum methods (`vqe`, `adapt-vqe`, `vasqa`, `valsqa`): spin-summed
-  reduced density matrices of the variational state contract displaced reduced
-  Hamiltonians. They need the local state vector; on a circuit device
-  (`execute_circuits=True`, `shots > 0`) `get_forces()` raises
-  `PropertyNotImplementedError`.
+- The quantum methods (`vqe`, `adapt-vqe`, `vasqa`, `valsqa`): on a PAW-LCAO
+  basis, an analytic force from the relaxed reduced density matrices of the
+  variational state, with the orbital response and the Z-vector correction
+  ([forces of a VQE or ADAPT-VQE state](#forces-variational)). On a circuit device
+  (`execute_circuits=True`, `shots > 0`) `vqe` and `adapt-vqe` take the same force
+  on the density matrices measured on the device, with a propagated statistical
+  error; `vasqa` and `valsqa` have no force there. `precision="float32"` raises
+  `ValueError`.
 
 **Periodic.** A geometry with a periodic axis (or `load_crystal=`) is solved by
 `dft` (`lda`, `pbe`, `r2scan`, `pbe+rvv10`, `r2scan+rvv10` or `hse06`) and by `vqe`,
@@ -58,13 +61,20 @@ energy per primitive cell; it needs `crystal_orbitals="real-space"` (the default
 need `seed=`), and its `get_stress()` raises `NotImplementedError` (see
 [the crystal guide](../guide/bloch.md)). `subspace-vqe`, `subspace-adapt-vqe`, `rhf`,
 `uhf` and `ghf` raise on a crystal. `dft` forces and stress on a crystal are supported
-through `atoms.get_forces()` and `atoms.get_stress()`. A hybrid (`xc="hse06"`) crystal needs the whole k
+through `atoms.get_forces()` and `atoms.get_stress()`; the Berry phase, Berry curvature, Chern
+number, polarization and anomalous Hall conductivity of a `dft` crystal are
+[their own guide](../guide/berry.md). A hybrid (`xc="hse06"`) crystal needs the whole k
 mesh: on a mesh reduced by symmetry or halved by time reversal it raises
 `NotImplementedError` (see `symmetry` in the `Mandacaru` docstring).
 `hubbard_u` is accepted for a crystal and for a molecule with `method="dft"` on a PAW-LCAO
 basis, with energy and analytic forces ([molecules](#dft-u-molecules)); a
 molecule with another method raises `ValueError`, and a screened hybrid or a spin-orbit dataset
 raises `NotImplementedError` (the full list is in [DFT+U](../guide/dft_u.md)).
+
+**Excited states.** `get_excitations()` is a post-SCF request on a converged `rhf` state
+or on a `dft` state with `xc="lda"`, `"pbe"` or `"hse06"` (closed-shell molecules); every
+other method and functional raises, and `energy_levels()` stays the quantum route
+([Excited states of molecules](../guide/excited_states.md)).
 
 **Quantum options on classical methods.** `rhf`, `uhf`, `ghf` and `dft` refuse
 `shots`, `execute_circuits`, `backend_provider`, `device`, `backend_options` and

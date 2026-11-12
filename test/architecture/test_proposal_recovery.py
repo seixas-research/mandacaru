@@ -13,7 +13,7 @@ def calculator(**options):
     h = ctx.pauli_operator(4, [("ZIII", .3, 0.), ("XXII", .2, 0.), ("YYII", .2, 0.)])
     settings = dict(method="valsqa", hamiltonian=h, n_spatial_orbitals=2,
                     num_particles=(1, 0), max_steps=20, max_length=3,
-                    seed=7, atomic_units=True, resources={"threads": 1})
+                    seed=7, atomic_units=True, parallelization={"threads": 1})
     settings.update(options)
     return Mandacaru(**settings)
 
@@ -27,7 +27,7 @@ def test_empty_training_saves_a_valid_unready_model_and_native_gradient_chain(tm
     monkeypatch.setattr(scipy.optimize, "minimize", forbidden)
     monkeypatch.setattr(np.linalg, "eigh", forbidden)
     store = tmp_path / "empty"
-    model = fit(store, fractions=(1.,), resources={"threads": 1})
+    model = fit(store, fractions=(1.,), parallelization={"threads": 1})
     assert not model.ready
     assert "0 groups" in model.report["reason"]
     restored = ProposalModel.load(store / "proposal_model.npz")
@@ -45,7 +45,7 @@ def test_frozen_ready_model_actually_changes_the_native_proposal_probabilities(t
     # A deliberately supplied test model can be marked ready; production fit
     # decides readiness only by held-out validation. Compare the actual score
     # mixture in recorded chain transitions, rather than just a model flag.
-    model = fit(tmp_path / "empty", fractions=(1.,), resources={"threads": 1})
+    model = fit(tmp_path / "empty", fractions=(1.,), parallelization={"threads": 1})
     value = json.loads(model.native_json)
     value["ready"] = True
     value["mixing"] = .3

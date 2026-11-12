@@ -58,6 +58,12 @@ pub fn smooth_waves(r: &[f64], waves: &ChannelWaves<'_>) -> Result<Vec<f64>> {
     Ok(out)
 }
 
+/// The augmentation radius of a pair of channels: the larger of their two cutoff radii, so a
+/// moment integrates both partial waves over the whole sphere either one occupies.
+pub fn pair_cut(first: f64, second: f64) -> f64 {
+    first.max(second)
+}
+
 /// A pair of channels with their all-electron and smooth waves.
 pub struct Pair<'a> {
     pub r: &'a [f64],

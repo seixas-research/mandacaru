@@ -6,6 +6,24 @@ import json
 from pathlib import Path
 
 
+def _layout(text):
+    """``kpts=4,threads=2`` as ``{"kpts": 4, "threads": 2}``; the keys and values are checked by
+    ``Mandacaru(parallelization=...)``."""
+    layout = {}
+    for item in text.split(","):
+        key, sep, value = item.partition("=")
+        key = key.strip()
+        if not sep or not key or key in layout:
+            raise argparse.ArgumentTypeError(
+                f"expected KEY=N pairs separated by commas (kpts, bands, threads), got {text!r}"
+            )
+        try:
+            layout[key] = int(value)
+        except ValueError:
+            raise argparse.ArgumentTypeError(f"{key} needs an integer, got {value!r}") from None
+    return layout
+
+
 def main(argv=None):
     from .version import __version__
     from .specifications import METHODS, FUNCTIONALS
@@ -34,7 +52,11 @@ def main(argv=None):
              "coefficients and every sum over many terms stay float64. Forces of "
              "PAW-LCAO and quantum methods are refused under float32; settings "
              "float32 cannot resolve raise an error")
-    parser.add_argument("--threads", type=int, default=None)
+    parser.add_argument(
+        "--parallelization", type=_layout, default=None, metavar="kpts=K,bands=B,threads=T",
+        help="processor layout (Mandacaru(parallelization=...)): K groups of k-point tasks of a "
+             "crystal, B groups of states each, T workers each; a missing key is 1 "
+             "(default: threads from MANDACARU_NUM_THREADS, OMP_NUM_THREADS, the hardware)")
     parser.add_argument("--memory-mb", type=int, default=32768)
     parser.add_argument("--forces", action="store_true")
     parser.add_argument("--load-hamiltonian")
@@ -67,16 +89,15 @@ def main(argv=None):
     # Passed only when given, so the calculator's own default and refusals apply.
     extra = ({} if options.crystal_orbitals is None
              else {"crystal_orbitals": options.crystal_orbitals})
+    if options.parallelization is not None:
+        extra["parallelization"] = options.parallelization
     with Mandacaru(
         method=options.method,
         xc=options.xc or ("lda" if options.method == "dft" else None),
         basis=options.basis,
         grid_spacing=options.grid_spacing,
         precision=options.precision,
-        resources={
-            "threads": options.threads,
-            "memory_limit_bytes": options.memory_mb * 1024**2,
-        },
+        resources={"memory_limit_bytes": options.memory_mb * 1024**2},
         load_hamiltonian=options.load_hamiltonian,
         save_hamiltonian=options.save_hamiltonian,
         load_crystal=options.load_crystal,

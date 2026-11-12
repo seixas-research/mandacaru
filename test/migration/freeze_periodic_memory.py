@@ -62,7 +62,7 @@ def worker(case: str, precision: str, traced: bool) -> dict:
     symbol, cubic, repeat, size, kpts, grid_spacing = CASES[case]
     atoms = bulk(symbol, "fcc" if symbol == "Al" else "diamond", a=4.05 if symbol == "Al" else 5.43, cubic=cubic).repeat(repeat)
     options = dict(method="dft", xc="lda", basis={"name": "PAW-LCAO", "size": size}, grid_spacing=grid_spacing, precision=precision,
-                   resources={"threads": 2, "memory_limit_bytes": 1800 * MIB})
+                   parallelization={"threads": 2}, resources={"memory_limit_bytes": 1800 * MIB})
     if kpts:
         options["kpts"] = kpts
     out = dict(case=case, precision=precision, tracemalloc=traced, natoms=len(atoms), options={k: repr(v) for k, v in options.items()},

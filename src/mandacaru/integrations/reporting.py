@@ -45,6 +45,16 @@ def write_forces(driver, result, geometry, *, internal, translated):
         )
 
 
+def write_excitations(driver, view, *, tolerance):
+    """Append the ``[EXCITED STATES]`` block of one ``get_excitations`` request to the run log
+    (``driver.txt``, and standard output when tracing)."""
+    from ..utils.logging import append_excitations
+
+    targets = ([str(driver.txt)] if driver.txt is not None else []) + ([STDOUT] if driver.trace else [])
+    for target in targets:
+        append_excitations(target, view, tolerance=tolerance)
+
+
 def write_optimization_summary(driver, atoms=None, fmax=None, optimizer=None, force=False, status=None):
     from ase.data import chemical_symbols
     from ..structure import geometry_value
@@ -90,13 +100,14 @@ def write_performance(driver, result, wall_time_s, *, solver_ran):
     """
     from ..backends.providers import qpu_usage
     from ..utils.logging import append_performance
+    from ..resources import layout_label
     from ..utils.profiling import Timings
 
     targets = _targets(driver)
     if not targets:
         return
-    threads = driver.context.threads
-    resources = Timings(n_cores=threads, backend=f"Rust ({threads} threads)").resources()
+    # The block owns the processor layout: the one place the run log writes it.
+    resources = Timings(parallelization=layout_label(driver.context)).resources()
     # The peak resident size is the one memory figure of the block.
     resources.pop("resident_memory_MiB")
     extra = {}

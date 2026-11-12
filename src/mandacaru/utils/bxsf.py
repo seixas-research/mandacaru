@@ -33,6 +33,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from ..core.atomic import atomic_path
+from ..resources import native_context
 
 #: Values per line in a band block.
 BXSF_VALUES_PER_LINE = 6
@@ -61,8 +62,7 @@ def write_bxsf(path, energies, reciprocal_cell, fermi_level: float, comment: str
     :math:`\\text{\\AA}^{-1}` (with the :math:`2\\pi`); ``fermi_level`` in
     eV.  Returns the path written.
     """
-    from .._native import Context
-    Context(**dict(resources or {})).write_bands(str(path), np.ascontiguousarray(energies, dtype=float), np.asarray(reciprocal_cell, dtype=float).reshape(3, 3).tolist(), float(fermi_level), comment=str(comment))
+    native_context(resources).write_bands(str(path), np.ascontiguousarray(energies, dtype=float), np.asarray(reciprocal_cell, dtype=float).reshape(3, 3).tolist(), float(fermi_level), comment=str(comment))
     return str(path)
 
 

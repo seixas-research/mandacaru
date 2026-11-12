@@ -1,11 +1,12 @@
 //! Isolated PAW-LCAO integrals with exact valence one-center interactions.
 //! Dataset decoding and basis recipes are outside this numerical boundary.
 pub(super) mod data;
+mod response_terms;
 pub mod gradient;
 pub(super) mod hubbard;
 pub(super) mod onecenter;
 mod screened;
-pub use screened::{Screened, SpinTerms};
+pub use screened::{Screened, SphereKernels, SpinTerms};
 use super::invalid;
 use crate::{
     basis::{Basis, Orbital, Radial},
@@ -300,6 +301,80 @@ pub struct Setup {
     /// The species-level terms of a screened hybrid, built once per screening.
     screened: std::sync::Mutex<Vec<(f64, Arc<Vec<ScreenedAtom>>)>>,
     hubbard: Option<crate::models::hubbard_request::Request>,
+    /// The basis functions that belong to a diffuse shell (flagged `"diffuse"` in the input).
+    diffuse: Vec<usize>,
+}
+
+/// A function whose norm on the real-space grid falls below `1 - BOX_TOL` of its radial norm is
+/// cut by the box.
+pub const BOX_TOL: f64 = 1e-4;
+
+/// What the cell of a molecule does to its diffuse functions (`Setup::diffuse_box`).
+#[derive(Clone, Debug)]
+pub struct DiffuseBox {
+    /// `(function, atom, ratio)`: each diffuse function's squared norm sampled on the grid over its
+    /// radial norm.
+    pub ratios: Vec<(usize, usize, f64)>,
+    /// `(atom, largest accepted r_cut, face distance, smallest ratio)` of every atom that carries
+    /// diffuse functions: its largest accepted `r_cut` (NaN with none) against the distance (Bohr)
+    /// from the atom to the nearest face of the grid.
+    pub rows: Vec<(usize, f64, f64, f64)>,
+    /// How many functions keep less than `1 - BOX_TOL` of their norm, and the worst one
+    /// `(function, atom, ratio)`.
+    pub short: usize,
+    pub worst: Option<(usize, usize, f64)>,
+}
+
+impl Setup {
+    /// How many basis functions are diffuse shells.
+    pub fn diffuse_functions(&self) -> usize {
+        self.diffuse.len()
+    }
+
+    /// The box diagnostic of the diffuse functions on `grid`: the check that they fit the cell.
+    pub fn diffuse_box(&self, grid: &SpatialGrid, cuts: &[Vec<f64>]) -> Result<DiffuseBox> {
+        let dv = grid.index.dv();
+        let points = grid.index.points();
+        let mut ratios = Vec::with_capacity(self.diffuse.len());
+        for &i in &self.diffuse {
+            let orbital = &self.basis.orbitals[i];
+            let crate::basis::Radial::Tabulated(table) = &orbital.radial else {
+                return Err(invalid("a diffuse function is a tabulated radial shell"));
+            };
+            let radial = crate::basis::pao::radial_norm(table.knots.as_slice(), table.values.as_slice());
+            let sampled: f64 = (0..points)
+                .map(|k| {
+                    let v = orbital.evaluate(grid.point(k));
+                    v * v
+                })
+                .sum::<f64>()
+                * dv;
+            ratios.push((i, orbital.atom, sampled / radial));
+        }
+        let atoms: std::collections::BTreeSet<usize> = ratios.iter().map(|r| r.1).collect();
+        let step = grid.step;
+        let rows_of_step: [[f64; 3]; 3] = std::array::from_fn(|i| std::array::from_fn(|j| step[(i, j)]));
+        let mut rows = Vec::new();
+        for atom in atoms {
+            let first = ratios.iter().find(|r| r.1 == atom).map(|r| r.0).unwrap_or(0);
+            let face = crate::basis::diffuse::face_distance(
+                grid.origin,
+                rows_of_step,
+                grid.index.shape(),
+                self.basis.orbitals[first].center,
+            )?;
+            let smallest = ratios.iter().filter(|r| r.1 == atom).map(|r| r.2).fold(f64::INFINITY, f64::min);
+            let r_cut = cuts.get(atom).map_or(f64::NAN, |c| c.iter().copied().fold(f64::NAN, f64::max));
+            rows.push((atom, r_cut, face, smallest));
+        }
+        let short = ratios.iter().filter(|r| r.2 < 1. - BOX_TOL).count();
+        let worst = ratios
+            .iter()
+            .filter(|r| r.2 < 1. - BOX_TOL)
+            .min_by(|a, b| a.2.total_cmp(&b.2))
+            .copied();
+        Ok(DiffuseBox { ratios, rows, short, worst })
+    }
 }
 
 impl Setup {
@@ -509,6 +584,20 @@ pub fn build(
             if let Some(file) = s.get("file").and_then(|f| f.as_str()) {
                 let ds = crate::paw::record::PawDataset::read(ctx, std::path::Path::new(file))?;
                 Species::from_dataset(ctx, &ds, raw, allow_spin_orbit, allow_heavy)
+            } else if let Some(text) = s.get("record").and_then(|t| t.as_str()) {
+                // The dataset as its record: the payload text here, the radial tables among the
+                // arrays under the entry's `tables` prefix (`<prefix><column>`).
+                let prefix = s["tables"]
+                    .as_str()
+                    .ok_or_else(|| invalid("a PAW record species needs its tables prefix"))?;
+                let names: Vec<String> =
+                    arrays.keys().filter(|k| k.starts_with(prefix)).cloned().collect();
+                let columns = names
+                    .into_iter()
+                    .filter_map(|k| arrays.remove(&k).map(|v| (k[prefix.len()..].to_string(), v)))
+                    .collect();
+                let ds = crate::paw::record::PawDataset::from_parts(ctx, text, columns)?;
+                Species::from_dataset(ctx, &ds, raw, allow_spin_orbit, allow_heavy)
             } else {
                 Species::parse_with_options(ctx, s, &mut arrays, raw, false, allow_heavy)
             }
@@ -532,6 +621,7 @@ pub fn build(
         return Err(invalid("PAW dataset atomic numbers disagree with geometry"));
     }
     let mut orbitals = Vec::new();
+    let mut diffuse = Vec::new();
     let mut cache = BTreeMap::<String, Arc<Cubic>>::new();
     for entry in metadata["basis"]
         .as_array()
@@ -562,6 +652,9 @@ pub fn build(
             cache.insert(key, radial.clone());
             radial
         };
+        if entry["diffuse"].as_bool() == Some(true) {
+            diffuse.push(orbitals.len());
+        }
         orbitals.push(Orbital {
             atom,
             l,
@@ -582,6 +675,7 @@ pub fn build(
         species_terms,
         screened: std::sync::Mutex::new(Vec::new()),
         hubbard,
+        diffuse,
     });
     setup.at_geometry(ctx, geometry, grid, kinetic, tolerance, precision)
 }
@@ -614,7 +708,7 @@ impl Setup {
         let species_terms = &self.species_terms;
         let m = basis.orbitals.len();
         let g = grid.index.points();
-        let c = if atoms.len() <= 1 || ctx.threads() <= 1 {
+        let c = if atoms.len() <= 1 || ctx.width() <= 1 {
             atoms
                 .iter()
                 .enumerate()
@@ -694,7 +788,7 @@ impl Setup {
         }
         let sigma = 1.4 * grid.spacings().into_iter().fold(0., f64::max);
         let mut external = ctx.allocate::<f64>(g)?;
-        let workers = ctx.threads().max(1).min(g.max(1));
+        let workers = ctx.width().max(1).min(g.max(1));
         if workers <= 1 {
             for k in 0..g {
                 external.as_mut_slice()[k] = atoms
@@ -793,7 +887,7 @@ impl Setup {
             })?;
             local.finish()
         };
-        let partials: Vec<Result<crate::Buffer<f64>>> = if atoms.len() <= 1 || ctx.threads() <= 1 {
+        let partials: Vec<Result<crate::Buffer<f64>>> = if atoms.len() <= 1 || ctx.width() <= 1 {
             (0..atoms.len()).map(&local_of).collect()
         } else {
             let local_of = &local_of;
@@ -829,7 +923,7 @@ impl Setup {
                 None
             };
             let mut field = ctx.allocate::<f64>(g)?;
-            let workers = ctx.threads().max(1).min(g.max(1));
+            let workers = ctx.width().max(1).min(g.max(1));
             let chunk = g.div_ceil(workers);
             for (a, ch) in multipoles.iter().enumerate() {
                 let sp = &species[atoms[ch.atom]];
@@ -941,7 +1035,7 @@ impl Setup {
             )?;
             Ok((electrostatic.finish()?, ionic))
         };
-        let partials: Vec<Result<(crate::Buffer<f64>, Vec<f64>)>> = if atoms.len() <= 1 || ctx.threads() <= 1 {
+        let partials: Vec<Result<(crate::Buffer<f64>, Vec<f64>)>> = if atoms.len() <= 1 || ctx.width() <= 1 {
             (0..atoms.len()).map(&electrostatic_of).collect()
         } else {
             let electrostatic_of = &electrostatic_of;

@@ -1581,7 +1581,7 @@ def append_performance(path: str, stages=None, wall_time_s=None,
     wall_time_s : float, optional
         End-to-end time of the step.
     resources : dict, optional
-        Machine context (backend, threads, CPUs, memory); see
+        Machine context (backend, processor layout, CPUs, memory); see
         :meth:`~mandacaru.utils.profiling.Timings.resources`.
     step : int, optional
         Geometry step; defaults to the number of blocks already written to
@@ -1645,6 +1645,62 @@ def append_forces(path: str, symbols: Sequence[str], forces,
     _write_lines(path, lines)
 
 
+def _excitation_block_lines(view, *, tolerance) -> list[str]:
+    """Lines of an ``[EXCITED STATES]`` block: the request, the solver's record and one row per
+    root. The block owns these facts; the ground-state energy and levels stay in the SCF
+    blocks."""
+    unit = view.energy_unit
+    kernel = view.kernel if view.functional is None or view.kernel != "adiabatic" else (
+        f"adiabatic ({view.functional})")
+    reference = "hartree-fock" if view.functional is None else f"kohn-sham {view.functional}"
+    keys = [f"approximation: {view.approximation}",
+            f"spin: {view.spin}",
+            f"kernel: {kernel}",
+            f"reference: {reference}",
+            f"roots_requested: {view.requested}",
+            f"roots_added_for_multiplets: {view.added}",
+            f"tolerance: {tolerance:.1e}",
+            f"iterations: {view.iterations}",
+            f"operator_applications: {view.applications}",
+            "orbitals: 0-based indices of the reference in ascending energy"]
+    if view.reference_spin_squared is not None:
+        keys.append(f"reference_spin_squared: {view.reference_spin_squared:.6f}")
+    if view.one_center_hartree is not None:
+        keys.append(f"one_center_{unit}: first-order shift of each root from the one-center "
+                    "Hartree kernel the linearized PAW one-center energy omits; the one-center "
+                    "exchange-correlation part is not estimated")
+    heading = ["root", f"energy_{unit}", "wavelength_nm", "oscillator_strength",
+               "f_velocity", "residual"]
+    if view.spin_squared is not None:
+        heading.append("spin_squared")
+    if view.one_center_hartree is not None:
+        heading.append(f"one_center_{unit}")
+    heading.append("transitions")
+    rows = [" ".join(f"{h:>20}" if k else f"{h:>4}" for k, h in enumerate(heading))]
+    for root in range(view.num_states):
+        cells = [f"{root + 1:>4}", f"{view.energies[root]:>20.8f}",
+                 f"{view.wavelengths[root]:>20.3f}", f"{view.oscillator_strengths[root]:>20.8f}",
+                 f"{view.velocity_oscillator_strengths[root]:>20.8f}",
+                 f"{view.residuals[root]:>20.2e}"]
+        if view.spin_squared is not None:
+            cells.append(f"{view.spin_squared[root]:>20.6f}")
+        if view.one_center_hartree is not None:
+            cells.append(f"{view.one_center_hartree[root]:>20.8f}")
+        cells.append(",".join(
+            f"{t.occupied}{'' if t.spin is None else t.spin[0]}->{t.empty}"
+            f"{'' if t.spin is None else t.spin[0]}({t.weight:.3f})"
+            for t in view.transitions(root)))
+        rows.append(" ".join(cells))
+    lines = ["", "[EXCITED STATES]"] + _indent(keys)
+    lines += _indent(["roots:"]) + _indent(rows, 2)
+    return lines + [_BANNER]
+
+
+def append_excitations(path: str, view, *, tolerance: float) -> None:
+    """Append an ``[EXCITED STATES]`` block (one ``get_excitations`` request) to ``path``."""
+    _write_lines(path, _excitation_block_lines(view, tolerance=tolerance))
+
+
 def _cell_parameters(cell: np.ndarray):
     """Return ``(a, b, c, alpha, beta, gamma)`` for a (3, 3) cell tensor.
 
@@ -1660,8 +1716,7 @@ _RELAXATION_COUNTS = ("geometry_steps",)
 
 #: ``[PERFORMANCE]`` keys that are counts rather than measurements, so they read
 #: back as ``int``.
-_PERFORMANCE_COUNTS = ("step", "threads", "openmp_threads", "cpu_count", "qpu_jobs",
-                       "qpu_submissions")
+_PERFORMANCE_COUNTS = ("step", "cpu_count", "qpu_jobs", "qpu_submissions")
 
 #: Section markers of the protocol, mapped to the key they fill (the step
 #: markers are handled separately: they open a new geometry step).
@@ -1678,6 +1733,7 @@ _SECTIONS = {"[BASIS]": "basis", "[ACTIVE SPACE]": "active_space",
              "[SCF ITERATIONS]": "scf_iterations",
              "[MARKOV CHAIN]": "markov_chain",
              "[FORCES]": "forces", "[PERFORMANCE]": "performance",
+             "[EXCITED STATES]": "excited_states",
              "[VARIATIONAL QUANTUM SUMMARY]": "summary",
              "[GEOMETRY OPTIMIZATION SUMMARY]": "optimization",
              "[RELAXATION COMPLETE]": "completion"}
@@ -1778,7 +1834,7 @@ def parse_output(path: str) -> dict:
                 elif section in ("electrons", "measurement", "energy_measurement",
                                  "gradient_measurement"):
                     step[section] = {}
-                elif section in ("basis", "active_space"):
+                elif section in ("basis", "active_space", "excited_states"):
                     table = None
                     basis_columns = None
                     step[section] = {}
@@ -1852,7 +1908,7 @@ def parse_output(path: str) -> dict:
                     else:
                         numeric = number(value)
                         block[key] = value if numeric is None else numeric
-            elif section in ("basis", "active_space"):
+            elif section in ("basis", "active_space", "excited_states"):
                 block = step[section]
                 if stripped.endswith(":") and indent < len(INDENT) * 2:
                     table = stripped[:-1]          # "datasets", "orbitals", ...

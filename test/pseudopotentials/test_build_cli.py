@@ -129,11 +129,10 @@ def test_a_worker_shares_the_cores_out():
     from concurrent.futures import ProcessPoolExecutor
 
     from mandacaru import _native
-    from mandacaru.pseudopotentials.build_cli import (_limit_threads,
-                                                     worker_threads)
+    from mandacaru.pseudopotentials.build_cli import _limit_threads
 
-    assert worker_threads(1) == _native.grid_blas_threads() >= 1
-    assert worker_threads(10_000) == 1
+    assert _native.worker_threads(1) == _native.grid_blas_threads() >= 1
+    assert _native.worker_threads(10_000) == 1
 
     with ProcessPoolExecutor(max_workers=1, initializer=_limit_threads,
                              initargs=(1,)) as pool:

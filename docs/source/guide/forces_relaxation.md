@@ -127,7 +127,21 @@ result.force_details["cphf_residual"]
 
 The analytic force reproduces the finite-difference route it replaced (displaced
 SCF, selection and Hamiltonian, Richardson steps), which is kept as a test
-oracle, to below `1e-7` eV/angstrom on every component.
+oracle, to below `1e-7` eV/angstrom on every component, with the one exception
+below. The orbitals the Hamiltonian is built in sit in a deterministic frame
+inside every exactly degenerate cluster ([Degenerate
+orbitals](#degenerate-orbitals)), so the production energy is a function of the
+geometry that the force differentiates.
+
+**Known limitation (unrestricted references).** The analytic force of a truncated
+`uhf` ansatz whose active space cuts the exact zero-occupation cluster of
+natural orbitals differs from the derivative of the energy: on linear H3 it is
+20.1 meV/angstrom off a force of 15.4 eV/angstrom (0.13 percent), while a central
+difference of the production energy and the finite-difference oracle agree with
+each other to `1e-3` meV/angstrom. A pair of orbitals degenerate by symmetry is
+exact. The cause is open; it is not the deterministic frame. Read from the
+maintainers' measurement, not requested on this build.
+
 On a circuit device (`shots > 0` or `execute_circuits=True`, `vqe` and
 `adapt-vqe`) the force is the same analytic one on the density matrices measured
 on the device (`measured_rdms()`). The parameter gradient and Hessian are

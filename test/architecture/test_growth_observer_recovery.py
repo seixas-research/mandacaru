@@ -14,7 +14,7 @@ REFERENCE = Path(__file__).parents[1] / "migration/reference/h2_hamiltonian.json
 def test_live_growth_observer_can_reenter_its_context_and_sample_native_states():
     seen = []
     with Mandacaru(
-        method="adapt-vqe", load_hamiltonian=REFERENCE, resources={"threads": 1}
+        method="adapt-vqe", load_hamiltonian=REFERENCE, parallelization={"threads": 1}
     ) as calc:
 
         def callback(info):
@@ -44,7 +44,7 @@ def test_live_growth_observer_can_reenter_its_context_and_sample_native_states()
 
 def test_observer_exceptions_preserve_the_original_exception_and_allow_recovery():
     with Mandacaru(
-        method="adapt-vqe", load_hamiltonian=REFERENCE, resources={"threads": 1}
+        method="adapt-vqe", load_hamiltonian=REFERENCE, parallelization={"threads": 1}
     ) as calc:
 
         def fail(info):

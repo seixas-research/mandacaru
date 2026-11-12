@@ -47,7 +47,7 @@ and `method`. With `--forces` it gains `forces_ev_per_angstrom`, one row per ato
 | `--xc` | `lda` for `dft` | `xc`: `lda`, `pbe`, `r2scan`, `hse06`, `pbe+rvv10` or `r2scan+rvv10`. Only `dft` uses it; with another method the calculator raises `ValueError` ("does not use: xc"). |
 | `--basis` | `HAO` | `basis`, as a name only (`HAO`, `PAW-LCAO`, a Gaussian recipe such as `STO-3G`). A basis with options needs the Python interface. |
 | `--grid-spacing` | `0.2` | `grid_spacing`, in angstrom. |
-| `--threads` | automatic | `resources["threads"]`. |
+| `--parallelization kpts=K,bands=B,threads=T` | `threads` automatic | `parallelization`: the processor layout, `K * B * T` processors. Keys are comma-separated `KEY=N` pairs, each at most once; a missing key is 1. Not passed, the calculation runs on `{"threads": n}`, `n` from `MANDACARU_NUM_THREADS`, then `OMP_NUM_THREADS`, then the hardware. The keys and values are checked by the calculator ([Parallel layout](#dft-parallel-layout)). |
 | `--memory-mb` | `32768` | The calculation's memory budget in mebibytes (`resources["memory_limit_bytes"]`). |
 | `--forces` | off | Also compute forces (`calculate` with the `forces` property). |
 | `--load-hamiltonian FILE` | none | `load_hamiltonian`: solve a cached qubit Hamiltonian; no geometry is needed. |
@@ -83,7 +83,7 @@ The second command reports `-26.018025475613708` eV for this H2 geometry.
 Limit threads and memory:
 
 ```bash
-mandacaru h2.json --method rhf --grid-spacing 0.35 --threads 2 --memory-mb 1024
+mandacaru h2.json --method rhf --grid-spacing 0.35 --parallelization threads=2 --memory-mb 1024
 ```
 
 Solve a crystal saved earlier with `save_crystal=` (see
@@ -92,6 +92,10 @@ Solve a crystal saved earlier with `save_crystal=` (see
 ```bash
 mandacaru --load-crystal si.json
 ```
+
+The command has no k-mesh flag, so the `kpts` level of `--parallelization` (groups of
+k-point tasks) applies to a crystal whose mesh comes from `--load-crystal`; a request for
+more groups than the crystal has k-point tasks raises and names the largest that fits.
 
 ## What the command refuses
 

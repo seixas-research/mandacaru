@@ -24,8 +24,9 @@ from ase import Atoms
 
 from mandacaru import Mandacaru
 from mandacaru.pseudopotentials.families import family_names, resolve_family
-from mandacaru.pseudopotentials.paw import (UPAW_FAMILY, build_upaw_library,
-                                            generate_paw, generate_upaw, get_upaw)
+from mandacaru.pseudopotentials.io import library_file, save_pseudopotential
+from mandacaru.pseudopotentials.paw import (UPAW_FAMILY, generate_paw,
+                                            generate_upaw, get_upaw)
 
 CELL = 10.0
 CENTER = CELL / 2 + 0.011
@@ -164,7 +165,7 @@ class TestFamilyRegistration:
     def test_a_missing_dataset_in_a_named_paw_dataset_is_not_generated(self,
                                                                      tmp_path):
         # An explicit paw_dataset is a statement that the library is there.
-        with pytest.raises(FileNotFoundError, match="build_upaw_library"):
+        with pytest.raises(FileNotFoundError, match="mandacaru-build"):
             get_upaw("Li", str(tmp_path))
 
 
@@ -189,8 +190,8 @@ class TestCalculatorPath:
     def test_a_built_library_is_used_instead_of_generating(self, tmp_path):
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            written = build_upaw_library(("H",), paw_dataset=str(tmp_path),
-                                         verbose=False)
+            written = [save_pseudopotential(
+                generate_upaw("H"), library_file("H", str(tmp_path)))]
         assert len(written) == 1
         # From the library: no generation warning this time.
         with warnings.catch_warnings():

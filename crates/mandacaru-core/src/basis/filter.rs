@@ -13,6 +13,10 @@ use crate::{Buffer, Context, Error, Result};
 use mandacaru_kernels::two_center::spherical_bessel;
 use std::f64::consts::PI;
 
+/// The default filter cutoff as a fraction of the grid's Nyquist wave vector: 1 leaves nothing aliased,
+/// every smaller fraction is worse in both ripple and cost.
+pub const NYQUIST_FRACTION: f64 = 1.0;
+
 /// Width of the `k`-space roll-off, as a fraction of `k_c`: the window is 1 below
 /// `(1 - rolloff) k_c` and reaches 0 at `k_c`. A hard step rings with a
 /// `sin(k_c r)/r` tail that only decays as `1/r`; a raised cosine over a quarter of
@@ -153,7 +157,7 @@ fn radial_norm(r: &[f64], values: &[f64]) -> f64 {
 
 /// Run `f(start, chunk)` over contiguous chunks of `out`, one per context thread.
 fn parallel(ctx: &Context, out: &mut [f64], f: impl Fn(usize, &mut [f64]) + Sync) -> Result<()> {
-    let workers = ctx.threads().max(1).min(out.len().max(1));
+    let workers = ctx.width().max(1).min(out.len().max(1));
     if workers == 1 {
         f(0, out);
         return Ok(());

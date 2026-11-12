@@ -1,6 +1,6 @@
 //! `bloch::bloch_project` under a thread policy: the workers it starts are counted and bounded
-//! by the policy a `Context` installs, and the sum of their partial arrays does not depend on the
-//! order in which they finish.
+//! by the policy a `Context` installs, and the sum of their partial arrays depends neither on the
+//! order in which they finish nor on how many there are (the point blocks form fixed groups).
 //!
 //! The policy is the one `Context::run` installs (`runtime::with_policy` with the context's thread
 //! count and its worker statistics). `mandacaru-core` is its only caller.
@@ -88,10 +88,10 @@ fn project(problem: &Problem) -> Vec<Complex64> {
 }
 
 #[test]
-fn the_workers_of_a_projection_are_bounded_by_the_context_and_add_in_worker_order() {
+fn the_workers_of_a_projection_are_bounded_by_the_context_and_add_in_group_order() {
     let problem = problem();
     let mut one = None;
-    for threads in [1usize, 2, 4] {
+    for threads in [1usize, 2, 3, 4] {
         let stats = Arc::new(WorkerStats::default());
         let run = || with_policy(threads, stats.clone(), || project(&problem));
         let first = run();
@@ -111,18 +111,9 @@ fn the_workers_of_a_projection_are_bounded_by_the_context_and_add_in_worker_orde
         assert!(stats.peak() <= threads);
         match &one {
             None => one = Some(first),
-            // A different worker count changes the grouping of the sum, nothing else.
-            Some(reference) => {
-                let worst = reference
-                    .iter()
-                    .zip(&first)
-                    .map(|(a, b)| (a.re - b.re).abs().max((a.im - b.im).abs()))
-                    .fold(0., f64::max);
-                assert!(
-                    worst < 1e-12,
-                    "{threads} threads differ from one by {worst}"
-                );
-            }
+            // The groups of point blocks and their order of addition are fixed: any number of
+            // workers gives the bits of one.
+            Some(reference) => assert!(*reference == first, "{threads} threads differ from one"),
         }
     }
 }

@@ -7,7 +7,6 @@ calculator's options, resolves the basis family and its datasets, and hands the 
 
 from __future__ import annotations
 from time import perf_counter
-import numpy as np
 
 from .setup_block import native_setup, spin_orbit_symbols
 
@@ -49,7 +48,6 @@ def configure(driver, atoms):
     if driver.method == "dft" and any(atoms.get_initial_magnetic_moments()):
         driver._unrestricted = True
     moments = initial_moments(atoms, spinor=spinor, unrestricted=driver._unrestricted)
-    time_reversal = spinor and not driver._unrestricted and not np.any(moments)
     for axis, periodic in enumerate(atoms.pbc):
         size = (
             driver._kpts_spec.get("size", (1, 1, 1))
@@ -60,4 +58,4 @@ def configure(driver, atoms):
     # The crystal of the previous geometry (a relaxation, a scan on one calculator) is released
     # before the next is built: two crystals and their setup arrays never coexist in memory.
     driver._drop_crystal()
-    native_setup(driver, atoms, family, options, moments, spinor, time_reversal, start)
+    native_setup(driver, atoms, family, options, moments, spinor, start)

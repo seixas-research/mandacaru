@@ -23,7 +23,7 @@ def molecule():
 
 def calculator(**options):
     return Mandacaru(
-        method="dft", xc="pbe", grid_spacing=0.5, resources={"threads": 1}, **options
+        method="dft", xc="pbe", grid_spacing=0.5, parallelization={"threads": 1}, **options
     )
 
 
@@ -60,7 +60,7 @@ def test_vdw_transforms_functional():
 @pytest.mark.parametrize("functional", _native.FUNCTIONALS)
 def test_scf_retains_no_dense_hamiltonian_until_explicit_request(functional):
     with Mandacaru(
-        method="dft", xc=functional, grid_spacing=0.5, resources={"threads": 1}
+        method="dft", xc=functional, grid_spacing=0.5, parallelization={"threads": 1}
     ) as calc:
         result = calc.run(molecule())
         assert result.success
@@ -86,8 +86,8 @@ def test_scf_retains_no_dense_hamiltonian_until_explicit_request(functional):
 
 def test_calculator_resources_and_results_have_independent_lifetimes(tmp_path):
     options = {"method": "rhf", "grid_spacing": 0.5}
-    first = Mandacaru(**options, resources={"threads": 1, "scratch_dir": tmp_path})
-    second = Mandacaru(**options, resources={"threads": 2, "scratch_dir": tmp_path})
+    first = Mandacaru(**options, parallelization={"threads": 1}, resources={"scratch_dir": tmp_path})
+    second = Mandacaru(**options, parallelization={"threads": 2}, resources={"scratch_dir": tmp_path})
     try:
         one, two = first.resources.scratch, second.resources.scratch
         assert one != two
@@ -129,7 +129,7 @@ def test_geometry_and_snapshots_do_not_alias_inputs():
 )
 def test_native_quantum_methods_against_frozen_hamiltonian(method):
     with Mandacaru(
-        method=method, load_hamiltonian=REFERENCE, resources={"threads": 1}
+        method=method, load_hamiltonian=REFERENCE, parallelization={"threads": 1}
     ) as calc:
         result = calc.run()
         assert result.success
@@ -164,7 +164,7 @@ import numpy as np
 from mandacaru import Mandacaru, Geometry
 g=Geometry((1,1),np.array([[2.5,2.5,2.13],[2.5,2.5,2.87]]),np.eye(3)*5)
 for basis in ['HAO','STO-3G']:
-    with Mandacaru(method='dft',xc='pbe',basis=basis,grid_spacing=.5,resources={'threads':1}) as c:
+    with Mandacaru(method='dft',xc='pbe',basis=basis,grid_spacing=.5,parallelization={'threads':1}) as c:
         r=c.run(g)
         assert r.success and not r.scf.has_model
 """
@@ -361,3 +361,58 @@ def test_periodic_transfer_honors_native_memory_budget():
     with pytest.raises(MemoryError):
         ctx.periodic_problem(metadata, arrays)
     assert ctx.memory_used_bytes == 0
+
+
+class TestParallelization:
+    """``parallelization`` is the one home of the processor layout: its validation, the refusal
+    of the processor count in ``resources``, and the levels a calculation does not have."""
+
+    def test_the_layout_reaches_the_native_context(self):
+        calc = Mandacaru(method="dft", parallelization={"kpts": 2, "threads": 3})
+        assert calc.context.parallelization == {"kpts": 2, "bands": 1, "threads": 3}
+        assert calc.context.workers == 6
+        assert "threads" not in calc.options
+
+    def test_omitted_the_context_takes_the_default_worker_count(self):
+        calc = Mandacaru(method="rhf")
+        assert calc.context.parallelization == {
+            "kpts": 1, "bands": 1, "threads": _native.num_threads()}
+
+    def test_the_processor_count_is_not_a_resource(self):
+        with pytest.raises(ValueError, match=r"parallelization=\{"):
+            Mandacaru(method="rhf", resources={"threads": 2})
+        with pytest.raises(TypeError, match="memory_limit_bytes"):
+            Mandacaru(method="rhf", resources={"cores": 2})
+
+    @pytest.mark.parametrize("layout, error", [
+        ("4", TypeError), ({"gpus": 2}, TypeError), ({"kpts": 2.0}, TypeError),
+        ({"threads": True}, TypeError), ({"kpts": 0}, ValueError), ({"threads": -1}, ValueError),
+        ({"kpts": 32, "threads": 64}, ValueError),
+    ])
+    def test_a_malformed_layout_is_refused(self, layout, error):
+        with pytest.raises(error):
+            Mandacaru(method="dft", parallelization=layout)
+
+    @pytest.mark.parametrize("method", ["rhf", "vqe", "adapt-vqe"])
+    @pytest.mark.parametrize("level", ["kpts", "bands"])
+    def test_a_method_without_k_points_takes_threads_only(self, method, level):
+        with pytest.raises(ValueError, match="method='dft'"):
+            Mandacaru(method=method, parallelization={level: 2})
+        Mandacaru(method=method, parallelization={"threads": 2}).close()
+
+    def test_bands_need_a_hybrid_and_are_not_implemented_yet(self):
+        with pytest.raises(ValueError, match="hybrid"):
+            Mandacaru(method="dft", xc="pbe", parallelization={"bands": 2})
+        with pytest.raises(NotImplementedError, match="not implemented yet"):
+            Mandacaru(method="dft", xc="hse06", parallelization={"bands": 2})
+
+    def test_k_point_groups_on_a_molecule_are_refused(self):
+        with Mandacaru(method="dft", grid_spacing=0.5, parallelization={"kpts": 2}) as calc:
+            with pytest.raises(ValueError, match="no periodic axis"):
+                calc.run(molecule())
+
+    def test_a_supplied_model_keeps_its_layout(self):
+        class Model:
+            context = _native.Context(threads=1)
+        with pytest.raises(ValueError, match="parallelization"):
+            Mandacaru(method="vqe", native_model=Model(), parallelization={"threads": 2})

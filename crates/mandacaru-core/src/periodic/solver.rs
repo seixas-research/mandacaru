@@ -13,7 +13,7 @@ use crate::{
     models::xc,
     product,
     quantum::C64,
-    Buffer, Reservation, Result,
+    Buffer, Level, Reservation, Result,
 };
 use nalgebra::{DMatrix, DVector};
 type Matrix = DMatrix<C64>;
@@ -748,6 +748,66 @@ pub fn diagonalize_with_solver_ws(
     };
     Ok((eps, &data.lowdin * &y, y))
 }
+/// The lanes of a crystal's spin channel and k-point tasks: the layout's `kpts`, refused when it
+/// exceeds the `tasks` the crystal has (a layout never leaves lanes idle).
+pub(super) fn kpoint_lanes(c: &Crystal, tasks: usize) -> Result<usize> {
+    let kpts = c.context.layout().kpts;
+    if kpts > tasks {
+        return Err(invalid(format!(
+            "parallelization kpts={kpts} exceeds the {tasks} k-point tasks of this crystal \
+             ({} k-points x {} spin channels); the largest kpts is {tasks}",
+            c.points.len(),
+            c.spins
+        )));
+    }
+    Ok(c.context.lanes(Level::Kpts, tasks))
+}
+
+/// Adds `w_t diag(phi_t^T D_t conj(phi_t))` of every term `t = 0..terms` (`term(t)` gives its
+/// point, matrix, weight and field channel) into `out`, `channels` fields of the grid one after
+/// the other. The grid is split into ranges of whole tiles, one per lane of the calling thread's
+/// width, and every lane adds the terms in order on its range: each point receives the same
+/// additions in the same order whatever the split, so the field does not depend on the processor
+/// count or the layout. Each lane reads the matrices itself, one at a time.
+pub(super) fn accumulate_densities<'a>(
+    c: &'a Crystal,
+    terms: usize,
+    term: impl Fn(usize) -> Result<(&'a KPoint, Matrix, f64, usize)> + Sync,
+    out: &mut [f64],
+) -> Result<()> {
+    use crate::math::projection::{density_tile, hermitian_density_tiles_accumulate_range};
+    let n = c.grid.index.points();
+    let tile = density_tile(n);
+    let tiles = n.div_ceil(tile);
+    let lanes = c.context.lanes(Level::Threads, tiles);
+    let bounds: Vec<usize> = (0..=lanes).map(|l| (l * tiles / lanes * tile).min(n)).collect();
+    // Lane `l` owns points `bounds[l]..bounds[l + 1]` of every channel.
+    let mut ranges: Vec<(usize, Vec<&mut [f64]>)> =
+        (0..lanes).map(|l| (bounds[l], Vec::new())).collect();
+    for mut field in out.chunks_mut(n) {
+        for (l, range) in ranges.iter_mut().enumerate() {
+            let (own, rest) = field.split_at_mut(bounds[l + 1] - bounds[l]);
+            range.1.push(own);
+            field = rest;
+        }
+    }
+    c.context.run_lanes(Level::Threads, &mut ranges, |_, (first, fields)| {
+        for t in 0..terms {
+            let (point, matrix, weight, channel) = term(t)?;
+            hermitian_density_tiles_accumulate_range(
+                &c.context,
+                &point.psi,
+                &matrix,
+                n,
+                weight,
+                *first,
+                fields[channel],
+            )?;
+        }
+        Ok(())
+    })
+}
+
 pub(super) fn density(
     c: &Crystal,
     matrices: &[StoredMatrix],
@@ -757,24 +817,26 @@ pub(super) fn density(
     }
     let n = c.grid.index.points();
     let p = c.p;
+    let nk = c.points.len();
     let mut rho = c.context.allocate::<f64>(c.spins * n)?;
     let mut q = c.context.allocate::<C64>(c.channels)?;
     let mut projected = Matrix::zeros(p, p);
     for s in 0..c.spins {
         let mut raw = c.context.allocate::<f64>(n)?;
         for (k, data) in c.points.iter().enumerate() {
-            let d = matrices[s * c.points.len() + k].matrix(&c.context)?;
+            let d = matrices[s * nk + k].matrix(&c.context)?;
             projected +=
                 data.projections.adjoint() * &*d * &data.projections * C64::new(data.weight, 0.);
-            crate::math::projection::hermitian_density_tiles_accumulate(
-                &c.context,
-                &data.psi,
-                &d,
-                n,
-                data.weight,
-                raw.as_mut_slice(),
-            )?;
         }
+        accumulate_densities(
+            c,
+            nk,
+            |k| {
+                let point = &c.points[k];
+                Ok((point, (*matrices[s * nk + k].matrix(&c.context)?).clone(), point.weight, 0))
+            },
+            raw.as_mut_slice(),
+        )?;
         sym_field(
             c,
             raw.as_slice(),
@@ -1128,8 +1190,23 @@ impl Crystal {
                     ])?)
                     .ok_or(crate::Error::Overflow)?,
             )?;
-            let _projector_work = ctx.reserve(product(&[c.p, c.p, 16, 12])?)?;
-            let _matrix_work = ctx.reserve(product(&[m, m, 16, 16])?)?;
+            // The spin channel and k-point tasks of every iteration run on `kpts` lanes of the
+            // layout, each with its own projector workspace and its share of the transient
+            // matrix work; a layout whose lanes do not fit in the budget is refused, not shrunk.
+            let tasks = product(&[c.spins, nk])?;
+            let lanes = kpoint_lanes(c, tasks)?;
+            let transient = product(&[c.p, c.p, 16, 12])?
+                .checked_add(product(&[m, m, 16, 16])?)
+                .ok_or(crate::Error::Overflow)?;
+            ctx.check_lanes(
+                Level::Kpts,
+                lanes,
+                transient
+                    .checked_add(crate::math::projection::ComplexProjectorWorkspace::bytes(m, n)?)
+                    .ok_or(crate::Error::Overflow)?,
+            )?;
+            let _projector_work = ctx.reserve(product(&[c.p, c.p, 16, 12, lanes])?)?;
+            let _matrix_work = ctx.reserve(product(&[m, m, 16, 16, lanes])?)?;
             let mut fft = Fft3::new(ctx, c.grid.index.shape())?;
             let mut rho = ctx.allocate::<f64>(c.field_channels() * n)?;
             let mut q = ctx.allocate::<C64>(c.channels)?;
@@ -1177,7 +1254,9 @@ impl Crystal {
             let mut previous = None;
             let mut history = vec![];
             let mut mixer = Mixer { history: vec![], gram: vec![], spec: None };
-            let mut projector_ws = crate::math::projection::ComplexProjectorWorkspace::new(ctx, m, n).ok();
+            let mut projector_ws: Vec<_> = (0..lanes)
+                .map(|_| crate::math::projection::ComplexProjectorWorkspace::new(ctx, m, n).ok())
+                .collect();
             // DFT+U: the shell occupations that define the operator are part of the mixed state.
             let mut hub_in = match (hub, initial) {
                 (Some(h), Some(init)) if active => {
@@ -1228,38 +1307,41 @@ impl Crystal {
                 let mut eigenvalues = vec![];
                 let mut coefficients = vec![];
                 let current_residual = history.last().map_or(f64::INFINITY, |it: &Iteration| it.residual);
-                for s in 0..c.spins {
-                    for (k_idx, data) in c.points.iter().enumerate() {
-                        let idx = s * c.points.len() + k_idx;
-                        let (eps, coeff, y_ortho) = diagonalize_with_solver_ws(
-                            c,
-                            data,
+                // One task per spin channel and k-point (index `s * nk + k`), each today's serial
+                // eigensolve on its own lane; the results are taken in index order, so they do
+                // not depend on the layout.
+                let solved = ctx.map_tasks(Level::Kpts, &mut projector_ws, tasks, |ws, idx| {
+                    let (s, k_idx) = (idx / nk, idx % nk);
+                    diagonalize_with_solver_ws(
+                        c,
+                        &c.points[k_idx],
+                        if c.spinor {
+                            v.as_slice()
+                        } else {
+                            &v.as_slice()[s * n..(s + 1) * n]
+                        },
+                        w.as_slice(),
+                        // A spinor's v_tau, like its v, is one block per Pauli channel.
+                        kinetic_potential.as_ref().map(|v| {
                             if c.spinor {
                                 v.as_slice()
                             } else {
                                 &v.as_slice()[s * n..(s + 1) * n]
-                            },
-                            w.as_slice(),
-                            // A spinor's v_tau, like its v, is one block per Pauli channel.
-                            kinetic_potential.as_ref().map(|v| {
-                                if c.spinor {
-                                    v.as_slice()
-                                } else {
-                                    &v.as_slice()[s * n..(s + 1) * n]
-                                }
-                            }),
-                            effective_operators.as_ref().map(|o| &o[s]),
-                            hybrid.map(|_| &exchange_in[idx]),
-                            options.eigensolver,
-                            options.switch_tolerance,
-                            current_residual,
-                            previous_y[idx].as_ref(),
-                            projector_ws.as_mut(),
-                        )?;
-                        previous_y[idx] = Some(y_ortho);
-                        eigenvalues.push(eps);
-                        coefficients.push(StoredMatrix::new(ctx, coeff, archive_matrices)?);
-                    }
+                            }
+                        }),
+                        effective_operators.as_ref().map(|o| &o[s]),
+                        hybrid.map(|_| &exchange_in[idx]),
+                        options.eigensolver,
+                        options.switch_tolerance,
+                        current_residual,
+                        previous_y[idx].as_ref(),
+                        ws.as_mut(),
+                    )
+                })?;
+                for (idx, (eps, coeff, y_ortho)) in solved.into_iter().enumerate() {
+                    previous_y[idx] = Some(y_ortho);
+                    eigenvalues.push(eps);
+                    coefficients.push(StoredMatrix::new(ctx, coeff, archive_matrices)?);
                 }
                 let weights: Vec<_> = (0..c.spins)
                     .flat_map(|_| c.points.iter().map(|p| p.weight))
@@ -1283,18 +1365,19 @@ impl Crystal {
                             .collect()
                     })
                     .collect();
-                let matrices = coefficients
-                    .iter()
-                    .zip(&occupations)
-                    .map(|(c, f)| {
-                        let c = c.matrix(ctx)?;
-                        let d =
-                            &*c * Matrix::from_diagonal(&DVector::from_iterator(
+                let mut units = vec![(); lanes];
+                let matrices = ctx
+                    .map_tasks(Level::Kpts, &mut units, tasks, |_, idx| {
+                        let c = coefficients[idx].matrix(ctx)?;
+                        Ok(&*c
+                            * Matrix::from_diagonal(&DVector::from_iterator(
                                 m,
-                                f.iter().map(|f| C64::new(*f, 0.)),
-                            )) * c.adjoint();
-                        StoredMatrix::new(ctx, d, archive_matrices)
-                    })
+                                occupations[idx].iter().map(|f| C64::new(*f, 0.)),
+                            ))
+                            * c.adjoint())
+                    })?
+                    .into_iter()
+                    .map(|d| StoredMatrix::new(ctx, d, archive_matrices))
                     .collect::<Result<Vec<_>>>()?;
                 // A magnetic spinor: the output state at the spin-orbit-optimal rigid orientation.
                 let (coefficients, matrices) = match super::spinor::optimal_rotation(c, &matrices)?

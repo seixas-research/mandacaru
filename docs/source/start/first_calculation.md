@@ -49,7 +49,8 @@ and scratch directory:
 
 ```python
 with Mandacaru(method="dft", xc="pbe", basis="HAO", grid_spacing=0.35,
-               resources={"threads": 2, "memory_limit_bytes": 512 * 1024**2}) as calc:
+               parallelization={"threads": 2},
+               resources={"memory_limit_bytes": 512 * 1024**2}) as calc:
     result = calc.run(atoms)
     print(result.in_units("Ha"), result.in_units("eV"), result.success)
     print(result.num_particles)            # (n_alpha, n_beta)
@@ -79,7 +80,7 @@ $ mandacaru h2.extxyz --method rhf --basis HAO --grid-spacing 0.35
 
 The report has the keys `energy_ev`, `converged` and `method`, plus
 `forces_ev_per_angstrom` with `--forces`. `--output FILE` also writes the report
-to a file. The other options are `--xc`, `--threads`, `--memory-mb` and the
+to a file. The other options are `--xc`, `--parallelization`, `--memory-mb` and the
 `--load-hamiltonian`, `--save-hamiltonian` and `--load-crystal` file options;
 `mandacaru --help` lists them. The command takes a geometry file or a JSON
 geometry, not a molecule name, and it has no dry-run flag; to count qubits

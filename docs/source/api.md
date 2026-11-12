@@ -17,6 +17,7 @@ do, are in [the methods table](#methods-table); what is not implemented is in
 ```{eval-rst}
 .. autoclass:: mandacaru.calculation.Mandacaru
    :members:
+   :inherited-members: Calculator, BaseCalculator, GetPropertiesMixin, object
 ```
 
 ## Qubit counts without a calculation
@@ -42,6 +43,14 @@ do, are in [the methods table](#methods-table); what is not implemented is in
 
 ```{eval-rst}
 .. autoclass:: mandacaru.results.CalculationResult
+   :members:
+```
+
+`calc.get_excitations(...)` returns an `Excitations` view of the linear-response
+excitations of a molecule ([Excited states of molecules](guide/excited_states.md)):
+
+```{eval-rst}
+.. autoclass:: mandacaru.analysis.excitations.Excitations
    :members:
 ```
 
@@ -74,7 +83,8 @@ The compiled extension `mandacaru._native` is the only numerical implementation.
 Its signatures are recorded in the stub `src/mandacaru/_native.pyi`, which must
 match the bindings in `crates/mandacaru-python`. The rules at the boundary:
 
-- `Context` owns checked allocations and the execution threads. Native calls use
+- `Context` owns checked allocations and the processor layout (`kpts`, `bands` and
+  `threads`, read back as `parallelization`, with the `workers` they make). Native calls use
   Hartree and Bohr; the Python layer converts from ASE's angstrom and eV.
 - Input arrays are aligned, C-contiguous NumPy arrays of the declared dtype. Rust
   copies and validates them into owned buffers before releasing the interpreter.
@@ -95,6 +105,14 @@ match the bindings in `crates/mandacaru-python`. The rules at the boundary:
   Hamiltonian ([Parquet files](#native-parquet)).
 - An active-space model exposes `orbital_rotation`, `selection_occupations` and
   `mp2_correlation_energy`.
+- The defaults and tolerances of the PAW-LCAO options are defined once, in Rust, and
+  read by Python as constants of `mandacaru._native`: the confinement
+  (`DEFAULT_ENERGY_SHIFT`, `MIN_ENERGY_SHIFT`, `CONFINEMENT_AMPLITUDE`,
+  `CONFINEMENT_INNER_FRACTION`), the Fourier filter (`FILTER_NYQUIST_FRACTION`), the
+  diffuse recipe (`DEFAULT_RMS_RATIO`, `DEFAULT_SHELL_RATIO`, `DEFAULT_CUTOFF_NORM`,
+  `MAX_CUTOFF_NORM`, `LINEAR_DEPENDENCE_TOL`) and the read-back check of a written
+  dataset (`RELOAD_LEVEL_TOLERANCE`). `mandacaru._native.worker_threads(workers)` is
+  the thread count each of that many worker processes may use.
 
 [The architecture page](development/architecture.md) states the dependency rule
 between the crates and the boundary rules for contributors.

@@ -358,3 +358,37 @@ fn verify(
     }
     Ok(())
 }
+
+/// Largest change (Hartree) of any channel's bound levels between a dataset as generated and as
+/// read back from the file written for it, at the library stride (the stored digits do not matter).
+/// Measured: 3e-6 at most (He 1s, Fe 3d), 1e-7 for H, C, O, Na.
+pub const RELOAD_LEVEL_TOLERANCE: f64 = 1e-5;
+
+/// `{l: shift}`: the channels whose bound levels (those below zero in the generated dataset)
+/// moved by more than [`RELOAD_LEVEL_TOLERANCE`] between the dataset as generated (`before`) and as
+/// read back (`after`); a level that is not finite counts as moved, and the worst shift of a channel
+/// is the one reported. Levels above zero are box states, whose energy follows the box the spectrum
+/// picks from the grid, not the dataset.
+pub fn reload_errors(
+    before: &[(usize, Vec<f64>)],
+    after: &[(usize, Vec<f64>)],
+) -> std::collections::BTreeMap<usize, f64> {
+    let mut out = std::collections::BTreeMap::new();
+    let mut worst = std::collections::BTreeMap::<usize, f64>::new();
+    for ((l, generated), (_, loaded)) in before.iter().zip(after) {
+        for (&b, &a) in generated.iter().zip(loaded) {
+            if b >= 0.0 {
+                continue; // a NaN stays in, and fails
+            }
+            let gap = (a - b).abs();
+            let entry = worst.entry(*l).or_insert(0.0);
+            if gap.is_nan() || *entry < gap {
+                *entry = gap;
+            }
+            if !(gap <= RELOAD_LEVEL_TOLERANCE) {
+                out.insert(*l, *entry);
+            }
+        }
+    }
+    out
+}

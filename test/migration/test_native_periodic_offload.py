@@ -25,14 +25,14 @@ SCF = {"max_iterations": 400, "tolerance": 1e-11, "density_tolerance": 1e-9, "mi
 
 
 def aluminum(offload):
-    resources = {"threads": 1}
+    resources = {}
     if offload is not None:
         resources["disk_offload_bytes"] = offload
     atoms = bulk("Al", "fcc", a=4.05)
     atoms.calc = Mandacaru(
         method="dft", basis=BASIS, grid_spacing=0.6, kpts={"size": (2, 2, 2), "gamma": True},
         smearing={"method": "fermi-dirac", "width": 0.3}, trace=False, periodic_scf_options=SCF,
-        resources=resources,
+        parallelization={"threads": 1}, resources=resources,
     )
     return atoms
 

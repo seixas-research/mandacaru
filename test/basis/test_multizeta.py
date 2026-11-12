@@ -15,13 +15,11 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from ase.data import atomic_numbers
 
 from mandacaru import _native
-from mandacaru.basis._config import ground_state_config, valence_subshells
-from mandacaru.basis.multizeta import (DEFAULT_NAO_SIZE, ZETA_NAMES,
-                                       RadialTable, TabulatedOrbital,
-                                       resolve_zeta, zeta_tables)
+from mandacaru.basis.multizeta import RadialTable, zeta_tables
+from mandacaru.models.radial import DEFAULT_NAO_SIZE, ZETA_NAMES, resolve_zeta
+from mandacaru.pseudopotentials.native_context import context
 from mandacaru.integrals import Grid
 
 
@@ -157,26 +155,28 @@ class TestSplitValence:
             assert len(zeta_tables(r, radial, 1, 0, n_zeta)) == n_zeta
 
 
-class TestTabulatedOrbital:
-    """The basis function built on a radial table."""
+def sample(table, m, points, *, center=(0.0, 0.0, 0.0), real=True, gradient=False):
+    """``R(r) Y_lm`` (or its gradient) of a radial table at ``points`` (3, n), sampled by the engine."""
+    x, y, z = (np.ascontiguousarray(a, dtype=float) for a in points)
+    return _native.radial_orbital_sample(
+        context(), np.ascontiguousarray(table.r, dtype=float),
+        np.ascontiguousarray(table.values, dtype=float), table.l, m, x, y, z,
+        list(center), real, gradient)
+
+
+class TestSampledOrbital:
+    """The basis function built on a radial table, sampled by ``_native.radial_orbital_sample``."""
 
     def test_confined_outside_the_cutoff(self, hydrogen_1s):
         r, radial = hydrogen_1s
-        orbital = TabulatedOrbital(RadialTable(r, radial, 1, 0), 0)
-        far = orbital.evaluate(np.array([50.0]), np.array([0.0]),
-                               np.array([0.0]))
+        far = sample(RadialTable(r, radial, 1, 0), 0, ([50.0], [0.0], [0.0]))
         assert far[0] == 0.0
-
-    def test_m_is_validated(self, hydrogen_1s):
-        r, radial = hydrogen_1s
-        with pytest.raises(ValueError, match=r"\|m\| <= l"):
-            TabulatedOrbital(RadialTable(r, radial, 1, 0), 1)
 
     def test_normalized_on_a_grid(self, hydrogen_1s):
         r, radial = hydrogen_1s
-        orbital = TabulatedOrbital(RadialTable(r, radial, 1, 0), 0)
         grid = Grid(center=[0, 0, 0], box_size=6.0, grid_spacing=0.10)
-        values = orbital.evaluate(grid.X, grid.Y, grid.Z)
+        values = sample(RadialTable(r, radial, 1, 0), 0,
+                        (grid.X.ravel(), grid.Y.ravel(), grid.Z.ravel()))
         norm = float(np.sum(np.abs(values) ** 2) * grid.dV)
         assert norm == pytest.approx(1.0, abs=2e-2)
 
@@ -187,18 +187,12 @@ class TestAnalyticGradient:
 
     CENTER = np.array([0.1, -0.2, 0.3])
 
-    @staticmethod
-    def _orbital(l, m, real):
-        r = np.linspace(0.05, 6.0, 300)
-        return TabulatedOrbital(RadialTable(r, r ** l * np.exp(-r), l + 1, l),
-                                m, center=TestAnalyticGradient.CENTER,
-                                units="bohr", real=real)
-
     @pytest.mark.parametrize("real", [True, False])
     @pytest.mark.parametrize("l, m", [(0, 0), (1, -1), (1, 0), (1, 1),
                                       (2, -2), (2, 1), (2, 2), (3, -2)])
     def test_it_is_the_derivative_of_the_samples(self, l, m, real):
-        orbital = self._orbital(l, m, real)
+        r = np.linspace(0.05, 6.0, 300)
+        table = RadialTable(r, r ** l * np.exp(-r), l + 1, l)
         rng = np.random.default_rng(10 * l + m + 5)
         points = self.CENTER[:, None] + rng.uniform(-4.0, 4.0, size=(3, 120))
         # Inside the first table point (the power-law continuation), a few
@@ -208,11 +202,15 @@ class TestAnalyticGradient:
                             + 0.02 * rng.normal(size=(3, 20)),
                             self.CENTER[:, None]])
         step = 1e-5
+
+        def value(p):
+            return sample(table, m, p, center=self.CENTER, real=real)
+
         numeric = np.stack([
-            (orbital.evaluate(*(points + step * np.eye(3)[k][:, None]))
-             - orbital.evaluate(*(points - step * np.eye(3)[k][:, None])))
-            / (2.0 * step) for k in range(3)])
-        analytic = orbital.gradient(*points)
+            (value(points + step * np.eye(3)[k][:, None])
+             - value(points - step * np.eye(3)[k][:, None])) / (2.0 * step)
+            for k in range(3)])
+        analytic = sample(table, m, points, center=self.CENTER, real=real, gradient=True)
         assert analytic.dtype == (np.float64 if real else np.complex128)
         assert np.abs(analytic - numeric).max() < 1e-7
 
@@ -246,29 +244,3 @@ class TestBasisConstruction:
         """DZP is the default: 8 (double-zeta s+p) + 5 (d polarization)."""
         assert DEFAULT_NAO_SIZE == "DZP"
         assert self.count("O") == 13 == self.count("O", size="DZP")
-
-
-class TestValenceSubshells:
-    """Semicore d and f shells belong in the valence."""
-
-    @pytest.mark.parametrize("symbol, expected", [
-        ("H", [(1, 0)]),
-        ("C", [(2, 0), (2, 1)]),
-        ("Si", [(3, 0), (3, 1)]),
-        ("Ca", [(4, 0)]),
-        ("Fe", [(3, 2), (4, 0)]),          # 3d must not be dropped
-        ("Zn", [(3, 2), (4, 0)]),
-        ("Ga", [(3, 2), (4, 0), (4, 1)]),
-    ])
-    def test_valence(self, symbol, expected):
-        assert valence_subshells(atomic_numbers[symbol]) == expected
-
-    def test_iron_is_not_a_two_electron_atom(self):
-        """The regression: taking only the highest n gave Fe a 4s^2 valence."""
-        config = ground_state_config(atomic_numbers["Fe"])
-        electrons = sum(config[s]
-                        for s in valence_subshells(atomic_numbers["Fe"]))
-        assert electrons == 8
-
-    def test_f_block_keeps_its_f_shell(self):
-        assert (4, 3) in valence_subshells(atomic_numbers["W"])

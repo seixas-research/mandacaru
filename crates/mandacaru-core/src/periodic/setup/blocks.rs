@@ -22,7 +22,7 @@ use super::{
 use crate::{
     paw::{
         multipole::{gaunt, gaunt_grid},
-        multipole_pairs::{radial_moments, smooth_waves, ChannelWaves, Pair},
+        multipole_pairs::{pair_cut, radial_moments, smooth_waves, ChannelWaves, Pair},
         record::PawDataset,
     },
     product, Buffer, Context, Result,
@@ -212,7 +212,7 @@ fn calculate_radial_moments(
 
     let pair = Pair {
         r,
-        r_cut: ch1.r_cut.max(ch2.r_cut),
+        r_cut: pair_cut(ch1.r_cut, ch2.r_cut),
         ae: [&ae1, &ae2],
         smooth: [&ps1, &ps2],
         waves: [n1, n2],

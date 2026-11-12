@@ -135,7 +135,7 @@ def solve(case: str, precision: str, threads: int) -> dict:
     start = time.time()
     try:
         calc = Mandacaru(**opts, precision=precision, periodic_scf_options=dict(SCF), trace=False,
-                         resources={"threads": threads, "memory_limit_bytes": 900 * MB})
+                         parallelization={"threads": threads}, resources={"memory_limit_bytes": 900 * MB})
         atoms.calc = calc
         e_ev = float(atoms.get_potential_energy())
         sn = calc.result.scf.snapshot()

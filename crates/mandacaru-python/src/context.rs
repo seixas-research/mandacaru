@@ -3568,15 +3568,21 @@ impl PyContext {
         }
         let count = shape[0];
         let occupied = shape[1];
+        if count == 0 || occupied == 0 {
+            return Err(PyValueError::new_err(
+                "Wilson links need at least one nonempty link",
+            ));
+        }
         let (values, _memory) = copy(&self.inner, &links)?;
         py.detach(|| {
-            mandacaru_core::periodic::analysis::wilson_loop(
-                &self.inner,
-                &values,
-                count,
-                occupied,
-                tolerance,
-            )
+            let _work = self
+                .inner
+                .reserve(mandacaru_core::product(&[count, occupied, occupied, 16, 2])?)?;
+            let matrices: Vec<_> = values
+                .chunks(occupied * occupied)
+                .map(|block| nalgebra::DMatrix::from_row_slice(occupied, occupied, block))
+                .collect();
+            mandacaru_core::periodic::berry::links::string_phase(&matrices, tolerance)
         })
         .map_err(error)
     }
@@ -4299,10 +4305,14 @@ impl PyContext {
         }
         Ok(quantum::PyProblem { inner })
     }
+    /// A calculation context of `kpts x bands x threads` processors (`threads=None`: the
+    /// default worker count, `MANDACARU_NUM_THREADS`, then `OMP_NUM_THREADS`, then the hardware).
     #[new]
-    #[pyo3(signature = (threads=None, memory_limit_bytes=34359738368, disk_offload_bytes=None, scratch_dir=None))]
+    #[pyo3(signature = (threads=None, kpts=1, bands=1, memory_limit_bytes=34359738368, disk_offload_bytes=None, scratch_dir=None))]
     fn new(
         threads: Option<usize>,
+        kpts: usize,
+        bands: usize,
         memory_limit_bytes: usize,
         disk_offload_bytes: Option<usize>,
         scratch_dir: Option<std::path::PathBuf>,
@@ -4314,6 +4324,7 @@ impl PyContext {
                 disk_offload_bytes.unwrap_or(mandacaru_core::context::DEFAULT_OFFLOAD_BYTES),
                 scratch_dir,
             )
+            .and_then(|context| context.with_layout(kpts, bands))
             .map_err(error)?,
         })
     }
@@ -4331,9 +4342,33 @@ impl PyContext {
     fn disk_archived_bytes(&self) -> usize {
         self.inner.archived_bytes()
     }
+    /// The workers of each band group (the innermost level of the layout).
     #[getter]
     fn threads(&self) -> usize {
-        self.inner.threads()
+        self.inner.layout().threads
+    }
+    /// The k-point (and spin channel) task groups of the layout.
+    #[getter]
+    fn kpts(&self) -> usize {
+        self.inner.layout().kpts
+    }
+    /// The occupied-state groups of each k-point task.
+    #[getter]
+    fn bands(&self) -> usize {
+        self.inner.layout().bands
+    }
+    /// The processor count, `kpts * bands * threads`.
+    #[getter]
+    fn workers(&self) -> usize {
+        self.inner.layout().workers()
+    }
+    /// The layout as `{"kpts": ..., "bands": ..., "threads": ...}`.
+    #[getter]
+    fn parallelization(&self) -> std::collections::BTreeMap<&'static str, usize> {
+        let layout = self.inner.layout();
+        [("kpts", layout.kpts), ("bands", layout.bands), ("threads", layout.threads)]
+            .into_iter()
+            .collect()
     }
     #[getter]
     fn memory_limit_bytes(&self) -> usize {
@@ -5128,4 +5163,10 @@ pub fn num_threads() -> usize {
 #[pyfunction]
 pub fn grid_blas_threads() -> usize {
     mandacaru_core::hardware_threads()
+}
+
+/// The workers each of `workers` concurrent jobs may use (the hardware threads shared out).
+#[pyfunction]
+pub fn worker_threads(workers: usize) -> usize {
+    mandacaru_core::worker_threads(workers)
 }

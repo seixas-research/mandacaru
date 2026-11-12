@@ -71,16 +71,10 @@ from dataclasses import dataclass
 import numpy as np
 
 from .. import _native
-from ..units import to_bohr
-from ._angular import sample_dtype as _dtype
-from ._angular import (radial_angular_gradient, spherical_coords,
-                       spherical_harmonic)
-from .base import BasisFunction
-
-from ..models.radial import (ZETA_SPLITS, DEFAULT_ZETA_SPLIT, DEFAULT_SPLIT_NORM, DEFAULT_TAIL_NORMS, validate_zeta_split, resolve_split_scheme, DEFAULT_NAO_SIZE, ZETA_NAMES, resolve_zeta)
+from ..models.radial import DEFAULT_SPLIT_NORM
 
 # --------------------------------------------------------------------------- #
-# Basis functions.
+# Radial tables.
 # --------------------------------------------------------------------------- #
 
 @dataclass
@@ -96,83 +90,6 @@ class RadialTable:
     #: A diffuse shell (:mod:`mandacaru.pseudopotentials.diffuse`): neither a
     #: zeta of an occupied state nor a polarization shell.
     diffuse: bool = False
-
-
-class TabulatedOrbital(BasisFunction):
-    r"""A basis function ``R(r) Y_lm`` from a tabulated radial function.
-
-    Used for every orbital the multiple-zeta machinery produces -- the extra
-    zetas and the polarization shells alike -- so they all sample identically in
-    the integral engine.
-    """
-
-    def __init__(self, table: RadialTable, m: int, center=None,
-                 units: str = "angstrom", *, real: bool = True):
-        if abs(int(m)) > int(table.l):
-            raise ValueError(f"require |m| <= l, got l={table.l}, m={m}")
-        self.table = table
-        self.n, self.l, self.m = int(table.n), int(table.l), int(m)
-        #: Real (molecule) or complex (crystal) spherical harmonics.
-        self.real = bool(real)
-        self.zeta = int(table.zeta)
-        self.polarization = bool(table.polarization)
-        self.diffuse = bool(table.diffuse)
-        self.center = (np.zeros(3) if center is None
-                       else to_bohr(center, units))
-        self.r_c = float(table.r[-1])
-
-    @property
-    def state(self) -> tuple[int, int, int]:
-        return (self.n, self.l, self.m)
-
-    @property
-    def kind(self) -> str:
-        """``"diffuse"``, ``"polarization"`` or ``"zeta"``."""
-        return ("diffuse" if self.diffuse
-                else "polarization" if self.polarization else "zeta")
-
-    def radial(self, r) -> np.ndarray:
-        """Interpolated radial function; zero outside the confining sphere."""
-        shape = np.shape(r)
-        res = _native.radial_orbital_evaluate(
-            np.ascontiguousarray(self.table.r, dtype=float),
-            np.ascontiguousarray(self.table.values, dtype=float),
-            np.ascontiguousarray(np.asarray(r, dtype=float).ravel(), dtype=float),
-            int(self.l), float(self.r_c), False,
-        )
-        return res.reshape(shape)
-
-    def radial_slope(self, r) -> np.ndarray:
-        """``dR/dr`` of :meth:`radial`: the spline's derivative."""
-        shape = np.shape(r)
-        res = _native.radial_orbital_evaluate(
-            np.ascontiguousarray(self.table.r, dtype=float),
-            np.ascontiguousarray(self.table.values, dtype=float),
-            np.ascontiguousarray(np.asarray(r, dtype=float).ravel(), dtype=float),
-            int(self.l), float(self.r_c), True,
-        )
-        return res.reshape(shape)
-
-    def evaluate(self, x, y, z) -> np.ndarray:
-        r, theta, phi = spherical_coords(x, y, z, self.center)
-        return np.asarray(self.radial(r)
-                          * spherical_harmonic(self.l, self.m, theta, phi,
-                                               real=self.real),
-                          dtype=_dtype(self.real))
-
-    def gradient(self, x, y, z, delta: float = 1e-3) -> np.ndarray:
-        """Analytic gradient (``delta`` is unused)."""
-        return radial_angular_gradient(
-            self.radial, self.radial_slope, self.l, self.m,
-            np.asarray(x, dtype=float) - self.center[0],
-            np.asarray(y, dtype=float) - self.center[1],
-            np.asarray(z, dtype=float) - self.center[2], real=self.real)
-
-    def __repr__(self) -> str:
-        kind = ("diffuse" if self.diffuse
-                else "pol" if self.polarization else f"zeta{self.zeta}")
-        return (f"TabulatedOrbital(n={self.n}, l={self.l}, m={self.m}, "
-                f"{kind}, r_c={self.r_c:.2f})")
 
 
 # --------------------------------------------------------------------------- #
@@ -218,67 +135,3 @@ def zeta_tables(r: np.ndarray, radial: np.ndarray, n: int, l: int,
     values = [first] + list(refined[1:])
     return [RadialTable(r=r, values=v, n=n, l=l, zeta=zeta)
             for zeta, v in enumerate(values, start=1)]
-
-
-def polarization_tables(r: np.ndarray, l_max: int, n_polarization: int,
-                        solver, n_zeta: int = 1,
-                        split_norm: float = DEFAULT_SPLIT_NORM,
-                        tail_norms=None) -> list[RadialTable]:
-    """Polarization shells at ``l_max + 1`` (and beyond), from ``solver``.
-
-    ``solver(n, l)`` returns ``(r, R)`` for a confined orbital.  The polarization
-    shell uses the lowest principal quantum number allowed for its angular
-    momentum, so it is the most compact function of that symmetry.  Each
-    polarization shell may itself be split into multiple zetas.
-
-    ``solver`` must accept an *unoccupied* subshell: a polarization shell has no
-    electrons in it by definition.  Failures are not swallowed -- a silently
-    absent polarization shell is indistinguishable from an unpolarized basis and
-    would quietly change the answer.
-    """
-    tables: list[RadialTable] = []
-    for offset in range(int(n_polarization)):
-        l = int(l_max) + 1 + offset
-        n = l + 1                              # lowest allowed principal number
-        r_pol, radial = solver(n, l)
-        for table in zeta_tables(r_pol, radial, n, l, n_zeta, split_norm,
-                                 tail_norms=tail_norms):
-            table.polarization = True
-            tables.append(table)
-    return tables
-
-
-def build_shells(valence, solver, n_zeta: int = 1, n_polarization: int = 0,
-                 split_norm: float = DEFAULT_SPLIT_NORM,
-                 tail_norms=None) -> list[RadialTable]:
-    """All radial tables of a multiple-zeta polarized basis for one atom.
-
-    ``valence`` is a sequence of ``(n, l)`` subshells and ``solver(n, l)``
-    returns ``(r, R)`` for each.
-    """
-    tables: list[RadialTable] = []
-    l_max = -1
-    for (n, l) in valence:
-        r, radial = solver(n, l)
-        tables.extend(zeta_tables(r, radial, n, l, n_zeta, split_norm,
-                                  tail_norms=tail_norms))
-        l_max = max(l_max, l)
-    if n_polarization and l_max >= 0:
-        tables.extend(polarization_tables(r, l_max, n_polarization, solver,
-                                          n_zeta=1, split_norm=split_norm,
-                                          tail_norms=tail_norms))
-    return tables
-
-
-def orbitals_from_tables(tables, center=(0.0, 0.0, 0.0),
-                         units: str = "angstrom", *,
-                         real: bool = True) -> list[BasisFunction]:
-    """Expand radial tables over all ``m`` into basis functions, with real
-    spherical harmonics (a molecule) or complex ones (``real=False``, a
-    crystal)."""
-    orbitals: list[BasisFunction] = []
-    for table in tables:
-        for m in range(-table.l, table.l + 1):
-            orbitals.append(TabulatedOrbital(table, m, center=center,
-                                             units=units, real=real))
-    return orbitals

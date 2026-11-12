@@ -27,7 +27,7 @@ def chain():
                   cell=CELL, pbc=True)
     atoms.calc = Mandacaru(method="dft", xc="lda", basis={"name": "PAW-LCAO", "size": "SZ"},
                            grid_spacing=0.4 * BOHR, kpts={"size": (1, 1, 1), "gamma": True},
-                           resources={"threads": 2})
+                           parallelization={"threads": 2})
     atoms.get_potential_energy()
     wannier = atoms.calc.wannier(2, guess=atoms.positions, kpts={"size": (3, 1, 1), "gamma": True})
     assert wannier.converged

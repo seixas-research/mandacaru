@@ -46,11 +46,11 @@ Python boundary and Python dependencies in either scientific crate.
 | --- | --- |
 | `math/` | Spatial grids, FFTs, radial quadrature, splines, linear algebra with a verified Jacobi fallback, symmetry, reciprocal geometry, separable generalized eigenproblems. |
 | `models/` | Atoms, spherical Hartree and exchange-correlation models, the functional registry, nonlocal correlation, dispersion primitives, spin-orbit operators. |
-| `basis/` | Native basis generation: radial functions, NAO and NAO-AE. |
+| `basis/` | Native basis generation: radial functions, NAO and NAO-AE, the diffuse shells of a PAW-LCAO basis and the box geometry that checks them. |
 | `parquet/` | The Parquet container (Thrift footer, PLAIN and dictionary pages, Snappy and ZSTD codecs, writer); depends on no physical model, and its one third-party crate, `ruzstd`, is used only in `codec/zstd.rs`. Python reads and writes Hamiltonian caches and pseudopotential datasets through it ([Parquet files](#native-parquet)). |
 | `molecular/` | Molecular integrals, RHF/UHF/GHF and Kohn-Sham, forces and geometry response, orbital selection and MP2, PAW-LCAO gradients. |
 | `periodic/` | Crystal SCF and spinors, Ewald sums, spectra, Wannier functions. |
-| `paw/` | PAW dataset storage and evaluation, generation, projector channels, augmentation, molecular PAW. |
+| `paw/` | PAW dataset storage and evaluation, generation, the basis recipe shared by molecules and crystals, projector channels, augmentation, molecular PAW. |
 | `quantum/` | Pauli and fermion algebra, mappings, sectors, pools, states, evolution, the optimizers, ADAPT, subspace and deflation solvers, architecture search, execution hooks. |
 
 The functional registry and the physical constants live in Rust and are exported to
@@ -58,9 +58,10 @@ Python, so there is one list of exchange-correlation functionals.
 
 ## The Python layer
 
-`src/mandacaru/` is the interface layer. Numerics that still sit in it are awaiting
-their move to Rust and are tracked on the cutover page; no new numerical routine is
-added in Python.
+`src/mandacaru/` is the interface layer. Any numerics that still sit in it are
+awaiting their move to Rust and are tracked by the numerics budget on the cutover
+page (its zero tier, which covers the basis, pseudopotential and PAW-adapter
+modules, shows no hard counter), and no new numerical routine is added in Python.
 
 | Module | Role |
 | --- | --- |
@@ -70,7 +71,7 @@ added in Python.
 | `analysis/` | Views of native results. |
 | `workflows/` | Quantum phase estimation, time evolution, quantum echoes. |
 | `backends/` | Device registry, circuit providers, measurement grouping and budgets. |
-| `basis/`, `models/`, `pseudopotentials/` | Basis families and metadata, input recipes, PAW-LCAO and UPAW-LCAO generation and dataset layout. |
+| `basis/`, `models/`, `pseudopotentials/` | Basis families and metadata, input recipes and option validation, and the hand-off of PAW-LCAO and UPAW-LCAO datasets and basis recipes to Rust, which generates the datasets, builds the basis shells and checks the files. |
 | `circuits/`, `core/`, `integrals/`, `optimizers/` | Circuit cost profiling, fermion and Pauli algebra, integral helpers, the named-optimizer record a calculator accepts. |
 | `utils/` | The run-log protocol, profiling, bibliography, cube and XSF writers, `Viewer3D`. |
 | `cli.py`, `units.py`, `version.py`, `backend_policy.py` | The `mandacaru` command, unit constants, version, the one parser of `MANDACARU_BACKEND`. |
@@ -89,7 +90,7 @@ change:
   by string keys. JSON files are persistence, not the runtime transport.
 - Native objects keep their `Context` and shared immutable state through reference
   counting. Each calculator has its own context, lock and optional scratch directory.
-- A `Context` carries a thread limit and a byte budget. The budget covers native
+- A `Context` carries a processor layout (`kpts x bands x threads`) and a byte budget. The budget covers native
   buffers and estimated scratch; it is not a limit on the process, and the NumPy
   copies returned to Python are outside it.
 - Units inside the boundary are Hartree and Bohr.
@@ -110,8 +111,9 @@ factors at all.
 Orbital selection (`molecular/active.rs`) builds the active-space Hamiltonian
 directly from the Coulomb factors, without a full source-MO tensor, and the selected
 model owns its orbital rotation and occupations. Molecular PAW adds the projector,
-augmentation and one-center terms in Rust; the Python adapter only decodes the dataset
-and supplies the radial tables.
+augmentation and one-center terms in Rust; the Python adapter only validates the
+options and hands over the dataset record and the basis recipe, from which Rust builds
+the radial tables.
 
 The public configuration is fixed at construction. Closing a calculator releases its
 state and scratch, while results you kept continue to own their buffers; closing one

@@ -37,12 +37,12 @@ assert {'numpy','ase','scipy','matplotlib',
         'qiskit','qiskit-ibm-runtime','amazon-braket-sdk','cirq'}.issubset(required), requirements
 assert {'pandas','fastparquet','pyarrow'}.isdisjoint(required), requirements
 g=Geometry((1,1),np.array([[2.5,2.5,2.13],[2.5,2.5,2.87]]),np.eye(3)*5)
-with Mandacaru(method='dft',xc='pbe',grid_spacing=.5,resources={'threads':1}) as c:
+with Mandacaru(method='dft',xc='pbe',grid_spacing=.5,parallelization={'threads':1}) as c:
     r=c.run(g)
     assert r.success and not r.scf.has_model and not c.integrals.has_eri
     molecular=r.optimal_energy
     assert np.isfinite(c.get_forces()).all()
-with Mandacaru(method='adapt-vqe',load_hamiltonian=sys.argv[2],resources={'threads':1}) as c:
+with Mandacaru(method='adapt-vqe',load_hamiltonian=sys.argv[2],parallelization={'threads':1}) as c:
     r=c.run()
     assert r.success and abs(r.optimal_energy+25.871895455446616)<1e-8
 from mandacaru.core.serialization import load_hamiltonian, save_hamiltonian
@@ -51,10 +51,10 @@ save_hamiltonian('cached.parquet',record.hamiltonian,mapping=record.mapping,
                  num_particles=record.num_particles,n_spatial_orbitals=record.n_spatial_orbitals)
 assert pathlib.Path('cached.parquet').read_bytes()[:4]==b'PAR1'
 assert load_hamiltonian('cached.parquet').hamiltonian.terms==record.hamiltonian.simplify().terms
-with Mandacaru(method='adapt-vqe',load_hamiltonian='cached.parquet',resources={'threads':1}) as c:
+with Mandacaru(method='adapt-vqe',load_hamiltonian='cached.parquet',parallelization={'threads':1}) as c:
     r=c.run()
     assert r.success and abs(r.optimal_energy+25.871895455446616)<1e-8
-with Mandacaru(method='dft',xc='lda',load_crystal=sys.argv[3],resources={'threads':1}) as c:
+with Mandacaru(method='dft',xc='lda',load_crystal=sys.argv[3],parallelization={'threads':1}) as c:
     assert c.run().success
 assert not pathlib.Path('.mandacaru').exists()
 print(json.dumps({'version':mandacaru.__version__,'extension':_native.__file__,

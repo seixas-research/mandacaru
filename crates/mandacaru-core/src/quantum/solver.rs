@@ -7,6 +7,11 @@ use crate::{math::storage::Precision, product, Buffer, Context, Error, Reservati
 use num_complex::Complex32;
 use std::{path::Path, time::Instant};
 
+/// The pool screen takes the support-restricted route when fewer than one amplitude in this many
+/// is nonzero. Only a cost threshold: the restricted route gives the dense bits
+/// (`Operator::apply_support_into` refuses whenever it could not), so no value depends on it.
+const RESTRICTED_SUPPORT: usize = 32;
+
 /// Run `body` once with `A` bound to the stored amplitude of `precision`.
 /// The one dispatch point of every quantum entry: below it the code is
 /// generic, so there is a single numerical definition per precision.
@@ -381,7 +386,66 @@ impl CachedProblem {
             out.gradient = gradient;
             return Ok(out);
         }
-        let ops: Result<Vec<_>> = indices
+        let ops = self.product_operators(indices)?;
+        evolution::evaluate::<A>(
+            &self.context,
+            basis,
+            &self.hamiltonian,
+            self.dense.as_ref().map(|d| d.as_slice()),
+            self.sparse.as_ref(),
+            &ops,
+            parameters,
+            trotter,
+        )
+    }
+    /// The energy at `parameters` with the gradient deferred: what an optimizer's line search
+    /// needs to test a trial point. The gradient is computed from the state this call prepared,
+    /// by the code [`CachedProblem::evaluate`] runs, so the energy and the gradient are its bits;
+    /// a point whose gradient is never read costs the forward half only. A summed (non-product)
+    /// ansatz keeps its derivative rows in the forward pass, so it defers only the final
+    /// contractions; an HVA ansatz, whose gradient is folded onto its shared angles, is evaluated
+    /// in full.
+    pub fn probe<'p>(
+        &'p self,
+        indices: &[usize],
+        parameters: &[f64],
+        trotter: bool,
+    ) -> Result<optimizer::Probe<'p>> {
+        by_precision!(self.precision, A => self.probe_as::<A>(indices, parameters, trotter))
+    }
+    fn probe_as<'p, A: Amplitude>(
+        &'p self,
+        indices: &[usize],
+        parameters: &[f64],
+        trotter: bool,
+    ) -> Result<optimizer::Probe<'p>> {
+        if self.hva.is_some() {
+            let full = self.evaluate_as::<A>(indices, parameters, trotter)?;
+            return Ok(optimizer::Probe::ready(full.energy, full.gradient));
+        }
+        let basis = self.register("a state-vector energy evaluation")?;
+        let ops = self.product_operators(indices)?;
+        let theta = parameters.to_vec();
+        let context = &self.context;
+        let forward = evolution::forward_from::<A>(
+            context,
+            basis,
+            &self.hamiltonian,
+            self.dense.as_ref().map(|d| d.as_slice()),
+            self.sparse.as_ref(),
+            &ops,
+            &theta,
+            trotter,
+            None,
+        )?;
+        let energy = forward.energy();
+        Ok(optimizer::Probe::deferred(energy, move || {
+            Ok(forward.finish(context, basis, &ops, &theta, trotter)?.gradient)
+        }))
+    }
+    /// The pool generators of `indices`, in order.
+    fn product_operators(&self, indices: &[usize]) -> Result<Vec<&Operator>> {
+        indices
             .iter()
             .map(|&i| {
                 self.pool
@@ -389,16 +453,38 @@ impl CachedProblem {
                     .map(|g| &g.operator)
                     .ok_or_else(|| invalid("generator index exceeds pool"))
             })
-            .collect();
-        evolution::evaluate::<A>(
+            .collect()
+    }
+    /// `|dE/dtheta_i|` at the angles with `theta_i` set to zero, for every position `i` of a
+    /// product ansatz: each equals the `i`-th gradient entry of [`CachedProblem::evaluate`] at
+    /// that point, in the same bits, from one shared forward prefix and a sweep that stops at
+    /// `i` (see [`evolution::importances`]).
+    pub fn importances(
+        &self,
+        indices: &[usize],
+        parameters: &[f64],
+    ) -> Result<evolution::Importances> {
+        if self.hva.is_some() {
+            return Err(invalid(
+                "operator importances belong to a product ansatz; an HVA ties its parameters",
+            ));
+        }
+        by_precision!(self.precision, A => self.importances_as::<A>(indices, parameters))
+    }
+    fn importances_as<A: Amplitude>(
+        &self,
+        indices: &[usize],
+        parameters: &[f64],
+    ) -> Result<evolution::Importances> {
+        let basis = self.register("an importance evaluation")?;
+        evolution::importances::<A>(
             &self.context,
             basis,
             &self.hamiltonian,
             self.dense.as_ref().map(|d| d.as_slice()),
             self.sparse.as_ref(),
-            &ops?,
+            &self.product_operators(indices)?,
             parameters,
-            trotter,
         )
     }
     pub fn prepare_state(
@@ -440,7 +526,7 @@ impl CachedProblem {
     /// `2 Re <H psi | G_i psi>` for every pool generator (the Hamiltonian
     /// without its identity term when `centered`). `H psi` is stored in the
     /// state precision, `G_i psi` is a float64 row, the sums are float64.
-    pub(super) fn pool_gradients(&self, state: &State, centered: bool) -> Result<Vec<f64>> {
+    pub fn pool_gradients(&self, state: &State, centered: bool) -> Result<Vec<f64>> {
         match state {
             State::Float64(buffer) => self.pool_gradients_of::<C64>(buffer.as_slice(), centered),
             State::Float32(buffer) => {
@@ -468,15 +554,60 @@ impl CachedProblem {
                 }
             });
         }
-        // Every generator is independent: the pool splits across threads, each with its own row.
-        let threads = super::parallel::threads_for(ctx, self.pool.len().saturating_mul(d), self.pool.len());
-        let mut actions = (0..threads).map(|_| ctx.allocate::<C64>(d)).collect::<Result<Vec<_>>>()?;
-        let mut out = vec![0.; self.pool.len()];
         let hpsi = hpsi.as_slice();
-        super::parallel::parallel_tasks(ctx, &mut out, &mut actions, |first, values, action| {
+        // A sparse state restricts each generator's work to the rows it can write. The route is
+        // chosen once from the data (the support of the state and the finiteness of `H psi`),
+        // never from the thread count, and gives the dense bits: see `Operator::apply_support_into`
+        // and `amplitude::inner_wide_rows`. A non-finite `H psi` would turn a skipped `0 * inf`
+        // into a NaN the dense dot has, so it takes the dense route.
+        let nonzero = state.iter().filter(|a| **a != A::default()).count();
+        let restricted = nonzero.saturating_mul(RESTRICTED_SUPPORT) < d && amplitude::finite(hpsi);
+        let _support_bytes = ctx.reserve(if restricted { nonzero.saturating_mul(size_of::<usize>()) } else { 0 })?;
+        let support = restricted.then(|| {
+            state
+                .iter()
+                .enumerate()
+                .filter(|(_, a)| **a != A::default())
+                .map(|(row, _)| row)
+                .collect::<Vec<_>>()
+        });
+        let support = support.as_deref();
+        // Every generator is independent: the pool splits across threads, each with its own row
+        // (clean, `+0` throughout, between generators on the restricted route) and its own list
+        // of the rows a generator wrote.
+        let work = match support {
+            Some(support) => self.pool.len().saturating_mul(support.len()).saturating_mul(16),
+            None => self.pool.len().saturating_mul(d),
+        };
+        let threads = super::parallel::threads_for(ctx, work, self.pool.len());
+        // The rows written are fewer than an eighth of the basis (`apply_support_into` refuses
+        // otherwise), each an eight-byte index, and a growing list may hold twice that.
+        let _written_bytes = ctx.reserve(match support {
+            Some(_) => threads.saturating_mul(d).saturating_mul(2),
+            None => 0,
+        })?;
+        let mut lanes = (0..threads)
+            .map(|_| Ok((ctx.allocate::<C64>(d)?, Vec::<usize>::new())))
+            .collect::<Result<Vec<_>>>()?;
+        let mut out = vec![0.; self.pool.len()];
+        super::parallel::parallel_tasks(ctx, &mut out, &mut lanes, |first, values, (action, written)| {
+            let action = action.as_mut_slice();
             for (k, value) in values.iter_mut().enumerate() {
-                self.pool[first + k].operator.apply_into(basis, state, action.as_mut_slice());
-                *value = 2. * inner_wide(hpsi, action.as_slice()).re;
+                let operator = &self.pool[first + k].operator;
+                let restricted = support
+                    .is_some_and(|support| operator.apply_support_into(basis, state, support, action, written));
+                if restricted {
+                    *value = 2. * amplitude::inner_wide_rows(hpsi, action, written).re;
+                    for &row in written.iter() {
+                        action[row] = C64::default();
+                    }
+                } else {
+                    operator.apply_into(basis, state, action);
+                    *value = 2. * inner_wide(hpsi, action).re;
+                    if support.is_some() {
+                        action.fill(C64::default());
+                    }
+                }
             }
         });
         Ok(out)
@@ -653,13 +784,6 @@ impl CachedProblem {
             options.optimizer.method,
             optimizer::Method::Cobyla | optimizer::Method::NelderMead | optimizer::Method::Spsa
         );
-        let mut evaluate = |indices: &[usize],
-                            parameters: &[f64],
-                            trotter: bool,
-                            gradients: bool| match execution.as_mut() {
-            Some(device) => device.evaluate(self, indices, parameters, gradients),
-            None => self.evaluate(indices, parameters, trotter),
-        };
         let mut indices = Vec::new();
         let mut parameters = Vec::new();
         let mut iterations = Vec::new();
@@ -692,8 +816,8 @@ impl CachedProblem {
             // optimizer's own iterate may be a trial step, the best is not.
             let mut best: Option<(Vec<f64>, f64)> = None;
             let mut evaluations = 0usize;
-            let mut objective = |t: &[f64]| -> Result<(f64, Vec<f64>)> {
-                let v = evaluate(&indices, t, options.trotter, derivatives)?;
+            let mut objective = |t: &[f64]| -> Result<optimizer::Probe<'_>> {
+                let v = probe_of(self, execution.as_deref_mut(), &indices, t, options.trotter, derivatives)?;
                 if let Some(plan) = &options.checkpoint {
                     evaluations += 1;
                     if best.as_ref().is_none_or(|(_, e)| v.energy < *e) {
@@ -704,10 +828,10 @@ impl CachedProblem {
                         write_checkpoint(self, plan, &indices, x, options.trotter, *e, false, evaluations, options.optimizer.method.name(), None)?;
                     }
                 }
-                Ok((v.energy, v.gradient))
+                Ok(v)
             };
             let outcome = if options.quenching {
-                optimizer::minimize_interruptible(ctx, &parameters, &options.optimizer, &mut objective)?
+                optimizer::minimize_interruptible_deferred_from(ctx, &parameters, &options.optimizer, None, &mut objective)?
             } else {
                 sweep(ctx, &parameters, &options.optimizer, &mut objective)?
             };
@@ -724,9 +848,11 @@ impl CachedProblem {
             // run (register-free) leaves it NaN rather than spending thousands of jobs on a
             // diagnostic; a simulated one is free and keeps it.
             if stopped.is_none() && (!self.is_register_free() || derivatives) {
-                match evaluate(&indices, &parameters, options.trotter, true) {
-                    Ok(v) => {
-                        final_gradient = v.gradient.iter().fold(0f64, |a, g| a.max(g.abs()));
+                let measured_gradient = probe_of(self, execution.as_deref_mut(), &indices, &parameters, options.trotter, true)
+                    .and_then(optimizer::Probe::into_gradient);
+                match measured_gradient {
+                    Ok(gradient) => {
+                        final_gradient = gradient.iter().fold(0f64, |a, g| a.max(g.abs()));
                     }
                     Err(Error::Interrupted(m)) => stopped = Some(m),
                     Err(e) => return Err(e),
@@ -743,15 +869,12 @@ impl CachedProblem {
                     curvature = options.hessian.clone().filter(|_| carries_curvature);
                 } else if !indices.is_empty() {
                     let warm = options.hessian.is_some();
-                    let mut outcome = optimizer::minimize_from(
+                    let mut outcome = optimizer::minimize_deferred_from(
                         ctx,
                         &parameters,
                         &options.optimizer,
                         options.hessian.as_deref(),
-                        |t| {
-                            let value = evaluate(&indices, t, true, derivatives)?;
-                            Ok((value.energy, value.gradient))
-                        },
+                        |t| probe_of(self, execution.as_deref_mut(), &indices, t, true, derivatives),
                     )?;
                     let kept = outcome.energy < reference;
                     if kept && carries_curvature {
@@ -870,19 +993,13 @@ impl CachedProblem {
                     }
                 }
 
-                let objective = |t: &[f64]| {
-                    let v = match execution.as_mut() {
-                        Some(device) => device.evaluate(self, &indices, t, derivatives)?,
-                        None => self.evaluate(&indices, t, true)?,
-                    };
-                    Ok((v.energy, v.gradient))
-                };
+                let objective = |t: &[f64]| probe_of(self, execution.as_deref_mut(), &indices, t, true, derivatives);
                 let start_curvature = curvature
                     .as_deref()
                     .filter(|h| carries_curvature && h.len() == accepted * accepted)
                     .map(|h| extend_hessian(h, accepted, parameters.len()));
                 let optimized = if options.quenching {
-                    optimizer::minimize_interruptible_from(
+                    optimizer::minimize_interruptible_deferred_from(
                         ctx,
                         &parameters,
                         &options.optimizer,
@@ -1177,26 +1294,49 @@ pub fn prune_candidate(parameters: &[f64]) -> Option<usize> {
     (parameters[candidate].abs() < threshold).then_some(candidate)
 }
 
+/// One objective evaluation of a solve: a circuit executor's measurement when there is one (its
+/// gradient is measured with the energy, as the executor decides, so it is ready), else the
+/// native evaluation with its gradient deferred ([`CachedProblem::probe`]).
+fn probe_of<'p>(
+    problem: &'p CachedProblem,
+    execution: Option<&mut (dyn Execution + '_)>,
+    indices: &[usize],
+    parameters: &[f64],
+    trotter: bool,
+    gradients: bool,
+) -> Result<optimizer::Probe<'p>> {
+    match execution {
+        Some(device) => {
+            let value = device.evaluate(problem, indices, parameters, gradients)?;
+            Ok(optimizer::Probe::ready(value.energy, value.gradient))
+        }
+        None => problem.probe(indices, parameters, trotter),
+    }
+}
+
 /// Minimize `objective` over the coordinates `free` of `full`, the others held: the objective and
 /// the outcome see the full vector, the optimizer only the free block (and its gradient slice).
-fn minimize_block(
+fn minimize_block<'p>(
     ctx: &crate::Context,
     full: &[f64],
     free: std::ops::Range<usize>,
     options: &optimizer::Options,
-    mut objective: impl FnMut(&[f64]) -> Result<(f64, Vec<f64>)>,
+    mut objective: impl FnMut(&[f64]) -> Result<optimizer::Probe<'p>>,
 ) -> Result<optimizer::Outcome> {
     let mut point = full.to_vec();
     let start = full[free.clone()].to_vec();
-    let mut outcome = optimizer::minimize_interruptible(ctx, &start, options, |block| {
+    let mut outcome = optimizer::minimize_interruptible_deferred_from(ctx, &start, options, None, |block| {
         point[free.clone()].copy_from_slice(block);
-        let (energy, gradient) = objective(&point)?;
-        let gradient = if gradient.len() == point.len() {
-            gradient[free.clone()].to_vec()
-        } else {
-            gradient
-        };
-        Ok((energy, gradient))
+        let probe = objective(&point)?;
+        let free = free.clone();
+        let length = point.len();
+        Ok(probe.map_gradient(move |gradient| {
+            if gradient.len() == length {
+                gradient[free].to_vec()
+            } else {
+                gradient
+            }
+        }))
     })?;
     let mut parameters = full.to_vec();
     parameters[free].copy_from_slice(&outcome.parameters);
@@ -1207,14 +1347,14 @@ fn minimize_block(
 /// One sequential sweep (`quenching = false` on a fixed ansatz): parameter `k` alone, `0..k` at
 /// their optimized values and `k+1..` at their starting values. The outcome's steps and history
 /// are the sums over the one-parameter searches; a stop ends the sweep at the best point.
-fn sweep(
+fn sweep<'p>(
     ctx: &crate::Context,
     initial: &[f64],
     options: &optimizer::Options,
-    mut objective: impl FnMut(&[f64]) -> Result<(f64, Vec<f64>)>,
+    mut objective: impl FnMut(&[f64]) -> Result<optimizer::Probe<'p>>,
 ) -> Result<optimizer::Outcome> {
     if initial.len() <= 1 {
-        return optimizer::minimize_interruptible(ctx, initial, options, objective);
+        return optimizer::minimize_interruptible_deferred_from(ctx, initial, options, None, objective);
     }
     let mut parameters = initial.to_vec();
     let (mut history, mut steps, mut success) = (Vec::new(), 0, true);

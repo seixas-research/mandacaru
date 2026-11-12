@@ -207,7 +207,7 @@ class TestTheArchitectureSearches:
         from mandacaru.analysis.proposals import ProposalModel, fit
 
         store = tmp_path / "store"
-        model = fit(store / "empty", fractions=(1.,), resources={"threads": 1})
+        model = fit(store / "empty", fractions=(1.,), parallelization={"threads": 1})
         value = json.loads(model.native_json)
         value["ready"] = True
         value["mixing"] = .3

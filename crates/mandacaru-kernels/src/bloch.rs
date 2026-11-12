@@ -1,6 +1,9 @@
 use std::f64::consts::PI;
 
 pub const BLOCK: usize = 256;
+/// Point blocks per fixed group of [`bloch_project`]: 16 blocks, 4096 points. A smaller projection
+/// is one group, summed exactly as one thread always summed it.
+pub const PROJECT_GROUP_BLOCKS: usize = 16;
 
 #[inline(always)]
 pub fn radial_value(r: f64, breaks: &[f64], coeffs: &[f64], nb: usize, rc: f64, l: i32) -> f64 {
@@ -790,92 +793,93 @@ pub unsafe fn bloch_project(
 
     let n_blocks = (npts_usize + BLOCK - 1) / BLOCK;
     let n_threads = crate::runtime::thread_count();
-    let blocks_per_thread = (n_blocks + n_threads - 1) / n_threads;
+    let n_groups = (n_blocks + PROJECT_GROUP_BLOCKS - 1) / PROJECT_GROUP_BLOCKS;
 
-    // Each worker returns its partial sum and they are added in worker order after the scope
-    // joins. Added in order of arrival the last bits of the result would change from run to run.
-    let partials = std::thread::scope(|s| {
-        let mut workers = Vec::with_capacity(n_threads);
-        for t in 0..n_threads {
-            let b_start = t * blocks_per_thread;
-            let b_end = std::cmp::min(b_start + blocks_per_thread, n_blocks);
-            if b_start >= b_end {
-                continue;
-            }
+    // The point blocks form fixed groups of `PROJECT_GROUP_BLOCKS`, whatever the thread count.
+    // Each group sums from zero into its own partial, and the partials are added to `out` in group
+    // order, `n_threads` groups at a time: the result is the same on any number of threads and on
+    // every run (added in order of arrival, or grouped per thread, the last bits would change).
+    for wave in (0..n_groups).step_by(n_threads) {
+        let partials = std::thread::scope(|s| {
+            let mut workers = Vec::with_capacity(n_threads);
+            for group in wave..std::cmp::min(wave + n_threads, n_groups) {
+                let b_start = group * PROJECT_GROUP_BLOCKS;
+                let b_end = std::cmp::min(b_start + PROJECT_GROUP_BLOCKS, n_blocks);
 
-            workers.push(crate::runtime::spawn(s, move || {
-                let mut hits = vec![0usize; n_images_usize.max(1)];
-                let mut inside = [0usize; BLOCK];
-                let mut buffer = vec![Complex64::default(); nm_usize * BLOCK];
-                let mut local_out = vec![Complex64::default(); total_size.max(1)];
+                workers.push(crate::runtime::spawn(s, move || {
+                    let mut hits = vec![0usize; n_images_usize.max(1)];
+                    let mut inside = [0usize; BLOCK];
+                    let mut buffer = vec![Complex64::default(); nm_usize * BLOCK];
+                    let mut local_out = vec![Complex64::default(); total_size.max(1)];
 
-                for b in b_start..b_end {
-                    let j0 = b * BLOCK;
-                    let n = std::cmp::min(j0 + BLOCK, npts_usize) - j0;
-                    let n_hits = block_hits(
-                        x_slice,
-                        y_slice,
-                        z_slice,
-                        j0,
-                        n,
-                        center_slice,
-                        trans_slice,
-                        n_images_usize,
-                        support2,
-                        &mut hits,
-                    );
-                    for h in 0..n_hits {
-                        let r_idx = hits[h];
-                        let shift = &trans_slice[3 * r_idx..3 * r_idx + 3];
-                        let n_inside = image_values(
+                    for b in b_start..b_end {
+                        let j0 = b * BLOCK;
+                        let n = std::cmp::min(j0 + BLOCK, npts_usize) - j0;
+                        let n_hits = block_hits(
                             x_slice,
                             y_slice,
                             z_slice,
                             j0,
                             n,
                             center_slice,
-                            shift,
+                            trans_slice,
+                            n_images_usize,
                             support2,
-                            derivative,
-                            -1,
-                            l,
-                            ms_slice,
-                            breaks_slice,
-                            coeffs_slice,
-                            rc,
-                            &mut buffer,
-                            &mut inside,
+                            &mut hits,
                         );
+                        for h in 0..n_hits {
+                            let r_idx = hits[h];
+                            let shift = &trans_slice[3 * r_idx..3 * r_idx + 3];
+                            let n_inside = image_values(
+                                x_slice,
+                                y_slice,
+                                z_slice,
+                                j0,
+                                n,
+                                center_slice,
+                                shift,
+                                support2,
+                                derivative,
+                                -1,
+                                l,
+                                ms_slice,
+                                breaks_slice,
+                                coeffs_slice,
+                                rc,
+                                &mut buffer,
+                                &mut inside,
+                            );
 
-                        let target_base = (r_idx * nm_usize) * p_usize;
-                        for i in 0..nm_usize {
-                            for col_idx in 0..p_usize {
-                                let col_offset = col_idx * npts_usize + j0;
-                                let mut sum = Complex64::new(0.0, 0.0);
-                                for t_idx in 0..n_inside {
-                                    let jj = inside[t_idx];
-                                    let phi_conj = buffer[i * BLOCK + jj].conj();
-                                    let col_val = cols_slice[col_offset + jj];
-                                    sum = sum.add(phi_conj.mul(col_val));
+                            let target_base = (r_idx * nm_usize) * p_usize;
+                            for i in 0..nm_usize {
+                                for col_idx in 0..p_usize {
+                                    let col_offset = col_idx * npts_usize + j0;
+                                    let mut sum = Complex64::new(0.0, 0.0);
+                                    for t_idx in 0..n_inside {
+                                        let jj = inside[t_idx];
+                                        let phi_conj = buffer[i * BLOCK + jj].conj();
+                                        let col_val = cols_slice[col_offset + jj];
+                                        sum = sum.add(phi_conj.mul(col_val));
+                                    }
+                                    let idx = target_base + i * p_usize + col_idx;
+                                    local_out[idx] = local_out[idx].add(sum);
                                 }
-                                let idx = target_base + i * p_usize + col_idx;
-                                local_out[idx] = local_out[idx].add(sum);
                             }
                         }
                     }
-                }
 
-                local_out
-            }));
-        }
-        workers
-            .into_iter()
-            .map(|worker| worker.join().expect("a bloch_project worker panicked"))
-            .collect::<Vec<_>>()
-    });
-    for partial in &partials {
-        for (to, from) in out_slice.iter_mut().zip(partial) {
-            *to = to.add(*from);
+                    local_out
+                }));
+            }
+            workers
+                .into_iter()
+                .map(|worker| worker.join().expect("a bloch_project worker panicked"))
+                .collect::<Vec<_>>()
+        });
+        for partial in &partials {
+            for (to, from) in out_slice.iter_mut().zip(partial) {
+                *to = to.add(*from);
+            }
         }
     }
 }

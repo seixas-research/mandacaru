@@ -105,7 +105,7 @@ def test_periodic_spinor_ase_bands_and_dos_keep_unit_state_degeneracy():
     atoms = bulk("Si", "diamond", a=5.43)
     with Mandacaru(method="dft", xc="pbe", paw_dataset="pbe-fr", atoms=atoms,
                    basis="PAW-LCAO", grid_spacing=.8,
-                   resources={"threads": 1}) as calc:
+                   parallelization={"threads": 1}) as calc:
         atoms.get_potential_energy()
         assert calc.result.success
         assert calc.periodic_problem.spinor
@@ -132,7 +132,7 @@ def test_nonmagnetic_time_reversal_reduction_matches_full_vector_spinor_scf():
         with Mandacaru(method="dft", xc="pbe", paw_dataset="pbe-fr", atoms=atoms,
                        spin=unrestricted, basis="PAW-LCAO", grid_spacing=.8,
                        kpts={"size": (3, 1, 1), "gamma": True},
-                       resources={"threads": 1}) as calc:
+                       parallelization={"threads": 1}) as calc:
             energy = atoms.get_potential_energy()
             assert calc.result.success
             assert calc.periodic_problem.time_reversal == (not unrestricted)

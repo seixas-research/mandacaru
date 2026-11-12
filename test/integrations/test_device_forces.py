@@ -22,7 +22,7 @@ from mandacaru.units import BOHR_TO_ANGSTROM, HARTREE_TO_EV
 
 OPTIONS = dict(method="vqe", basis="PAW-LCAO", grid_spacing=0.4, active_space={"orbitals": 2},
                trace=False, optimizer={"method": "COBYLA", "maxiter": 6, "tol": 1e-6},
-               resources={"threads": 1})
+               parallelization={"threads": 1})
 
 
 def h2(**options):

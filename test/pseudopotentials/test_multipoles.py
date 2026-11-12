@@ -17,16 +17,38 @@ import numpy as np
 import pytest
 
 from mandacaru import _native
-from mandacaru.pseudopotentials import get_paw, multipoles
+from mandacaru.pseudopotentials import get_paw
+from mandacaru.pseudopotentials import multipoles
 from mandacaru.pseudopotentials.multipoles import (_pair, partial_waves,
-                                                    radial_moments,
-                                                    shape_function)
+                                                    radial_moments)
 from mandacaru.pseudopotentials.native_context import context
 
 
-# Array views of the native kernels these tests pin (their Python wrappers served only the deleted
-# Python crystal setup): the radial Fourier-Bessel transform, the multipole selection rule and the
-# augmentation remainder E^(L)_ij(q).
+# Array views of the native kernels these tests pin (the Python wrappers are gone): the shape
+# function and its potential, the Gaunt coefficients, the angular rule, the radial Fourier-Bessel
+# transform, the multipole selection rule and the augmentation remainder E^(L)_ij(q).
+def shape_function(radius, r_g, L):
+    radius = np.asarray(radius, dtype=float)
+    return _native.paw_shape_function(
+        context(), np.ascontiguousarray(radius.ravel()), float(r_g), int(L)).reshape(radius.shape)
+
+
+def shape_potential(radius, r_g, L):
+    radius = np.asarray(radius, dtype=float)
+    return _native.paw_shape_potential(
+        context(), np.ascontiguousarray(radius.ravel()), float(r_g), int(L)).reshape(radius.shape)
+
+
+def gaunt(L, M, l1, m1, l2, m2, *, real):
+    key = np.array([[L, M, l1, m1, l2, m2]], dtype=np.int64)
+    value = _native.paw_gaunt(context(), key, bool(real))[0]
+    return float(value.real) if real else complex(value)
+
+
+def angular_grid(polar, azimuthal):
+    return _native.paw_angular_grid(int(polar), int(azimuthal))
+
+
 def radial_transform(r, values, L, q):
     return context().periodic_radial_transform(
         np.ascontiguousarray(r, dtype=float), np.ascontiguousarray(values, dtype=float),
@@ -160,9 +182,7 @@ class TestRealAngularTables:
     molecule are the complex ones (a crystal's) transformed shell by shell."""
 
     def test_every_gaunt_coefficient_up_to_d(self):
-        from mandacaru.basis._angular import real_harmonic_transform
-        from mandacaru.pseudopotentials.multipoles import gaunt
-
+        real_harmonic_transform = _native.real_harmonic_transform
         U = {l: real_harmonic_transform(l) for l in range(5)}
         for l1 in range(3):
             for l2 in range(3):
@@ -210,7 +230,6 @@ class TestFrozenPythonOutputs:
     @pytest.mark.parametrize("r_g", [1.2, 2.5])
     @pytest.mark.parametrize("L", range(5))
     def test_the_shape_and_its_potential(self, frozen, r_g, L):
-        from mandacaru.pseudopotentials.multipoles import shape_potential
         assert _scaled_error(shape_function(self.X, r_g, L),
                              frozen[f"shape_{r_g}_{L}"]) < 1e-14
         assert _scaled_error(shape_potential(self.X, r_g, L),
@@ -218,14 +237,12 @@ class TestFrozenPythonOutputs:
 
     @pytest.mark.parametrize("real", [True, False])
     def test_every_gaunt_coefficient_up_to_f(self, frozen, real):
-        from mandacaru.pseudopotentials.multipoles import gaunt
         keys, values = frozen["gaunt_keys"], frozen["gaunt_values"]
         for (flag, *index), value in zip(keys, values):
             if bool(flag) is real:
                 assert abs(gaunt(*map(int, index), real=real) - value) < 1e-13
 
     def test_the_angular_rule(self, frozen):
-        from mandacaru.pseudopotentials.multipoles import angular_grid
         for polar, azimuthal, tag in ((24, 48, "angular"), (10, 14, "angular2")):
             theta, phi, weight = angular_grid(polar, azimuthal)
             assert np.abs(theta - frozen[f"{tag}_theta"]).max() < 1e-14

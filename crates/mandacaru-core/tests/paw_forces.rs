@@ -312,3 +312,23 @@ fn a_float32_state_has_an_analytic_force_at_its_own_floor() {
     }
     assert_eq!(ctx.memory_used(), 0);
 }
+
+#[test]
+fn the_analytic_gradient_is_bitwise_the_same_on_every_thread_count() {
+    // The grid terms are summed per orbital and applied in orbital order, whatever the number of
+    // workers the orbitals are spread over (a partial per worker rounded differently).
+    let mut reference: Option<Vec<f64>> = None;
+    for threads in [1, 2, 3, 4] {
+        let ctx = Context::new(Some(threads), 512 << 20).unwrap();
+        let gradient = {
+            let base = integrals(&ctx, &H2, "pbe");
+            let state = solve(&base, Method::Ks("pbe"), [1, 1]);
+            base.gradient(&state).unwrap().total.as_slice().to_vec()
+        };
+        match &reference {
+            None => reference = Some(gradient),
+            Some(first) => assert!(*first == gradient, "{threads} threads differ from one"),
+        }
+        assert_eq!(ctx.memory_used(), 0);
+    }
+}

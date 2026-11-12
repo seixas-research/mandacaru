@@ -412,7 +412,7 @@ pub(super) fn electrostatic_force(
         Ok(force)
     };
 
-    let workers = integrals.context.threads().max(1).min(n_atoms.max(1));
+    let workers = integrals.context.width().max(1).min(n_atoms.max(1));
     let mut total_force = vec![0.; 3 * positions.len()];
     if workers <= 1 {
         for b in 0..n_atoms {
@@ -517,7 +517,7 @@ pub(super) fn field_force(
         sum
     };
 
-    let workers = integrals.context.threads().max(1).min(nch.max(1));
+    let workers = integrals.context.width().max(1).min(nch.max(1));
     let mut force = vec![0.; 3 * positions.len()];
     if workers <= 1 {
         for (a, channel) in channels.iter().enumerate() {

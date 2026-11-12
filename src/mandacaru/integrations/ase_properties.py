@@ -22,6 +22,121 @@ class ASEProperties:
                          max_iterations=max_iterations, tolerance=tolerance,
                          step=step)
 
+    def get_berry_phase(self, direction, kpts=None, bands=None):
+        """Berry phases of closed k-point strings along ``G_direction``
+        (:class:`~mandacaru.analysis.berry.BerryPhase`).
+
+        ``direction`` is the index 0, 1 or 2 of a reciprocal lattice vector. ``kpts`` is the
+        Gamma-anchored mesh ``(n1, n2, n3)`` or ``{"size": ...}`` (default: the calculation's
+        ``kpts`` size): its entry along ``direction`` is the string length (at least 2), the
+        other two the transverse mesh. ``bands`` is ``None`` (the occupied bands of an insulator,
+        per spin channel), a band index, or a half-open ``(lo, hi)`` group isolated from its
+        neighbors. The view holds the phases, the Wilson-loop Wannier charge centers and the
+        Berry connection in the parallel-transport gauge. A DFT crystal only: a molecule raises
+        ``ValueError``, a quantum method on a crystal ``NotImplementedError``.
+        """
+        from .berry import berry_phase
+
+        return berry_phase(self._calculation_owner(), direction, kpts=kpts, bands=bands)
+
+    def get_berry_curvature(self, plane, kpts=None, offset=0.0, bands=None):
+        """The Berry curvature and Chern number of a k plane
+        (:class:`~mandacaru.analysis.berry.BerryCurvature`).
+
+        ``plane`` is the index 0, 1 or 2 of the reciprocal vector ``G_c`` normal to the plane,
+        which the other two span in cyclic order. ``kpts`` is as in :meth:`get_berry_phase`; its
+        two in-plane entries (each at least 2) are the plane's mesh. ``offset`` is the plane's
+        fractional coordinate along ``G_c``, in [0, 1). ``bands`` is as in
+        :meth:`get_berry_phase`: one isolated band gives the band-resolved curvature. The
+        curvature and the Chern number are oriented along ``G_a x G_b`` and flip sign when the
+        cell is relabeled into the other handedness.
+        """
+        from .berry import berry_curvature
+
+        return berry_curvature(self._calculation_owner(), plane, kpts=kpts, offset=offset,
+                               bands=bands)
+
+    def get_chern_number(self, plane, kpts=None, offset=0.0, bands=None):
+        """The Chern number of the k plane normal to ``G_plane``, summed over spin channels
+        (:meth:`get_berry_curvature` holds the per-channel numbers). It is oriented along
+        ``G_a x G_b`` (``a, b`` the in-plane directions in cyclic order), so it changes sign when
+        the cell is relabeled into the other handedness; the Hall conductivity does not."""
+        return self.get_berry_curvature(plane, kpts=kpts, offset=offset,
+                                        bands=bands).chern_number
+
+    def get_polarization(self, kpts=None):
+        """The Berry-phase electric polarization of an insulating crystal
+        (:class:`~mandacaru.analysis.berry.Polarization`).
+
+        Strings along the three reciprocal vectors are cut from the mesh ``kpts`` (default: the
+        calculation's ``kpts`` size; at least 2 points per direction) and diagonalized at the
+        converged Hamiltonian. The view holds the vector in C/m^2 on the branch nearest zero,
+        its quanta, the raw coordinates for differences along a path, and the electronic and
+        ionic parts. A metal or a fractionally occupied state raises ``ValueError``. String phases
+        that spread by more than pi / 2 over the transverse mesh return the result with a
+        warning; below that, compare two transverse meshes to judge the sampling.
+        """
+        from .berry import polarization
+
+        return polarization(self._calculation_owner(), kpts=kpts)
+
+    def get_anomalous_hall(self, kpts=None):
+        """The intrinsic anomalous Hall conductivity with its provenance
+        (:class:`~mandacaru.analysis.berry.AnomalousHall`).
+
+        An insulator gives the quantized conductivity of its Chern numbers; a metal the Fermi-sea
+        term of the converged smearing from the occupation-weighted lattice field, with the
+        stride-2 sub-mesh value ``sigma_coarse`` as its convergence estimate, at the Fermi level
+        re-solved on that mesh. Warnings name a missing or poor estimate and a mesh where most
+        plaquettes merge band groups: a metal's value converges slowly with ``kpts``. ``kpts`` is
+        the mesh (at least 2 per direction; even and at least 8 for the estimate).
+        """
+        from .berry import anomalous_hall
+
+        return anomalous_hall(self._calculation_owner(), kpts=kpts, stacklevel=3)
+
+    def get_anomalous_hall_conductivity(self, kpts=None):
+        """``(3, 3)``: the anomalous Hall conductivity ``sigma_ab`` in S/cm,
+        ``(e^2/h)(1/2 pi) eps_abd K_d`` with ``K = sign(det G) sum_c nu_c G_c``: for an insulator
+        ``nu_c`` is the Chern number of the plane family times the electrons per band, for a metal
+        the intrinsic Fermi-sea term (:meth:`get_anomalous_hall` holds both, the convergence
+        estimate and the per-layer numbers).
+        """
+        from .berry import anomalous_hall
+
+        return anomalous_hall(self._calculation_owner(), kpts=kpts, stacklevel=3).sigma
+
+    def get_excitations(self, num_states=5, *, approximation="tda", spin=None,
+                        kernel="adiabatic", tolerance=1e-5, max_iterations=200):
+        """The lowest ``num_states`` linear-response excitations of a converged molecule
+        (:class:`~mandacaru.analysis.excitations.Excitations`).
+
+        Time-dependent DFT on a ``method="dft"`` state (``xc="lda"``, ``"pbe"`` or ``"hse06"``:
+        the adiabatic kernel of the functional, with the short-range exact exchange of the
+        screened hybrid in both A and B) and TDHF/CIS on an ``rhf`` or ``uhf`` state.
+        ``approximation`` is ``"tda"`` (Tamm-Dancoff) or ``"casida"`` (the full equations).
+        A closed shell is spin-adapted: ``spin`` is ``"singlet"`` (the default) or
+        ``"triplet"``. An unrestricted reference (an open shell, or ``spin=True`` /
+        ``unrestricted=True``) gives the spin-conserving excitations of both spins, with each
+        root's ``<S^2>``; ``spin`` must be left unset there. ``kernel`` is ``"adiabatic"`` (the
+        reference's whole kernel), ``"hartree"`` (the Coulomb kernel only) or
+        ``"independent"`` (bare orbital-energy differences). ``tolerance`` bounds each root's
+        residual (atomic units). A request that would cut a degenerate multiplet returns the
+        whole multiplet. On a PAW-LCAO basis the kernel is the exact second derivative of the
+        engine's energy, whose one-center terms are linearized; the view reports, per root,
+        the first-order shift the missing one-center Hartree kernel would make. The view holds
+        the length-form strengths and the velocity form (with the PAW one-center part of the
+        gradient), which agree only as the basis is completed. Meta-GGAs, rVV10, DFT+U,
+        spin-orbit datasets, fractional occupations, crystals and ``precision="float32"``
+        raise. Each call appends an ``[EXCITED STATES]`` block to the
+        run log.
+        """
+        from .excitations import excitations
+
+        return excitations(self._calculation_owner(), num_states, approximation=approximation,
+                           spin=spin, kernel=kernel, tolerance=tolerance,
+                           max_iterations=max_iterations)
+
     def _calculation_owner(self):
         return self
 

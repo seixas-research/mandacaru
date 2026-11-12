@@ -876,7 +876,7 @@ def _silicon_hybrid(mesh, **scf):
         method="dft", xc="hse06", grid_spacing=0.8,
         kpts={"size": mesh, "gamma": True}, symmetry=False,
         basis={"name": "PAW-LCAO", "size": "SZ", "filter_cutoff": 200},
-        resources={"threads": 1}, periodic_scf_options=scf, trace=False)
+        parallelization={"threads": 1}, periodic_scf_options=scf, trace=False)
     return atoms, atoms.calc
 
 
@@ -1052,7 +1052,7 @@ class TestHybrid:
             method="dft", xc="hse06", grid_spacing=0.8,
             kpts={"size": (2, 1, 1), "gamma": True},
             basis={"name": "PAW-LCAO", "size": "SZ", "filter_cutoff": 200},
-            resources={"threads": 1}, trace=False,
+            parallelization={"threads": 1}, trace=False,
         )
         assert np.isfinite(atoms.get_potential_energy())
         weights = atoms.calc.periodic_problem.weights
@@ -1084,7 +1084,7 @@ class TestHybrid:
                 if periodic:
                     options.update(kpts={"size": (1, 1, 1), "gamma": True},
                                    symmetry=False, unrestricted=True,
-                                   resources={"threads": 2})
+                                   parallelization={"threads": 2})
                 energy[xc] = _run(atoms, **options)
             shift[periodic] = to_hartree(energy["hse06"] - energy["pbe"], "eV")
         assert shift[False] == pytest.approx(-0.001805, abs=5e-5)
@@ -1104,6 +1104,31 @@ class TestHybrid:
         assert first["n_iterations"] == second["n_iterations"]
         assert np.array_equal(first["eigenvalues"], second["eigenvalues"])
         assert first["exchange_residuals"] == second["exchange_residuals"]
+
+    def test_a_crystal_is_bitwise_the_same_on_every_processor_layout(self):
+        """``parallelization`` spreads the k-point tasks over groups and the grid over the
+        workers, and changes no bit: the same energy and eigenvalues on k-point groups, on
+        threads, and on one processor. More groups than tasks are refused, naming the largest."""
+        from ase.build import bulk
+
+        def run(layout):
+            atoms = bulk("Si", "diamond", a=5.43)
+            atoms.calc = Mandacaru(
+                method="dft", grid_spacing=0.45, kpts={"size": (2, 2, 2), "gamma": True},
+                smearing={"method": "fermi-dirac", "width": 0.01},
+                basis={"name": "PAW-LCAO", "size": "SZ", "filter_cutoff": 200},
+                trace=False, parallelization=layout)
+            energy = atoms.get_potential_energy()
+            snapshot = atoms.calc.result.snapshot()
+            return energy, snapshot["eigenvalues"], snapshot["n_iterations"]
+
+        reference = run({"threads": 2})
+        for layout in ({"kpts": 2}, {"threads": 1}, {"kpts": 3, "threads": 2}):
+            energy, eigenvalues, iterations = run(layout)
+            assert energy == reference[0], layout
+            assert np.array_equal(eigenvalues, reference[1]) and iterations == reference[2]
+        with pytest.raises(ValueError, match="the largest kpts is"):
+            run({"kpts": 64})
 
     @pytest.mark.parametrize("mesh", [(1, 1, 1), (2, 2, 2)])
     def test_a_periodic_hybrid_scf_stops_only_when_its_exchange_operator_has_stopped(
@@ -1156,7 +1181,7 @@ class TestHybrid:
                 method="dft", xc="hse06", grid_spacing=0.8,
                 kpts={"size": (3, 1, 1), "gamma": True},
                 basis={"name": "PAW-LCAO", "size": "SZ", "filter_cutoff": 200},
-                resources={"threads": 1}, trace=False,
+                parallelization={"threads": 1}, trace=False,
             )
             assert np.isfinite(atoms.get_potential_energy())
             return atoms.calc.periodic_problem.weights

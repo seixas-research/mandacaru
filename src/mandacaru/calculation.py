@@ -14,7 +14,7 @@ from ase.calculators.calculator import Calculator, PropertyNotImplementedError
 from .integrations.ase_properties import ASEProperties
 
 from . import _native, hubbard
-from .resources import CalculationResources
+from .resources import CalculationResources, parse_parallelization
 from .results import CalculationResult
 from .specifications import (
     METHODS,
@@ -105,6 +105,34 @@ def _refuse_inapplicable(method, arguments):
         raise ValueError(
             f"method={method!r} does not use: {'; '.join(refused)}; "
             "remove the option or choose a method it applies to"
+        )
+
+
+def _refuse_unavailable_levels(layout, method, xc):
+    """Raise for a ``parallelization`` level the calculation does not have.
+
+    ``kpts`` and ``bands`` distribute the k-point tasks and the occupied states of a crystal's
+    Kohn-Sham equations: a method other than ``"dft"`` has neither (a molecule is refused at
+    ``run()``, when the structure is known). ``bands`` groups the occupied states of the exact
+    exchange, so it needs a hybrid functional; that level is not implemented yet, and a layout it
+    would leave idle is refused rather than run as a different layout.
+    """
+    for level in ("kpts", "bands"):
+        if layout[level] > 1 and method != "dft":
+            raise ValueError(
+                f"parallelization {level}={layout[level]} applies to method='dft' on a "
+                f"crystal; method={method!r} takes parallelization={{'threads': N}}"
+            )
+    if layout["bands"] > 1:
+        if xc != "hse06":
+            raise ValueError(
+                f"parallelization bands={layout['bands']} groups the occupied states of the "
+                f"exact exchange, which only a hybrid functional (xc='hse06') has; "
+                f"xc={'lda' if xc is None else xc!r} has none"
+            )
+        raise NotImplementedError(
+            f"parallelization bands={layout['bands']}: the occupied-state groups of the exact "
+            "exchange are not implemented yet; use kpts and threads"
         )
 
 
@@ -251,7 +279,7 @@ class Mandacaru(ASEProperties, Calculator):
     cell; the subspace methods refuse a crystal.
 
     The option groups are: geometry and grid (``atoms``, ``grid_spacing``,
-    ``grid``, ``kinetic``, ``precision``, ``resources``); basis and
+    ``grid``, ``kinetic``, ``precision``, ``parallelization``, ``resources``); basis and
     pseudopotentials (``basis``, ``paw_dataset``); the electronic problem
     (``xc``, ``spin``, ``unrestricted``, ``charge``, ``n_electrons``,
     ``scf_options``, ``two_body``); the qubit problem
@@ -420,23 +448,44 @@ class Mandacaru(ASEProperties, Calculator):
         and ``grid_spacing``. With it the atoms need no cell. The first force
         evaluation freezes the grid in use so that displaced geometries share
         it.
+    parallelization : dict, optional
+        The processor layout ``{"kpts": k, "bands": b, "threads": t}``: ``k``
+        groups of k-point (and spin channel) tasks of a crystal, each split
+        into ``b`` groups of states, each running its kernels on ``t``
+        workers. The processor count is ``k * b * t``; a missing key is 1,
+        and outside the k-point tasks (the setup, the grid fields) every
+        kernel runs on all of them. Results are the same, bit for bit, on
+        every layout and every processor count. Omitted, the calculation runs
+        on ``{"threads": n}``, ``n`` being ``MANDACARU_NUM_THREADS``, then
+        ``OMP_NUM_THREADS``, then the hardware's threads. An unknown key or a
+        non-integer raises ``TypeError``, a value below 1 or above 1024
+        processors in all ``ValueError``. ``kpts`` or ``bands`` above 1 with
+        a method other than ``"dft"``, or on a structure with no periodic
+        axis, raises ``ValueError``; ``kpts`` above the crystal's k-point
+        tasks (irreducible k-points times spin channels) raises ``ValueError``
+        at ``run()``, naming the largest that fits, and tasks that do not fit
+        in ``memory_limit_bytes`` raise ``MemoryError`` naming the largest
+        ``kpts`` that does. ``bands`` above 1 needs a hybrid (``xc="hse06"``,
+        else ``ValueError``) and is not implemented yet
+        (``NotImplementedError``). Not allowed together with ``native_model``
+        (``ValueError``).
     resources : dict, optional
-        Per-calculator allocation, with keys ``threads`` (default chosen by the
-        native context), ``memory_limit_bytes`` (default 34359738368, that is
-        32 GiB), ``disk_offload_bytes`` (the size from which a periodic
+        Per-calculator allocation, with keys ``memory_limit_bytes`` (default
+        34359738368, that is 32 GiB), ``disk_offload_bytes`` (the size from which a periodic
         calculation keeps its bulk arrays, such as the Bloch orbital stacks,
         in a scratch folder on disk instead of memory: default 8 MiB, ``0``
         offloads every one) and ``scratch_dir`` (parent directory for both
         Python scratch and native archived arrays). An unknown key raises
-        ``TypeError``. A calculation that needs more memory than the limit
+        ``TypeError``; ``threads`` raises ``ValueError``, the processors being
+        ``parallelization``. A calculation that needs more memory than the limit
         raises ``MemoryError`` at ``run()``. Not allowed together with
         ``native_model``, which carries its own context (``ValueError``).
     xc : str, optional
         Exchange-correlation functional, one of ``"lda"``, ``"pbe"``,
         ``"r2scan"``, ``"hse06"``, ``"pbe+rvv10"``, ``"r2scan+rvv10"``; anything
         else raises ``ValueError``. ``None`` means ``"lda"``. Used by
-        ``method="dft"`` only and ignored by every other method (an
-        ``"rhf"`` run with ``xc="pbe"`` is the same Hartree-Fock). It also
+        ``method="dft"`` only; any other method given an ``xc`` raises
+        ``ValueError`` (an ``"rhf"`` run with ``xc="pbe"`` is refused). It also
         chooses the default PAW-LCAO dataset folder (``pbe-sr`` for PBE, HSE06
         and r2SCAN, ``lda-sr`` otherwise); a dataset generated with another
         functional triggers a warning. A crystal supports every one of them;
@@ -540,7 +589,7 @@ class Mandacaru(ASEProperties, Calculator):
     native_model : mandacaru._native.MolecularModel, optional
         A molecular model taken from an earlier result (``result.hamiltonian``)
         to minimize without a geometry. The calculator reuses the context of
-        the model, so ``resources`` must not be given. The type is not
+        the model, so ``resources`` and ``parallelization`` must not be given. The type is not
         checked at construction: anything else fails with ``AttributeError``.
         Quantum methods only; mutually exclusive with ``hamiltonian``,
         ``load_hamiltonian`` and ``load_crystal``.
@@ -800,8 +849,9 @@ class Mandacaru(ASEProperties, Calculator):
         measurement answers for a whole squared one-body operator. The energy
         equals the commuting-group energy up to the leaf truncation (below
         ``1e-11`` Ha for H2 and LiH in the ``HAO`` basis; the run reports the
-        discarded tensor norm in ``problem.factorized_measurement``); each basis is its own submission, so a run
-        costs ``L + 1`` jobs and ``(L + 1) x shots`` shots per energy, which
+        discarded tensor norm in ``problem.factorized_measurement``); each basis is its own circuit, so an energy
+        costs ``L + 1`` circuits and ``(L + 1) x shots`` shots, sent as one job by the
+        Qiskit provider and as one task per basis on Braket, which
         ``measurement_budget`` and ``backend_options["run_budget"]`` check
         before the first job. The pool gradients of ``"adapt-vqe"`` stay on
         the commuting groups. It needs a circuit device (``shots > 0``, a
@@ -1058,6 +1108,7 @@ class Mandacaru(ASEProperties, Calculator):
         grid_spacing=0.2,
         precision="float64",
         grid=None,
+        parallelization=None,
         resources=None,
         xc=None,
         vdw=None,
@@ -1306,12 +1357,17 @@ class Mandacaru(ASEProperties, Calculator):
         ):
             if type(value) is not bool:
                 raise TypeError("boolean calculation controls require booleans")
-        if native_model is not None and resources:
+        if native_model is not None and (resources or parallelization is not None):
             raise ValueError(
-                "a supplied model retains its context; configure resources on its originating calculation"
+                "a supplied model retains its context; configure resources and "
+                "parallelization on its originating calculation"
             )
+        layout = parse_parallelization(parallelization)
+        if layout is not None:
+            _refuse_unavailable_levels(layout, self._method, xc)
         self.resources = CalculationResources(
-            **dict(resources or {}),
+            parallelization=parallelization,
+            resources=resources,
             context=None if native_model is None else native_model.context,
         )
         self.context = self.resources.context
@@ -1642,8 +1698,8 @@ class Mandacaru(ASEProperties, Calculator):
         self._periodic_two_body_requested = self._two_body_representation != "dense"
         self._requested_mapping = mapping
         self._save_hamiltonian = save_hamiltonian
+        # The processor layout is the context's (`calc.context.parallelization`): not repeated here.
         self.options = {
-            "threads": self.context.threads,
             "memory_limit_bytes": self.context.memory_limit_bytes,
         }
         if smearing is not None:
@@ -2568,6 +2624,12 @@ class Mandacaru(ASEProperties, Calculator):
             elif (value is not None and any(value.pbc)) and not self.capabilities.quantum:
                 result = self._periodic(value)
             elif value is not None:
+                if self.context.kpts > 1:
+                    raise ValueError(
+                        f"parallelization kpts={self.context.kpts} distributes the k-points "
+                        "of a crystal; this structure has no periodic axis: use "
+                        "parallelization={'threads': N}"
+                    )
                 hubbard.require_crystal(self._hubbard_u, value.pbc, method=self._method)
                 _refuse_exchange_divergence_without_hybrid(
                     self._periodic_options["exxdiv_treatment"], self._xc, periodic=False

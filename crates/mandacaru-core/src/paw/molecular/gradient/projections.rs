@@ -126,7 +126,7 @@ pub(super) fn derivative_samples(
         Ok(samples)
     };
 
-    let workers = integrals.context.threads().max(1).min(n_atoms.max(1));
+    let workers = integrals.context.width().max(1).min(n_atoms.max(1));
     if workers <= 1 {
         let mut out = Vec::with_capacity(n_atoms);
         for a in 0..n_atoms {

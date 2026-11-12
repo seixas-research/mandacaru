@@ -17,7 +17,9 @@ pub(crate) fn error(error: Error) -> PyErr {
         Error::Invalid(_) => PyValueError::new_err(error.to_string()),
         Error::Unsupported(_) => PyNotImplementedError::new_err(error.to_string()),
         Error::Overflow => PyOverflowError::new_err(error.to_string()),
-        Error::Budget { .. } | Error::Allocation => PyMemoryError::new_err(error.to_string()),
+        Error::Budget { .. } | Error::Allocation | Error::LayoutBudget(_) => {
+            PyMemoryError::new_err(error.to_string())
+        }
         Error::Kernel(_) | Error::Interrupted(_) => PyRuntimeError::new_err(error.to_string()),
     }
 }

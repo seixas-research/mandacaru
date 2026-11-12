@@ -379,6 +379,19 @@ pub fn pulse_bound(tau: f64, norm_bound: f64) -> f64 {
     tau.abs() * norm_bound
 }
 
+/// `numerators[i] / denominators[i]`, element by element (a reduced radial function over `r`).
+pub fn quotients(numerators: &[f64], denominators: &[f64]) -> Result<Vec<f64>> {
+    if numerators.len() != denominators.len() {
+        return Err(Error::Invalid("numerators and denominators must have the same length".into()));
+    }
+    Ok(numerators.iter().zip(denominators).map(|(a, b)| a / b).collect())
+}
+
+/// The sum of `values` as Python's `sum` computes it, rounded half to even like Python's `round`.
+pub fn rounded_total(values: &[f64]) -> i64 {
+    python_sum(values).round_ties_even() as i64
+}
+
 /// Python's `sum` of floats, added in order with Neumaier's compensation (the algorithm of
 /// CPython 3.12 and later), not the running sum: the norm bound of a Pauli sum, for one.
 pub fn python_sum(values: &[f64]) -> f64 {

@@ -40,39 +40,26 @@ import sys
 import time
 import warnings
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from itertools import chain
+
+from .. import _native
 
 #: ``--pp`` spellings -> family name.
 FAMILIES = {"paw": "paw-lcao", "paw-lcao": "paw-lcao",
             "upaw": "upaw-lcao", "upaw-lcao": "upaw-lcao"}
-#: Largest change (Hartree) of any channel's bound levels between a dataset
-#: as generated and as read back from the file written for it, at the
-#: library stride (:data:`.io.STRIDE`; the stored digits do not matter).
-#: Measured: 3e-6 at most (He 1s, Fe 3d), 1e-7 for H, C, O, Na
-#: (HISTORY.md, 2026-10-11, "The PAW audit report checked").
-RELOAD_LEVEL_TOLERANCE = 1e-5
+#: Largest change (Hartree) of any channel's bound levels between a dataset as generated and as
+#: read back from the file written for it, at the library stride (:data:`.io.STRIDE`; the stored
+#: digits do not matter): defined in Rust (``paw::record``), with the check itself.
+RELOAD_LEVEL_TOLERANCE = _native.RELOAD_LEVEL_TOLERANCE
 
 
 def reload_errors(generated, loaded, levels) -> dict:
-    """``{l: shift}``: the channels whose bound levels (those of
-    ``levels(pp, l)`` below zero in the generated dataset) moved by more than
-    :data:`RELOAD_LEVEL_TOLERANCE` Hartree between the dataset as generated
-    and as read back from its file; a level that is not finite counts as
-    moved.  Levels above zero are box states, whose energy follows the box
-    the spectrum picks from the grid, not the dataset."""
-    out, worst = {}, {}
-    for l, before, after in chain.from_iterable(
-            ((l, a, b) for a, b in zip(levels(generated, l), levels(loaded, l)))
-            for l in generated.channels):
-        if before >= 0.0:                          # a NaN stays in, and fails
-            continue
-        gap = after - before
-        gap = gap if gap >= 0.0 else -gap
-        if gap != gap or worst.get(l, 0.0) < gap:
-            worst[l] = gap
-        if not gap <= RELOAD_LEVEL_TOLERANCE:
-            out[int(l)] = worst[l]
-    return out
+    """``{l: shift}``: the channels whose bound levels (those of ``levels(pp, l)`` below zero in
+    the generated dataset) moved by more than :data:`RELOAD_LEVEL_TOLERANCE` Hartree between the
+    dataset as generated and as read back from its file (``paw::record::reload_errors``)."""
+    channels = sorted(generated.channels)
+    return dict(_native.paw_reload_errors(
+        [(int(l), [float(v) for v in levels(generated, l)]) for l in channels],
+        [(int(l), [float(v) for v in levels(loaded, l)]) for l in channels]))
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -168,18 +155,6 @@ def build_one(family: str, symbol: str, options: dict, paw_dataset: str,
     if notes:
         report += "".join(f"\n    warning: {note}" for note in notes)
     return ok, report
-
-
-def worker_threads(workers: int) -> int:
-    """BLAS/OpenMP threads per worker: the physical cores shared out.
-
-    Each worker otherwise opens a pool as wide as the machine: seven workers
-    ran 48 threads each on 12 cores (load average 150) and built a library
-    set at a quarter of its speed.
-    """
-    from .. import _native
-
-    return max(1, _native.grid_blas_threads() // max(1, int(workers)))
 
 
 def _limit_threads(threads: int) -> None:
@@ -312,7 +287,7 @@ def main(argv=None) -> int:
         jobs = [j for z in range(120, 0, -1) for j in jobs if atomic_numbers[j[1]] == z]
         with ProcessPoolExecutor(max_workers=args.workers,
                                  initializer=_limit_threads,
-                                 initargs=(worker_threads(args.workers),)) as pool:
+                                 initargs=(_native.worker_threads(args.workers),)) as pool:
             futures = {pool.submit(build_one, *job): job[1] for job in jobs}
             for future in as_completed(futures):
                 try:

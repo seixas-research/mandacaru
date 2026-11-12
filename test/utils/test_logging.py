@@ -17,9 +17,11 @@ per block, plus the lifetime rules (append across geometry steps, indentation,
 nothing said twice) and the round trip through :func:`parse_output`.
 """
 
+import re
 from types import SimpleNamespace
 
 import numpy as np
+
 import pytest
 from ase import Atoms
 
@@ -471,7 +473,7 @@ class TestBasisPrecisionLine:
         atoms = Atoms("H2", positions=[[3, 3, 2.63], [3, 3, 3.37]],
                       cell=[6.0, 6.0, 6.0])
         atoms.calc = Mandacaru(method="rhf", basis="HAO", grid_spacing=0.5,
-                               precision=precision, resources={"threads": 1},
+                               precision=precision, parallelization={"threads": 1},
                                txt=out)
         atoms.get_potential_energy()
         step = parse_output(out)
@@ -697,7 +699,7 @@ class TestSearchOptimizationSetup:
                        num_particles=(1, 0), max_steps=12, max_length=4, seed=7,
                        move_weights={"insert": 1., "delete": .2, "replace": 3.},
                        length_penalty=.001, atomic_units=True, profile=False,
-                       resources={"threads": 1}, txt=out, trace=False) as calc:
+                       parallelization={"threads": 1}, txt=out, trace=False) as calc:
             calc.run()
         return out
 
@@ -868,7 +870,8 @@ class TestPerformanceBlock:
                       cell=[6.0, 6.0, 6.0])
         atoms.calc = Mandacaru(method="adapt-vqe", basis="PAW-LCAO", active_space={"orbitals": 2}, grid_spacing=0.35,
                                pool="fermionic", max_iterations=4,
-                               convergence={"gradient": 1e-3}, txt=out)
+                               convergence={"gradient": 1e-3}, txt=out,
+                               parallelization={"threads": 2})
         BFGS(atoms, logfile=None).run(fmax=0.05, steps=1)
         return out
 
@@ -907,7 +910,13 @@ class TestPerformanceBlock:
 
     def test_resources_are_recorded(self, relaxation):
         performance = parse_output(relaxation)["performance"]
-        assert performance["integration_backend"].startswith("Rust")
+        assert performance["integration_backend"] == "Rust"
+        # The block owns the processor layout: written once per step, nowhere else in the log,
+        # and no bare thread count beside it.
+        assert performance["parallelization"] == "kpts 1 x bands 1 x threads 2 (2 workers)"
+        text = open(relaxation, encoding="utf-8").read()
+        assert text.count("parallelization:") == text.count("[PERFORMANCE]")
+        assert not re.search(r"^\s*threads:|\(\d+ threads\)", text, re.MULTILINE)
         assert isinstance(performance["cpu_count"], int)
         assert performance["peak_memory_MiB"] > 0
         # There is no distributed parallelism, and the block says so rather
@@ -1539,7 +1548,7 @@ def transferred_search_log(tmp_path_factory):
     atoms = Atoms("H2", positions=[[2.5, 2.5, 2.1], [2.5, 2.5, 2.9]], cell=[5.] * 3)
     with Mandacaru(method="vasqa", atoms=atoms, basis="HAO", pool="qeb", grid_spacing=.5,
                    transfer=True, transfer_steps=2, max_steps=6, seed=7, record=False,
-                   resources={"threads": 1}, profile=False, txt=out, trace=False):
+                   parallelization={"threads": 1}, profile=False, txt=out, trace=False):
         atoms.get_potential_energy()
         atoms.positions[1, 2] += .001
         atoms.get_potential_energy()
@@ -1584,7 +1593,7 @@ class TestASearchLineage:
         out = str(tmp_path / "output.txt")
         atoms = Atoms("H2", positions=[[2.5, 2.5, 2.1], [2.5, 2.5, 2.9]], cell=[5.] * 3)
         with Mandacaru(method="vasqa", atoms=atoms, basis="HAO", pool="qeb", grid_spacing=.5,
-                       max_steps=2, seed=7, record=False, resources={"threads": 1},
+                       max_steps=2, seed=7, record=False, parallelization={"threads": 1},
                        profile=False, txt=out, trace=False):
             atoms.get_potential_energy()
         setup = parse_output(out)["setup"]

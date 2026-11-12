@@ -15,7 +15,7 @@ def lih():
 def test_owned_paw_setup_rebuilds_after_the_creating_calculator_is_closed():
     atoms = lih()
     with Mandacaru(method="rhf", atoms=atoms, basis="PAW-LCAO", grid_spacing=.35,
-                   resources={"threads": 1}) as calc:
+                   parallelization={"threads": 1}) as calc:
         atoms.get_potential_energy()
         owned = calc.integrals
     atoms.positions[1, 2] += .01
@@ -23,7 +23,7 @@ def test_owned_paw_setup_rebuilds_after_the_creating_calculator_is_closed():
     rebuilt = owned.at_geometry(geometry.native())
     rebuilt_reference = rebuilt.mean_field("rhf", (1, 1))
     with Mandacaru(method="rhf", atoms=atoms, basis="PAW-LCAO", grid=owned.grid,
-                   grid_spacing=.35, resources={"threads": 1}) as fresh:
+                   grid_spacing=.35, parallelization={"threads": 1}) as fresh:
         fresh.run()
         assert rebuilt_reference.snapshot()["electronic_energy"] == pytest.approx(
             fresh.native_reference.snapshot()["electronic_energy"], abs=1e-11)
@@ -35,7 +35,7 @@ def test_paw_variational_force_uses_native_response_and_matches_reoptimized_bond
 
     atoms = lih()
     with Mandacaru(method="adapt-vqe", atoms=atoms, basis="PAW-LCAO", grid_spacing=.35,
-                   resources={"threads": 1}) as calc:
+                   parallelization={"threads": 1}) as calc:
         atoms.get_potential_energy()
         result = calc.result
         grid = calc.integrals.grid
@@ -62,7 +62,7 @@ def test_paw_variational_force_uses_native_response_and_matches_reoptimized_bond
         moved.positions[0, 2] -= offset / 2
         moved.positions[1, 2] += offset / 2
         with Mandacaru(method="adapt-vqe", atoms=moved, basis="PAW-LCAO", grid=grid,
-                       grid_spacing=.35, resources={"threads": 1}):
+                       grid_spacing=.35, parallelization={"threads": 1}):
             energies.append(moved.get_potential_energy())
     assert force[1, 2] == pytest.approx(-(energies[0] - energies[1]) / (2 * step), abs=1e-4)
     assert internal[1, 2] == pytest.approx(-(energies[0] - energies[1]) / (2 * step), abs=1e-4)
@@ -71,7 +71,7 @@ def test_paw_variational_force_uses_native_response_and_matches_reoptimized_bond
 def test_an_all_electron_variational_force_raises_by_name():
     atoms = Atoms("H2", positions=[[2.5, 2.5, 2.1], [2.5, 2.5, 2.9]], cell=[5.] * 3)
     with Mandacaru(method="adapt-vqe", atoms=atoms, basis="HAO", grid_spacing=.5,
-                   project_translation=False, resources={"threads": 1}):
+                   project_translation=False, parallelization={"threads": 1}):
         with pytest.raises(NotImplementedError, match="PAW-LCAO only"):
             atoms.get_forces()
 
@@ -94,7 +94,7 @@ def test_central_active_space_response_matches_independent_exact_water_energies(
 
     def exact(frame, grid=None, *, response=False):
         with Mandacaru(method="rhf", atoms=frame, basis={"name": "PAW-LCAO", "size": "DZP"},
-                       grid_spacing=.35, grid=grid, resources={"threads": 1}) as calc:
+                       grid_spacing=.35, grid=grid, parallelization={"threads": 1}) as calc:
             calc.run()
             model = calc.native_reference.active_model(spec)
             problem = model.problem(mapping="jordan_wigner", sector=True)
@@ -127,7 +127,7 @@ def test_relaxation_log_records_the_used_forces_and_ase_completion_verdict(tmp_p
     atoms = Atoms("H2", positions=[[2.5, 2.5, 2.1], [2.5, 2.5, 2.9]], cell=[5.] * 3)
     path = tmp_path / "relaxation.txt"
     with Mandacaru(method="adapt-vqe", atoms=atoms, basis="PAW-LCAO", grid_spacing=.4,
-                   active_space={"orbitals": 2}, txt=path, resources={"threads": 1}) as calc:
+                   active_space={"orbitals": 2}, txt=path, parallelization={"threads": 1}) as calc:
         optimizer = BFGS(atoms, logfile=None)
         optimizer.run(fmax=.02, steps=2)
         final_force = atoms.get_forces()
@@ -157,7 +157,7 @@ def _h2_force(optimizer, grid=None, method="vqe"):
 
     atoms = Atoms("H2", positions=[[2.5, 2.5, 2.1], [2.5, 2.5, 2.9]], cell=[5.] * 3)
     with Mandacaru(method=method, atoms=atoms, basis="PAW-LCAO", grid=grid, grid_spacing=.4,
-                   active_space={"orbitals": 2}, optimizer=optimizer, resources={"threads": 1}) as calc:
+                   active_space={"orbitals": 2}, optimizer=optimizer, parallelization={"threads": 1}) as calc:
         calc.run()
         result = calc.result
         force = result.forces(internal=True)
@@ -197,7 +197,7 @@ def test_lagrangian_correction_of_a_loose_adapt_lih_state_matches_the_converged_
         atoms = lih()
         with Mandacaru(method="adapt-vqe", atoms=atoms, basis="PAW-LCAO", grid=grid, grid_spacing=.35,
                        optimizer=optimizer, max_iterations=3, convergence={"gradient": 1e-9},
-                       resources={"threads": 1}) as calc:
+                       parallelization={"threads": 1}) as calc:
             with pytest.warns(RuntimeWarning) if optimizer["tol"] > 1e-8 else nullcontext():
                 calc.run()
             force = calc.result.forces(internal=True)
@@ -221,7 +221,7 @@ def test_search_methods_report_their_stationarity_and_subspace_forces_are_refuse
     assert details["stationarity"] in {"stationary", "lagrangian"}
     atoms = Atoms("H2", positions=[[2.5, 2.5, 2.1], [2.5, 2.5, 2.9]], cell=[5.] * 3)
     with Mandacaru(method="subspace-vqe", atoms=atoms, basis="HAO", grid_spacing=.5,
-                   resources={"threads": 1}) as calc:
+                   parallelization={"threads": 1}) as calc:
         calc.run()
         with pytest.raises(ValueError, match="subspace method"):
             calc.result.forces()

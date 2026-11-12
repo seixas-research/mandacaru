@@ -18,7 +18,8 @@ geometry = Geometry(
 )
 with Mandacaru(
     method="dft", xc="pbe", basis="HAO", grid_spacing=.35,
-    resources={"threads": 2, "memory_limit_bytes": 512 * 1024**2},
+    parallelization={"threads": 2},
+    resources={"memory_limit_bytes": 512 * 1024**2},
 ) as calculation:
     result = calculation.run(geometry)
     print(result.optimal_energy)  # eV, including nuclear repulsion
@@ -69,14 +70,20 @@ native state. Low-level snapshots export four-index terms only with
 ## Ownership and resource limits
 
 Each calculator owns a resource object, a context, a state and result
-references. Its thread setting never changes a global worker pool or BLAS
-setting. The variational methods use it too: on a large state vector the
+references. Its processor layout, `parallelization={"kpts": k, "bands": b,
+"threads": t}` ([Parallel layout](#dft-parallel-layout)), never changes a global
+worker pool or BLAS setting; the processor count is `k * b * t`, a missing key is
+1, and omitted the calculation runs on `{"threads": n}` with `n` from
+`MANDACARU_NUM_THREADS`, then `OMP_NUM_THREADS`, then the hardware. The
+variational methods use it too, through `threads`: on a large state vector the
 Hamiltonian action, the excitation rotations and adjoint gradients of the
 product ansatz, and the ADAPT-VQE pool screening split across that many
-threads, and every number they return is the same whatever the thread count.
-Scratch is created lazily in a unique temporary directory, optionally
-beneath `resources={"scratch_dir": ...}`, and closing the calculator deletes only
-that directory. There is no automatic `.mandacaru/` workspace.
+threads, and every number they return is the same whatever the processor count.
+`resources` holds the memory budget, the offload threshold and the scratch
+parent only: `resources={"threads": N}` raises `ValueError`, pointing to
+`parallelization`. Scratch is created lazily in a unique temporary directory,
+optionally beneath `resources={"scratch_dir": ...}`, and closing the calculator
+deletes only that directory. There is no automatic `.mandacaru/` workspace.
 
 A result can retain its native state after its calculator is closed; native
 memory stays allocated while any owner retains it. The memory limit covers native
@@ -85,7 +92,8 @@ raises `MemoryError` and releases temporary allocations.
 
 Scientific configuration is fixed when the calculator is constructed. Create a
 new calculator to change the method, basis or functional. A supplied native model
-retains its original context, so configure that context at its origin.
+retains its original context, so configure that context at its origin:
+`native_model` together with `parallelization` or `resources` raises `ValueError`.
 
 (native-coverage)=
 ## Coverage
@@ -102,8 +110,8 @@ retains its original context, so configure that context at its origin.
 
 Unsupported combinations raise errors. What is planned but not yet available is
 collected in [not yet available](#not-yet-available), and the
-[audit](../development/native_cutover.md) records the remaining scientific Python
-modules. A complete exchange–correlation catalog is not enabled. A checkpoint
+[audit](../development/native_cutover.md) records the numerical Python that the
+numerics budget still counts. A complete exchange–correlation catalog is not enabled. A checkpoint
 supplies a compatible warm start and, for SLSQP and BFGS, the optimizer's
 curvature estimate ([checkpoints](checkpoints_qpe.md)); it does not restore a
 partially completed iteration.

@@ -719,8 +719,6 @@ def tier_of(relative):
     name = relative.rsplit("/", 1)[-1]
     if relative.startswith(("pseudopotentials/", "basis/", "integrals/", "models/")):
         return "zero"
-    if relative in {"core/symmetry.py", "core/spin_orbit.py"}:
-        return "zero"
     if relative.startswith("integrations/") and relative.count("/") == 1 and name.startswith("paw"):
         return "zero"
     if relative.startswith(("backends/", "circuits/", "core/", "optimizers/", "workflows/")):
@@ -756,8 +754,7 @@ HEADER = """\
 # lower the row (python scripts/numerics_budget.py --ratchet); only the owner
 # raises a number or moves a `dies` later, by committing it.
 #
-# Zero tier (pseudopotentials/ basis/ integrals/ models/ integrations/paw*
-# core/symmetry.py core/spin_orbit.py): a module without a row is budgeted at
+# Zero tier (pseudopotentials/ basis/ integrals/ models/ integrations/paw*): a module without a row is budgeted at
 # zero on every counter, sloc included. A row is dated (wave, dies) while it has
 # any hard counter or policy to port; an undated row names a closed category
 # (validation, hand-off, unit, result-view, log-table) and shows no hard counter.

@@ -130,7 +130,19 @@ fn paw_local_value<'py>(
     ))
 }
 
+/// `{l: shift}` of the channels whose bound levels moved by more than the reload tolerance between
+/// the dataset as generated and as read back; both arguments are `[(l, levels)]` in the same order.
+#[pyfunction]
+fn paw_reload_errors(
+    before: Vec<(usize, Vec<f64>)>,
+    after: Vec<(usize, Vec<f64>)>,
+) -> std::collections::BTreeMap<usize, f64> {
+    mandacaru_core::paw::record::reload_errors(&before, &after)
+}
+
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add("RELOAD_LEVEL_TOLERANCE", mandacaru_core::paw::record::RELOAD_LEVEL_TOLERANCE)?;
+    m.add_function(wrap_pyfunction!(paw_reload_errors, m)?)?;
     m.add_function(wrap_pyfunction!(paw_record_read, m)?)?;
     m.add_function(wrap_pyfunction!(paw_record_write, m)?)?;
     m.add_function(wrap_pyfunction!(paw_local_value, m)?)?;

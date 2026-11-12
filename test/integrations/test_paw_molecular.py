@@ -43,7 +43,7 @@ def test_a_multi_atom_molecule_gives_the_same_bits_on_every_thread_count():
         atoms = Atoms("OH2", positions=[[0, 0, 0], [0.76, 0, 0.59], [-0.76, 0, 0.59]])
         atoms.center(vacuum=3.0)
         atoms.calc = Mandacaru(method="rhf", basis={"name": "PAW-LCAO", "size": "SZ"},
-                               grid_spacing=0.4, resources={"threads": threads})
+                               grid_spacing=0.4, parallelization={"threads": threads})
         runs.append((atoms.get_potential_energy(), atoms.calc.integrals.snapshot()))
     for energy, snapshot in runs[1:]:
         assert energy == runs[0][0]

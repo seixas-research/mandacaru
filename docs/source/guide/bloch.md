@@ -160,6 +160,11 @@ orbitals, so the channels add up to `dos`. The projected density of a Bloch run 
 the tetrahedron method only. The same keyword works for a DFT crystal, whose bands are diagonalized
 at every mesh point.
 
+**Berry phase and polarization.** The Berry phase, Berry curvature, Chern number, polarization
+and anomalous Hall conductivity of a crystal are [a guide of their own](berry.md). They are
+computed from the Bloch states of a `method="dft"` crystal: a quantum method on a crystal has
+no Bloch bands there and `get_berry_phase` and the other Berry methods raise `NotImplementedError`.
+
 **Spectral function.** `get_spectral_function(energies=None, eta=0.1, kpoints=None, krylov=200)`
 returns a `SpectralFunction` (`mandacaru.analysis.bloch`). For every mesh point `k` and primitive
 Lowdin orbital `nu` it holds the Lehmann representation of the one-particle Green's function of the

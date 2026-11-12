@@ -6,7 +6,7 @@ use crate::{
     math::{
         fft::Fft3,
         linalg::{davidson, eigen, rmm_diis},
-        projection::{hermitian_density_tiles_accumulate, ComplexProjector},
+        projection::ComplexProjector,
         storage::MatrixSource,
     },
     quantum::C64,
@@ -234,7 +234,7 @@ pub fn diagonalize_with_solver(
 
 /// Spatial Hermitian matrices for (n, mx, my, mz); public for the spinor force. This retains transverse
 /// coherences; dropping the off-diagonal spin blocks would discard SOC.
-pub fn density<M: MatrixSource>(c: &Crystal, matrices: &[M]) -> Result<(Buffer<f64>, Buffer<C64>)> {
+pub fn density<M: MatrixSource + Sync>(c: &Crystal, matrices: &[M]) -> Result<(Buffer<f64>, Buffer<C64>)> {
     if matrices.len() != c.points.len() {
         return Err(invalid(
             "spinor density matrices must match the Bloch basis and k-point mesh",
@@ -249,24 +249,24 @@ pub fn density<M: MatrixSource>(c: &Crystal, matrices: &[M]) -> Result<(Buffer<f
         if d.shape() != (2 * c.m, 2 * c.m) {
             return Err(invalid("spinor matrix dimensions disagree with the basis"));
         }
-        for a in 0..c.field_channels() {
-            let d = component(&d, c.m, a);
-            if a == 0 {
-                projected += point.projections.adjoint()
-                    * &d
-                    * &point.projections
-                    * C64::new(point.weight, 0.);
-            }
-            hermitian_density_tiles_accumulate(
-                &c.context,
-                &point.psi,
-                &d,
-                n,
-                point.weight,
-                &mut rho.as_mut_slice()[a * n..(a + 1) * n],
-            )?;
-        }
+        let d = component(&d, c.m, 0);
+        projected +=
+            point.projections.adjoint() * &d * &point.projections * C64::new(point.weight, 0.);
     }
+    // Term `k * channels + a`: component `a` of point `k`, into field `a` (the grid split by
+    // range, `solver::accumulate_densities`).
+    let channels = c.field_channels();
+    solver::accumulate_densities(
+        c,
+        c.points.len() * channels,
+        |t| {
+            let (k, a) = (t / channels, t % channels);
+            let point = &c.points[k];
+            let d = matrices[k].matrix(&c.context)?;
+            Ok((point, component(&d, c.m, a), point.weight, a))
+        },
+        rho.as_mut_slice(),
+    )?;
     let mut q = c.context.allocate::<C64>(c.channels)?;
     for a in 0..c.channels {
         q.as_mut_slice()[a] = (0..p)

@@ -169,7 +169,13 @@ _ANALYSIS_KEYS = {
     "downfold": ("Spencer2008",),
     "downfold-screening": ("Aryasetiawan2004", "Sasioglu2011", "Spencer2008"),
     "polarization": ("KingSmith1993", "Resta1994"),
+    "berry-phase": ("Berry1984", "KingSmith1993", "Yu2011"),
+    "berry-curvature": ("Fukui2005", "Xiao2010"),
+    "anomalous-hall": ("Thouless1982", "Fukui2005", "Xiao2010"),
     "isosurface": ("Kuhn1960", "Doi1991"),
+    # Linear-response excited states of a molecule (``calc.get_excitations``).
+    "excited-states": ("RungeGross1984", "Casida1995", "HirataHeadGordon1999",
+                       "StratmannScuseriaFrisch1998", "Martin2003"),
 }
 
 #: Circuit template of ``method="vqe"`` (``ansatz=``) -> the papers that
@@ -356,8 +362,9 @@ def citation_keys(*, method=None, ansatz=None, pool=None, mapping=None,
     names what a script computed afterwards: ``"tetrahedron-dos"``,
     ``"spectral-function"``, ``"band-path"``, ``"irreducible-zone"``, ``"time-evolution"``, ``"quantum-echoes"``,
     ``"nested-otoc"``, ``"wannier"``, ``"downfold"`` (a Wannier fragment's many-body
-    problem), ``"downfold-screening"`` (the same with ``screening=``), ``"polarization"`` or
-    ``"isosurface"``.
+    problem), ``"downfold-screening"`` (the same with ``screening=``), ``"polarization"``,
+    ``"berry-phase"``, ``"berry-curvature"`` (with the Chern number), ``"anomalous-hall"``,
+    ``"excited-states"`` (``get_excitations``) or ``"isosurface"``.
     Circuit-measured energies (``shots`` or ``execute_circuits`` on a quantum
     method) also cite the parameter-shift gradient.
 

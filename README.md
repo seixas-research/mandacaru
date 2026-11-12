@@ -110,7 +110,8 @@ atoms.calc = Mandacaru(
     spin=False,                                  # True: unrestricted (spin-polarized) Kohn-Sham
     scf_options={"max_iterations": 300, "tolerance": 1e-9, "diis": True},
     precision="float64",                         # or "float32" for the stored orbital samples
-    resources={"threads": 4, "memory_limit_bytes": 2 * 1024**3},
+    parallelization={"threads": 4},              # processors; a crystal also takes {"kpts": 4, "threads": 2}
+    resources={"memory_limit_bytes": 2 * 1024**3},
     txt="h2o_dft.log",                           # run log file; trace=True also prints it
 )
 
@@ -138,7 +139,7 @@ The geometry needs a cell, so use a JSON geometry or an extended XYZ file such
 as the one written above:
 
 ```bash
-mandacaru h2o.xyz --method dft --xc pbe --basis PAW-LCAO --grid-spacing 0.25 --threads 4 --forces
+mandacaru h2o.xyz --method dft --xc pbe --basis PAW-LCAO --grid-spacing 0.25 --parallelization threads=4 --forces
 ```
 
 ## Variational quantum algorithms
@@ -240,9 +241,10 @@ error. It never selects a different calculation.
    and stress.
 5. Extend circuit execution to the multi-reference methods, continue device
    runs, and hand a GHF reference to the quantum methods.
-6. Remove the last numerical Python, in the basis, dataset and PAW adapter
-   modules that the numerics budget still lists, each one only after its Rust
-   replacement reproduces the numbers it replaces.
+6. Parallelize the rest of the crystal engine over the new `parallelization`
+   layout (the hybrid exchange, forces and stress, post-processing). The basis,
+   dataset and PAW adapter modules no longer hold numerical Python: they hand
+   over to the Rust engine.
 7. Write the SCF log while the run proceeds, not only when it ends.
 
 The [native engine status](https://mandacaru.readthedocs.io/en/latest/development/native_cutover.html)

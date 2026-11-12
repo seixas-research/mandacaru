@@ -149,6 +149,13 @@ function of the sequence and, at a fixed temperature, the chain leaves
 $\pi(C)\propto e^{-\beta \widehat F(C)}$ invariant. A local optimizer does not
 certify the global minimum over the angles.
 
+A sampling run (`warm_start=False` with a fixed scalar `temperature`) should set
+`proposal_temperature` explicitly to 0.2 or larger. On a 73-state H₂ model the
+exact Metropolis-Hastings matrix relaxes in about 194 steps at 0.2 and about
+68000 at 0.1, because a sharp proposal almost never proposes the operators of low
+gradient. The default 0.1 suits the default chain, which is an optimizer and not
+a sampler.
+
 ## Along a trajectory
 
 In an ASE relaxation, scan or dynamics run, every geometry is its own chain, and
@@ -202,7 +209,10 @@ and cube files. The result also has:
   proposed and source energies and costs, the temperature and the decision
   (`accepted`). A rejected step repeats the current state.
 * `acceptance_by_move`, `num_architectures` (distinct sequences evaluated),
-  `num_screenings` (pool screenings, one per proposal) and `num_evaluations`.
+  `num_screenings` (the number of pool screens the chain actually ran: a uniform
+  proposal skips the screen unless the run records or a ready learned model is
+  present, and one final screen gives `final_max_gradient` when no state screened
+  it) and `num_evaluations`.
 
 A completed chain does not certify eigenstate convergence: `result.completed` and
 `result.converged` report those distinct facts. Each step is a full VQE

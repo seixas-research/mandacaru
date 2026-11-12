@@ -220,7 +220,7 @@ class TestASpinOrbitCrystal:
                                kpts={"size": (3, 1, 1), "gamma": True},
                                smearing={"method": "fermi-dirac", "width": 0.01},
                                basis={"name": "PAW-LCAO", "size": "SZ", "filter_cutoff": 200},
-                               resources={"threads": 1}, trace=False)
+                               parallelization={"threads": 1}, trace=False)
         forces = atoms.get_forces()
         weights = atoms.calc.periodic_problem.weights
         assert len(weights) == 3 and np.allclose(weights, 1 / 3)

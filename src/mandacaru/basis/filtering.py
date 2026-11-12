@@ -56,7 +56,7 @@ Two properties of doing this **per angular-momentum channel** matter here:
   the forces badly once already (the polarization-shell bug), so it is
   asserted by the test suite;
 * the filter commutes with the angular part, so a filtered table drops into
-  :class:`~mandacaru.basis.multizeta.TabulatedOrbital` unchanged and everything
+  :class:`~mandacaru.pseudopotentials.orbitals.PseudoShell` unchanged and everything
   downstream -- grid sampling, the PAW-LCAO atom-centered projection quadrature, the
   displaced sampling the forces are built from -- sees one consistent function.
 
@@ -177,7 +177,7 @@ from .. import _native
 #: at their floor).  Every fraction below 1.0 is therefore worse on *both*
 #: axes -- more ripple and more cost -- so the choice is only between 1.0 and
 #: something above it, and 1.0 is the one that leaves nothing aliased.
-FILTER_NYQUIST_FRACTION = 1.0
+FILTER_NYQUIST_FRACTION = _native.FILTER_NYQUIST_FRACTION
 
 #: The filter methods, the default (``"switch"``) first: defined once, in Rust
 #: (``mandacaru_core::basis::filter``), together with the numerical constants of

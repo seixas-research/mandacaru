@@ -55,6 +55,61 @@ pub fn gaussian_dos(
     Ok(out)
 }
 
+/// The shape of each line of [`line_spectrum`]: unit area, `width` its standard deviation
+/// (Gaussian) or its half width at half maximum (Lorentzian).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LineShape {
+    Gaussian,
+    Lorentzian,
+}
+impl LineShape {
+    pub fn parse(name: &str) -> Result<Self> {
+        match name {
+            "gaussian" => Ok(Self::Gaussian),
+            "lorentzian" => Ok(Self::Lorentzian),
+            _ => Err(invalid(format!(
+                "unknown line shape {name:?}; expected 'gaussian' or 'lorentzian'"
+            ))),
+        }
+    }
+}
+
+/// `S(x) = sum_n s_n g(x - x_n)` on `axis`: discrete lines (excitation energies and their
+/// oscillator strengths, for example) broadened into unit-area shapes of `width`, so
+/// `int S dx = sum_n s_n` when the axis covers the lines. Units are the caller's.
+pub fn line_spectrum(
+    ctx: &Context,
+    positions: &[f64],
+    strengths: &[f64],
+    axis: &[f64],
+    width: f64,
+    shape: LineShape,
+) -> Result<Buffer<f64>> {
+    if positions.len() != strengths.len() || !width.is_finite() || width <= 0. {
+        return Err(invalid(
+            "a line spectrum needs one strength per line and a positive finite width",
+        ));
+    }
+    finite(positions, "line positions")?;
+    finite(strengths, "line strengths")?;
+    finite(axis, "spectrum axis")?;
+    let mut out = ctx.allocate::<f64>(axis.len())?;
+    let gaussian = 1. / (width * (2. * std::f64::consts::PI).sqrt());
+    let lorentzian = width / std::f64::consts::PI;
+    for (value, &x) in out.as_mut_slice().iter_mut().zip(axis) {
+        for (&center, &strength) in positions.iter().zip(strengths) {
+            let delta = x - center;
+            *value += strength
+                * match shape {
+                    LineShape::Gaussian => gaussian * (-0.5 * (delta / width).powi(2)).exp(),
+                    LineShape::Lorentzian => lorentzian / (delta * delta + width * width),
+                };
+        }
+    }
+    finite(out.as_slice(), "line spectrum")?;
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

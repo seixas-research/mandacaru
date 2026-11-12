@@ -94,7 +94,32 @@ fn pool_kind(name: &str) -> PyResult<&'static str> {
     pools::kind(name).map_err(error)
 }
 
+/// The box diagnostic of a molecule's diffuse functions (`paw::molecular::Setup::diffuse_box`):
+/// `cuts[atom]` are that atom's accepted `r_cut` values.
+/// `{"ratios": [(function, atom, ratio)], "rows": [(atom, r_cut, face_distance, smallest_ratio)],
+/// "short": n, "worst": (function, atom, ratio) | None}`, `None` when the basis has no diffuse
+/// function or is not a PAW basis.
+#[pyfunction]
+fn paw_diffuse_box<'py>(
+    py: Python<'py>,
+    integrals: PyRef<'_, PyIntegrals>,
+    cuts: Vec<Vec<f64>>,
+) -> PyResult<Option<Bound<'py, PyDict>>> {
+    let inner = &integrals.inner;
+    let Some(setup) = inner.paw_setup.as_ref().filter(|s| s.diffuse_functions() > 0) else {
+        return Ok(None);
+    };
+    let report = py.detach(|| setup.diffuse_box(&inner.grid, &cuts)).map_err(error)?;
+    let out = PyDict::new(py);
+    out.set_item("ratios", report.ratios)?;
+    out.set_item("rows", report.rows)?;
+    out.set_item("short", report.short)?;
+    out.set_item("worst", report.worst)?;
+    Ok(Some(out))
+}
+
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(paw_diffuse_box, m)?)?;
     m.add_function(wrap_pyfunction!(problem_term_count, m)?)?;
     m.add_function(wrap_pyfunction!(integrals_report, m)?)?;
     m.add_function(wrap_pyfunction!(snapshot_lineage, m)?)?;

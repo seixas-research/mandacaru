@@ -120,7 +120,7 @@ LIBRARY_ELEMENTS = library_elements()
 #: This is deliberately *not* the default of :func:`save_pseudopotential`.
 #: Decimating on every write would make a load-then-save cycle lossy and
 #: compound with each round trip; it belongs at generation time, where the fine
-#: grid actually exists (each family's ``build_*_library``).  The rule itself
+#: grid actually exists (``mandacaru-build``).  The rule itself
 #: (which points, how many digits) is the engine's: ``paw::record::digits``.
 STRIDE = 4
 #: Significant digits written per number.  Double precision would store 17,
@@ -206,7 +206,7 @@ FOLDER_RELATIVITY = {"sr": "scalar", "fr": "dirac"}
 
 
 def load_library_dataset(symbol: str, folder: str, family: str, cache: dict,
-                         *, label: str, noun: str, builder: str):
+                         *, label: str, noun: str):
     """Load ``symbol`` from the library ``folder`` (cached), or explain.
 
     ``folder`` comes from :func:`.environment.paw_dataset_folder`, which has
@@ -243,7 +243,7 @@ def load_library_dataset(symbol: str, folder: str, family: str, cache: dict,
         raise FileNotFoundError(
             f"no {label} {noun} for {symbol!r} at {path!r}. "
             f"Available: {', '.join(available)}. "
-            f"Generate it with {builder}([symbol]).")
+            f"Generate it with mandacaru-build --pp {family} --element {symbol} --install.")
     # The bytes, identified: a path names a checkout that can change under
     # it, so the run log records this digest beside the file's name.
     import hashlib

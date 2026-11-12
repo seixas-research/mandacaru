@@ -44,7 +44,7 @@ def test_pool_rotations_match_independent_dense_exponentials_and_derivatives(poo
 def reference(tmp_path):
     atoms = Atoms("H2", positions=[[2.5, 2.5, 2.13], [2.5, 2.5, 2.87]], cell=[5] * 3)
     with Mandacaru(
-        method="rhf", atoms=atoms, grid_spacing=0.5, resources={"threads": 1}
+        method="rhf", atoms=atoms, grid_spacing=0.5, parallelization={"threads": 1}
     ) as calc:
         atoms.get_potential_energy()
         result = calc.result
@@ -136,7 +136,7 @@ def test_hva_matches_independent_group_exponentials_and_logical_gradients(
 def test_deflation_reports_bare_levels_and_orthogonal_states(reference):
     result, path = reference
     with Mandacaru(
-        method="vqe", load_hamiltonian=path, resources={"threads": 1}
+        method="vqe", load_hamiltonian=path, parallelization={"threads": 1}
     ) as calc:
         calc.run()
         levels = calc.energy_levels(num_states=2, restarts=4)
@@ -158,7 +158,7 @@ def test_named_optimizers_execute_the_same_quantum_problem(method):
         method="vqe",
         load_hamiltonian=path,
         optimizer={"method": method, "maxiter": 1000, "tol": 1e-10},
-        resources={"threads": 1},
+        parallelization={"threads": 1},
     ) as calc:
         result = calc.run()
         assert result.energy_hartree == pytest.approx(

@@ -164,7 +164,7 @@ pub fn minimum_image_kernel(
     let mut kernel = ctx.allocate::<f64>(grid.index.points())?;
     let shifts = table.as_slice();
     let selfpot = voxel_self_potential(&step)? / step.determinant().abs();
-    let workers = ctx.threads().min(nx);
+    let workers = ctx.width().min(nx);
     let planes = nx.div_ceil(workers);
     ctx.run(|| {
         std::thread::scope(|scope| {

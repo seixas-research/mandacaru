@@ -7,7 +7,7 @@ import tempfile
 
 import numpy as np
 
-from .. import _native
+from ..resources import native_context
 
 MODEL_FILE = "proposal_model.npz"
 
@@ -65,7 +65,7 @@ class ProposalModel:
 
 def fit(directory=None, path=None, *, group_by="molecule", fractions=(.25,.5,1.),
         seed=0, folds=None, gnn_epochs=100, mixing=.3, temperature=1.,
-        kinds=("graph",), resources=None):
+        kinds=("graph",), parallelization=None, resources=None):
     """Train native models, assess disjoint held-out groups, and save the report.
 
     ``kinds`` names the predictors to assess and train: ``"ranker"`` (the
@@ -81,6 +81,10 @@ def fit(directory=None, path=None, *, group_by="molecule", fractions=(.25,.5,1.)
 
     Missing or insufficient observations produce an unready model with an
     explicit reason. They are never replaced by generated observations.
+
+    ``parallelization={"threads": n}`` sets the training's workers (a fit has
+    no k-point or band level) and ``resources={"memory_limit_bytes": ...}``
+    its memory budget, as for ``Mandacaru``.
     """
     kinds = tuple(kinds)
     if not kinds or set(kinds) - {"ranker", "graph"} or len(set(kinds)) != len(kinds):
@@ -94,10 +98,7 @@ def fit(directory=None, path=None, *, group_by="molecule", fractions=(.25,.5,1.)
         for line in source.read_text().splitlines():
             if line.strip():
                 records.append(json.loads(line))
-    settings = dict(resources or {})
-    if set(settings) - {"threads", "memory_limit_bytes"}:
-        raise ValueError("proposal resources accept threads and memory_limit_bytes")
-    context = _native.Context(**settings)
+    context = native_context(resources, parallelization, takes_layout=True)
     source = context.fit_proposal(
         json.dumps(dict(problems=problems, records=records), allow_nan=False),
         group_by=group_by, fractions=list(fractions), seed=seed, folds=folds,

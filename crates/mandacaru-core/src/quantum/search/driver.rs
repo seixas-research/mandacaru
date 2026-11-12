@@ -1,5 +1,6 @@
 //! Quenched Metropolis–Hastings search over variational operator sequences.
 use super::kernel::{self, Action, Kernel, Move};
+use crate::quantum::evolution;
 use super::learning::{
     graph::{Candidates, Graph},
     training::{self, Model},
@@ -79,21 +80,50 @@ impl Options {
             * (self.temperatures[1] / self.temperatures[0]).powf(step as f64 / (steps - 1) as f64)
     }
 }
+/// The pool screen of a state and the operator proposal drawn from it. `gradients` is empty when
+/// nothing but the proposal reads them (a uniform chain that records nothing).
+#[derive(Clone)]
+struct Screen {
+    gradients: Vec<f64>,
+    probabilities: Vec<f64>,
+}
+/// The position weights of a state's deletions and replacements.
+#[derive(Clone)]
+struct Weights {
+    /// Each operator's importance: the |gradient| it would have if re-inserted at its own position
+    /// (its angle zero, the other angles of this state).
+    importances: Vec<f64>,
+    /// The deletion and replacement position weights of [`kernel::removal`].
+    removal: Vec<f64>,
+}
+/// A relaxed state and, once something needs them, its two analyses. The relaxation is what the
+/// Metropolis test reads (the cost); the screen and the weights are the proposal distribution
+/// drawn from the state. A proposal's reverse probability reads only the half of the distribution
+/// that its move kind uses, and a rejected proposal's state is never drawn from, so each half is
+/// computed when something first needs it ([`Evaluator::screen`], [`Evaluator::weigh`]) and a state
+/// becomes the chain's current state only complete ([`Evaluator::complete`]).
 #[derive(Clone)]
 struct Evaluated {
     sequence: Vec<usize>,
     parameters: Vec<f64>,
     energy: f64,
     cost: f64,
-    gradients: Vec<f64>,
-    probabilities: Vec<f64>,
-    /// Each operator's importance: the |gradient| it would have if re-inserted at its own position
-    /// (its angle zero, the other angles of this state).
-    importances: Vec<f64>,
-    /// The deletion and replacement position weights of [`kernel::removal`].
-    removal: Vec<f64>,
+    screen: Option<Screen>,
+    weights: Option<Weights>,
     success: bool,
     message: String,
+}
+impl Evaluated {
+    fn screened(&self) -> Result<&Screen> {
+        self.screen
+            .as_ref()
+            .ok_or_else(|| invalid("a search state was used before its pool screen"))
+    }
+    fn weighed(&self) -> Result<&Weights> {
+        self.weights
+            .as_ref()
+            .ok_or_else(|| invalid("a search state was used before its removal weights"))
+    }
 }
 pub struct SearchResult {
     pub solution: SolveResult,
@@ -109,6 +139,17 @@ pub struct SearchResult {
     pub final_parameters: Vec<f64>,
     pub num_architectures: usize,
     pub num_screenings: usize,
+    /// Operator importances computed (one per position of a weighed state), not in `history`.
+    /// Each is the gradient entry of one evaluation with that angle zeroed, taken from the
+    /// shared prefix and the truncated sweep of [`evolution::importances`], not from a full
+    /// evaluation.
+    pub num_importance_evaluations: usize,
+    /// What the importances did in whole-state actions, against
+    /// [`evolution::Work::separate_evaluations`] per weighed state (one full evaluation each).
+    pub importance_work: evolution::Work,
+    /// Gradients the optimizer asked for: the others of the `history` entries (one energy per
+    /// objective call) were trial points its line search rejected on the energy alone.
+    pub num_gradient_evaluations: usize,
     pub failures: Vec<(usize, String)>,
     _memory: Reservation,
 }
@@ -122,11 +163,15 @@ struct Evaluator<'a> {
     history: Vec<f64>,
     optimizer_steps: usize,
     screenings: usize,
+    importance_evaluations: usize,
+    importance_work: evolution::Work,
+    gradient_evaluations: usize,
     failures: Vec<(usize, String)>,
 }
 impl Evaluator<'_> {
-    /// The relaxed state of `sequence`. With `warm_start=false` the result is a function of the
-    /// sequence alone (the relaxation starts from zeros), so it is memoized.
+    /// The relaxed state of `sequence`, without its analyses unless the memo holds them. With
+    /// `warm_start=false` the relaxation is a function of the sequence alone (it starts from
+    /// zeros), so the state is memoized, and every analysis computed later is stored with it.
     fn evaluate(
         &mut self,
         sequence: Vec<usize>,
@@ -139,11 +184,24 @@ impl Evaluator<'_> {
                 return Ok(cached.clone());
             }
         }
-        let result = self.compute(sequence, initial, step)?;
+        let result = self.relax(sequence, initial, step)?;
         if !self.options.warm_start {
             self.cache.insert(result.sequence.clone(), result.clone());
         }
         Ok(result)
+    }
+    /// Write the analyses of `state` into the memo entry of its sequence, when that entry is this
+    /// very state (an uncached transferred start shares the sequence, not the angles).
+    fn store(&mut self, state: &Evaluated) {
+        if self.options.warm_start {
+            return;
+        }
+        if let Some(entry) = self.cache.get_mut(&state.sequence) {
+            if entry.parameters == state.parameters {
+                entry.screen = state.screen.clone();
+                entry.weights = state.weights.clone();
+            }
+        }
     }
     /// Relax `sequence` from `initial` without reading or writing the cache: a start that is not
     /// the zero start is not a function of the sequence, so it must never be stored as one.
@@ -154,9 +212,9 @@ impl Evaluator<'_> {
         step: usize,
     ) -> Result<Evaluated> {
         self.seen.insert(sequence.clone());
-        self.compute(sequence, initial, step)
+        self.relax(sequence, initial, step)
     }
-    fn compute(
+    fn relax(
         &mut self,
         sequence: Vec<usize>,
         initial: Vec<f64>,
@@ -170,15 +228,23 @@ impl Evaluator<'_> {
                 "empty reference".into(),
             )
         } else {
-            let result = optimizer::minimize(
+            let gradients = std::cell::Cell::new(0);
+            let result = optimizer::minimize_deferred_from(
                 &self.problem.context,
                 &initial,
                 &self.options.optimizer,
+                None,
                 |p| {
-                    let value = self.problem.evaluate(&sequence, p, true)?;
-                    Ok((value.energy, value.gradient))
+                    // A rejected trial of the line search never asks for its gradient.
+                    let probe = self.problem.probe(&sequence, p, true)?;
+                    let counter = &gradients;
+                    Ok(optimizer::Probe::deferred(probe.energy, move || {
+                        counter.set(counter.get() + 1);
+                        probe.into_gradient()
+                    }))
                 },
             )?;
+            self.gradient_evaluations += gradients.get();
             self.history.extend(result.history);
             self.optimizer_steps += result.steps;
             if !result.success {
@@ -191,6 +257,22 @@ impl Evaluator<'_> {
                 result.message,
             )
         };
+        Ok(Evaluated {
+            cost: energy + self.options.length_penalty * sequence.len() as f64,
+            sequence,
+            parameters,
+            energy,
+            screen: None,
+            weights: None,
+            success,
+            message,
+        })
+    }
+    /// The pool screen and the operator proposal of `state` (a no-op once computed).
+    fn screen(&mut self, state: &mut Evaluated) -> Result<()> {
+        if state.screen.is_some() {
+            return Ok(());
+        }
         // The pool screen feeds the gradient proposal, a ready learned model, the recorded rows and
         // the final gradient (computed once at the end when no state screens it): a uniform chain
         // that records nothing needs none of it per proposal.
@@ -198,9 +280,11 @@ impl Evaluator<'_> {
             || self.options.record
             || (self.learned.is_some_and(|m| m.ready) && self.graph.is_some());
         let gradients = if screen {
-            let state = self.problem.prepare_state(&sequence, &parameters, true)?;
+            let prepared = self
+                .problem
+                .prepare_state(&state.sequence, &state.parameters, true)?;
             self.screenings += 1;
-            self.problem.pool_gradients(&state, true)?
+            self.problem.pool_gradients(&prepared, true)?
         } else {
             vec![]
         };
@@ -216,10 +300,10 @@ impl Evaluator<'_> {
                 let rows = Candidates::new(
                     &self.problem.context,
                     graph,
-                    &sequence,
+                    &state.sequence,
                     &candidates,
                     &gradients,
-                    energy - graph.reference_energy,
+                    state.energy - graph.reference_energy,
                 )?;
                 let scores = model.scores(&self.problem.context, graph, &rows)?;
                 let scores: Vec<_> = scores.iter().map(|v| v / model.temperature).collect();
@@ -239,26 +323,34 @@ impl Evaluator<'_> {
                 }
             }
         }
-        let mut importances = Vec::with_capacity(sequence.len());
-        for i in 0..sequence.len() {
-            let mut zeroed = parameters.clone();
-            zeroed[i] = 0.;
-            importances.push(self.problem.evaluate(&sequence, &zeroed, true)?.gradient[i].abs());
-        }
-        let removal = kernel::removal(&importances, self.options.proposal_temperature)?;
-        let result = Evaluated {
-            cost: energy + self.options.length_penalty * sequence.len() as f64,
-            sequence,
-            parameters,
-            energy,
+        state.screen = Some(Screen {
             gradients,
             probabilities,
+        });
+        self.store(state);
+        Ok(())
+    }
+    /// The importances and removal weights of `state` (a no-op once computed).
+    fn weigh(&mut self, state: &mut Evaluated) -> Result<()> {
+        if state.weights.is_some() {
+            return Ok(());
+        }
+        let measured = self.problem.importances(&state.sequence, &state.parameters)?;
+        self.importance_evaluations += state.sequence.len();
+        self.importance_work += measured.work;
+        let importances = measured.values;
+        let removal = kernel::removal(&importances, self.options.proposal_temperature)?;
+        state.weights = Some(Weights {
             importances,
             removal,
-            success,
-            message,
-        };
-        Ok(result)
+        });
+        self.store(state);
+        Ok(())
+    }
+    /// Both analyses: what a state needs to be drawn from, so to become the current state.
+    fn complete(&mut self, state: &mut Evaluated) -> Result<()> {
+        self.screen(state)?;
+        self.weigh(state)
     }
 }
 fn record(
@@ -269,7 +361,7 @@ fn record(
     temperature: f64,
     outcome: Option<(f64, f64, f64, bool)>,
     vectors: bool,
-) -> Value {
+) -> Result<Value> {
     let mut row = json!({"step":step,"move":action.kind.name(),"position":action.position,
         "operator":if matches!(action.kind,Move::Insert|Move::Replace) {Some(action.operator)} else {None},
         "source":source.sequence,"proposed":proposed.sequence,"source_parameters":source.parameters,"parameters":proposed.parameters,
@@ -281,12 +373,13 @@ fn record(
     // The four source vectors (pool and sequence long) are the recorded edit's training data: a
     // step row of a chain that records nothing does not copy them.
     if vectors {
-        row["source_gradients"] = json!(source.gradients);
-        row["source_probabilities"] = json!(source.probabilities);
-        row["source_importances"] = json!(source.importances);
-        row["source_removal"] = json!(source.removal);
+        let (screen, weights) = (source.screened()?, source.weighed()?);
+        row["source_gradients"] = json!(screen.gradients);
+        row["source_probabilities"] = json!(screen.probabilities);
+        row["source_importances"] = json!(weights.importances);
+        row["source_removal"] = json!(weights.removal);
     }
-    row
+    Ok(row)
 }
 impl CachedProblem {
     pub fn search(
@@ -322,8 +415,9 @@ impl CachedProblem {
             let memory = ctx.reserve(product(&[evaluations,self.pool.len()+options.max_length+32,256])?)?;
             let result_memory = ctx.reserve(product(&[evaluations,options.optimizer.max_evaluations,8])?)?;
             let graph = if learned.is_some_and(|m| m.ready) {Some(Graph::from_problem(self)?)} else {None};
-            let mut evaluator = Evaluator {problem:self,options,learned,graph,cache:BTreeMap::new(),seen:BTreeSet::new(),history:vec![],optimizer_steps:0,screenings:0,failures:vec![]};
-            let reference = evaluator.evaluate(vec![],vec![],0)?;
+            let mut evaluator = Evaluator {problem:self,options,learned,graph,cache:BTreeMap::new(),seen:BTreeSet::new(),history:vec![],optimizer_steps:0,screenings:0,importance_evaluations:0,importance_work:evolution::Work::default(),gradient_evaluations:0,failures:vec![]};
+            let mut reference = evaluator.evaluate(vec![],vec![],0)?;
+            evaluator.complete(&mut reference)?;
             let reference_energy = reference.energy;
             let mut current = reference;
             let mut seed=None;
@@ -334,15 +428,18 @@ impl CachedProblem {
                 // transferred start is another start: it is evaluated apart (never cached under the
                 // sequence) and only decides `kept` and the returned candidate, while the chain starts
                 // from the zero-start state of the same sequence.
-                let transferred = if options.warm_start {evaluator.evaluate(initial_indices.to_vec(),initial_parameters.to_vec(),0)?}
+                let mut transferred = if options.warm_start {evaluator.evaluate(initial_indices.to_vec(),initial_parameters.to_vec(),0)?}
                     else {evaluator.evaluate_uncached(initial_indices.to_vec(),initial_parameters.to_vec(),0)?};
                 let kept=transferred.cost<current.cost;
                 seed=Some(crate::quantum::solver::SeedRelaxation {kept,energy:transferred.energy,success:transferred.success,
                     message:transferred.message.clone(),evaluations:evaluator.history.len()-before,steps:evaluator.optimizer_steps-before_steps,warm:false});
                 if kept {
-                    if options.warm_start {current=transferred;}
-                    else {
+                    if options.warm_start {
+                        evaluator.complete(&mut transferred)?;
+                        current=transferred;
+                    } else {
                         current=evaluator.evaluate(initial_indices.to_vec(),vec![0.;initial_indices.len()],0)?;
+                        evaluator.complete(&mut current)?;
                         transferred_start=Some(transferred);
                     }
                 }
@@ -366,27 +463,37 @@ impl CachedProblem {
                 let temperature = options.temperature(step,chain_steps);
                 if options.screen_insertions>0 && current.sequence.len()<options.max_length && screened.insert(current.sequence.clone()) {
                     let mut remaining: Vec<_> = (0..self.pool.len()).collect();
+                    let probabilities = &current.screened()?.probabilities;
                     for _ in 0..options.screen_insertions.min(remaining.len()) {
-                        let mut draw = screening_random.uniform()*remaining.iter().map(|&i|current.probabilities[i]).sum::<f64>();
+                        let mut draw = screening_random.uniform()*remaining.iter().map(|&i|probabilities[i]).sum::<f64>();
                         let mut selected = remaining.len()-1;
-                        for (j,&i) in remaining.iter().enumerate() {draw-=current.probabilities[i];if draw<0. {selected=j;break;}}
+                        for (j,&i) in remaining.iter().enumerate() {draw-=probabilities[i];if draw<0. {selected=j;break;}}
                         let operator = remaining.remove(selected);
                         let action = Action {kind:Move::Insert,position:screening_random.index(current.sequence.len()+1),operator};
                         let sequence = action.apply(&current.sequence);
                         let initial = if options.warm_start {action.transfer(&current.parameters,options.replace_inherit)} else {vec![0.;sequence.len()]};
                         let proposed = evaluator.evaluate(sequence,initial,step+1)?;
-                        records.push(record(step+1,action,&current,&proposed,temperature,None,true));
+                        // A screened insertion is only recorded: its relaxation is all the row reads.
+                        records.push(record(step+1,action,&current,&proposed,temperature,None,true)?);
                     }
                 }
-                let action = kernel.draw(ctx,&current.sequence,&current.probabilities,&current.removal,&mut random)?;
+                let (screen,weights) = (current.screened()?,current.weighed()?);
+                let action = kernel.draw(ctx,&current.sequence,&screen.probabilities,&weights.removal,&mut random)?;
                 let sequence = action.apply(&current.sequence);
                 let initial = if options.warm_start {action.transfer(&current.parameters,options.replace_inherit)} else {vec![0.;sequence.len()]};
-                let proposed = evaluator.evaluate(sequence,initial,step+1)?;
-                let forward = kernel.log_q(ctx,&proposed.sequence,&current.sequence,&current.probabilities,&current.removal)?;
-                let reverse = kernel.log_q(ctx,&current.sequence,&proposed.sequence,&proposed.probabilities,&proposed.removal)?;
+                let mut proposed = evaluator.evaluate(sequence,initial,step+1)?;
+                let forward = kernel.log_q(ctx,&proposed.sequence,&current.sequence,&screen.probabilities,&weights.removal)?;
+                // The reverse edit reads one half of the proposed state's distribution: an insertion
+                // is undone by a deletion (the removal weights), a deletion by an insertion (the
+                // operator probabilities), a replacement by a replacement (both).
+                if matches!(action.kind,Move::Insert|Move::Replace) {evaluator.weigh(&mut proposed)?;}
+                if matches!(action.kind,Move::Delete|Move::Replace) {evaluator.screen(&mut proposed)?;}
+                let reverse = kernel.log_q_matched(&current.sequence,&proposed.sequence,proposed.screen.as_ref().map(|s|&s.probabilities[..]),proposed.weights.as_ref().map(|w|&w.removal[..]))?;
                 let ratio = kernel::log_acceptance(temperature,current.cost,proposed.cost,forward,reverse);
                 let accepted = ratio>=0. || random.uniform().ln()<ratio;
-                let row = record(step+1,action,&current,&proposed,temperature,Some((forward,reverse,ratio,accepted)),options.record);
+                // A rejected state is never drawn from; an accepted one becomes `current` complete.
+                if accepted {evaluator.complete(&mut proposed)?;}
+                let row = record(step+1,action,&current,&proposed,temperature,Some((forward,reverse,ratio,accepted)),options.record)?;
                 if options.record {records.push(row.clone());}
                 steps.push(row);
                 let move_index = match action.kind {Move::Insert=>0,Move::Delete=>1,Move::Replace=>2};
@@ -398,7 +505,11 @@ impl CachedProblem {
             }
             let final_state = self.prepare_state(&best.sequence,&best.parameters,true)?;
             // A state that was not screened (a uniform chain that records nothing) is screened once.
-            let final_gradients = if best.gradients.len()==self.pool.len() {best.gradients.clone()} else {evaluator.screenings+=1;self.pool_gradients(&final_state,true)?};
+            // (`best` may be a rejected state whose screen was skipped, or a transferred start.)
+            let final_gradients = match best.screen.as_ref().filter(|s|s.gradients.len()==self.pool.len()) {
+                Some(s) => s.gradients.clone(),
+                None => {evaluator.screenings+=1;self.pool_gradients(&final_state,true)?}
+            };
             Ok(SearchResult {
                 solution: SolveResult {seed,energy:best.energy,reference:reference_energy,parameters:best.parameters,
                     state:final_state,labels:best.sequence.iter().map(|&i|self.pool[i].label.clone()).collect(),indices:best.sequence,
@@ -408,7 +519,7 @@ impl CachedProblem {
                 records,steps,acceptance,optimal_cost:best.cost,best_energy:best_energy.energy,
                 best_energy_indices:best_energy.sequence,best_energy_parameters:best_energy.parameters,final_energy:current.energy,
                 final_indices:current.sequence,final_parameters:current.parameters,num_architectures:evaluator.seen.len(),
-                num_screenings:evaluator.screenings,failures:evaluator.failures,_memory:memory,
+                num_screenings:evaluator.screenings,num_importance_evaluations:evaluator.importance_evaluations,importance_work:evaluator.importance_work,num_gradient_evaluations:evaluator.gradient_evaluations,failures:evaluator.failures,_memory:memory,
             })
         })
     }

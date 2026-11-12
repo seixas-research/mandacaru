@@ -188,7 +188,7 @@ def test_public_h2_solve_matches_phase0(method, sector, sparse, optimizer):
     # The frozen operator label is the fermionic pool's; ``adapt-vqe`` defaults to ``ceo``.
     calc = Mandacaru(method=method, pool="fermionic", load_hamiltonian=FIXTURE,
                     sector=sector, sparse=sparse, trace=False,
-                    resources={"threads": 1}, optimizer={"method": optimizer, "tol": 1e-12})
+                    parallelization={"threads": 1}, optimizer={"method": optimizer, "tol": 1e-12})
     result = calc.run()
     assert (result.success if method == "vqe" else result.converged)
     assert result.optimal_energy == pytest.approx(-25.871895455446612, abs=1e-9)
@@ -392,7 +392,7 @@ def test_public_h2_float32_solve_matches_the_float64_energy(method):
     energies = {}
     for precision in ("float64", "float32"):
         calc = Mandacaru(method=method, load_hamiltonian=FIXTURE, precision=precision, trace=False,
-                         resources={"threads": 1}, optimizer={"method": "BFGS", "tol": 1e-6},
+                         parallelization={"threads": 1}, optimizer={"method": "BFGS", "tol": 1e-6},
                          convergence={"gradient": 1e-5, "energy": 1e-4})
         result = calc.run()
         assert (result.success if method == "vqe" else result.converged)
@@ -499,7 +499,7 @@ def test_float64_quantum_energies_equal_the_frozen_precision_baseline(case_id):
     atoms.center(vacuum=3.0)
     options = dict(method=spec["method"], basis={"name": spec["family"], "size": spec["size"]},
                    grid_spacing=spec["h"], optimizer={"method": "BFGS", "maxiter": 300, "tol": spec["opt_tol"]},
-                   resources={"threads": 2}, trace=False)
+                   parallelization={"threads": 2}, trace=False)
     if spec["method"].startswith("adapt"):
         options.update(convergence={"gradient": spec["grad"], "energy": None}, max_iterations=spec["max_ops"])
     atoms.calc = Mandacaru(**options)

@@ -2,10 +2,7 @@
 use crate::arrays::{array, layout, Array};
 use numpy::{Complex64, PyReadonlyArray1};
 use pyo3::prelude::*;
-use std::f64::consts::PI;
-
-pub const NODE_OFFSET: f64 = 1e-12;
-const R_EPS: f64 = 1e-15;
+use mandacaru_core::math::harmonics::{harmonic, harmonic_gradient, polar, NODE_OFFSET};
 
 #[pyfunction]
 pub fn spherical_coords<'py>(
@@ -31,14 +28,7 @@ pub fn spherical_coords<'py>(
     let mut theta_out = Vec::with_capacity(n);
     let mut phi_out = Vec::with_capacity(n);
     for i in 0..n {
-        let xr = xs[i] - center[0];
-        let yr = ys[i] - center[1];
-        let zr = zs[i] - center[2];
-        let r = (xr * xr + yr * yr + zr * zr).sqrt();
-        let r_safe = if r < R_EPS { R_EPS } else { r };
-        let z_ratio = (zr / r_safe).clamp(-1.0, 1.0);
-        let theta = z_ratio.acos();
-        let phi = yr.atan2(xr);
+        let (r, theta, phi) = polar(xs[i] - center[0], ys[i] - center[1], zs[i] - center[2]);
         r_out.push(r);
         theta_out.push(theta);
         phi_out.push(phi);
@@ -74,60 +64,6 @@ pub fn real_harmonic_transform<'py>(
     array(py, &[dim, dim], u)
 }
 
-fn evaluate_spherical_harmonic_scalar(
-    l: usize,
-    m: i32,
-    theta: f64,
-    phi: f64,
-    real: bool,
-) -> (f64, Complex64) {
-    let order = m.unsigned_abs() as usize;
-    if order > l {
-        return (0.0, Complex64::default());
-    }
-    let cos_t = theta.cos();
-    let sin_t = theta.sin();
-    let mut legendre = 1.0 / (4.0 * PI).sqrt();
-    for k in 1..=order {
-        legendre *= -((2 * k + 1) as f64 / (2 * k) as f64).sqrt() * sin_t;
-    }
-    if l > order {
-        let mut previous = legendre;
-        legendre *= ((2 * order + 3) as f64).sqrt() * cos_t;
-        for degree in order + 2..=l {
-            let d = degree as f64;
-            let o = order as f64;
-            let a = ((4.0 * d * d - 1.0) / (d * d - o * o)).sqrt();
-            let b = (((d - 1.0).powi(2) - o * o) / (4.0 * (d - 1.0).powi(2) - 1.0)).sqrt();
-            let next = a * (cos_t * legendre - b * previous);
-            previous = legendre;
-            legendre = next;
-        }
-    }
-    if real {
-        let val = if m == 0 {
-            legendre
-        } else {
-            let trig = if m > 0 {
-                (order as f64 * phi).cos()
-            } else {
-                (order as f64 * phi).sin()
-            };
-            let sign = if order % 2 == 0 { 1.0 } else { -1.0 };
-            2.0_f64.sqrt() * sign * legendre * trig
-        };
-        (val, Complex64::default())
-    } else {
-        let exp_term = Complex64::from_polar(1.0, order as f64 * phi);
-        let mut value = exp_term * legendre;
-        if m < 0 {
-            let sign = if order % 2 == 0 { 1.0 } else { -1.0 };
-            value = value.conj() * sign;
-        }
-        (0.0, value)
-    }
-}
-
 #[pyfunction]
 pub fn spherical_harmonic_evaluate<'py>(
     py: Python<'py>,
@@ -150,116 +86,17 @@ pub fn spherical_harmonic_evaluate<'py>(
     if real {
         let mut out = Vec::with_capacity(n);
         for i in 0..n {
-            let (v, _) = evaluate_spherical_harmonic_scalar(l, m, ts[i], ps[i], true);
+            let (v, _) = harmonic(l, m, ts[i], ps[i], true);
             out.push(v);
         }
         Ok(array(py, &[n], out)?.into_any())
     } else {
         let mut out = Vec::with_capacity(n);
         for i in 0..n {
-            let (_, v) = evaluate_spherical_harmonic_scalar(l, m, ts[i], ps[i], false);
+            let (_, v) = harmonic(l, m, ts[i], ps[i], false);
             out.push(v);
         }
         Ok(array(py, &[n], out)?.into_any())
-    }
-}
-
-fn evaluate_spherical_harmonic_gradient_scalar(
-    l: usize,
-    m: i32,
-    x: f64,
-    y: f64,
-    z: f64,
-    real: bool,
-) -> (f64, [f64; 3], Complex64, [Complex64; 3]) {
-    let order = m.unsigned_abs() as usize;
-    let r = (x * x + y * y + z * z).sqrt();
-    let u = z / r;
-    let w = Complex64::new(x / r, y / r);
-
-    let mut q0 = 1.0 / (4.0 * PI).sqrt();
-    for k in 1..=order {
-        q0 *= -((2 * k + 1) as f64 / (2 * k) as f64).sqrt();
-    }
-    let d0 = 0.0;
-    let (q, dq) = if l == order {
-        (q0, d0)
-    } else {
-        let mut q0_cur = q0;
-        let mut d0_cur = d0;
-        let mut q1 = ((2 * order + 3) as f64).sqrt() * u * q0;
-        let mut d1 = ((2 * order + 3) as f64).sqrt() * q0;
-        for degree in order + 2..=l {
-            let d = degree as f64;
-            let o = order as f64;
-            let a = ((4.0 * d * d - 1.0) / (d * d - o * o)).sqrt();
-            let b = (((d - 1.0).powi(2) - o * o) / (4.0 * (d - 1.0).powi(2) - 1.0)).sqrt();
-            let next_q = a * (u * q1 - b * q0_cur);
-            let next_d = a * (q1 + u * d1 - b * d0_cur);
-            q0_cur = q1;
-            d0_cur = d1;
-            q1 = next_q;
-            d1 = next_d;
-        }
-        (q1, d1)
-    };
-
-    let wm = w.powu(order as u32);
-    let wm1 = if order > 0 {
-        w.powu((order - 1) as u32)
-    } else {
-        Complex64::default()
-    };
-    let mut value = wm * q;
-
-    let coords = [x, y, z];
-    let e_axes = [
-        Complex64::new(1.0, 0.0),
-        Complex64::new(0.0, 1.0),
-        Complex64::new(0.0, 0.0),
-    ];
-    let mut grad = [Complex64::default(); 3];
-    for axis in 0..3 {
-        let xa = coords[axis];
-        let du = (((if axis == 2 { 1.0 } else { 0.0 }) - u * xa / r)) / r;
-        let dw = (e_axes[axis] - w * (xa / r)) / r;
-        grad[axis] = wm * (dq * du) + (wm1 * dw) * (q * order as f64);
-    }
-
-    if real {
-        let sign = if order % 2 == 0 { 1.0 } else { -1.0 };
-        let scale = 2.0_f64.sqrt() * sign;
-        if m == 0 {
-            (
-                value.re,
-                [grad[0].re, grad[1].re, grad[2].re],
-                Complex64::default(),
-                [Complex64::default(); 3],
-            )
-        } else if m > 0 {
-            (
-                scale * value.re,
-                [scale * grad[0].re, scale * grad[1].re, scale * grad[2].re],
-                Complex64::default(),
-                [Complex64::default(); 3],
-            )
-        } else {
-            (
-                scale * value.im,
-                [scale * grad[0].im, scale * grad[1].im, scale * grad[2].im],
-                Complex64::default(),
-                [Complex64::default(); 3],
-            )
-        }
-    } else {
-        if m < 0 {
-            let sign = if order % 2 == 0 { 1.0 } else { -1.0 };
-            value = value.conj() * sign;
-            for g in grad.iter_mut() {
-                *g = g.conj() * sign;
-            }
-        }
-        (0.0, [0.0; 3], value, grad)
     }
 }
 
@@ -295,7 +132,7 @@ pub fn spherical_harmonic_gradient_evaluate<'py>(
         let mut gz = Vec::with_capacity(n);
         for i in 0..n {
             let (v, g, _, _) =
-                evaluate_spherical_harmonic_gradient_scalar(l, m, xs[i], ys[i], zs[i], true);
+                harmonic_gradient(l, m, xs[i], ys[i], zs[i], true);
             val_out.push(v);
             gx.push(g[0]);
             gy.push(g[1]);
@@ -316,7 +153,7 @@ pub fn spherical_harmonic_gradient_evaluate<'py>(
         let mut gz = Vec::with_capacity(n);
         for i in 0..n {
             let (_, _, v, g) =
-                evaluate_spherical_harmonic_gradient_scalar(l, m, xs[i], ys[i], zs[i], false);
+                harmonic_gradient(l, m, xs[i], ys[i], zs[i], false);
             val_out.push(v);
             gx.push(g[0]);
             gy.push(g[1]);
@@ -380,7 +217,7 @@ pub fn angular_factor<'py>(
         let mut gy = Vec::with_capacity(n);
         let mut gz = Vec::with_capacity(n);
         for i in 0..n {
-            let (v, g, _, _) = evaluate_spherical_harmonic_gradient_scalar(
+            let (v, g, _, _) = harmonic_gradient(
                 l, m, x_mod[i], y_mod[i], z_mod[i], true,
             );
             val_out.push(v);
@@ -403,7 +240,7 @@ pub fn angular_factor<'py>(
         let mut gy = Vec::with_capacity(n);
         let mut gz = Vec::with_capacity(n);
         for i in 0..n {
-            let (_, _, v, g) = evaluate_spherical_harmonic_gradient_scalar(
+            let (_, _, v, g) = harmonic_gradient(
                 l, m, x_mod[i], y_mod[i], z_mod[i], false,
             );
             val_out.push(v);

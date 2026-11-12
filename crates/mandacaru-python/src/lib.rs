@@ -10,6 +10,7 @@ mod basis_confinement;
 mod basis_filter;
 mod basis_table;
 mod basis_zetas;
+mod berry;
 mod bloch;
 mod context;
 mod derived;
@@ -42,6 +43,7 @@ mod sparse;
 mod viewer;
 mod workflows;
 mod downfold;
+mod excitations;
 mod wannier;
 mod xc_grid;
 use arrays::{array, complex, complex_array, copy, error, layout, Array};
@@ -56,6 +58,32 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("HARTREE_TO_EV", mandacaru_core::units::HARTREE_TO_EV)?;
     m.add("ANGSTROM_TO_BOHR", mandacaru_core::units::ANGSTROM_TO_BOHR)?;
     m.add("EV_TO_HARTREE", mandacaru_core::units::EV_TO_HARTREE)?;
+    // The defaults of the basis options, one definition, in Rust.
+    m.add(
+        "DEFAULT_ENERGY_SHIFT",
+        mandacaru_core::paw::basis_recipe::DEFAULT_ENERGY_SHIFT,
+    )?;
+    m.add(
+        "MIN_ENERGY_SHIFT",
+        mandacaru_core::paw::basis_recipe::MIN_ENERGY_SHIFT,
+    )?;
+    m.add(
+        "CONFINEMENT_AMPLITUDE",
+        mandacaru_core::basis::confinement::AMPLITUDE,
+    )?;
+    m.add(
+        "CONFINEMENT_INNER_FRACTION",
+        mandacaru_core::basis::confinement::INNER_FRACTION,
+    )?;
+    m.add("FILTER_NYQUIST_FRACTION", mandacaru_core::basis::filter::NYQUIST_FRACTION)?;
+    m.add("DEFAULT_RMS_RATIO", mandacaru_core::basis::diffuse::DEFAULT_RMS_RATIO)?;
+    m.add("DEFAULT_SHELL_RATIO", mandacaru_core::basis::diffuse::default_shell_ratio())?;
+    m.add("DEFAULT_CUTOFF_NORM", mandacaru_core::basis::diffuse::DEFAULT_CUTOFF_NORM)?;
+    m.add("MAX_CUTOFF_NORM", mandacaru_core::basis::diffuse::MAX_CUTOFF_NORM)?;
+    m.add(
+        "LINEAR_DEPENDENCE_TOL",
+        mandacaru_core::paw::basis_recipe::DIFFUSE_LINEAR_DEPENDENCE_TOL,
+    )?;
     m.add(
         "FUNCTIONALS",
         mandacaru_core::models::FUNCTIONALS
@@ -82,7 +110,13 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     )?;
     m.add_function(wrap_pyfunction!(context::num_threads, m)?)?;
     m.add_function(wrap_pyfunction!(molecular::two_body_representation, m)?)?;
+    m.add_function(wrap_pyfunction!(excitations::molecular_excitations, m)?)?;
+    m.add_function(wrap_pyfunction!(excitations::line_spectrum, m)?)?;
+    m.add_class::<excitations::PyExcitations>()?;
     m.add_function(wrap_pyfunction!(context::grid_blas_threads, m)?)?;
+    m.add_function(wrap_pyfunction!(context::worker_threads, m)?)?;
+    m.add_function(wrap_pyfunction!(derived::quotients, m)?)?;
+    m.add_function(wrap_pyfunction!(derived::rounded_total, m)?)?;
     m.add_function(wrap_pyfunction!(quantum::optimizer_evaluation_bound, m)?)?;
     m.add_function(wrap_pyfunction!(measurement::shot_noise, m)?)?;
     m.add_function(wrap_pyfunction!(derived::to_user_units, m)?)?;

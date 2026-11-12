@@ -1,17 +1,18 @@
 //! Polak–Ribiere+ nonlinear conjugate gradients with strong-Wolfe search.
 use super::*;
-pub(super) fn minimize(
+pub(super) fn minimize<'p>(
     ctx: &Context,
     initial: &[f64],
     options: &Options,
-    mut objective: impl FnMut(&[f64]) -> Result<(f64, Vec<f64>)>,
+    mut objective: impl FnMut(&[f64]) -> Result<Probe<'p>>,
 ) -> Result<Outcome> {
     let n = initial.len();
     let _work = ctx.reserve(product(&[n, 8, 16])?)?;
     let _history = ctx.reserve(product(&[options.max_evaluations, 8])?)?;
     let mut x = initial.to_vec();
-    let (mut energy, mut gradient) = objective(&x)?;
-    validate(energy, &gradient, n)?;
+    let first = objective(&x)?;
+    let mut energy = first.checked_energy()?;
+    let mut gradient = first.checked_gradient(n)?;
     let mut direction: Vec<_> = gradient.iter().map(|g| -g).collect();
     let mut history = vec![energy];
     let mut steps = 0;
@@ -48,8 +49,8 @@ pub(super) fn minimize(
                 .zip(&direction)
                 .map(|(x, p)| x + alpha * p)
                 .collect();
-            let (value, g) = objective(&next)?;
-            validate(value, &g, n)?;
+            let probe = objective(&next)?;
+            let value = probe.checked_energy()?;
             history.push(value);
             let noise = 4. * f64::EPSILON * energy.abs().max(1.);
             if value > energy + 1e-4 * alpha * slope + noise
@@ -57,9 +58,12 @@ pub(super) fn minimize(
             {
                 upper = Some(alpha);
             } else {
-                let derivative = dot(&g, &direction);
+                // The strong-Wolfe curvature test is the first reader of the gradient: a trial the
+                // energy sends to `upper` never computes it.
+                let mut pending = Pending::new(probe, n);
+                let derivative = dot(pending.gradient()?, &direction);
                 if derivative.abs() <= -0.1 * slope {
-                    accepted = Some((next, value, g));
+                    accepted = Some((next, value, pending.into_gradient()?));
                     break;
                 }
                 if derivative >= 0. {

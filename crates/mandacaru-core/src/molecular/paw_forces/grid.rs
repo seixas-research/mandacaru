@@ -17,7 +17,7 @@ use nalgebra::{Matrix3, Vector3};
 pub(super) fn points(integrals: &MolecularIntegrals) -> Result<Buffer<f64>> {
     let n = integrals.grid.index.points();
     let mut out = integrals.context.allocate::<f64>(product(&[3, n])?)?;
-    let workers = integrals.context.threads().max(1).min(n.max(1));
+    let workers = integrals.context.width().max(1).min(n.max(1));
     if workers == 1 {
         for k in 0..n {
             out.as_mut_slice()[3 * k..3 * k + 3].copy_from_slice(&integrals.grid.point(k));
@@ -109,39 +109,6 @@ impl CombinedOutputs {
             xc_tau: inputs.xc_tau.map(|_| vec![0.; 3 * atoms]),
         }
     }
-
-    fn accumulate(&mut self, other: &Self) {
-        for (a, b) in self.external.iter_mut().zip(&other.external) {
-            *a += b;
-        }
-        for (a, b) in self.hartree.iter_mut().zip(&other.hartree) {
-            *a += b;
-        }
-        for (a, b) in self.xc.iter_mut().zip(&other.xc) {
-            *a += b;
-        }
-        for (a, b) in self.coulomb.iter_mut().zip(&other.coulomb) {
-            *a += b;
-        }
-        for (a, b) in self.pulay.iter_mut().zip(&other.pulay) {
-            *a += b;
-        }
-        if let (Some(a), Some(b)) = (&mut self.kinetic, &other.kinetic) {
-            for (x, y) in a.iter_mut().zip(b) {
-                *x += y;
-            }
-        }
-        if let (Some(a), Some(b)) = (&mut self.xc_gradient, &other.xc_gradient) {
-            for (x, y) in a.iter_mut().zip(b) {
-                *x += y;
-            }
-        }
-        if let (Some(a), Some(b)) = (&mut self.xc_tau, &other.xc_tau) {
-            for (x, y) in a.iter_mut().zip(b) {
-                *x += y;
-            }
-        }
-    }
 }
 
 pub(super) fn contract_combined(
@@ -158,7 +125,11 @@ pub(super) fn contract_combined(
         return CombinedOutputs::new(atoms, &inputs);
     }
 
-    let inv_step = integrals.grid.step.try_inverse().unwrap_or(Matrix3::identity());
+    let inv_step = integrals
+        .grid
+        .step
+        .try_inverse()
+        .unwrap_or(Matrix3::identity());
     let row_norms = [
         (inv_step[(0, 0)].powi(2) + inv_step[(0, 1)].powi(2) + inv_step[(0, 2)].powi(2)).sqrt(),
         (inv_step[(1, 0)].powi(2) + inv_step[(1, 1)].powi(2) + inv_step[(1, 2)].powi(2)).sqrt(),
@@ -167,8 +138,10 @@ pub(super) fn contract_combined(
     let shape = integrals.grid.index.shape();
     let [_, ny, nz] = shape;
 
-    let worker_fn = |start: usize, end: usize| -> CombinedOutputs {
-        let mut local_out = CombinedOutputs::new(atoms, &inputs);
+    // Each orbital's sums are recorded with its atom and applied afterwards in orbital order: the
+    // forces are the same on any number of threads (a partial per worker rounded differently).
+    let worker_fn = |start: usize, end: usize| -> Vec<(usize, [[f64; 3]; 8])> {
+        let mut records = Vec::new();
         let mut weight = vec![0.; occupied.len()];
         // The same orbital's weight in W = sum w_weight a a^T, for the grid Pulay term.
         let mut pulay_weight = vec![0.; occupied.len()];
@@ -294,34 +267,46 @@ pub(super) fn contract_combined(
                 }
             }
 
-            let atom_base = 3 * orbital.atom;
+            records.push((
+                orbital.atom,
+                [
+                    sum_ext, sum_har, sum_xc, sum_coul, sum_pulay, sum_kin, sum_grad, sum_tau,
+                ],
+            ));
+        }
+        records
+    };
+    let apply = |out: &mut CombinedOutputs, records: &[(usize, [[f64; 3]; 8])]| {
+        for (atom, sums) in records {
+            let [ext, har, xc, coul, pulay, kin, grad, tau] = sums;
+            let atom_base = 3 * atom;
             for axis in 0..3 {
-                local_out.external[atom_base + axis] -= dv * sum_ext[axis];
-                local_out.hartree[atom_base + axis] -= dv * sum_har[axis];
-                local_out.xc[atom_base + axis] -= dv * sum_xc[axis];
-                local_out.coulomb[atom_base + axis] -= dv * sum_coul[axis];
-                local_out.pulay[atom_base + axis] -= dv * sum_pulay[axis];
-                if let Some(ref mut k_out) = local_out.kinetic {
-                    k_out[atom_base + axis] -= dv * sum_kin[axis];
+                out.external[atom_base + axis] -= dv * ext[axis];
+                out.hartree[atom_base + axis] -= dv * har[axis];
+                out.xc[atom_base + axis] -= dv * xc[axis];
+                out.coulomb[atom_base + axis] -= dv * coul[axis];
+                out.pulay[atom_base + axis] -= dv * pulay[axis];
+                if let Some(ref mut k_out) = out.kinetic {
+                    k_out[atom_base + axis] -= dv * kin[axis];
                 }
-                if let Some(ref mut g_out) = local_out.xc_gradient {
-                    g_out[atom_base + axis] -= dv * sum_grad[axis];
+                if let Some(ref mut g_out) = out.xc_gradient {
+                    g_out[atom_base + axis] -= dv * grad[axis];
                 }
-                if let Some(ref mut t_out) = local_out.xc_tau {
-                    t_out[atom_base + axis] -= dv * sum_tau[axis];
+                if let Some(ref mut t_out) = out.xc_tau {
+                    t_out[atom_base + axis] -= dv * tau[axis];
                 }
             }
         }
-        local_out
     };
 
-    let workers = integrals.context.threads().max(1).min(num_orbitals.max(1));
+    let mut total_out = CombinedOutputs::new(atoms, &inputs);
+    let workers = integrals.context.width().max(1).min(num_orbitals.max(1));
     if workers <= 1 {
-        return worker_fn(0, num_orbitals);
+        apply(&mut total_out, &worker_fn(0, num_orbitals));
+        return total_out;
     }
 
     let chunk = num_orbitals.div_ceil(workers);
-    let mut total_out = CombinedOutputs::new(atoms, &inputs);
     integrals.context.run(|| {
         std::thread::scope(|scope| {
             let handles: Vec<_> = (0..workers)
@@ -338,14 +323,12 @@ pub(super) fn contract_combined(
                 })
                 .collect();
             for handle in handles {
-                let worker_out = handle.join().unwrap();
-                total_out.accumulate(&worker_out);
+                apply(&mut total_out, &handle.join().unwrap());
             }
         });
     });
     total_out
 }
-
 
 /// The force on every atom from one action (`nocc * n` values).
 pub(super) fn contract(
@@ -362,7 +345,11 @@ pub(super) fn contract(
         return vec![0.; 3 * atoms];
     }
 
-    let inv_step = integrals.grid.step.try_inverse().unwrap_or(Matrix3::identity());
+    let inv_step = integrals
+        .grid
+        .step
+        .try_inverse()
+        .unwrap_or(Matrix3::identity());
     let row_norms = [
         (inv_step[(0, 0)].powi(2) + inv_step[(0, 1)].powi(2) + inv_step[(0, 2)].powi(2)).sqrt(),
         (inv_step[(1, 0)].powi(2) + inv_step[(1, 1)].powi(2) + inv_step[(1, 2)].powi(2)).sqrt(),
@@ -371,8 +358,10 @@ pub(super) fn contract(
     let shape = integrals.grid.index.shape();
     let [_, ny, nz] = shape;
 
-    let worker_fn = |start: usize, end: usize| -> Vec<f64> {
-        let mut local_out = vec![0.; 3 * atoms];
+    // Each orbital's sum is recorded with its atom and applied in orbital order (see
+    // `contract_combined`): the same forces on any number of threads.
+    let worker_fn = |start: usize, end: usize| -> Vec<(usize, [f64; 3])> {
+        let mut records = Vec::new();
         let mut weight = vec![0.; occupied.len()];
         for a in start..end {
             let orbital = &integrals.basis.orbitals[a];
@@ -435,21 +424,26 @@ pub(super) fn contract(
                     }
                 }
             }
-            let atom_base = 3 * orbital.atom;
+            records.push((orbital.atom, sum));
+        }
+        records
+    };
+    let apply = |out: &mut [f64], records: &[(usize, [f64; 3])]| {
+        for (atom, sum) in records {
             for axis in 0..3 {
-                local_out[atom_base + axis] -= dv * sum[axis];
+                out[3 * atom + axis] -= dv * sum[axis];
             }
         }
-        local_out
     };
 
-    let workers = integrals.context.threads().max(1).min(num_orbitals.max(1));
+    let mut total_out = vec![0.; 3 * atoms];
+    let workers = integrals.context.width().max(1).min(num_orbitals.max(1));
     if workers <= 1 {
-        return worker_fn(0, num_orbitals);
+        apply(&mut total_out, &worker_fn(0, num_orbitals));
+        return total_out;
     }
 
     let chunk = num_orbitals.div_ceil(workers);
-    let mut total_out = vec![0.; 3 * atoms];
     integrals.context.run(|| {
         std::thread::scope(|scope| {
             let handles: Vec<_> = (0..workers)
@@ -466,10 +460,7 @@ pub(super) fn contract(
                 })
                 .collect();
             for handle in handles {
-                let worker_out = handle.join().unwrap();
-                for (tot, part) in total_out.iter_mut().zip(worker_out) {
-                    *tot += part;
-                }
+                apply(&mut total_out, &handle.join().unwrap());
             }
         });
     });

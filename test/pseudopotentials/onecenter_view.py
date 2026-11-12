@@ -52,12 +52,13 @@ def _channel_arrays(dataset, *, occupied: bool = False) -> dict:
 
 def _layout(projectors) -> np.ndarray:
     """``(n, 4)`` rows ``l, m, index, real`` of a sphere's projectors."""
-    return _native.paw_projector_layout(projectors)
+    return np.array([[p.l, p.m, getattr(p, "index", 0), int(bool(p.real))] for p in projectors],
+                    dtype=np.int64).reshape(len(projectors), 4)
 
 
 def _members_layout(projectors) -> np.ndarray:
     """``(n, 3)`` rows ``l, m, index`` of a sphere's projectors."""
-    return _native.paw_projector_members_layout(projectors)
+    return _layout(projectors)[:, :3].copy()
 
 
 def _projector_basis(projectors, basis):
@@ -175,7 +176,11 @@ class OneCenterTerms:
 
 
 def _by_atom(projectors) -> dict:
-    return _native.paw_projectors_by_atom(projectors)
+    """``{atom: [positions of its projectors]}``, ordered by atom."""
+    positions: dict = {}
+    for position, projector in enumerate(projectors):
+        positions.setdefault(int(projector.atom_index), []).append(position)
+    return dict(sorted(positions.items()))
 
 
 class OneCenterHybrid:
@@ -303,12 +308,11 @@ def core_orbitals(dataset) -> list:
     if key is not None and key in _CORE_ORBITALS:
         result, error = _CORE_ORBITALS[key]
     else:
-        from mandacaru.basis._config import valence_subshells
         from mandacaru.pseudopotentials.record import record_of
 
         atom = _native.paw_reference_atom(context(), *record_of(dataset))
         occupied = {k: v for k, v in atom["occupations"].items() if v > 0}
-        shells = valence_subshells(int(dataset.atomic_number), configuration=occupied)
+        shells = set(_native.valence_subshells([(n, l, q) for (n, l), q in occupied.items()]))
         valence = {k: v for k, v in occupied.items() if k in shells}
         core = {k: v for k, v in occupied.items() if k not in valence}
         for orbital in dataset.frozen_subshells or ():
@@ -344,12 +348,10 @@ def _smooth_xc_core(dataset):
         return np.zeros_like(r)
     if record.get("source") == "smooth_core" or record.get("r_nlcc") is None:
         return np.asarray(dataset.smooth_core_density, dtype=float)
-    from mandacaru.pseudopotentials.core_correction import partial_core_density
-    density, _details = partial_core_density(
-        r, np.asarray(dataset.core_density, dtype=float),
-        np.asarray(dataset.valence_density, dtype=float),
-        r_nlcc=float(record["r_nlcc"]))
-    return density
+    out = _native.paw_partial_core_density(
+        context(), np.ascontiguousarray(r), np.ascontiguousarray(dataset.core_density, dtype=float),
+        np.ascontiguousarray(dataset.valence_density, dtype=float), float(record["r_nlcc"]), 1.0)
+    return out["density"]
 
 
 def exact_one_center_terms(dataset, basis: str = "raw") -> dict:
@@ -479,7 +481,17 @@ class OneCenterExact:
 
     def coupling_blocks(self) -> dict:
         """``{(atom, l, m): block}`` to add to the nonlocal coupling."""
-        return _native.paw_exact_coupling_blocks(self.atoms)
+        blocks = {}
+        for entry in self.atoms:
+            channels: dict = {}
+            for position, projector in enumerate(entry["projectors"]):
+                channels.setdefault((int(projector.l), int(projector.m)), []).append(
+                    (int(getattr(projector, "index", 0)), position))
+            for (l, m), members in sorted(channels.items()):
+                rows = [position for _index, position in sorted(members, key=lambda t: t[0])]
+                blocks[(int(entry["atom"]), l, m)] = np.ascontiguousarray(
+                    np.asarray(entry["coupling"], dtype=float)[np.ix_(rows, rows)])
+        return blocks
 
     def _spheres(self):
         return ([[int(m) for m in entry["members"]] for entry in self.atoms],

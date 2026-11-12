@@ -26,7 +26,9 @@ reduced = estimate_qubits(water, basis={"name": "NAO", "size": "DZP"},
 The arguments are the geometry (an ASE `Atoms` or a `Geometry`), `basis`
 (any all-electron specification of [Basis sets](basis_sets.md), including a
 per-element mapping), `mapping` (default `"jordan_wigner"`) and `resources` (the
-dictionary the calculator takes, for the thread count and the memory limit). It
+dictionary the calculator takes, for the memory limit, the offload threshold and the
+scratch directory; the estimate runs on the default worker count, and a `threads` key raises
+`ValueError`). It
 returns a `QubitEstimate` with the fields `n_qubits`, `n_spatial_orbitals` and
 `mapping`.
 

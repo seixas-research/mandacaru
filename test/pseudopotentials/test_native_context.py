@@ -12,7 +12,6 @@ from __future__ import annotations
 import numpy as np
 
 from mandacaru import _native
-from mandacaru.pseudopotentials import multipoles
 from mandacaru.pseudopotentials.native_context import context
 
 
@@ -30,5 +29,5 @@ def test_a_radial_call_releases_its_memory():
     """Every native call reserves its workspace through the context and gives
     it back."""
     before = context().memory_used_bytes
-    multipoles.shape_function(np.linspace(0.0, 3.0, 50), 1.5, 2)
+    _native.paw_shape_function(context(), np.linspace(0.0, 3.0, 50), 1.5, 2)
     assert context().memory_used_bytes == before

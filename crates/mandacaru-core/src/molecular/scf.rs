@@ -60,6 +60,9 @@ pub struct MeanField {
     pub aufbau_inversion: Option<f64>,
     pub natural_occupations: Vec<f64>,
     pub model_orbitals: Matrix,
+    /// Why the degenerate clusters of `model_orbitals` could not be put into a deterministic
+    /// frame ([`super::frame`]); a model or active space built on them refuses.
+    pub(super) frame_error: Option<String>,
     model: Mutex<Option<Arc<Model>>>,
     pub kramers_pairing: f64,
     pub functional: Option<String>,
@@ -742,7 +745,7 @@ impl MolecularIntegrals {
                 .checked_add(product(&[options.max_iterations, 128])?)
                 .ok_or(crate::Error::Overflow)?,
         )?;
-        Ok(MeanField {
+        let mut state = MeanField {
             method: method.into(),
             electronic_energy: best.energy,
             reference_energy,
@@ -758,6 +761,7 @@ impl MolecularIntegrals {
             smearing_width: None,
             natural_occupations,
             model_orbitals,
+            frame_error: None,
             model: Mutex::new(None),
             kramers_pairing,
             functional: xc.map(|v| v.0.to_string()),
@@ -766,7 +770,9 @@ impl MolecularIntegrals {
             hubbard_energy: hubbard.as_ref().map(|v| v.0),
             hubbard: hubbard.map(|v| v.1),
             _memory: workspace,
-        })
+        };
+        state.fix_frame(self)?;
+        Ok(state)
     }
 }
 
@@ -861,6 +867,7 @@ impl MeanField {
             .is_some()
     }
     pub fn model(&self, integrals: &MolecularIntegrals) -> Result<Arc<Model>> {
+        self.require_frame()?;
         let mut cache = self.model.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(model) = cache.as_ref() {
             return Ok(model.clone());

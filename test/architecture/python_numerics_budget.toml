@@ -4,8 +4,7 @@
 # lower the row (python scripts/numerics_budget.py --ratchet); only the owner
 # raises a number or moves a `dies` later, by committing it.
 #
-# Zero tier (pseudopotentials/ basis/ integrals/ models/ integrations/paw*
-# core/symmetry.py core/spin_orbit.py): a module without a row is budgeted at
+# Zero tier (pseudopotentials/ basis/ integrals/ models/ integrations/paw*): a module without a row is budgeted at
 # zero on every counter, sloc included. A row is dated (wave, dies) while it has
 # any hard counter or policy to port; an undated row names a closed category
 # (validation, hand-off, unit, result-view, log-table) and shows no hard counter.
@@ -16,48 +15,45 @@
 # match the measurement exactly and are subtracted from the module row.
 
 [tier_total]
-zero_sloc = 3822
+zero_sloc = 3286
 
 [module]
 "analysis/proposals.py" = { dloops = 2 }
 "backends/providers.py" = { dyn = 1, dloops = 1, dcomp = 2 }
 "basis/__init__.py" = { sloc = 30, category = "hand-off" }
-"basis/_angular.py" = { np = 1, bi = 1, aloops = 1, arith = 4, arithmax = 4, sloc = 59, wave = "BF", dies = "2027-07-16" }
-"basis/_config.py" = { dloops = 3, bi = 6, sloc = 91, wave = "BF", dies = "2027-07-16" }
-"basis/atomic_solver.py" = { bi = 2, arith = 1, arithmax = 1, sloc = 94, wave = "W4", dies = "2027-07-16" }
-"basis/base.py" = { sloc = 12, wave = "BF", dies = "2027-07-16" }
-"basis/filtering.py" = { bi = 2, arith = 1, arithmax = 1, sloc = 123, wave = "W4", dies = "2027-07-16" }
-"basis/multizeta.py" = { dloops = 1, bi = 2, arith = 1, arithmax = 1, sloc = 131, wave = "BF", dies = "2027-07-16" }
-"basis/relativity.py" = { bi = 4, arith = 4, arithmax = 3, sloc = 130, wave = "W4", dies = "2027-07-16" }
+"basis/atomic_solver.py" = { sloc = 94, category = "hand-off" }
+"basis/base.py" = { sloc = 12, category = "hand-off" }
+"basis/filtering.py" = { arithmax = 1, sloc = 123, category = "hand-off" }
+"basis/multizeta.py" = { sloc = 32, category = "hand-off" }
+"basis/relativity.py" = { sloc = 108, category = "hand-off" }
 "core/checkpoint.py" = { dcomp = 2 }
 "core/mapping.py" = { dcomp = 1 }
 "core/serialization.py" = { dcomp = 1 }
 "integrals/__init__.py" = { sloc = 2, category = "hand-off" }
-"integrals/grid.py" = { sloc = 70, wave = "W4", dies = "2027-07-16" }
-"integrations/paw.py" = { sloc = 49, wave = "3b", dies = "2027-05-07" }
-"integrations/paw_molecular.py" = { bi = 1, sloc = 130, wave = "W4", dies = "2027-07-16" }
+"integrals/grid.py" = { sloc = 70, category = "result-view" }
+"integrations/paw.py" = { sloc = 47, category = "validation" }
+"integrations/paw_molecular.py" = { sloc = 80, category = "hand-off" }
 "models/basis.py" = { arith = 2, arithmax = 2, sloc = 293, category = "validation" }
 "models/datasets.py" = { sloc = 32, category = "validation" }
 "models/elements.py" = { sloc = 3, category = "hand-off" }
 "models/radial.py" = { sloc = 69, category = "validation" }
 "models/setup.py" = { sloc = 19, category = "hand-off" }
 "pseudopotentials/__init__.py" = { sloc = 16, category = "hand-off" }
-"pseudopotentials/build_cli.py" = { bi = 6, arith = 1, arithmax = 1, sloc = 225, wave = "W4", dies = "2027-07-16" }
-"pseudopotentials/confinement.py" = { bi = 2, sloc = 205, wave = "W4-A-py", dies = "2027-03-26" }
-"pseudopotentials/core_correction.py" = { sloc = 30, category = "hand-off" }
-"pseudopotentials/dataset.py" = { sloc = 35, wave = "3a", dies = "2027-03-26" }
+"pseudopotentials/build_cli.py" = { sloc = 213, category = "hand-off" }
+"pseudopotentials/confinement.py" = { sloc = 201, category = "validation" }
+"pseudopotentials/dataset.py" = { sloc = 35, category = "hand-off" }
 "pseudopotentials/defects.py" = { sloc = 91, category = "validation" }
 "pseudopotentials/diagnostics.py" = { sloc = 75, category = "hand-off" }
-"pseudopotentials/diffuse.py" = { bi = 7, aloops = 1, arith = 1, arithmax = 1, sloc = 251, wave = "W4", dies = "2027-07-16" }
+"pseudopotentials/diffuse.py" = { sloc = 207, category = "validation" }
 "pseudopotentials/environment.py" = { sloc = 196, category = "hand-off" }
 "pseudopotentials/families.py" = { sloc = 152, category = "validation" }
 "pseudopotentials/generation.py" = { sloc = 125, category = "validation" }
-"pseudopotentials/io.py" = { sloc = 136, wave = "3a", dies = "2027-03-26" }
+"pseudopotentials/io.py" = { sloc = 136, category = "hand-off" }
 "pseudopotentials/library_cli.py" = { acomp = 1, arith = 2, arithmax = 1, sloc = 180, category = "hand-off" }
-"pseudopotentials/multipoles.py" = { bi = 1, sloc = 56, wave = "3a", dies = "2027-03-26" }
+"pseudopotentials/multipoles.py" = { sloc = 26, category = "hand-off" }
 "pseudopotentials/native_context.py" = { sloc = 5, category = "hand-off" }
-"pseudopotentials/orbitals.py" = { bi = 4, arith = 1, arithmax = 1, sloc = 197, wave = "3b", dies = "2027-05-07" }
-"pseudopotentials/paw.py" = { bi = 1, sloc = 320, wave = "3a/3b", dies = "2027-05-07" }
+"pseudopotentials/orbitals.py" = { sloc = 155, category = "hand-off" }
+"pseudopotentials/paw.py" = { sloc = 269, category = "hand-off" }
 "pseudopotentials/record.py" = { sloc = 190, category = "hand-off" }
 "utils/banner.py" = { dyn = 3 }
 "utils/logging.py" = { dloops = 7, dcomp = 3 }
@@ -145,6 +141,91 @@ function = "available_elements"
 bi = 1
 category = "hand-off"
 reason = "sorted list of the elements found on disk"
+
+[[exception]]
+module = "pseudopotentials/confinement.py"
+function = "energy_shift_label"
+bi = 1
+category = "log-table"
+reason = "sorted per-element entries of a basis label"
+
+[[exception]]
+module = "basis/filtering.py"
+function = "filter_radial"
+bi = 2
+arith = 1
+category = "log-table"
+reason = "sorted option names of the cache key and the refusal, and the percentage of the warning text"
+
+[[exception]]
+module = "integrations/paw_molecular.py"
+function = "build"
+bi = 1
+category = "validation"
+reason = "sorts the unexpected basis option names for the error text"
+
+[[exception]]
+module = "pseudopotentials/build_cli.py"
+function = "_build_one"
+bi = 3
+category = "log-table"
+reason = "sorted channel entries of the printed report"
+
+[[exception]]
+module = "pseudopotentials/build_cli.py"
+function = "build_one"
+bi = 1
+category = "log-table"
+reason = "sorted warning notes of the printed report"
+
+[[exception]]
+module = "pseudopotentials/diffuse.py"
+function = "_is_element_mapping"
+bi = 2
+category = "validation"
+reason = "sorts the element keys for the error text"
+
+[[exception]]
+module = "pseudopotentials/diffuse.py"
+function = "_recipe"
+bi = 1
+category = "validation"
+reason = "sorts the unknown recipe keys for the error text"
+
+[[exception]]
+module = "pseudopotentials/diffuse.py"
+function = "_shells"
+bi = 1
+category = "validation"
+reason = "orders the requested shell list"
+
+[[exception]]
+module = "pseudopotentials/diffuse.py"
+function = "diffuse_recipe_text"
+bi = 1
+category = "log-table"
+reason = "sorted entries of the recipe label"
+
+[[exception]]
+module = "pseudopotentials/orbitals.py"
+function = "_RadialTabulated.__init__"
+bi = 1
+category = "validation"
+reason = "checks |m| <= l of a requested orbital"
+
+[[exception]]
+module = "pseudopotentials/paw.py"
+function = "PAWDataset.__repr__"
+bi = 1
+category = "log-table"
+reason = "sorted channel numbers of the printed summary"
+
+[[exception]]
+module = "pseudopotentials/build_cli.py"
+function = "reload_errors"
+bi = 1
+category = "hand-off"
+reason = "orders the channels handed to the engine's read-back check"
 
 [[exception]]
 module = "pseudopotentials/defects.py"

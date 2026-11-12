@@ -144,7 +144,7 @@ def _orbital_rows(symbol, pp, options, confined):
     return table
 
 
-def _tables(species, options, report):
+def _tables(species, options, report, symbols):
     """The ``datasets``, ``orbitals`` and ``polarization_shells`` tables."""
     datasets = [("symbol", "Z", "Z_ion", "l_max", "r_cut_Bohr", "source", "sha256")]
     orbitals = [("symbol", "n", "l", "zetas", "polarization", "r_c_Bohr", "r_c_Angstrom",
@@ -159,6 +159,14 @@ def _tables(species, options, report):
         ] + [(symbol, shell.l, shell.base_l, f"{shell.r_cut:.4f}", f"{shell.r_char:.4f}",
               f"{shell.reference_radius:.4f}")
              for symbol, shell in report["polarization"].items()]
+    if report.get("diffuse"):
+        from ..pseudopotentials.diffuse import shells_table
+
+        tables["diffuse_shells"] = shells_table(report["diffuse"])
+    if report.get("diffuse_box"):
+        from ..pseudopotentials.diffuse import box_table
+
+        tables["diffuse_box"] = box_table(report["diffuse_box"], symbols)
     return tables
 
 
@@ -188,7 +196,7 @@ def _paw(driver, symbols, fields):
     fields["local_potential"] = ("range-separated: long range on the grid, short range "
                                  "on atom-centered quadrature")
     _dataset_fields(driver, species, fields)
-    return _tables(species, options, report)
+    return _tables(species, options, report, symbols)
 
 
 def basis_report(driver, geometry):

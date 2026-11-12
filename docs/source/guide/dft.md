@@ -15,7 +15,8 @@ from mandacaru import Mandacaru
 atoms = Atoms("H2", positions=[[0, 0, 0], [0, 0, .74]], cell=[5, 5, 5])
 atoms.center()
 atoms.calc = Mandacaru(method="dft", xc="r2scan", basis="HAO", grid_spacing=.35,
-                       resources={"threads": 2, "memory_limit_bytes": 512 * 1024**2})
+                       parallelization={"threads": 2},
+                       resources={"memory_limit_bytes": 512 * 1024**2})
 energy = atoms.get_potential_energy()   # eV, including nuclear repulsion
 atoms.calc.close()
 ```
@@ -215,6 +216,16 @@ exchange and nonlocal terms. Their use, the PAW-LCAO force
 scheme and the grid requirements are in [Forces](forces_relaxation.md), which
 owns them; for geometry work use a PAW-LCAO basis.
 
+## Excited states
+
+After a converged molecular `dft` run with `xc="lda"` or `xc="pbe"`,
+`calc.get_excitations(num_states, approximation="tda"|"casida", spin="singlet"|"triplet")`
+solves the adiabatic linear-response (TD-DFT) equations for the lowest excitations, with
+oscillator strengths, transition dipoles and natural transition orbitals. `hse06`,
+`r2scan`, the rVV10 pairings, DFT+U, open shells, spin-orbit datasets and crystals
+raise. The guide [Excited states of molecules](excited_states.md) owns the method, the
+limits of an adiabatic semilocal kernel in a confined basis and the refusals.
+
 (dft-periodic)=
 ## Periodic calculations
 
@@ -239,6 +250,13 @@ screened and compensation terms; the rVV10 stress adds the strain derivative of 
 kernel's wave numbers to the semilocal terms). The forces and stress of a DFT+U crystal with a
 hybrid or a spin-orbit dataset raise `NotImplementedError` naming the cause.
 
+The converged Bloch states of an insulating crystal also give its Berry phase, Berry curvature,
+Chern number, electric polarization and anomalous Hall conductivity, for every functional above,
+spin-polarized or with spin-orbit coupling: `get_berry_phase`, `get_berry_curvature`,
+`get_chern_number`, `get_polarization` and `get_anomalous_hall_conductivity`; the last also
+gives a metal's intrinsic anomalous Hall conductivity, with `get_anomalous_hall`
+([Berry phase, curvature and polarization](berry.md)).
+
 The stress is the strain derivative of the energy at the discretization of the
 unstrained cell: the grid node counts, the ion width (1.4 times the coarsest grid
 step) and the basis stay fixed. A variable-cell relaxation re-meshes each strained
@@ -262,9 +280,9 @@ SCF bands are then within `tolerance` of the bands of the converged density. The
 snapshot of a hybrid run carries `exchange_residuals`, one value per iteration, in
 Hartree. The first iteration diagonalizes without the exchange operator.
 
-`resources={"threads": N}` does not yet bound the Bloch projection kernels that the
-Python PAW setup calls from a shared library; they take the number of threads from
-the environment or the core count until that setup moves into Rust.
+The processors of a calculation are its `parallelization` ([Parallel layout](#dft-parallel-layout)),
+which bounds the Bloch projection kernels too: the crystal setup runs them in Rust under the
+calculator's own context, so they take the calculator's layout and not the environment's.
 
 For HSE06 crystal calculations, the exact exchange divergence treatment can be
 selected via `exxdiv_treatment="gygi-baldereschi"` (`gygi_baldereschi=True` is the one
@@ -280,6 +298,53 @@ still not converged at box sizes of 9 to 13 Å. Which treatment is better on a r
 been decided. The default is `exxdiv_treatment="none"`, using the point limit $\pi/\omega^2$.
 The on-site Hubbard correction of a `d` or `f` shell (`hubbard_u`, DFT+U) is an
 option of this periodic path and has [its own guide](dft_u.md).
+
+(dft-parallel-layout)=
+### Parallel layout
+
+`parallelization={"kpts": k, "bands": b, "threads": t}` sets the processors of a
+calculation: the count is `k * b * t`, and a missing key is 1. Omitted, the calculation
+runs on `{"threads": n}`, with `n` from `MANDACARU_NUM_THREADS`, then `OMP_NUM_THREADS`,
+then the hardware. The three levels nest:
+
+- `kpts` is the number of groups that solve the crystal's **k-point tasks** at once. A
+  task is one k-point of one spin channel (the k-points the setup keeps times the spin
+  channels), so a spin-polarized crystal on 4 k-points has 8 tasks. This
+  `kpts` is a processor count and not the `kpts` mesh of the calculator: it never changes
+  which k-points are sampled.
+- `bands` splits the occupied states of the exact exchange of a hybrid into groups. It is
+  not implemented yet ([not yet available](#not-yet-available)).
+- `threads` is the number of workers each group runs its kernels on. Outside the k-point
+  tasks (the setup, the grid fields) every kernel runs on all `k * b * t` processors.
+
+```python
+atoms.calc = Mandacaru(method="dft", xc="pbe", basis={"name": "PAW-LCAO", "size": "SZ"},
+                       kpts={"size": (4, 4, 4), "gamma": True},
+                       parallelization={"kpts": 4, "threads": 2})   # 8 processors
+```
+
+The layout changes how long a crystal takes and not what it computes: the energy, the
+eigenvalues and the iteration count are bitwise identical on every layout and at every
+processor count, because every reduction runs in a fixed order. Each k-point task holds
+its own Hamiltonian and state blocks, so memory grows with `kpts`; a layout that does not
+fit `memory_limit_bytes` raises `MemoryError`, naming the largest `kpts` that does.
+
+A layout the calculation cannot use raises instead of running another one:
+
+| Request | What happens |
+| --- | --- |
+| An unknown key or a value that is not an integer; a value that is not a `dict` | `TypeError` |
+| A value below 1, or more than 1024 processors | `ValueError` |
+| `kpts` or `bands` above 1 with a method other than `"dft"` | `ValueError` at construction |
+| `kpts` above 1 on a structure with no periodic axis | `ValueError` at `run()` |
+| `kpts` above the number of k-point tasks | `ValueError` at `run()`, naming the largest that fits |
+| `bands` above 1 without `xc="hse06"` | `ValueError` |
+| `bands` above 1 with `xc="hse06"` | `NotImplementedError` |
+| `parallelization` together with `native_model` | `ValueError` |
+
+The k-point tasks of the SCF (the eigensolve and the density matrices of each task) run on
+the `kpts` level. The hybrid exchange, the forces and stress, the setup's k-point loop and
+the post-processing still run on all the processors, whatever `kpts` says.
 
 ## Dispersion correction
 

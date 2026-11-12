@@ -374,11 +374,60 @@ impl Operator {
         let work = rows.saturating_mul(terms.len());
         if work >= super::parallel::PARALLEL_WORK {
             let nonzero = input.iter().filter(|a| **a != A::default()).count();
-            if nonzero.saturating_mul(8) >= rows {
+            if Self::gathers(rows, terms.len(), nonzero) {
                 return Self::gather_terms(terms, basis, input, scale, output);
             }
         }
         Self::scatter_terms(terms, basis, input, scale, output)
+    }
+    /// Whether an action of `terms` strings on `rows` rows with `nonzero` nonzero input amplitudes
+    /// is a gather ([`Self::gather_terms`]) rather than a scatter ([`Self::scatter_terms`]): the
+    /// one rule [`Self::apply_terms`] and [`Self::apply_support_into`] share. A gather sums each
+    /// row in another order than a scatter, so the two are not bit-equal and the rule must not
+    /// differ between the dense action and its support-restricted twin.
+    fn gathers(rows: usize, terms: usize, nonzero: usize) -> bool {
+        rows.saturating_mul(terms) >= super::parallel::PARALLEL_WORK && nonzero.saturating_mul(8) >= rows
+    }
+    /// `self input` into `output` by scattering only the columns of `support` (the ascending
+    /// indices of every nonzero amplitude of `input`), and the rows written, ascending and
+    /// without repeats, in `touched`. `output` must be all `+0` on entry: after the call every row
+    /// off `touched` is still `+0`, and every row on it holds exactly the bits of
+    /// [`Self::apply_into`] (the same scatter, over the same nonzero columns in the same order, so
+    /// each row accumulates the same terms in the same order; the columns it skips are exactly the
+    /// zero amplitudes the dense scatter skips).
+    ///
+    /// Returns `false`, touching nothing, when the restriction would not be the dense route or
+    /// would not be small: the dense action gathers for this input ([`Self::gathers`]), or the
+    /// rows it could write (`support x flip masks`) reach an eighth of the basis. The caller then
+    /// runs [`Self::apply_into`]. The answer depends on the data alone, never on a thread count.
+    pub fn apply_support_into<A: Amplitude>(
+        &self,
+        basis: &Basis,
+        input: &[A],
+        support: &[usize],
+        output: &mut [C64],
+        touched: &mut Vec<usize>,
+    ) -> bool {
+        let rows = output.len();
+        let masks = self.terms.chunk_by(|a, b| a.x == b.x).count();
+        if Self::gathers(rows, self.terms.len(), support.len())
+            || support.len().saturating_mul(masks.max(1)).saturating_mul(8) >= rows
+        {
+            return false;
+        }
+        touched.clear();
+        Self::scatter_columns(
+            &self.terms,
+            basis,
+            input,
+            support.iter().copied(),
+            C64::new(1., 0.),
+            output,
+            |row| touched.push(row),
+        );
+        touched.sort_unstable();
+        touched.dedup();
+        true
     }
     /// The common flip mask of every string, when there is one (an excitation generator: its
     /// strings all flip the same modes).
@@ -624,45 +673,64 @@ impl Operator {
         scale: C64,
         output: &mut [C64],
     ) {
+        Self::scatter_columns(terms, basis, input, 0..input.len(), scale, output, |_| {})
+    }
+    /// The scatter of [`Self::scatter_terms`] over the listed `columns` (ascending), calling
+    /// `written(row)` for every output row it adds to. A zero amplitude contributes nothing and
+    /// is skipped, so the columns may list zeros; listing every nonzero column in ascending order
+    /// gives the full scatter, bit for bit, whatever else it lists.
+    fn scatter_columns<A: Amplitude>(
+        terms: &[Term],
+        basis: &Basis,
+        input: &[A],
+        columns: impl Iterator<Item = usize>,
+        scale: C64,
+        output: &mut [C64],
+        mut written: impl FnMut(usize),
+    ) {
         if let Some(first) = terms.first() {
             if terms.iter().all(|term| term.x == first.x) {
                 // Excitation strings share their flip mask. Sum their exact
                 // Pauli coefficient before multiplying a state amplitude:
                 // forbidden occupations cancel without roundoff leakage.
-                for (column, (&ket, &amplitude)) in
-                    basis.indices.as_slice().iter().zip(input).enumerate()
-                {
-                    if amplitude == A::default() {
+                for column in columns {
+                    if input[column] == A::default() {
                         continue;
                     }
+                    let ket = basis.indices.as_slice()[column];
                     if let Some(row) = basis.index(ket ^ first.x) {
                         let coefficient: C64 = terms.iter().map(|term| term.amplitude(ket)).sum();
                         output[row] += coefficient * (scale * input[column].widen());
+                        written(row);
                     }
                 }
                 return;
             }
         }
         if basis.full_register {
-            for (ket, &amplitude) in input.iter().enumerate() {
-                if amplitude == A::default() {
+            for ket in columns {
+                if input[ket] == A::default() {
                     continue;
                 }
-                let weighted = scale * amplitude.widen();
+                let weighted = scale * input[ket].widen();
                 for term in terms {
-                    output[(ket as u64 ^ term.x) as usize] += term.amplitude(ket as u64) * weighted;
+                    let row = (ket as u64 ^ term.x) as usize;
+                    output[row] += term.amplitude(ket as u64) * weighted;
+                    written(row);
                 }
             }
             return;
         }
-        for (col, &ket) in basis.indices.as_slice().iter().enumerate() {
+        for col in columns {
             if input[col] == A::default() {
                 continue;
             }
+            let ket = basis.indices.as_slice()[col];
             let weighted = scale * input[col].widen();
             for t in terms {
                 if let Some(row) = basis.index(ket ^ t.x) {
                     output[row] += t.amplitude(ket) * weighted;
+                    written(row);
                 }
             }
         }

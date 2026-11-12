@@ -81,21 +81,28 @@ where
     let policy = POLICY.with(|p| p.borrow().clone());
     scope.spawn(move || {
         if let Some(policy) = policy {
-            struct Active(Arc<WorkerStats>);
-            impl Drop for Active {
-                fn drop(&mut self) {
-                    self.0.active.fetch_sub(1, Ordering::Relaxed);
-                }
-            }
-            let current = policy.stats.active.fetch_add(1, Ordering::Relaxed) + 1;
-            policy.stats.peak.fetch_max(current, Ordering::Relaxed);
-            policy.stats.total.fetch_add(1, Ordering::Relaxed);
-            let _active = Active(policy.stats.clone());
-            with_policy(policy.threads, policy.stats, f)
+            as_worker(policy.threads, policy.stats, f)
         } else {
             f()
         }
     })
+}
+
+/// Runs `f` on the calling thread as one counted worker of `stats` under a policy of `threads`:
+/// what [`spawn`] does in the thread it starts, for a thread that some other executor (a
+/// persistent pool) owns. The kernels `f` calls take `threads` workers.
+pub fn as_worker<T>(threads: usize, stats: Arc<WorkerStats>, f: impl FnOnce() -> T) -> T {
+    struct Active(Arc<WorkerStats>);
+    impl Drop for Active {
+        fn drop(&mut self) {
+            self.0.active.fetch_sub(1, Ordering::Relaxed);
+        }
+    }
+    let current = stats.active.fetch_add(1, Ordering::Relaxed) + 1;
+    stats.peak.fetch_max(current, Ordering::Relaxed);
+    stats.total.fetch_add(1, Ordering::Relaxed);
+    let _active = Active(stats.clone());
+    with_policy(threads, stats, f)
 }
 
 #[cfg(test)]

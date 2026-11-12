@@ -20,7 +20,7 @@ def h2():
 def test_semilocal_fields_conserve_charge_and_do_not_construct_a_hamiltonian(tmp_path):
     atoms = h2()
     with Mandacaru(
-        method="dft", atoms=atoms, xc="pbe", grid_spacing=0.5, resources={"threads": 1}
+        method="dft", atoms=atoms, xc="pbe", grid_spacing=0.5, parallelization={"threads": 1}
     ) as calc:
         atoms.get_potential_energy()
         natural = calc.natural_orbitals()
@@ -53,7 +53,7 @@ def test_semilocal_fields_conserve_charge_and_do_not_construct_a_hamiltonian(tmp
 def test_complex_rdm_and_frozen_core_use_the_correct_orbital_conjugation():
     atoms = h2()
     with Mandacaru(
-        method="rhf", atoms=atoms, grid_spacing=0.5, resources={"threads": 1}
+        method="rhf", atoms=atoms, grid_spacing=0.5, parallelization={"threads": 1}
     ) as calc:
         atoms.get_potential_energy()
         c = np.array([1.0, 1j]) / np.sqrt(2.0)

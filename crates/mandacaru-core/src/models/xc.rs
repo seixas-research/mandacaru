@@ -9,34 +9,149 @@ use std::{
     ops::{Add, Div, Mul, Neg, Sub},
 };
 
-#[derive(Clone, Copy)]
-struct Jet {
-    v: f64,
-    d: [f64; 7],
+/// The arithmetic a [`Jet`] carries its value and slopes in: `f64` for the potential, and a
+/// `Jet<f64>` itself for the second derivatives of the kernel (forward over forward), so the
+/// functionals below are written once for both.
+pub(crate) trait Scalar:
+    Copy
+    + Add<Output = Self>
+    + Sub<Output = Self>
+    + Mul<Output = Self>
+    + Div<Output = Self>
+    + Neg<Output = Self>
+{
+    fn constant(v: f64) -> Self;
+    /// The plain value, for branches and floors.
+    fn re(self) -> f64;
+    fn powf(self, p: f64) -> Self;
+    fn ln(self) -> Self;
+    fn ln_1p(self) -> Self;
+    fn exp_m1(self) -> Self;
+    fn exp(self) -> Self;
+    fn recip(self) -> Self;
+    fn sqrt(self) -> Self;
+    fn asinh(self) -> Self;
+    fn erfc(self) -> Self;
+    /// `exp(x^2) erfc(x)`.
+    fn erfcx(self) -> Self;
 }
-impl Jet {
-    fn c(v: f64) -> Self {
-        Self { v, d: [0.; 7] }
+impl Scalar for f64 {
+    fn constant(v: f64) -> Self {
+        v
     }
-    fn variable(v: f64, axis: usize) -> Self {
-        let mut out = Self::c(v);
-        out.d[axis] = 1.;
+    fn re(self) -> f64 {
+        self
+    }
+    fn powf(self, p: f64) -> Self {
+        f64::powf(self, p)
+    }
+    fn ln(self) -> Self {
+        f64::ln(self)
+    }
+    fn ln_1p(self) -> Self {
+        f64::ln_1p(self)
+    }
+    fn exp_m1(self) -> Self {
+        f64::exp_m1(self)
+    }
+    fn exp(self) -> Self {
+        f64::exp(self)
+    }
+    fn recip(self) -> Self {
+        f64::recip(self)
+    }
+    fn sqrt(self) -> Self {
+        f64::sqrt(self)
+    }
+    fn asinh(self) -> Self {
+        f64::asinh(self)
+    }
+    fn erfc(self) -> Self {
+        libm::erfc(self)
+    }
+    fn erfcx(self) -> Self {
+        (self * self).exp() * libm::erfc(self)
+    }
+}
+impl Scalar for Jet<f64> {
+    fn constant(v: f64) -> Self {
+        Self::c(v)
+    }
+    fn re(self) -> f64 {
+        self.v
+    }
+    fn powf(self, p: f64) -> Self {
+        self.pow(p)
+    }
+    fn ln(self) -> Self {
+        Jet::ln(self)
+    }
+    fn ln_1p(self) -> Self {
+        self.ln1p()
+    }
+    fn exp_m1(self) -> Self {
+        self.expm1()
+    }
+    fn exp(self) -> Self {
+        Jet::exp(self)
+    }
+    fn recip(self) -> Self {
+        Self::c(1.) / self
+    }
+    fn sqrt(self) -> Self {
+        self.pow(0.5)
+    }
+    fn asinh(self) -> Self {
+        self.unary(self.v.asinh(), 1. / (1. + self.v * self.v).sqrt())
+    }
+    fn erfc(self) -> Self {
+        Jet::erfc(self)
+    }
+    fn erfcx(self) -> Self {
+        let value = f64::erfcx(self.v);
+        self.unary(value, 2. * self.v * value - 2. / PI.sqrt())
+    }
+}
+
+/// A value and its first derivatives along the seven XC variables
+/// `(n_up, n_dn, s_uu, s_ud, s_dd, tau_up, tau_dn)`.
+#[derive(Clone, Copy)]
+pub(crate) struct Jet<S = f64> {
+    v: S,
+    d: [S; 7],
+}
+impl<S: Scalar> Jet<S> {
+    fn c(v: f64) -> Self {
+        Self {
+            v: S::constant(v),
+            d: [S::constant(0.); 7],
+        }
+    }
+    fn variable(v: S, axis: usize) -> Self {
+        let mut out = Self {
+            v,
+            d: [S::constant(0.); 7],
+        };
+        out.d[axis] = S::constant(1.);
         out
     }
-    fn unary(self, v: f64, derivative: f64) -> Self {
+    fn re(self) -> f64 {
+        self.v.re()
+    }
+    fn unary(self, v: S, derivative: S) -> Self {
         Self {
             v,
             d: self.d.map(|d| d * derivative),
         }
     }
     fn pow(self, p: f64) -> Self {
-        self.unary(self.v.powf(p), p * self.v.powf(p - 1.))
+        self.unary(self.v.powf(p), S::constant(p) * self.v.powf(p - 1.))
     }
     fn ln(self) -> Self {
         self.unary(self.v.ln(), self.v.recip())
     }
     fn ln1p(self) -> Self {
-        self.unary(self.v.ln_1p(), (1. + self.v).recip())
+        self.unary(self.v.ln_1p(), (S::constant(1.) + self.v).recip())
     }
     fn expm1(self) -> Self {
         self.unary(self.v.exp_m1(), self.v.exp())
@@ -44,18 +159,20 @@ impl Jet {
     fn exp(self) -> Self {
         self.unary(self.v.exp(), self.v.exp())
     }
+    fn erfc(self) -> Self {
+        self.unary(
+            self.v.erfc(),
+            S::constant(-2. / PI.sqrt()) * (-self.v * self.v).exp(),
+        )
+    }
+}
+impl Jet<f64> {
     fn tanh(self) -> Self {
         let v = self.v.tanh();
         self.unary(v, 1. - v * v)
     }
-    fn erfc(self) -> Self {
-        self.unary(
-            libm::erfc(self.v),
-            -2. / PI.sqrt() * (-self.v * self.v).exp(),
-        )
-    }
 }
-impl Add for Jet {
+impl<S: Scalar> Add for Jet<S> {
     type Output = Self;
     fn add(self, b: Self) -> Self {
         Self {
@@ -64,20 +181,20 @@ impl Add for Jet {
         }
     }
 }
-impl Neg for Jet {
+impl<S: Scalar> Neg for Jet<S> {
     type Output = Self;
     fn neg(self) -> Self {
-        self.unary(-self.v, -1.)
+        self.unary(-self.v, S::constant(-1.))
     }
 }
-impl Sub for Jet {
+impl<S: Scalar> Sub for Jet<S> {
     type Output = Self;
     fn sub(self, b: Self) -> Self {
         self + -b
     }
 }
 #[allow(clippy::suspicious_arithmetic_impl)]
-impl Mul for Jet {
+impl<S: Scalar> Mul for Jet<S> {
     type Output = Self;
     fn mul(self, b: Self) -> Self {
         Self {
@@ -87,7 +204,7 @@ impl Mul for Jet {
     }
 }
 #[allow(clippy::suspicious_arithmetic_impl)]
-impl Div for Jet {
+impl<S: Scalar> Div for Jet<S> {
     type Output = Self;
     fn div(self, b: Self) -> Self {
         let v = self.v / b.v;
@@ -98,8 +215,8 @@ impl Div for Jet {
     }
 }
 macro_rules! scalar_ops {($trait:ident,$method:ident,$op:tt) => {
-    impl $trait<f64> for Jet {type Output=Self;fn $method(self,b:f64)->Self {self $op Self::c(b)}}
-    impl $trait<Jet> for f64 {type Output=Jet;fn $method(self,b:Jet)->Jet {Jet::c(self) $op b}}
+    impl<S: Scalar> $trait<f64> for Jet<S> {type Output=Self;fn $method(self,b:f64)->Self {self $op Self::c(b)}}
+    impl<S: Scalar> $trait<Jet<S>> for f64 {type Output=Jet<S>;fn $method(self,b:Jet<S>)->Jet<S> {Jet::c(self) $op b}}
 };}
 scalar_ops!(Add,add,+);
 scalar_ops!(Sub,sub,-);
@@ -113,13 +230,13 @@ pub fn functional(name: &str) -> Result<&'static str> {
         _ => Err(invalid("expected canonical XC name lda or pbe")),
     }
 }
-fn pz(rs: Jet, ferro: bool) -> Jet {
+fn pz<S: Scalar>(rs: Jet<S>, ferro: bool) -> Jet<S> {
     let (gamma, b1, b2, a, b) = if ferro {
         (-0.0843, 1.3981, 0.2611, 0.01555, -0.0269)
     } else {
         (-0.1423, 1.0529, 0.3334, 0.0311, -0.048)
     };
-    if rs.v >= 1. {
+    if rs.re() >= 1. {
         return gamma / (1. + b1 * rs.pow(0.5) + b2 * rs);
     }
     let denominator = 1. + b1 + b2;
@@ -127,7 +244,7 @@ fn pz(rs: Jet, ferro: bool) -> Jet {
     let c = -gamma * (b1 / 2. + b2) / (denominator * denominator) - a - d;
     a * rs.ln() + b + c * rs * rs.ln() + d * rs
 }
-fn pw(rs: Jet, params: [f64; 6]) -> Jet {
+fn pw<S: Scalar>(rs: Jet<S>, params: [f64; 6]) -> Jet<S> {
     let [a, a1, b1, b2, b3, b4] = params;
     let q = 2. * a * (b1 * rs.pow(0.5) + b2 * rs + b3 * rs.pow(1.5) + b4 * rs * rs);
     -2. * a * (1. + a1 * rs) * (1. / q).ln1p()
@@ -144,6 +261,15 @@ pub(crate) fn partials_relativistic(
     values: [f64; 5],
     relativistic: bool,
 ) -> Result<(f64, [f64; 5])> {
+    check_semilocal(values)?;
+    let variables = std::array::from_fn(|i| Jet::variable(values[i], i));
+    let f = semilocal(name, variables, relativistic);
+    if !f.v.is_finite() || f.d.iter().any(|d| !d.is_finite()) {
+        return Err(invalid("nonfinite XC evaluation"));
+    }
+    Ok((f.v, std::array::from_fn(|i| f.d[i])))
+}
+fn check_semilocal(values: [f64; 5]) -> Result<()> {
     if values.iter().any(|v| !v.is_finite())
         || values[0] < 0.
         || values[1] < 0.
@@ -154,12 +280,17 @@ pub(crate) fn partials_relativistic(
             "XC densities and diagonal gradient contractions must be finite and nonnegative",
         ));
     }
-    let [up, dn, suu, sud, sdd] = std::array::from_fn(|i| Jet::variable(values[i], i));
+    Ok(())
+}
+/// The LDA or PBE energy per volume of `(up, down, uu, ud, dd)`, in any [`Scalar`]: `f64`
+/// variables give the potential, `Jet<f64>` variables the kernel.
+fn semilocal<S: Scalar>(name: &str, variables: [Jet<S>; 5], relativistic: bool) -> Jet<S> {
+    let [up, dn, suu, sud, sdd] = variables;
     let beta = 0.06672455060314922;
     let gamma = (1. - 2f64.ln()) / (PI * PI);
     let mut f = Jet::c(0.);
     for (rho, sigma) in [(up * 2., suu * 4.), (dn * 2., sdd * 4.)] {
-        if rho.v <= 2e-12 {
+        if rho.re() <= 2e-12 {
             continue;
         }
         let mut fx = -0.75 * (3. / PI).cbrt() * rho.pow(4. / 3.);
@@ -170,10 +301,13 @@ pub(crate) fn partials_relativistic(
         }
         if relativistic {
             let beta = (3. * PI * PI * rho).pow(1. / 3.) / 137.035999177;
-            let factor = if beta.v < 1e-2 {
+            let factor = if beta.re() < 1e-2 {
                 1. - (2. / 3.) * beta.pow(2.) + (2. / 5.) * beta.pow(4.)
             } else {
-                let asinh = beta.unary(beta.v.asinh(), 1. / (1. + beta.v * beta.v).sqrt());
+                let asinh = beta.unary(
+                    beta.v.asinh(),
+                    (S::constant(1.) + beta.v * beta.v).sqrt().recip(),
+                );
                 let f = (1. + beta * beta).pow(0.5) / beta - asinh / (beta * beta);
                 1. - 1.5 * f * f
             };
@@ -182,7 +316,7 @@ pub(crate) fn partials_relativistic(
         f = f + 0.5 * fx;
     }
     let rho = up + dn;
-    if rho.v > 1e-12 {
+    if rho.re() > 1e-12 {
         let z = (1. - 1e-12) * ((up - dn) / rho);
         let fz = ((1. + z).pow(4. / 3.) + (1. - z).pow(4. / 3.) - 2.) / (2f64.powf(4. / 3.) - 2.);
         let rs = (3. / (4. * PI) / rho).pow(1. / 3.);
@@ -208,10 +342,46 @@ pub(crate) fn partials_relativistic(
         }
         f = f + rho * correlation;
     }
-    if !f.v.is_finite() || f.d.iter().any(|d| !d.is_finite()) {
-        return Err(invalid("nonfinite XC evaluation"));
+    f
+}
+/// The energy per volume of LDA, PBE or the HSE06 semilocal part at `(up, down, uu, ud, dd)`, its five partials and
+/// their 5 x 5 symmetric matrix of second partials (the point kernel), from the same
+/// expression as [`partials_relativistic`] evaluated forward over forward. Exact up to
+/// round-off, with the same floors and branches as the potential: on a branch boundary
+/// (`rs = 1` of Perdew-Zunger, a density at a floor) it is the one-sided derivative of the
+/// branch the value takes.
+pub fn point_hessian(
+    name: &str,
+    values: [f64; 5],
+    relativistic: bool,
+) -> Result<(f64, [f64; 5], [[f64; 5]; 5])> {
+    check_semilocal(values)?;
+    let variables = std::array::from_fn(|i| Jet::variable(Jet::<f64>::variable(values[i], i), i));
+    let f = match name {
+        "lda" | "pbe" => semilocal(name, variables, relativistic),
+        "hse06" => hybrid(
+            variables,
+            relativistic,
+            super::HSE06_OMEGA,
+            super::HSE06_EXACT_FRACTION,
+        )?,
+        _ => return Err(invalid("the XC kernel is defined for lda, pbe and hse06")),
+    };
+    let first: [f64; 5] = std::array::from_fn(|i| f.d[i].v);
+    let mut second = [[0.; 5]; 5];
+    for (i, row) in second.iter_mut().enumerate() {
+        for (j, value) in row.iter_mut().enumerate() {
+            // The two mixed orders differ only by round-off; their mean is symmetric exactly.
+            *value = 0.5 * (f.d[i].d[j] + f.d[j].d[i]);
+        }
     }
-    Ok((f.v, std::array::from_fn(|i| f.d[i])))
+    if !f.v.v.is_finite()
+        || first.iter().any(|v| !v.is_finite())
+        || second.iter().flatten().any(|v| !v.is_finite())
+    {
+        return Err(invalid("nonfinite XC kernel evaluation"));
+    }
+    Ok((f.v.v, first, second))
 }
 /// Unpolarized LDA split into its parts at total density `rho` (floored at 1e-30):
 /// `(e_x, v_x, e_c, v_c)`, the Slater exchange and Perdew-Zunger correlation energies per
@@ -285,13 +455,13 @@ pub fn point_partials(name: &str, values: [f64; 7], relativistic: bool) -> Resul
         )),
     }
 }
-fn hole_parameters(rho: Jet, sigma: Jet) -> (Jet, Jet, Jet, Jet) {
+fn hole_parameters<S: Scalar>(rho: Jet<S>, sigma: Jet<S>) -> (Jet<S>, Jet<S>, Jet<S>, Jet<S>) {
     let kf = (3. * PI * PI * rho).pow(1. / 3.);
     let mut t = sigma / (4. * kf * kf * rho * rho);
-    if t.v > 1. {
+    if t.re() > 1. {
         let s = t.pow(0.5);
         let x = 8.572844 - s;
-        let softplus = if x.v > 0. {
+        let softplus = if x.re() > 0. {
             x + (-x).exp().ln1p()
         } else {
             x.exp().ln1p()
@@ -304,7 +474,7 @@ fn hole_parameters(rho: Jet, sigma: Jet) -> (Jet, Jet, Jet, Jet) {
         / (1. + 0.187440 * t2 + 0.00120824 * t.pow(2.5) + 0.0347188 * t * t2);
     let hs = t * h;
     let f = 6.4753871 * h + 0.47965830;
-    let eg = if t.v <= 0.08 * 0.08 {
+    let eg = if t.re() <= 0.08 * 0.08 {
         -0.02628417880 - 0.07117647788 * t + 0.08534541323 * t2
     } else {
         let p = 0.57786348 + hs;
@@ -322,10 +492,13 @@ fn hole_parameters(rho: Jet, sigma: Jet) -> (Jet, Jet, Jet, Jet) {
     };
     (t, hs, f, eg)
 }
-fn positive_erfcx(x: Jet) -> Jet {
-    if x.v < 8. {
-        let value = (x.v * x.v).exp() * libm::erfc(x.v);
-        x.unary(value, 2. * x.v * value - 2. / PI.sqrt())
+fn positive_erfcx<S: Scalar>(x: Jet<S>) -> Jet<S> {
+    if x.re() < 8. {
+        let value = x.v.erfcx();
+        x.unary(
+            value,
+            S::constant(2.) * x.v * value - S::constant(2. / PI.sqrt()),
+        )
     } else {
         let mut fraction = x;
         for i in (1..=64).rev() {
@@ -334,12 +507,12 @@ fn positive_erfcx(x: Jet) -> Jet {
         1. / (PI.sqrt() * fraction)
     }
 }
-fn e1_plus_log(x: Jet) -> Jet {
+fn e1_plus_log<S: Scalar>(x: Jet<S>) -> Jet<S> {
     const EULER: f64 = 0.577_215_664_901_532_9;
-    if x.v == 0. {
+    if x.re() == 0. {
         return Jet::c(-EULER);
     }
-    if x.v < 3. {
+    if x.re() < 3. {
         let mut term = x;
         let mut sum = x;
         for k in 2..=40 {
@@ -355,7 +528,7 @@ fn e1_plus_log(x: Jet) -> Jet {
         1. / f + x.ln()
     }
 }
-fn hole_exchange(rho: Jet, sigma: Jet, omega: f64) -> Result<Jet> {
+fn hole_exchange<S: Scalar>(rho: Jet<S>, sigma: Jet<S>, omega: f64) -> Result<Jet<S>> {
     let (t, hs, f, eg) = hole_parameters(rho, sigma);
     let p = 0.57786348 + hs;
     let enhancement = if omega == 0. {
@@ -378,7 +551,7 @@ fn hole_exchange(rho: Jet, sigma: Jet, omega: f64) -> Result<Jet> {
                     + (-0.051955731 + eg * t) * y2 * y2);
             (long + gaussian) * (nu * y).erfc()
         };
-        let maximum = 8.5 / nu.v;
+        let maximum = 8.5 / nu.re();
         if !maximum.is_finite() {
             return Err(invalid("screened exchange integration range overflows"));
         }
@@ -417,13 +590,13 @@ fn gauss_nodes<const N: usize>() -> [(f64, f64); N] {
         (z, 2. / ((1. - z * z) * derivative * derivative))
     })
 }
-fn integrate_hole(
-    f: &impl Fn(f64) -> Jet,
+fn integrate_hole<S: Scalar>(
+    f: &impl Fn(f64) -> Jet<S>,
     lo: f64,
     hi: f64,
     depth: usize,
     budget: &mut usize,
-) -> Result<Jet> {
+) -> Result<Jet<S>> {
     static LOW: std::sync::OnceLock<[(f64, f64); 16]> = std::sync::OnceLock::new();
     static HIGH: std::sync::OnceLock<[(f64, f64); 32]> = std::sync::OnceLock::new();
     if *budget == 0 {
@@ -439,8 +612,16 @@ fn integrate_hole(
     };
     let coarse = eval(LOW.get_or_init(gauss_nodes::<16>));
     let fine = eval(HIGH.get_or_init(gauss_nodes::<32>));
-    let good = std::iter::once((coarse.v, fine.v))
-        .chain(coarse.d.into_iter().zip(fine.d))
+    // The refinement reads the values and first slopes only, so every scalar type takes the
+    // same panels as the potential.
+    let good = std::iter::once((coarse.v.re(), fine.v.re()))
+        .chain(
+            coarse
+                .d
+                .iter()
+                .map(|d| d.re())
+                .zip(fine.d.iter().map(|d| d.re())),
+        )
         .all(|(a, b)| (a - b).abs() <= 1e-12 + 1e-10 * b.abs());
     if good {
         return Ok(fine);
@@ -466,19 +647,33 @@ fn hybrid_partials(
     fraction: f64,
 ) -> Result<(f64, [f64; 7])> {
     if [0, 1, 2, 4].iter().any(|&i| values[i] < 0.) {
-        return Err(invalid("hse06 needs nonnegative spin densities and diagonal gradients"));
+        return Err(invalid(
+            "hse06 needs nonnegative spin densities and diagonal gradients",
+        ));
     }
-    let (energy, d) = partials_relativistic("pbe", std::array::from_fn(|i| values[i]), relativistic)?;
-    let mut result = Jet {
-        v: energy,
-        d: std::array::from_fn(|i| if i < 5 { d[i] } else { 0. }),
-    };
-    let variables: [Jet; 7] = std::array::from_fn(|i| Jet::variable(values[i], i));
+    check_semilocal(std::array::from_fn(|i| values[i]))?;
+    let variables = std::array::from_fn(|i| Jet::variable(values[i], i));
+    let result = hybrid(variables, relativistic, omega, fraction)?;
+    if !result.v.is_finite() || result.d.iter().any(|v| !v.is_finite()) {
+        return Err(invalid("nonfinite screened hybrid evaluation"));
+    }
+    Ok((result.v, result.d))
+}
+/// The screened hybrid's semilocal energy per volume of `(up, down, uu, ud, dd)`: PBE with its
+/// exchange replaced by the hole model, less `fraction` of the hole model's short-range part
+/// (the part exact exchange takes), in any [`Scalar`].
+fn hybrid<S: Scalar>(
+    variables: [Jet<S>; 5],
+    relativistic: bool,
+    omega: f64,
+    fraction: f64,
+) -> Result<Jet<S>> {
+    let mut result = semilocal("pbe", variables, relativistic);
     for (rho, sigma) in [
         (2. * variables[0], 4. * variables[2]),
         (2. * variables[1], 4. * variables[4]),
     ] {
-        if rho.v <= 2e-12 {
+        if rho.re() <= 2e-12 {
             continue;
         }
         let kf = (3. * PI * PI * rho).pow(1. / 3.);
@@ -493,10 +688,51 @@ fn hybrid_partials(
             result = result - 0.5 * fraction * hole_exchange(rho, sigma, omega)?;
         }
     }
-    if !result.v.is_finite() || result.d.iter().any(|v| !v.is_finite()) {
-        return Err(invalid("nonfinite screened hybrid evaluation"));
-    }
-    Ok((result.v, result.d))
+    Ok(result)
+}
+/// The full or short-range unpolarized exchange hole and its second derivatives: input
+/// `(rho, sigma)` pairs, output per pair `(e, e_rho, e_sigma, e_rho_rho, e_rho_sigma,
+/// e_sigma_sigma)`, zero at `rho <= 1e-12` as in [`exchange_hole_batch`] (forward over forward,
+/// the same expression and quadrature panels).
+pub fn exchange_hole_hessian_batch(
+    ctx: &Context,
+    values: &[f64],
+    omega: f64,
+) -> Result<Buffer<f64>> {
+    ctx.run(|| {
+        if !omega.is_finite()
+            || omega < 0.
+            || values.len() % 2 != 0
+            || values.iter().any(|v| !v.is_finite() || *v < 0.)
+        {
+            return Err(invalid(
+                "exchange hole requires nonnegative finite density, sigma and screening",
+            ));
+        }
+        let mut out = ctx.allocate::<f64>(product(&[values.len() / 2, 6])?)?;
+        for (x, y) in values
+            .chunks_exact(2)
+            .zip(out.as_mut_slice().chunks_exact_mut(6))
+        {
+            if x[0] > 1e-12 {
+                let rho = Jet::variable(Jet::<f64>::variable(x[0], 0), 0);
+                let sigma = Jet::variable(Jet::<f64>::variable(x[1], 1), 1);
+                let e = hole_exchange(rho, sigma, omega)?;
+                y.copy_from_slice(&[
+                    e.v.v,
+                    e.d[0].v,
+                    e.d[1].v,
+                    e.d[0].d[0],
+                    0.5 * (e.d[0].d[1] + e.d[1].d[0]),
+                    e.d[1].d[1],
+                ]);
+                if y.iter().any(|v| !v.is_finite()) {
+                    return Err(invalid("nonfinite exchange hole kernel"));
+                }
+            }
+        }
+        Ok(out)
+    })
 }
 /// Full or short-range unpolarized exchange hole: input (rho,sigma),
 /// output (energy density, d/drho, d/dsigma).

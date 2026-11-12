@@ -78,7 +78,11 @@ The ranking methods differ in what they cost and what they ask:
 `"energy"`
 : Canonical order, lowest orbital energy first. Free, and valid for open
   shells. Orbital energy is a poor proxy for correlation importance in a basis
-  with diffuse or polarization functions.
+  with diffuse or polarization functions. With the `diffuse` option of a
+  PAW-LCAO basis ([diffuse functions](#paw-lcao-diffuse)) the diffuse functions
+  make the lowest virtual orbitals, so an energy ranking that keeps fewer virtual
+  orbitals than the basis has raises `ValueError`: rank by `"mp2"`, or keep
+  every virtual orbital.
 
 `"mp2"`
 : The frozen natural orbitals: the eigenvectors of the second-order density's
@@ -126,6 +130,61 @@ orbitals are chosen:
 
 The requested frozen core is never paired. `"correlating_pairs"` together with
 `"symmetry"` raises `NotImplementedError`.
+
+(degenerate-orbitals)=
+## Degenerate orbitals
+
+Inside a cluster of exactly degenerate orbitals the SCF fixes nothing: any
+orthogonal rotation of the cluster is as good an answer as the one the
+eigensolver returned, and which one it returns changes with the round-off of the
+matrix. The mean-field energy does not care. A truncated ansatz (a short
+operator sequence, an active space that cuts the cluster) does, so its energy
+used to jump between nearly identical geometries of a linear or otherwise
+symmetric molecule, and a transfer of the ansatz between them could be refused.
+
+For the methods that truncate (`vqe`, `adapt-vqe`, the `subspace-*` methods and
+the search methods) on a molecule, the orbitals are now put in a fixed frame
+before anything reads them:
+
+* **Clusters.** Orbitals whose labels lie within 1e-8 of the cluster's lowest
+  (the orbital energy, in Hartree, for the restricted canonical orbitals; the
+  natural occupation for the unrestricted natural orbitals and for the MP2
+  natural-orbital rotation) form a cluster. A cluster never crosses the line
+  between occupied and empty orbitals (for an unrestricted reference, between
+  doubly occupied, singly occupied and empty natural orbitals). Each cluster is
+  put in a fixed lab-frame orientation: the orbitals are the eigenvectors of
+  fixed lab-frame moments about the nuclear charge centroid (a quadrupole with
+  distinct axis weights, then the off-diagonal quadrupole and two cubic moments
+  for whatever is still degenerate), ordered by eigenvalue.
+* **Signs.** Every orbital has a fixed sign, set by a fixed linear functional of
+  the orbital function itself.
+* **Where.** The restricted canonical orbitals (`rhf`), the unrestricted natural
+  orbitals (`uhf`) and the rotation to the MP2 natural orbitals (the virtual
+  ones and the active doubly occupied ones).
+
+The energy of a truncated ansatz is then a function of the geometry, and the
+transfer of an ansatz from one geometry to the next is no longer refused because
+the orbitals of a cluster came back rotated; a step that keeps the cluster degenerate (an axial step of a linear
+molecule) keeps the frame, the energy and the handover continuous. An active
+space that cuts a cluster (a count, a list of indices or `"frozen"` that ends
+inside it) keeps the same member of it every time: the one the frame puts at that
+position. Mean-field energies and forces are unchanged; only the orbitals the
+ansatz is built on are fixed.
+
+What stays arbitrary, because the frame does not cover it:
+
+* a `ghf` reference and spinor states (every Kramers pair is a cluster, which
+  needs a spin-aware operator);
+* a periodic grid and a supercell (a position operator is undefined on a
+  periodic grid);
+* a fractional or non-aufbau occupation, which is not a single determinant;
+* a cluster that no lab-frame moment resolves, which does not stay arbitrary but
+  raises: the Hamiltonian or the active space is refused, since a truncated
+  ansatz on it would depend on the eigensolver's round-off. The same holds for
+  an orbital to which none of the fixed functionals gives a sign.
+
+The analytic force of a truncated ansatz has one known limitation on an
+unrestricted reference ([the forces guide](#forces-variational)).
 
 ## Reading the selection back
 

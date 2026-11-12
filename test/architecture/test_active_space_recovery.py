@@ -14,7 +14,7 @@ def setup():
         method="rhf",
         basis={"name": "HAO", "virtual_orbitals": 1},
         grid_spacing=0.5,
-        resources={"threads": 1},
+        parallelization={"threads": 1},
         atoms=Atoms("H2", positions=[[2.5, 2.5, 2.13], [2.5, 2.5, 2.87]], cell=[5] * 3),
     )
 
@@ -99,7 +99,7 @@ def test_symmetry_selection_keeps_atomic_p_multiplets_whole():
         atoms=atoms,
         basis={"name": "HAO", "virtual_orbitals": 2},
         grid_spacing=0.3,
-        resources={"threads": 1},
+        parallelization={"threads": 1},
     ) as calc:
         atoms.get_potential_energy()
         for method in ("energy", "mp2"):
@@ -151,7 +151,7 @@ def test_quantum_result_retains_selected_orbitals_for_every_state_after_close(me
         basis={"name": "HAO", "virtual_orbitals": 1},
         grid_spacing=0.5,
         active_space={"method": "mp2", "orbitals": 3},
-        resources={"threads": 1},
+        parallelization={"threads": 1},
     ) as calc:
         atoms.get_potential_energy()
         result = calc.result

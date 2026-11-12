@@ -4,7 +4,8 @@
 A calculation can describe itself in a plain-text log: a fixed set of blocks of
 `key: value` lines, readable by eye and by a line scanner. This page lists the
 blocks that the calculator writes, with a real excerpt of each, and says which
-block owns which fact. Everything below was produced by running the calculator on
+block owns which fact. Everything below, except the layout excerpt of
+`[EXCITED STATES]`, was produced by running the calculator on
 H2, LiH and a PAW-LCAO H2, with `txt=` and `trace=True`. [What is still not
 written](#run-log-not-written) is listed at the end.
 
@@ -38,9 +39,9 @@ atoms.get_potential_energy()
   (`reference_energy_eV`, `reference_energy_Ha`).
 - Read a log back with `parse_output`, which returns a dictionary of the blocks
   (`system`, `basis`, `electrons`, `setup`, `scf_iterations`, `active_space`,
-  `gradient_measurement`, `iterations`, `summary`, `forces`, `performance` and a
-  `steps` list for a multi-step file; a key is present only when its block was
-  written). The `scf_`-prefixed keys of `[SCF SETUP]` land in `setup`:
+  `gradient_measurement`, `iterations`, `summary`, `forces`, `excited_states`,
+  `performance` and a `steps` list for a multi-step file; a key is present only when
+  its block was written). The `scf_`-prefixed keys of `[SCF SETUP]` land in `setup`:
 
 ```python
 from mandacaru.utils import parse_output
@@ -70,6 +71,7 @@ A periodic calculation (a crystal) writes `[SYSTEM]` (from a geometry), `[BASIS]
 | `[VARIATIONAL QUANTUM SUMMARY]` | quantum methods | Always for them |
 | `[SCF SUMMARY]` | `rhf`, `uhf`, `ghf`, `dft` | Always for them |
 | `[FORCES]` | any method | Each time forces are computed |
+| `[EXCITED STATES]` | `rhf`, `dft` | Each time `get_excitations()` is called, at the end of the file ([below](#run-log-excited-states)) |
 | `[PERFORMANCE]` | any method | At the end of every ASE calculation (`get_potential_energy`, `get_forces`), after `[FORCES]`; never from a direct `run()` |
 | `[GEOMETRY OPTIMIZATION SUMMARY]`, `[RELAXATION COMPLETE]` | a relaxation | When you call `write_optimization_summary` |
 
@@ -194,12 +196,50 @@ the dataset files with the digest of the bytes that were read.
         H       2      2
 ```
 
-`datasets`, `orbitals` and `functions` come in that order, `functions` last; `orbitals`
+`datasets` and `orbitals` come first and `functions` last; between them a Gaussian
+polarization shell adds `polarization_shells`, and diffuse shells add `diffuse_shells`
+and `diffuse_box` ([below](#run-log-basis-diffuse)). `orbitals`
 has one row per basis state and one per dataset channel without one; an
 unconfined orbital reads `unconfined` for its radius and has a shift of 0. With an
 unconfined basis (`energy_shift=None`) `energy_shift` reads `unconfined` and there is
 no `confinement_potential` line. `local_potential` and `dataset_xc` describe how the
 native engine integrates the local potential and the one-center terms.
+
+(run-log-basis-diffuse)=
+### The diffuse tables
+
+A molecule whose PAW-LCAO or UPAW-LCAO basis carries the `diffuse` option writes two more tables,
+`diffuse_shells` and then `diffuse_box`, after `orbitals` (and `polarization_shells`)
+and before `functions`; the `diffuse` line above them states the recipe. Rows are
+elided here, as in the sample above.
+
+```text
+    diffuse_shells:
+        symbol  l  index  rms_Bohr  rms_Angstrom  reference_l  reference_rms_Bohr  alpha_Bohr^-2  r_cut_Bohr  r_cut_Angstrom  residual  status
+        ...
+    diffuse_box:
+        atom  symbol  r_cut_Bohr  r_cut_Angstrom  face_distance_Bohr  face_distance_Angstrom  grid_norm
+        ...
+```
+
+`diffuse_shells` has one row per shell the recipe asked for, the rejected ones
+included. `rms` is the shell's rms radius, `reference_l` and `reference_rms` the
+free-atom valence orbital that scaled it, `alpha` the exponent of its quasi-Gaussian
+and `r_cut` its support. `residual` is the squared norm left after the shell is
+orthogonalized against its atom's functions of the same `l`, and `status` is `accepted`
+or `rejected`; a rejected shell, whose residual fell below the linear-dependence
+tolerance, is not in the basis. The table is written whenever the recipe built any row.
+
+`diffuse_box` is written when at least one diffuse function was accepted, with one row
+per atom that carries one. `r_cut` is the largest accepted support radius of that atom
+and `face_distance` the distance from the atom to the nearest face of the grid box (the
+cell). `grid_norm` is the smallest, over the atom's diffuse functions, of the squared
+norm sampled on the grid divided by the radial norm: 1 means the grid holds the function.
+A value below `1 - 1e-4` is the condition behind the `RuntimeWarning` that begins "the cell
+cuts" ([diffuse functions](#paw-lcao-diffuse)).
+
+`[BASIS]` is the only owner of both tables; a run without diffuse shells writes neither,
+and a crystal, which refuses `diffuse`, writes no such table.
 
 ## `[ELECTRONS]`
 
@@ -676,8 +716,8 @@ exists write a second block that holds only the gradient stage.
     untimed_s: 0.4153
     wall_time_s: 0.4749
     solver_wall_time_s: 0.0000
-    integration_backend: Rust (2 threads)
-    threads: 2
+    integration_backend: Rust
+    parallelization: kpts 1 x bands 1 x threads 2 (2 workers)
     cpu_count: 8
     mpi: not used (single process, shared-memory scoped threads)
     peak_memory_MiB: 194.7
@@ -689,8 +729,11 @@ two-body integrals are built by the first call that needs them and are part of t
 stage; `parameter optimization` is the whole solve, pool-gradient screening included.
 `untimed_s` is what no stage accounts for (building the Hamiltonian, the mapping, the
 circuit metrics, writing the log). `solver_wall_time_s` is the native solver's own
-clock, next to `wall_time_s`. `peak_memory_MiB` is the process's peak resident size. A classical run has no
-`solver_wall_time_s`.
+clock, next to `wall_time_s`. `parallelization` is the calculation's processor layout
+(`kpts`, `bands` and `threads` levels and the workers they make; [Parallel
+layout](#dft-parallel-layout)) and the one place the log writes it, once per block;
+`cpu_count` is what the machine offers. `peak_memory_MiB` is the process's peak resident
+size. A classical run has no `solver_wall_time_s`.
 On a processor, `qpu_*` lines account for the jobs that ran there. The block is
 timing data: the stdout and the file carry the same report up to it.
 
@@ -727,6 +770,59 @@ Other schemes add their own lines after `scheme`:
 `net_force` is the sum of the force vectors, which a free molecule should not feel:
 it measures the discretization error. For one atom it is left out. The `convention`
 line states the sign and the translation projection that were applied.
+
+(run-log-excited-states)=
+## `[EXCITED STATES]`
+
+Written each time `calc.get_excitations(...)` returns, to `txt=` and, with `trace=True`,
+to standard output. It is appended where the log ends, one block per request, so a
+script that asks for singlets and triplets leaves two blocks. It carries no `step:` line. It records the request, the solver's work and one row per root
+([Excited states of molecules](../guide/excited_states.md)). The excerpt shows the
+layout; `<...>` stands for a number the run determines:
+
+```text
+[EXCITED STATES]
+    approximation: tda
+    spin: singlet
+    kernel: adiabatic (lda)
+    reference: kohn-sham lda
+    roots_requested: 5
+    roots_added_for_multiplets: 0
+    tolerance: 1.0e-05
+    iterations: <n>
+    operator_applications: <n>
+    orbitals: 0-based indices of the reference in ascending energy
+    one_center_eV: first-order shift of each root from the one-center Hartree kernel the linearized PAW one-center energy omits; the one-center exchange-correlation part is not estimated
+    roots:
+        root            energy_eV        wavelength_nm  oscillator_strength           f_velocity             residual         one_center_eV transitions
+           1             <number>             <number>             <number>             <number>             <number>              <number> <i>-><a>(<weight>),...
+========================================================================
+```
+
+- `approximation`, `spin` and `kernel` are what was solved. `kernel` reads
+  `adiabatic (lda)`, `adiabatic (pbe)` or `adiabatic (hse06)` for the reference's whole
+  kernel, and `hartree` or `independent` for the two limits; on `rhf`, `reference` reads
+  `hartree-fock` and `kernel` just `adiabatic`.
+- `oscillator_strength` is the length-gauge strength and `f_velocity` the velocity-gauge
+  one (`velocity_oscillator_strengths` on the view), both dimensionless and zero for a
+  triplet. The two agree only in a complete basis ([the gauge limit](#excited-states-limits)).
+- `roots_requested` is the `num_states` you asked for and `roots_added_for_multiplets`
+  the roots the multiplet rule added to keep a degenerate multiplet whole. The table has
+  one row per root returned.
+- `tolerance` is the residual bound the solver was given, atomic units. `iterations`
+  and `operator_applications` are its work; `residual` in each row is that root's final
+  residual.
+- The `root` column counts from 1; the `Excitations` methods take a root from 0.
+  `transitions` lists `occupied->empty(weight)`, comma-separated, with 0-based indices of
+  the reference's orbitals in ascending energy; weights below 0.01 are left out.
+- The energy unit is in the key names (`energy_eV`, `one_center_eV`; `Ha` with
+  `atomic_units=True`). `wavelength_nm` is always nm. The `one_center_*` key and column
+  appear only on a PAW-LCAO Kohn-Sham state; the key line describes the column, and the
+  numbers are in the table. For a triplet the column is zero.
+
+`parse_output` returns the block under `excited_states`: the keys as strings, and `roots`
+as a list of rows keyed by their column heading. It keeps only the last block of a step,
+so read a log with several requests by splitting it or ask for one request per log.
 
 ## `[GEOMETRY OPTIMIZATION SUMMARY]` and `[RELAXATION COMPLETE]`
 
@@ -791,6 +887,7 @@ owner.
 | Program version, machine, Python and package versions | Banner |
 | Geometry, cell, periodicity | `[SYSTEM]` |
 | The basis that ran, its number of functions, the storage precision | `[BASIS]` |
+| The diffuse shells that were built, and whether the cell holds them | `[BASIS]` (`diffuse_shells`, `diffuse_box`) |
 | Grid, mapping, particle numbers, orbitals and qubits of the register | `[ELECTRONS]` |
 | What the mean-field reference stops on, and its iterations | `[SCF SETUP]`, `[SCF ITERATIONS]` |
 | Which orbitals were frozen, active or deleted | `[ACTIVE SPACE]` |
@@ -804,6 +901,7 @@ owner.
 | Final mean-field energy and convergence | `[SCF SUMMARY]` |
 | The DFT+U correction (`hubbard_u=`): its energy, and `U`, `J` and `U_eff` per element | `[SCF SUMMARY]` |
 | Force vectors and their convention | `[FORCES]` |
+| An excited-state request: approximation, spin, kernel, roots, solver work, energies, strengths in both gauges, dominant transitions, the one-center Hartree diagnostic | `[EXCITED STATES]` |
 | Stage timings, wall times, peak memory | `[PERFORMANCE]` |
 | Trajectory, relaxed geometry, verdict | `[GEOMETRY OPTIMIZATION SUMMARY]`, `[RELAXATION COMPLETE]` |
 

@@ -58,6 +58,7 @@ from ..units import energy_unit_label, from_hartree, to_hartree
 from ..utils import memory
 from .. import _native
 from .time_evolution import state_dtype
+from ..resources import native_context
 
 MEMORY_POLICIES = ("abort", "prompt", "ignore")
 DEFAULT_MEMORY_FRACTION = 0.5
@@ -344,9 +345,8 @@ class QuantumPhaseEstimation:
         self.precision = precision
         self._resources = dict(resources or {})
         self._context = None
-        from .._native import Context
 
-        self._context = Context(**dict(resources or {}))
+        self._context = native_context(resources)
         if hamiltonian is not None and (not isinstance(hamiltonian, PauliSum)):
             raise TypeError("hamiltonian must be a PauliSum (qubit operator)")
         self.hamiltonian = hamiltonian

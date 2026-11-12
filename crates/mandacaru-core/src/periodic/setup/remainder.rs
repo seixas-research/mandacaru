@@ -13,7 +13,7 @@ use super::shapes::Shapes;
 use crate::{
     paw::{
         multipole::{gaunt, gaunt_grid, multipole_range},
-        multipole_pairs::{radial_moments, radial_remainder, smooth_waves, ChannelWaves, Pair},
+        multipole_pairs::{pair_cut, radial_moments, radial_remainder, smooth_waves, ChannelWaves, Pair},
         onecenter::{one_center_tensor, Basis, Channel, Projector, Sphere, Tensor},
         record::PawDataset,
     },
@@ -199,7 +199,7 @@ impl Remainder {
                     let (c1, c2) = (channel(l1)?, channel(l2)?);
                     let pair = Pair {
                         r: dataset.r.as_slice(),
-                        r_cut: c1.r_cut.max(c2.r_cut),
+                        r_cut: pair_cut(c1.r_cut, c2.r_cut),
                         ae: [&c1.ae, &c2.ae],
                         smooth: [&c1.ps, &c2.ps],
                         waves: [c1.waves, c2.waves],

@@ -6,6 +6,25 @@ pub const HARTREE_TO_EV: f64 = 27.211386245988;
 pub const ANGSTROM_TO_BOHR: f64 = 1.0 / BOHR_TO_ANGSTROM;
 /// `1 / HARTREE_TO_EV`.
 pub const EV_TO_HARTREE: f64 = 1.0 / HARTREE_TO_EV;
+/// The elementary charge in coulomb (exact in the SI since 2019).
+pub const ELEMENTARY_CHARGE_COULOMB: f64 = 1.602176634e-19;
+/// The Planck constant in joule seconds (exact in the SI since 2019).
+pub const PLANCK_JOULE_SECOND: f64 = 6.62607015e-34;
+/// The Bohr radius in meters.
+pub const BOHR_TO_METER: f64 = BOHR_TO_ANGSTROM * 1e-10;
+/// The speed of light in vacuum, meters per second (exact in the SI).
+pub const SPEED_OF_LIGHT_METER_PER_SECOND: f64 = 299_792_458.;
+
+/// The vacuum wavelength in nanometers of a photon of `energy` Hartree, `h c / E`.
+pub fn wavelength_nm(energy: f64) -> Result<f64> {
+    if !energy.is_finite() || energy <= 0. {
+        return Err(Error::Invalid(
+            "a wavelength needs a positive finite photon energy".into(),
+        ));
+    }
+    let joule = energy * HARTREE_TO_EV * ELEMENTARY_CHARGE_COULOMB;
+    Ok(PLANCK_JOULE_SECOND * SPEED_OF_LIGHT_METER_PER_SECOND / joule * 1e9)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LengthUnit {
@@ -49,6 +68,10 @@ pub enum Quantity {
     Area,
     /// 1/Hartree to 1/eV (a response function), as the value times `1 / HARTREE_TO_EV`.
     InverseEnergy,
+    /// e/Bohr^2 to C/m^2 (an electric polarization).
+    Polarization,
+    /// e^2/(hbar Bohr) to S/cm (a conductivity).
+    Conductivity,
 }
 
 impl Quantity {
@@ -61,10 +84,12 @@ impl Quantity {
             "stress" => Self::Stress,
             "area" => Self::Area,
             "inverse_energy" => Self::InverseEnergy,
+            "polarization" => Self::Polarization,
+            "conductivity" => Self::Conductivity,
             _ => {
                 return Err(Error::Invalid(
                     "quantity must be 'energy', 'length', 'force', 'gradient_to_force', 'stress', \
-                     'area' or 'inverse_energy'"
+                     'area', 'inverse_energy', 'polarization' or 'conductivity'"
                         .into(),
                 ))
             }
@@ -84,6 +109,13 @@ impl Quantity {
             Self::Stress => HARTREE_TO_EV / BOHR_TO_ANGSTROM.powf(3.),
             Self::Area => BOHR_TO_ANGSTROM * BOHR_TO_ANGSTROM,
             Self::InverseEnergy => 1.0 / HARTREE_TO_EV,
+            Self::Polarization => ELEMENTARY_CHARGE_COULOMB / (BOHR_TO_METER * BOHR_TO_METER),
+            // e^2/hbar = 2 pi e^2/h siemens, per Bohr in centimeters.
+            Self::Conductivity => {
+                2. * std::f64::consts::PI * ELEMENTARY_CHARGE_COULOMB * ELEMENTARY_CHARGE_COULOMB
+                    / PLANCK_JOULE_SECOND
+                    / (BOHR_TO_METER * 100.)
+            }
         }
     }
 }

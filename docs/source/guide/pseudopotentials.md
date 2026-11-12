@@ -24,9 +24,11 @@ all-electron core is not. `"UPAW-LCAO"` is the unitary variant, with no overlap
 correction; it is optional and reads its own library.
 
 The dataset gives the basis, the local potential, the projectors and the
-compensation charges. Oxygen keeps its six valence electrons. The engine samples
-the orbitals, builds the integrals, the augmentation and the SCF in Rust; Python
-reads the dataset tables and prepares the radial basis tables.
+compensation charges. Oxygen keeps its six valence electrons. The engine builds
+the basis shells from the dataset (the confined, split-valence, polarization and
+diffuse shells of the options below), samples the orbitals, and builds the
+integrals, the augmentation and the SCF, all in Rust; Python validates the
+options and hands the dataset and the basis recipe to it.
 
 ## What is supported
 
@@ -39,11 +41,12 @@ reads the dataset tables and prepares the radial basis tables.
 | Geometry | molecules; a crystal reads its own datasets through the periodic setup |
 
 The following raise, or are not yet available ([open items](#not-yet-available)):
-nonlocal correlation (`pbe+rvv10`, `r2scan+rvv10`) with a scalar-relativistic
-PAW dataset; multi-shell frozen-core exchange; any method other than `dft` on a
+multi-shell frozen-core exchange; any method other than `dft` on a
 molecule with a spin-orbit dataset (`NotImplementedError`: "a molecule with a
 spin-orbit dataset needs method='dft' (spinor Kohn-Sham)"), and DFT+U there;
-molecular stress; `precision="float32"` forces; the GHF-to-quantum handoff.
+molecular stress; `precision="float32"` forces of the quantum methods (the
+Hartree–Fock and Kohn–Sham forces take `float32`, see [Forces](forces_relaxation.md));
+the GHF-to-quantum handoff.
 
 The two families of one-center terms differ by method. Kohn–Sham keeps the
 dataset's frozen one-center Hartree and exchange–correlation terms. Hartree–Fock
@@ -120,9 +123,28 @@ quantum method; the cost is paid before any active space and is not reduced by
 it. The cell must hold the shells: a shell cut by the box is a different
 function, and the energy is wrong rather than merely unconverged. Allow several
 ångström of vacuum more than for the ordinary basis, and the most for
-lithium. Diffuse functions that become the lowest virtual orbitals defeat a
-truncation ranked by orbital energy; rank by MP2 instead ([active
-spaces](active_space.md)). A periodic geometry with `diffuse` is refused.
+lithium.
+
+The calculator checks it. After the integrals are built it samples every diffuse
+function on the real-space grid, and a function that keeps less than
+$1 - 10^{-4}$ of its radial norm on the grid counts as cut. Any cut function
+issues a `RuntimeWarning` that begins "the cell cuts", gives how many were cut
+and names the worst (the fraction of its norm that the grid keeps, its function
+index and its atom); the calculation then goes on, so enlarge the vacuum until
+the warning is gone. The check is also in the run log: the `[BASIS]` block of a
+molecule with diffuse shells (`"PAW-LCAO"` or `"UPAW-LCAO"`) lists every shell and, for each atom, the largest
+accepted cutoff radius against the distance from the atom to the nearest face of
+the cell ([the diffuse tables of `[BASIS]`](#run-log-basis-diffuse)). A basis
+without diffuse shells is not checked, and the check covers only the shells the
+`diffuse` option adds.
+
+Diffuse functions are among the lowest virtual orbitals, so a truncation ranked
+by orbital energy would fill the register with them. An `active_space` that
+ranks by `"energy"` (the default) and keeps fewer virtual orbitals than the basis
+has raises `ValueError`, naming the number of diffuse functions and the virtual
+orbitals kept. Rank by MP2 instead (`"method": "mp2"`, [active
+spaces](active_space.md)), or keep every virtual orbital. A periodic geometry
+with `diffuse` is refused.
 
 (paw-lcao-libraries)=
 ## The dataset libraries
@@ -170,8 +192,8 @@ and renamed, so a failed save leaves an existing file as it was. A JSON save is 
 plain write and is not.
 
 A library dataset is read with a context of its own, with the default thread
-count and memory budget, so the `threads` and `memory_limit_bytes` of a
-calculator's `resources` do not limit the decoding of its dataset files.
+count and memory budget, so the `parallelization` and the `memory_limit_bytes` of a
+calculator do not limit the decoding of its dataset files.
 
 The files already in a library were written by the previous writer and were not
 regenerated; they load unchanged. Files saved by this build use the native

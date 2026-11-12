@@ -97,7 +97,7 @@ class PseudoPotential:
     relativistic_exchange: bool = False
     #: Partial core density the local potential was unscreened with (zero
     #: without a core correction), and the record of how it was built
-    #: (:mod:`.core_correction`).
+    #: (``paw::core_correction``).
     core_density: np.ndarray = None
     nlcc: dict = field(default_factory=dict)
     #: What its generator could not remove (``ghosts="flag"``):

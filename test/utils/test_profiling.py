@@ -1,20 +1,21 @@
 # -*- coding: utf-8 -*-
 # file: test_profiling.py
 
-"""Profiling of the simulation stages: timing, peak memory and core count.
+"""Profiling of the simulation stages: timing, peak memory and the processor layout.
 
 Covers the resource-reporting features:
 
-* the native engine exposes its thread count (``_native.num_threads``);
-* a calculation times its integral stages and records the cores / backend /
-  peak memory (``CalculationResult.timings``);
+* the native engine exposes its default worker count (``_native.num_threads``);
+* a calculation times its integral stages and records its processor layout and
+  peak memory;
 * :class:`~mandacaru.utils.profiling.Timings` accumulates named stage wall-times.
 """
 
 import pytest
 
 from mandacaru import _native
-from mandacaru.utils.profiling import Timings, backend_cores, peak_memory_mb
+from mandacaru.resources import layout_label
+from mandacaru.utils.profiling import Timings, peak_memory_mb
 from ase import Atoms
 from mandacaru import Mandacaru
 
@@ -23,13 +24,12 @@ class TestBackendCores:
     def test_num_threads_reports_positive_int_when_native_backend(self):
         n = _native.num_threads()
         assert isinstance(n, int) and n >= 1
-        assert backend_cores() == n
 
-    def test_the_label_names_the_engine_and_its_threads(self):
-        from mandacaru.utils.profiling import backend_label
-
-        n = _native.num_threads()
-        assert backend_label() == (f"Rust ({n} threads)" if n > 1 else "Rust (serial)")
+    def test_the_layout_label_names_every_level_and_the_processor_count(self):
+        context = _native.Context(threads=2, kpts=3, memory_limit_bytes=1 << 20)
+        assert layout_label(context) == "kpts 3 x bands 1 x threads 2 (6 workers)"
+        assert context.parallelization == {"kpts": 3, "bands": 1, "threads": 2}
+        assert context.workers == 6
 
     def test_the_cores_for_a_grid_product_are_the_hardware_threads(self):
         assert _native.grid_blas_threads() >= 1
@@ -40,7 +40,7 @@ class TestBackendCores:
 
 class TestTimings:
     def test_stage_accumulates(self):
-        t = Timings(n_cores=4, backend="C (OpenMP)")
+        t = Timings(parallelization="kpts 2 x bands 1 x threads 2 (4 workers)")
         with t.time("stage-a"):
             _ = sum(range(1000))
         with t.time("stage-a"):
@@ -50,17 +50,20 @@ class TestTimings:
         assert set(t.stages) == {"stage-a", "stage-b"}
         assert t.total == pytest.approx(sum(t.stages.values()))
         d = t.as_dict()
-        assert d["n_cores"] == 4 and d["backend"] == "C (OpenMP)"
+        assert d["parallelization"] == "kpts 2 x bands 1 x threads 2 (4 workers)"
         assert "peak_memory_mb" in d
 
-    def test_format_report_mentions_cores_and_memory(self):
-        t = Timings(n_cores=8, backend="C (OpenMP)")
+    def test_format_report_mentions_the_layout_and_memory(self):
+        t = Timings(parallelization="kpts 1 x bands 1 x threads 8 (8 workers)")
         t.add("only-stage", 0.01)
         t.wall_time = 0.02
         report = t.format_report()
-        assert "cores (OpenMP threads)" in report
+        assert "parallelization" in report and "8 workers" in report
         assert "peak memory" in report
         assert "total wall time" in report
+        resources = t.resources()
+        assert resources["parallelization"] == "kpts 1 x bands 1 x threads 8 (8 workers)"
+        assert "threads" not in resources
 
 
 class TestADAPTProfiling:

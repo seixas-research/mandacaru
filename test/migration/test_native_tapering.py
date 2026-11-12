@@ -35,7 +35,7 @@ def calculate(name, method, taper, **options):
     calc = Mandacaru(method=method, taper=taper, grid_spacing=0.45, trace=False,
                      basis={"name": "PAW-LCAO", "size": "SZ"}, atomic_units=True,
                      optimizer=OPTIMIZER, convergence=CONVERGENCE, max_iterations=100,
-                     resources={"threads": 1}, **options)
+                     parallelization={"threads": 1}, **options)
     atoms.calc = calc
     atoms.get_potential_energy()
     return calc
@@ -123,7 +123,7 @@ def test_every_shipped_frozen_hamiltonian_is_taperable_through_the_option():
             with Mandacaru(method="vqe", hamiltonian=operator, n_spatial_orbitals=2,
                            num_particles=(1, 1), mapping=case["mapping"], taper=taper,
                            atomic_units=True, optimizer={"method": "BFGS", "tol": 1e-12},
-                           resources={"threads": 1}, trace=False) as calc:
+                           parallelization={"threads": 1}, trace=False) as calc:
                 result = calc.run()
                 energies.append(result.energy_hartree)
                 assert calc.n_qubits == (case["tapered_qubits"] if taper else n)
@@ -135,7 +135,7 @@ def h2_calculator(**options):
                 if c["molecule"] == "H2" and c["mapping"] == "jordan_wigner")
     context = _native.Context(threads=1)
     operator = context.pauli_operator(4, [tuple(t) for t in case["terms"]])
-    options = {"method": "adapt-vqe", "atomic_units": True, "resources": {"threads": 1},
+    options = {"method": "adapt-vqe", "atomic_units": True, "parallelization": {"threads": 1},
                "trace": False, **options}
     return Mandacaru(hamiltonian=operator, n_spatial_orbitals=2, num_particles=(1, 1), **options)
 
@@ -187,7 +187,7 @@ class TestRefusals:
         log = tmp_path / "output.txt"
         with Mandacaru(method="vqe", hamiltonian=operator, n_spatial_orbitals=2,
                        num_particles=(1, 1), mapping="parity_reduced", taper=True,
-                       atomic_units=True, resources={"threads": 1}, txt=str(log)) as calc:
+                       atomic_units=True, parallelization={"threads": 1}, txt=str(log)) as calc:
             calc.run()
             assert calc.problem.taper is None and calc.n_qubits == 2
         assert "Z2 tapering: none found" in log.read_text()

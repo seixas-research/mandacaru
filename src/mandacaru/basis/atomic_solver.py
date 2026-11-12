@@ -27,16 +27,16 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 import numpy as np
+from .. import _native
+from ..resources import native_context
 
 #: Default radial grid: points and outer radius (Bohr).
 DEFAULT_POINTS = 4000
 DEFAULT_R_MAX = 25.0
 
 
-def _context(resources=None):
-    from .. import _native
-
-    return _native.Context(**dict(resources or {}))
+def _context(resources=None, parallelization=None):
+    return native_context(resources, parallelization, takes_layout=True)
 
 
 def lda_exchange(rho):
@@ -129,7 +129,7 @@ class AtomicResult:
 
     def radial(self, n: int, l: int) -> np.ndarray:
         """``R_nl(r) = u_nl / r``."""
-        return self.orbitals[(n, l)] / self.r
+        return _native.quotients(*(np.ascontiguousarray(a, dtype=float) for a in (self.orbitals[(n, l)], self.r)))
 
     @property
     def relativity(self) -> str:
@@ -156,7 +156,7 @@ class AtomicResult:
 
     @property
     def n_electrons(self) -> int:
-        return int(round(sum(self.occupations.values())))
+        return int(_native.rounded_total(list(self.occupations.values())))
 
     def __repr__(self) -> str:
         return (f"AtomicResult(Z={self.atomic_number}, "
@@ -172,7 +172,7 @@ def solve_atom(atomic_number: int, *, points: int = DEFAULT_POINTS,
                r_max: float = DEFAULT_R_MAX, max_iterations: int = 200,
                tolerance: float = 1e-6, mixing: float = 0.3, configuration=None,
                confinement=None, xc: str = "lda", relativity: str = "none",
-               polish: int = 12, resources=None) -> AtomicResult:
+               polish: int = 12, resources=None, parallelization=None) -> AtomicResult:
     r"""Self-consistent spherical atom.
 
     Parameters
@@ -210,7 +210,9 @@ def solve_atom(atomic_number: int, *, points: int = DEFAULT_POINTS,
         Without it the atom and the generators discretize a relativistic s state two
         different ways and disagree about where the level is (9.5 mHa for oxygen's 2s).
     resources : dict, optional
-        Keyword arguments of the native ``Context`` (threads, memory).
+        Native context keys ``memory_limit_bytes``, ``disk_offload_bytes``, ``scratch_dir``.
+    parallelization : dict, optional
+        ``{"threads": n}``, the solve's workers (default: the native default count).
 
     Returns
     -------
@@ -218,9 +220,8 @@ def solve_atom(atomic_number: int, *, points: int = DEFAULT_POINTS,
         Converged orbitals, eigenvalues, density and potentials.
     """
     if callable(confinement):
-        from .. import _native
         confinement = confinement(_native.uniform_grid(int(points), float(r_max)))
-    context = _context(resources)
+    context = _context(resources, parallelization)
     spec = (None if configuration is None else
             [(int(n), int(l), float(q)) for (n, l), q in configuration.items() if q > 0])
     raw = context.solve_atom(

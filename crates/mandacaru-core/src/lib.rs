@@ -18,7 +18,7 @@ pub mod snapshot_table;
 pub mod units;
 pub mod volumetric;
 
-pub use context::{default_threads, hardware_threads, Buffer, Context, Reservation};
+pub use context::{default_threads, hardware_threads, worker_threads, Buffer, Context, Layout, Level, Reservation};
 pub use geometry::Geometry;
 pub use mandacaru_kernels::bloch::Complex64;
 pub use mandacaru_kernels::runtime::WorkerStats;
@@ -42,6 +42,9 @@ pub enum Error {
         available: usize,
     },
     Allocation,
+    /// A parallel layout whose tasks do not fit in the memory budget; the message names the
+    /// largest layout that does.
+    LayoutBudget(String),
     Kernel(String),
     /// An external executor ended the run on purpose (for example, its run
     /// budget is exhausted). Not a fault: solvers that can keep their best
@@ -55,6 +58,7 @@ impl std::fmt::Display for Error {
             Self::Invalid(message)
             | Self::Unsupported(message)
             | Self::Kernel(message)
+            | Self::LayoutBudget(message)
             | Self::Interrupted(message) => {
                 f.write_str(message)
             }

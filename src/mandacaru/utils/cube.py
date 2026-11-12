@@ -53,6 +53,7 @@ from __future__ import annotations
 import os
 
 import numpy as np
+from ..resources import native_context
 
 
 #: The second comment line.  ``ase.io.cube.read_cube`` parses this exact
@@ -137,8 +138,7 @@ def write_cube(path, data, origin, step, numbers, positions, comment: str='', ch
     charges = np.asarray(numbers, dtype=float) if charges is None else np.asarray(charges, dtype=float).reshape(-1)
     if len(charges) != len(numbers):
         raise ValueError(f'{len(charges)} charges but {len(numbers)} atoms')
-    from .._native import Context
-    Context(**dict(resources or {})).write_field(str(path), data, origin.tolist(), step.tolist(), numbers.tolist(), positions.tolist(), format='cube', charges=charges.tolist(), comment=str(comment))
+    native_context(resources).write_field(str(path), data, origin.tolist(), step.tolist(), numbers.tolist(), positions.tolist(), format='cube', charges=charges.tolist(), comment=str(comment))
     return str(path)
 
 
@@ -162,8 +162,7 @@ def write_xsf(path, data, origin, step, numbers, positions, cell=None, periodic:
     :func:`write_cube` is the more precise of the two.
     """
     data, origin, step, numbers, positions = _checked_field(data, origin, step, numbers, positions)
-    from .._native import Context
-    Context(**dict(resources or {})).write_field(str(path), data, origin.tolist(), step.tolist(), numbers.tolist(), positions.tolist(), format='xsf', periodic=periodic, cell=None if cell is None else np.asarray(cell, dtype=float).reshape(3, 3).tolist())
+    native_context(resources).write_field(str(path), data, origin.tolist(), step.tolist(), numbers.tolist(), positions.tolist(), format='xsf', periodic=periodic, cell=None if cell is None else np.asarray(cell, dtype=float).reshape(3, 3).tolist())
     return str(path)
 
 

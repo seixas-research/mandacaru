@@ -34,7 +34,7 @@ def test_saved_solver_view_can_resume_a_hamiltonian_with_small_terms(tmp_path):
     hpath.write_text(json.dumps(payload))
     checkpoint = tmp_path / "checkpoint.json"
     with Mandacaru(
-        method="adapt-vqe", load_hamiltonian=hpath, resources={"threads": 1}
+        method="adapt-vqe", load_hamiltonian=hpath, parallelization={"threads": 1}
     ) as calc:
         result = calc.run()
         assert result.success
@@ -44,7 +44,7 @@ def test_saved_solver_view_can_resume_a_hamiltonian_with_small_terms(tmp_path):
         method="adapt-vqe",
         load_hamiltonian=hpath,
         resume=checkpoint,
-        resources={"threads": 1},
+        parallelization={"threads": 1},
     ) as calc:
         resumed = calc.run()
         assert resumed.success
@@ -60,7 +60,7 @@ def test_public_result_retains_inner_failures_and_honors_growth_budget(method):
         load_hamiltonian=reference,
         max_iterations=3,
         optimizer={"method": "BFGS", "maxiter": 0},
-        resources={"threads": 1},
+        parallelization={"threads": 1},
     ) as calc:
         with pytest.warns(RuntimeWarning, match="inner optimizer did not converge"):
             result = calc.run()
@@ -92,7 +92,7 @@ def test_spin_orbit_pool_handles_complex_spin_mixing_and_checkpoint_resume(
         num_particles=(1, 0),
         mapping=mapping,
         convergence={"gradient": 1e-9},
-        resources={"threads": 1},
+        parallelization={"threads": 1},
     )
     checkpoint = tmp_path / "spin-orbit.json"
     with Mandacaru(**options) as calc:

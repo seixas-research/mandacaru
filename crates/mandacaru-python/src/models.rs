@@ -2,7 +2,8 @@
 use super::{array, copy, error, layout, Array, PyContext};
 use mandacaru_core::models::{
     radial_xc,
-    relativity::{PotentialTerms, Treatment, SCALAR_KAPPA, SPEED_OF_LIGHT},
+    configuration,
+    relativity::{self, PotentialTerms, Treatment, SCALAR_KAPPA, SPEED_OF_LIGHT},
     spherical,
 };
 use numpy::PyReadonlyArray1;
@@ -271,6 +272,57 @@ pub fn uniform_grid<'py>(
     array(py, &[points], out)
 }
 
+/// `kappa` of the `(l, j)` subshell (`models::relativity::kappa_of`).
+#[pyfunction]
+pub fn relativity_kappa_of(l: usize, j: f64) -> PyResult<i32> {
+    relativity::kappa_of(l, j).map_err(error)
+}
+
+/// The orbital angular momentum of a Dirac `kappa`.
+#[pyfunction]
+pub fn relativity_l_of(kappa: i32) -> PyResult<usize> {
+    relativity::l_of(kappa).map_err(error)
+}
+
+/// `j = |kappa| - 1/2`.
+#[pyfunction]
+pub fn relativity_j_of(kappa: i32) -> f64 {
+    relativity::j_of(kappa)
+}
+
+/// `2j + 1`.
+#[pyfunction]
+pub fn relativity_degeneracy(kappa: i32) -> usize {
+    relativity::degeneracy(kappa)
+}
+
+/// The `kappa` values of a subshell, by increasing `j`.
+#[pyfunction]
+pub fn relativity_kappa_values(l: usize) -> Vec<i32> {
+    relativity::kappa_values(l)
+}
+
+/// `2 / (2l + 1) (eps_{l+1/2} - eps_{l-1/2})` of `{kappa: eps}`; zero for an s shell.
+#[pyfunction]
+pub fn relativity_spin_orbit_difference(values: &Bound<'_, PyDict>, l: usize) -> PyResult<f64> {
+    if l == 0 {
+        return Ok(0.);
+    }
+    let get = |kappa: i64| -> PyResult<f64> {
+        values
+            .get_item(kappa)?
+            .ok_or_else(|| pyo3::exceptions::PyKeyError::new_err(kappa))?
+            .extract::<f64>()
+    };
+    Ok(relativity::spin_orbit_difference(l, get(-(l as i64 + 1))?, get(l as i64)?))
+}
+
+/// The valence subshells `(n, l)` of a configuration `[(n, l, occupation)]`.
+#[pyfunction]
+pub fn valence_subshells(configuration: Vec<(usize, usize, f64)>) -> Vec<(usize, usize)> {
+    configuration::valence_subshells(&configuration)
+}
+
 #[pyfunction]
 pub fn relativity_j_average(values: &Bound<'_, PyDict>, l: usize) -> PyResult<f64> {
     if l == 0 {
@@ -377,6 +429,13 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(relativity_f_evaluate, m)?)?;
     m.add_function(wrap_pyfunction!(uniform_grid, m)?)?;
     m.add_function(wrap_pyfunction!(relativity_j_average, m)?)?;
+    m.add_function(wrap_pyfunction!(relativity_kappa_of, m)?)?;
+    m.add_function(wrap_pyfunction!(relativity_l_of, m)?)?;
+    m.add_function(wrap_pyfunction!(relativity_j_of, m)?)?;
+    m.add_function(wrap_pyfunction!(relativity_degeneracy, m)?)?;
+    m.add_function(wrap_pyfunction!(relativity_kappa_values, m)?)?;
+    m.add_function(wrap_pyfunction!(relativity_spin_orbit_difference, m)?)?;
+    m.add_function(wrap_pyfunction!(valence_subshells, m)?)?;
     m.add_function(wrap_pyfunction!(relativity_large_component, m)?)?;
     m.add_function(wrap_pyfunction!(relativity_small_component, m)?)?;
     Ok(())

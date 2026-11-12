@@ -140,7 +140,7 @@ def test_all_electron_analytic_forces_are_allowed_under_float32(method):
     for precision in ("float64", "float32"):
         atoms = h2()
         atoms.calc = Mandacaru(method=method, grid_spacing=0.25, precision=precision,
-                               resources={"threads": 1})
+                               parallelization={"threads": 1})
         forces[precision] = atoms.get_forces()
     scale = max(np.abs(forces["float64"]).max(), 10.0)
     assert np.abs(forces["float32"] - forces["float64"]).max() / scale <= 1e-6

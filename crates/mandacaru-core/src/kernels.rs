@@ -52,7 +52,7 @@ pub fn one_body(
     finite(potential, "potential")?;
     let mut kinetic = ctx.allocate(product(&[orbitals, orbitals])?)?;
     let mut local = ctx.allocate(product(&[orbitals, orbitals])?)?;
-    let _scratch = ctx.reserve(product(&[grid.points(), 16, ctx.threads().min(orbitals)])?)?;
+    let _scratch = ctx.reserve(product(&[grid.points(), 16, ctx.width().min(orbitals)])?)?;
     let [nx, ny, nz] = grid.shape().map(|n| n as i32);
     // SAFETY: input shapes and integer ranges are checked; output buffers are
     // independent M*M allocations. The kernel joins all scoped workers.
@@ -534,8 +534,9 @@ pub fn bloch_project(
     c64_finite(columns, "projector columns")?;
     let size = product(&[call.images.len(), call.ms.len(), projectors])?;
     let mut output = ctx.allocate::<C64>(size)?;
-    // Every worker sums into a private copy of the output, joined in worker order afterwards.
-    let _scratch = ctx.reserve(product(&[ctx.threads(), size, 16])?)?;
+    // Each fixed group of point blocks sums into a private copy of the output, one group per
+    // worker at a time, the copies added in group order afterwards.
+    let _scratch = ctx.reserve(product(&[ctx.width(), size, 16])?)?;
     let spline = call.spline;
     let points_i = i64::try_from(points).map_err(|_| Error::Overflow)?;
     // SAFETY: coordinates, images, spline, angular indices and the `P * points` columns are

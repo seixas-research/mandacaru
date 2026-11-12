@@ -200,7 +200,7 @@ def test_native_spherical_lda_atom_matches_python_fixed_point(z):
     from mandacaru.basis.atomic_solver import solve_atom
     options = dict(points=600, r_max=18., tolerance=1e-9)
     expected = solve_atom(z, **options)
-    actual = solve_atom(z,  resources={"threads": 1}, **options)
+    actual = solve_atom(z,  parallelization={"threads": 1}, **options)
     assert actual.converged and actual.details["engine"] == "rust"
     assert actual.total_energy == pytest.approx(expected.total_energy, abs=2e-7)
     assert np.allclose(actual.density, expected.density, atol=1e-8, rtol=1e-7)

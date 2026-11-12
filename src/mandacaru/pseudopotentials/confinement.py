@@ -70,17 +70,14 @@ import numpy as np
 from .. import _native
 from .native_context import context as _context
 
-#: Amplitude ``A`` (Hartree) of the confining potential.
-CONFINEMENT_AMPLITUDE = 12.0
-
-#: Inner radius of the confining potential as a fraction of ``r_c``.  Below
-#: it the atom is untouched.
-CONFINEMENT_INNER_FRACTION = 0.6
-
-#: The ``energy_shift`` (eV) a pseudopotential basis uses when the basis dict
-#: does not say.  ``"energy_shift": None``
-#: restores the unconfined free-atom orbital.
-DEFAULT_ENERGY_SHIFT = 0.1
+#: Amplitude ``A`` (Hartree) of the confining potential, its inner radius as a fraction of
+#: ``r_c`` (below it the atom is untouched), the ``energy_shift`` (eV) a pseudopotential basis
+#: uses when the basis dict does not say (``"energy_shift": None`` restores the unconfined
+#: free-atom orbital) and the smallest one accepted: one definition each, in Rust.
+CONFINEMENT_AMPLITUDE = _native.CONFINEMENT_AMPLITUDE
+CONFINEMENT_INNER_FRACTION = _native.CONFINEMENT_INNER_FRACTION
+DEFAULT_ENERGY_SHIFT = _native.DEFAULT_ENERGY_SHIFT
+MIN_ENERGY_SHIFT = _native.MIN_ENERGY_SHIFT
 
 #: The basis options this module provides to PAW-LCAO and UPAW-LCAO, whose
 #: datasets define ``channel_operator_on``, and their defaults (the polarization shell is derived from the
@@ -97,28 +94,6 @@ CONFINEMENT_DEFAULT_OPTIONS = {"energy_shift": DEFAULT_ENERGY_SHIFT}
 #: split off the outermost channel -- Mandacaru's original, and what an
 #: unconfined element falls back to when the option is left unwritten.
 POLARIZATION_KINDS = ("gaussian", "orbital")
-
-
-#: Smallest ``energy_shift`` (eV) accepted.  Below it the cutoff radius runs
-#: past the end of the dataset's radial table, and the request is
-#: indistinguishable from "no confinement", which has its own spelling.
-MIN_ENERGY_SHIFT = 1e-3
-
-#: Target spacing (Bohr) of the finer of the two radial grids the confined
-#: problem is solved on; the coarser is twice it, and the two are
-#: Richardson-extrapolated.  The actual spacings are ``r_c / n`` so that the
-#: wall sits exactly on a node -- otherwise the eigenvalue is a staircase in
-#: ``r_c`` and the root search below has nothing smooth to converge on.
-RADIAL_SPACING = 0.01
-
-#: Growth factor of the outward bracketing scan, and the tolerance (Bohr) of
-#: the root search on ``r_c``.
-BRACKET_GROWTH = 1.25
-RADIUS_TOLERANCE = 1e-4
-
-#: Fraction of the radial table the cutoff may reach; beyond it the dataset's
-#: potential is no longer tabulated.
-TABLE_FRACTION = 0.95
 
 
 # --------------------------------------------------------------------------- #
@@ -385,7 +360,7 @@ def confined_orbital(pp, l: int, energy_shift: float,
     amplitude, inner = validate_confinement_potential(confinement_potential)
     state = int(state)
     pp_key = getattr(pp, "sha256", None) or id(pp)
-    key = (pp_key, l, round(shift, 12), amplitude, inner, state)
+    key = (pp_key, l, shift, amplitude, inner, state)
     entry = _CACHE.get(key)
     if entry is not None and (entry[0] is pp or entry[0] == pp_key):
         return entry[1]

@@ -37,7 +37,7 @@ impl Fft3 {
             .map(|p| p.get_inplace_scratch_len())
             .max()
             .unwrap();
-        let workers = ctx.threads().min(shape[0].max(shape[1] * shape[2]));
+        let workers = ctx.width().min(shape[0].max(shape[1] * shape[2]));
         Ok(Self {
             context: ctx.clone(),
             shape,

@@ -67,6 +67,36 @@ pub fn kappa_values(l: usize) -> Vec<i32> {
 pub fn degeneracy(kappa: i32) -> usize {
     2 * kappa.unsigned_abs() as usize
 }
+/// `kappa` of the `(l, j)` subshell: `-(l+1)` for `j = l + 1/2`, `l` for `j = l - 1/2` (`l > 0`).
+pub fn kappa_of(l: usize, j: f64) -> Result<i32> {
+    if (j - (l as f64 + 0.5)).abs() < 1e-9 {
+        return Ok(-(l as i32 + 1));
+    }
+    if (j - (l as f64 - 0.5)).abs() < 1e-9 && l > 0 {
+        return Ok(l as i32);
+    }
+    Err(invalid(format!("j must be l +/- 1/2 (and positive); got l={l}, j={j}")))
+}
+/// The orbital angular momentum of a Dirac quantum number `kappa` (never 0).
+pub fn l_of(kappa: i32) -> Result<usize> {
+    match kappa {
+        0 => Err(invalid("kappa = 0 is not a Dirac quantum number")),
+        k if k < 0 => Ok((-k - 1) as usize),
+        k => Ok(k as usize),
+    }
+}
+/// `j = |kappa| - 1/2`.
+pub fn j_of(kappa: i32) -> f64 {
+    kappa.unsigned_abs() as f64 - 0.5
+}
+/// `2 / (2l + 1) (eps_{l+1/2} - eps_{l-1/2})`: zero for an s shell.
+pub fn spin_orbit_difference(l: usize, up: f64, down: f64) -> f64 {
+    if l == 0 {
+        0.
+    } else {
+        2. / (2 * l + 1) as f64 * (up - down)
+    }
+}
 /// `(2j+1)`-weighted average over the two `j` of one `l`.
 pub fn j_average(l: usize, values: impl Fn(i32) -> f64) -> f64 {
     let ks = kappa_values(l);

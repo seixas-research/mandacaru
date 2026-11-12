@@ -13,7 +13,7 @@ def test_sdk_objective_and_parameter_shift_match_native_analytic_gradient(provid
     with Mandacaru(method="vqe", hamiltonian=operator, n_spatial_orbitals=2,
                    num_particles=(1, 0), backend_provider=provider,
                    execute_circuits=True, atomic_units=True,
-                   optimizer={"maxiter": 0}, resources={"threads": 1}) as calc:
+                   optimizer={"maxiter": 0}, parallelization={"threads": 1}) as calc:
         calls = []
         original = calc.provider.statevector
 

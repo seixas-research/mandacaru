@@ -1,5 +1,8 @@
 use mandacaru_core::{
-    math::projection::{hermitian_density, ComplexProjector, RealProjector},
+    math::projection::{
+        density_tile, hermitian_density, hermitian_density_tiles_accumulate,
+        hermitian_density_tiles_accumulate_range, ComplexProjector, RealProjector,
+    },
     quantum::C64,
     Context,
 };
@@ -196,4 +199,97 @@ fn tiled_local_projection_matches_direct_signed_quadrature_and_releases_its_budg
     let small = Context::new(Some(1), 64).unwrap();
     assert!(RealProjector::new(&small, &[0.; 64], 8, 8).is_err());
     assert_eq!(small.memory_used(), 0);
+}
+
+#[test]
+fn the_real_projection_is_bitwise_the_same_on_every_thread_count_and_budget() {
+    // 40 orbitals on 3 x 8192 + 5 points: four fixed groups of tiles. The budget of 3 MiB leaves
+    // room for one worker only.
+    let (m, n) = (40, 3 * 8192 + 5);
+    let samples: Vec<_> = (0..m * n).map(|i| (i as f64 * 0.0137).sin()).collect();
+    let field: Vec<_> = (0..n).map(|i| (i as f64 * 0.0071).cos()).collect();
+    let mut reference: Option<Vec<f64>> = None;
+    for (threads, budget) in [
+        (1, 64 << 20),
+        (2, 64 << 20),
+        (3, 64 << 20),
+        (4, 64 << 20),
+        (4, 3 << 20),
+    ] {
+        let ctx = Context::new(Some(threads), budget).unwrap();
+        let result = {
+            let mut projector = RealProjector::new(&ctx, &samples, m, n).unwrap();
+            projector.project(&field).unwrap().to_vec()
+        };
+        if threads == 4 && budget == 64 << 20 {
+            assert!(
+                ctx.workers_peak() > 1,
+                "the test must start several workers"
+            );
+        }
+        match &reference {
+            None => reference = Some(result),
+            Some(first) => assert!(*first == result, "{threads} threads, {budget} bytes differ"),
+        }
+    }
+}
+
+#[test]
+fn a_density_accumulated_by_ranges_of_whole_tiles_equals_the_whole_grid_bit_for_bit() {
+    let ctx = Context::new(Some(1), 64 << 20).unwrap();
+    let (m, n) = (6, 3 * density_tile(10_000) + 17);
+    let samples: Vec<C64> = (0..m * n)
+        .map(|i| C64::new((i as f64 * 0.021).sin(), (i as f64 * 0.013).cos()))
+        .collect();
+    let mut d = DMatrix::from_fn(m, m, |i, j| {
+        C64::new((i + 2 * j) as f64 * 0.1, (i as f64 - j as f64) * 0.05)
+    });
+    d = (&d + d.adjoint()) * C64::new(0.5, 0.);
+    let mut whole = vec![0.25; n];
+    hermitian_density_tiles_accumulate(&ctx, samples.as_slice(), &d, n, 0.75, &mut whole).unwrap();
+    let tile = density_tile(n);
+    for cuts in [
+        vec![0, n],
+        vec![0, tile, n],
+        vec![0, 2 * tile, 3 * tile, n],
+        vec![0, tile, 2 * tile, 3 * tile, n],
+    ] {
+        let mut split = vec![0.25; n];
+        for w in cuts.windows(2) {
+            hermitian_density_tiles_accumulate_range(
+                &ctx,
+                samples.as_slice(),
+                &d,
+                n,
+                0.75,
+                w[0],
+                &mut split[w[0]..w[1]],
+            )
+            .unwrap();
+        }
+        assert!(split == whole, "cuts {cuts:?}");
+    }
+    // A range that does not start or end on a tile boundary is refused.
+    let mut part = vec![0.; tile];
+    assert!(hermitian_density_tiles_accumulate_range(
+        &ctx,
+        samples.as_slice(),
+        &d,
+        n,
+        1.,
+        1,
+        &mut part
+    )
+    .is_err());
+    let mut part = vec![0.; tile - 1];
+    assert!(hermitian_density_tiles_accumulate_range(
+        &ctx,
+        samples.as_slice(),
+        &d,
+        n,
+        1.,
+        0,
+        &mut part
+    )
+    .is_err());
 }

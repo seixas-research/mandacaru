@@ -244,3 +244,87 @@ fn a_screened_hybrid_on_a_paw_molecule_converges_and_is_stationary_in_the_forces
     drop((gradient, pbe, hse, base));
     assert_eq!(ctx.memory_used(), 0);
 }
+
+#[test]
+fn the_sphere_polarization_kernel_is_the_derivative_of_its_fock() {
+    // The spheres' spin polarization P (the open-shell part of the frozen short-range semilocal
+    // exchange) through its exact second derivative (`SpinTerms::polarization_kernel`), against a
+    // central difference of its Fock matrices, at a spin-polarized point and at a closed shell.
+    // This is the fast gate of the term the triplet and unrestricted kernels of HSE06 carry.
+    use mandacaru_core::{models::HSE06_OMEGA, quantum::C64};
+    use nalgebra::DMatrix;
+    let ctx = Context::new(Some(1), 512 << 20).unwrap();
+    let base = integrals(&ctx, &H2, "raw");
+    let state = base
+        .kohn_sham(
+            "lda",
+            [1, 1],
+            false,
+            &ScfOptions {
+                tolerance: 1e-10,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let screened = base
+        .paw_setup
+        .as_ref()
+        .unwrap()
+        .screened_exchange(&base, HSE06_OMEGA)
+        .unwrap();
+    let d = state.densities[0].map(|z: C64| z.re);
+    let m = d.nrows();
+    // A symmetric orbital product to polarize with, and two generic directions.
+    let c = DMatrix::from_fn(m, m, |i, j| ((i * 7 + j * 3) as f64 * 0.37).sin());
+    let product = |a: usize, b: usize| {
+        let x = c.column(a) * c.column(b).transpose();
+        (&x + x.transpose()) * 0.5
+    };
+    let polarize = product(0, 1) * 0.05;
+    let (d_up, d_down) = (
+        product(1, 2) * 0.3 + product(0, 0) * 0.1,
+        product(2, 3) * -0.2,
+    );
+    let check = |up: &DMatrix<f64>, down: &DMatrix<f64>, du: &DMatrix<f64>, dd: &DMatrix<f64>| {
+        let kernel = screened.spin.polarization_kernel(&ctx, up, down).unwrap();
+        let [ku, kd] = kernel.apply(du, dd).unwrap();
+        let fock = |h: f64| {
+            screened
+                .spin
+                .polarization(&ctx, &(up + du * h), &(down + dd * h))
+                .unwrap()
+                .1
+        };
+        let difference = |h: f64| {
+            let (p, q) = (fock(h), fock(-h));
+            [(&p[0] - &q[0]) / (2. * h), (&p[1] - &q[1]) / (2. * h)]
+        };
+        let (coarse, fine) = (difference(2e-4), difference(1e-4));
+        let estimate = [
+            (&fine[0] * 4. - &coarse[0]) / 3.,
+            (&fine[1] * 4. - &coarse[1]) / 3.,
+        ];
+        let scale = ku.amax().max(kd.amax());
+        let error = (&ku - &estimate[0]).amax().max((&kd - &estimate[1]).amax());
+        (scale, error)
+    };
+    let (up, down) = (&d + &polarize, &d - &polarize);
+    let (scale, error) = check(&up, &down, &d_up, &d_down);
+    assert!(scale > 1e-6, "the polarization kernel vanishes: {scale:e}");
+    assert!(
+        error < 1e-7 * scale,
+        "polarized point: {error:e} of {scale:e}"
+    );
+    // At a closed shell: a magnetizing change responds, an equal change of both spins does not.
+    let (scale, error) = check(&d, &d, &d_up, &(-&d_up));
+    assert!(
+        scale > 1e-6 && error < 1e-7 * scale,
+        "closed shell, opposite spins: {error:e} of {scale:e}"
+    );
+    let kernel = screened.spin.polarization_kernel(&ctx, &d, &d).unwrap();
+    let [ku, kd] = kernel.apply(&d_up, &d_up).unwrap();
+    assert!(
+        ku.amax().max(kd.amax()) < 1e-12 * scale,
+        "an equal change of both spins keeps P at zero"
+    );
+}

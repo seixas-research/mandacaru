@@ -12,6 +12,7 @@ from numpy.typing import ArrayLike, NDArray
 from ..core.checkpoint import WavefunctionCheckpoint
 from .._native import real_pauli_terms, require_normalized_state
 from ..core.mapping import PauliSum
+from ..resources import native_context
 
 if TYPE_CHECKING:
     from qiskit import QuantumCircuit
@@ -139,9 +140,8 @@ class SuzukiTrotter:
              for label, c in hamiltonian.terms.items()],
         )
         self._terms = tuple(terms)
-        from .._native import Context
 
-        self._context = Context(**dict(resources or {}))
+        self._context = native_context(resources)
         self._native = self._context.propagator(
             self.n_qubits,
             [(l, c, 0.0) for l, c in terms],

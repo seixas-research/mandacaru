@@ -17,7 +17,6 @@ _EXPORTS = {
     "parse_output": (".logging", "parse_output"),
     "reset_log": (".logging", "reset_log"),
     "Timings": (".profiling", "Timings"),
-    "backend_cores": (".profiling", "backend_cores"),
     "cpu_count": (".profiling", "cpu_count"),
     "current_memory_mb": (".profiling", "current_memory_mb"),
     "peak_memory_mb": (".profiling", "peak_memory_mb"),

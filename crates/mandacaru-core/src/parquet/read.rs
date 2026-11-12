@@ -321,11 +321,11 @@ fn worker_bytes(meta: &FileMetaData) -> usize {
     usize::try_from(worst).unwrap_or(usize::MAX)
 }
 
-/// Threads that decode columns: at most `ctx.threads()` and one per column,
+/// Threads that decode columns: at most `ctx.width()` and one per column,
 /// and few enough that the buffers of all of them fit what the budget has
 /// left (one worker always runs, as before).
 fn worker_count(ctx: &Context, meta: &FileMetaData, columns: usize) -> usize {
-    let wanted = ctx.threads().min(columns);
+    let wanted = ctx.width().min(columns);
     if wanted <= 1 {
         return 1;
     }

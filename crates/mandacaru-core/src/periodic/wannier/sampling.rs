@@ -144,6 +144,9 @@ pub struct Frame {
     pub projections: Matrix,
     pub coefficients: Matrix,
     pub energies: Buffer<f64>,
+    /// Every eigenvalue of the diagonalization at this point (Hartree, on the scale of
+    /// `PeriodicResult::fermi`), ascending: the gaps around the selected bands.
+    pub levels: Buffer<f64>,
     pub components: usize,
     _memory: Reservation,
 }
@@ -232,12 +235,14 @@ impl Frame {
                 .map(|i| e[*i] + c.reference)
                 .collect::<Vec<_>>(),
         )?;
+        let levels = ctx.copy_slice(&e.iter().map(|v| v + c.reference).collect::<Vec<_>>())?;
         Ok(Self {
             fractional: point.fractional,
             samples,
             projections,
             coefficients,
             energies,
+            levels,
             components,
             _memory: memory,
         })

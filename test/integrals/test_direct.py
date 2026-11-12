@@ -50,7 +50,7 @@ def system(request):
     exists, and whether the reference still held no dense model after them."""
     kind = request.param
     with Mandacaru(method="rhf", basis=BASES[kind], grid_spacing=0.3,
-                   resources={"threads": 1}, atoms=_nh3()) as calc:
+                   parallelization={"threads": 1}, atoms=_nh3()) as calc:
         calc.get_potential_energy()
         reference = calc.native_reference
         specs = {"energy": ENERGY_SPECS[kind], "mp2": MP2_SPEC}
@@ -114,7 +114,7 @@ class TestRefusals:
         atoms = molecule("OH")
         atoms.center(vacuum=3.0)
         with Mandacaru(method="uhf", basis="HAO", grid_spacing=0.3,
-                       resources={"threads": 1}, atoms=atoms) as calc:
+                       parallelization={"threads": 1}, atoms=atoms) as calc:
             calc.get_potential_energy()
             yield calc.native_reference
 

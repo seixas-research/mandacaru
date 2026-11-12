@@ -101,7 +101,7 @@ observables, against the default ceiling of 50,000. The native planner forms the
 commutators in bounded batches and stops at the first batch that carries the distinct Pauli
 strings past the `observables` ceiling, so the refusal comes in seconds with bounded memory
 (measured 2026-11-10 on the 50-qubit one-electron run: 360 s and 1.9 GB before, 2.1 s and
-0.29 GB after; the figures are in `dev_plan/PAW_MIGRATION_LOG.md`) and no job or gradient plan is built:
+0.29 GB after) and no job or gradient plan is built:
 
 ```text
 the 'ceo' pool has 588,300 generators and measuring its gradients needs more than 50,000 Pauli
@@ -256,9 +256,11 @@ generators and the measured commutators are Pauli operators, and there is no
 state-vector basis, matrix or state. Particle-number conservation (`sector=True`)
 and Z2 tapering (`taper=True`) are checked and applied on the Pauli terms. The
 result carries no state, so everything that reads one refuses with a message
-saying the run is register-free: density matrices, natural orbitals and
-molecular fields, variational forces, `sparse=True`, `energy_levels`, and the
-subspace and architecture-search methods. A fixed-ansatz VQE with a
+saying the run is register-free: density matrices read from a state, natural
+orbitals and molecular fields, forces read from a state, `sparse=True`,
+`energy_levels`, and the subspace and architecture-search methods. (The measured
+density matrices and the device force of `vqe` and `adapt-vqe` come from the
+circuit, not from a state; see "What is not available" below.) A fixed-ansatz VQE with a
 derivative-free optimizer (SPSA, COBYLA, Nelder-Mead) reports no final gradient
 (`final_max_gradient` is NaN), since measuring it costs two evaluations per
 rotation. A test builds a 50-qubit problem on this path and asserts that no
@@ -284,11 +286,15 @@ example.
 ## What is not available
 
 The calculator measures the **energy** (and, for ADAPT-VQE, the pool gradients)
-on a circuit device. Measured reduced density matrices and forces,
-re-measuring an optimized state with `remeasure()`, and a separate
-`measurement_provider` are not implemented; see
-[what is not yet available](#not-yet-available). On a circuit device
-`get_forces()` raises: forces are not an implemented property there.
+on a circuit device. For `vqe` and `adapt-vqe` it also measures the reduced
+density matrices of the optimized circuit (`measured_rdms()`) and `get_forces()`
+is the analytic force on them, with a propagated statistical error
+([forces of a VQE or ADAPT-VQE state](#forces-variational)). Re-measuring an
+optimized state with `remeasure()` and a separate `measurement_provider` are not
+implemented, and neither are measured density matrices or forces for a tapered
+register or for `vasqa` and `valsqa`; see
+[what is not yet available](#not-yet-available) and
+[what returns forces](#forces-available).
 
 ## What to reach for
 

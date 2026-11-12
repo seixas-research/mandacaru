@@ -848,8 +848,8 @@ class QiskitProvider(CircuitProvider):
 
         Completed chunks are **kept**: each is stored, keyed by the circuit,
         the labels and the options, as soon as its job returns, and a repeat
-        of the same request -- :meth:`~mandacaru.algorithms.Mandacaru.remeasure`
-        after a failure -- submits only the chunks still missing.  Every job
+        of the same request (a rerun after a failure) submits only the chunks
+        still missing.  Every job
         of the submission is on :attr:`jobs`.
         """
         from qiskit.quantum_info import SparsePauliOp

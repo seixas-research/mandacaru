@@ -148,6 +148,109 @@ fn validate(energy: f64, gradient: &[f64], n: usize) -> Result<()> {
         Ok(())
     }
 }
+
+/// One evaluation of the objective: its energy, and its gradient when the optimizer asks for it.
+///
+/// An optimizer's line search tests a trial point on its energy, and reads the gradient only at a
+/// point it accepts (SLSQP) or keeps testing (conjugate gradients, the Wolfe tests of BFGS and
+/// L-BFGS); a derivative-free method never reads it. A deferred gradient is computed from the
+/// state the energy left behind, by the very code an eager evaluation runs, and a rejected
+/// point's is never computed. The `history` of an [`Outcome`] still holds one energy per
+/// evaluation: an entry no longer implies that a gradient was computed.
+pub struct Probe<'p> {
+    pub energy: f64,
+    gradient: Gradient<'p>,
+}
+enum Gradient<'p> {
+    Ready(Vec<f64>),
+    Deferred(Box<dyn FnOnce() -> Result<Vec<f64>> + 'p>),
+}
+impl<'p> Probe<'p> {
+    /// An evaluation whose gradient is already known.
+    pub fn ready(energy: f64, gradient: Vec<f64>) -> Self {
+        Self {
+            energy,
+            gradient: Gradient::Ready(gradient),
+        }
+    }
+    /// An evaluation whose gradient `gradient` computes on demand (at most once).
+    pub fn deferred(energy: f64, gradient: impl FnOnce() -> Result<Vec<f64>> + 'p) -> Self {
+        Self {
+            energy,
+            gradient: Gradient::Deferred(Box::new(gradient)),
+        }
+    }
+    /// The same evaluation with `map` applied to its gradient (a block of the parameters).
+    pub fn map_gradient(self, map: impl FnOnce(Vec<f64>) -> Vec<f64> + 'p) -> Self {
+        let energy = self.energy;
+        Self {
+            energy,
+            gradient: match self.gradient {
+                Gradient::Ready(g) => Gradient::Ready(map(g)),
+                Gradient::Deferred(compute) => {
+                    Gradient::Deferred(Box::new(move || compute().map(map)))
+                }
+            },
+        }
+    }
+    /// The gradient, computed now if it was deferred.
+    pub fn into_gradient(self) -> Result<Vec<f64>> {
+        match self.gradient {
+            Gradient::Ready(g) => Ok(g),
+            Gradient::Deferred(compute) => compute(),
+        }
+    }
+    /// The energy, which must be finite.
+    fn checked_energy(&self) -> Result<f64> {
+        validate(self.energy, &[], 0)?;
+        Ok(self.energy)
+    }
+    /// The gradient of `n` parameters, which must be finite.
+    fn checked_gradient(self, n: usize) -> Result<Vec<f64>> {
+        let gradient = self.into_gradient()?;
+        validate(0., &gradient, n)?;
+        Ok(gradient)
+    }
+}
+/// A closure that returns the energy and the gradient together, as a [`Probe`] whose gradient is
+/// ready. It is checked at every call, whether or not the method reads the gradient, as it
+/// always was.
+fn eager<'p>(
+    mut objective: impl FnMut(&[f64]) -> Result<(f64, Vec<f64>)>,
+) -> impl FnMut(&[f64]) -> Result<Probe<'p>> {
+    move |x| {
+        let (energy, gradient) = objective(x)?;
+        validate(energy, &gradient, x.len())?;
+        Ok(Probe::ready(energy, gradient))
+    }
+}
+/// A trial point's [`Probe`] whose gradient a line search reads at most when a test needs it, and
+/// then once: the first read computes it, later reads and the final hand-over reuse it.
+struct Pending<'p> {
+    probe: Option<Probe<'p>>,
+    gradient: Option<Vec<f64>>,
+    n: usize,
+}
+impl<'p> Pending<'p> {
+    fn new(probe: Probe<'p>, n: usize) -> Self {
+        Self {
+            probe: Some(probe),
+            gradient: None,
+            n,
+        }
+    }
+    fn gradient(&mut self) -> Result<&[f64]> {
+        if self.gradient.is_none() {
+            let probe = self.probe.take().expect("a pending probe holds its gradient");
+            self.gradient = Some(probe.checked_gradient(self.n)?);
+        }
+        Ok(self.gradient.as_deref().expect("just computed"))
+    }
+    fn into_gradient(mut self) -> Result<Vec<f64>> {
+        self.gradient()?;
+        Ok(self.gradient.take().expect("just computed"))
+    }
+}
 /// Like [`minimize`], but an objective that fails with
 /// [`Error::Interrupted`] ends the run cleanly: the lowest energy among the
 /// completed evaluations is returned with `success == false`, `interrupted`
@@ -167,19 +270,29 @@ pub fn minimize_interruptible_from(
     initial: &[f64],
     options: &Options,
     hessian: Option<&[f64]>,
-    mut objective: impl FnMut(&[f64]) -> Result<(f64, Vec<f64>)>,
+    objective: impl FnMut(&[f64]) -> Result<(f64, Vec<f64>)>,
+) -> Result<Outcome> {
+    minimize_interruptible_deferred_from(ctx, initial, options, hessian, eager(objective))
+}
+/// [`minimize_interruptible_from`] for an objective that defers its gradient ([`Probe`]).
+pub fn minimize_interruptible_deferred_from<'p>(
+    ctx: &Context,
+    initial: &[f64],
+    options: &Options,
+    hessian: Option<&[f64]>,
+    mut objective: impl FnMut(&[f64]) -> Result<Probe<'p>>,
 ) -> Result<Outcome> {
     let mut best: Option<(Vec<f64>, f64)> = None;
     let mut history = Vec::new();
-    let result = minimize_from(ctx, initial, options, hessian, |x| {
-        let value = objective(x)?;
-        if value.0.is_finite() {
-            history.push(value.0);
-            if best.as_ref().is_none_or(|(_, e)| value.0 < *e) {
-                best = Some((x.to_vec(), value.0));
+    let result = minimize_deferred_from(ctx, initial, options, hessian, |x| {
+        let probe = objective(x)?;
+        if probe.energy.is_finite() {
+            history.push(probe.energy);
+            if best.as_ref().is_none_or(|(_, e)| probe.energy < *e) {
+                best = Some((x.to_vec(), probe.energy));
             }
         }
-        Ok(value)
+        Ok(probe)
     });
     match (result, best) {
         (Err(Error::Interrupted(message)), Some((parameters, energy))) => Ok(Outcome {
@@ -212,7 +325,18 @@ pub fn minimize_from(
     initial: &[f64],
     options: &Options,
     hessian: Option<&[f64]>,
-    mut objective: impl FnMut(&[f64]) -> Result<(f64, Vec<f64>)>,
+    objective: impl FnMut(&[f64]) -> Result<(f64, Vec<f64>)>,
+) -> Result<Outcome> {
+    minimize_deferred_from(ctx, initial, options, hessian, eager(objective))
+}
+/// [`minimize_from`] for an objective that defers its gradient ([`Probe`]): the one body every
+/// closure form runs. The gradient of a point is computed only where the method reads it.
+pub fn minimize_deferred_from<'p>(
+    ctx: &Context,
+    initial: &[f64],
+    options: &Options,
+    hessian: Option<&[f64]>,
+    mut objective: impl FnMut(&[f64]) -> Result<Probe<'p>>,
 ) -> Result<Outcome> {
     options.validate()?;
     if initial.iter().any(|t| !t.is_finite()) {
@@ -259,8 +383,9 @@ pub fn minimize_from(
         }
     }
     let mut x = initial.to_vec();
-    let (mut energy, mut gradient) = objective(&x)?;
-    validate(energy, &gradient, n)?;
+    let first = objective(&x)?;
+    let mut energy = first.checked_energy()?;
+    let mut gradient = first.checked_gradient(n)?;
     let mut history = vec![energy];
     let mut steps = 0;
     let mut reset_after_failure = false;
@@ -337,30 +462,33 @@ pub fn minimize_from(
                 .zip(&direction)
                 .map(|(x, p)| x + alpha * p)
                 .collect();
-            let (value, g) = objective(&trial)?;
-            validate(value, &g, n)?;
+            let probe = objective(&trial)?;
+            let value = probe.checked_energy()?;
             history.push(value);
             let noise = 4. * f64::EPSILON * energy.abs().max(1.);
-            let derivative = dot(&g, &direction);
+            // The gradient is computed where a test first reads it, and not for a trial that the
+            // energy alone sends to `upper`.
+            let mut pending = Pending::new(probe, n);
             // Approximate Wolfe (Hager–Zhang, 2006, eqs. 23/27): near
             // stationarity, energy subtraction loses digits before the
             // analytic directional derivatives do. This accepts a step,
             // never a convergence certificate; the requested gradient
             // tolerance remains the sole successful stopping test.
-            if value <= energy + 1e-12 * energy.abs().max(1.)
-                && derivative >= 0.9 * slope
-                && derivative <= (2e-4 - 1.) * slope
-            {
-                accepted = Some((trial, value, g));
-                break;
+            if value <= energy + 1e-12 * energy.abs().max(1.) {
+                let derivative = dot(pending.gradient()?, &direction);
+                if derivative >= 0.9 * slope && derivative <= (2e-4 - 1.) * slope {
+                    accepted = Some((trial, value, pending.into_gradient()?));
+                    break;
+                }
             }
             if value > energy + 1e-4 * alpha * slope + noise
                 || (lower > 0. && value >= lower_value + noise)
             {
                 upper = Some(alpha);
             } else {
+                let derivative = dot(pending.gradient()?, &direction);
                 if derivative.abs() <= -0.9 * slope {
-                    accepted = Some((trial, value, g));
+                    accepted = Some((trial, value, pending.into_gradient()?));
                     break;
                 }
                 if derivative >= 0. {

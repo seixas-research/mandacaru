@@ -12,7 +12,7 @@ def test_ase_adapter_preserves_energy_force_and_displacement_response():
     atoms = ase.Atoms(
         "H2", positions=[[2.5, 2.5, 2.13], [2.5, 2.5, 2.87]], cell=[5] * 3
     )
-    options = dict(method="dft", xc="pbe", grid_spacing=0.5, resources={"threads": 1})
+    options = dict(method="dft", xc="pbe", grid_spacing=0.5, parallelization={"threads": 1})
     with Mandacaru(**options) as calculation:
         atoms.calc = ASECalculator(calculation)
         force = atoms.get_forces()

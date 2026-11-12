@@ -68,7 +68,7 @@ def test_float32_paw_forces_are_not_refused(method, monkeypatch):
     """The analytic gradient differences nothing, so float32 reaches the SCF."""
     atoms = dimer("H2", 0.75, 8.0)
     calc = Mandacaru(method=method, basis=BASIS, grid_spacing=0.25, precision="float32",
-                     resources={"threads": 1})
+                     parallelization={"threads": 1})
     atoms.calc = calc
     reached = []
 

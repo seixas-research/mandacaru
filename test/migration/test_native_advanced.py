@@ -281,7 +281,7 @@ def test_mp2_block_and_no_python_numerical_callbacks(monkeypatch):
 def test_public_subspace_shared_unitary_and_sorted_states(method, sector, trotter):
     options = dict(method=method,  load_hamiltonian=str(H2),
                    sector=sector, num_states=2, atomic_units=True,
-                   trace=False,  resources={"threads": 1})
+                   trace=False,  parallelization={"threads": 1})
     if method == "subspace-vqe":
         options["trotter"] = trotter
     calc = Mandacaru(**options)

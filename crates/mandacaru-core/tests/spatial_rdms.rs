@@ -116,3 +116,43 @@ fn transition_rdms_are_the_bilinear_form_of_the_rdms_on_every_thread_count() {
         assert_eq!(context.memory_used(), 0);
     }
 }
+
+#[test]
+fn transition_rdms_of_a_sector_above_one_chunk_are_bitwise_the_same_on_every_thread_count() {
+    // 8 orbitals, 4 + 4 electrons: 4900 determinants, two fixed chunks of
+    // `properties::RDM_CHUNK` columns whatever the number of threads.
+    let m = 8;
+    let mut reference: Option<(Vec<C64>, Vec<C64>)> = None;
+    for threads in [1, 2, 3, 4] {
+        let context = Context::new(Some(threads), 64 << 20).unwrap();
+        {
+            let encoding = Encoding::new("jordan_wigner", 2 * m, [4, 4]).unwrap();
+            let basis = Basis::new(&context, &encoding, true).unwrap();
+            assert!(basis.len() > properties::RDM_CHUNK);
+            let state = |shift: f64| -> Vec<C64> {
+                (0..basis.len())
+                    .map(|i| {
+                        C64::new(
+                            (i as f64 * 0.37 + shift).sin(),
+                            (0.11 * i as f64 - shift).cos(),
+                        )
+                    })
+                    .collect()
+            };
+            let rdm = properties::spatial_transition_rdms(
+                &context,
+                &encoding,
+                &basis,
+                &state(0.2),
+                &state(1.3),
+            )
+            .unwrap();
+            let got = (rdm.one.as_slice().to_vec(), rdm.two.as_slice().to_vec());
+            match &reference {
+                None => reference = Some(got),
+                Some(first) => assert!(*first == got, "{threads} threads differ from one"),
+            }
+        }
+        assert_eq!(context.memory_used(), 0);
+    }
+}

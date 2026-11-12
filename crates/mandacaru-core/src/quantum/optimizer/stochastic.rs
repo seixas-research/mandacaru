@@ -37,18 +37,17 @@ fn random(state: &mut u64) -> f64 {
         -1.
     }
 }
-pub(super) fn minimize(
+pub(super) fn minimize<'p>(
     ctx: &Context,
     initial: &[f64],
     options: &Options,
-    mut objective: impl FnMut(&[f64]) -> Result<(f64, Vec<f64>)>,
+    mut objective: impl FnMut(&[f64]) -> Result<Probe<'p>>,
 ) -> Result<Outcome> {
     let n = initial.len();
     let _work = ctx.reserve(product(&[n, 8, 12])?)?;
     let _history = ctx.reserve(product(&[options.max_evaluations, 8])?)?;
     let mut x = initial.to_vec();
-    let (mut best_energy, g) = objective(&x)?;
-    validate(best_energy, &g, n)?;
+    let mut best_energy = objective(&x)?.checked_energy()?;
     let mut best = x.clone();
     let mut history = vec![best_energy];
     let mut seed = options.seed;
@@ -77,8 +76,7 @@ pub(super) fn minimize(
                 .zip(&delta)
                 .map(|(x, d)| x + sign * ck * d)
                 .collect();
-            let (value, g) = objective(&trial)?;
-            validate(value, &g, n)?;
+            let value = objective(&trial)?.checked_energy()?;
             history.push(value);
             *out = value;
             if !options.track_best && value < best_energy {
@@ -93,8 +91,7 @@ pub(super) fn minimize(
         }
         steps += 1;
         if options.track_best {
-            let (value, g) = objective(&x)?;
-            validate(value, &g, n)?;
+            let value = objective(&x)?.checked_energy()?;
             history.push(value);
             if value < best_energy {
                 best_energy = value;

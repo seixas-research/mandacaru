@@ -18,18 +18,18 @@ the molecule path (ghosts, the box warning, the per-element form).
 import json
 import warnings
 from pathlib import Path
-from types import SimpleNamespace
 
 import numpy as np
 import pytest
 from ase import Atoms
 
-from mandacaru import Mandacaru, _native
+from mandacaru import Mandacaru
 from mandacaru.pseudopotentials import get_paw
+from mandacaru.units import to_bohr
 from mandacaru.pseudopotentials.diffuse import (
     DEFAULT_CUTOFF_NORM, DEFAULT_DIFFUSE, DEFAULT_RMS_RATIO,
     DEFAULT_SHELL_RATIO, LINEAR_DEPENDENCE_TOL, DiffuseRecipe,
-    box_diagnostic, box_table, diffuse_label, diffuse_of, diffuse_parameters,
+    box_table, diffuse_label, diffuse_of, diffuse_parameters,
     diffuse_radial, refuse_crystal, validate_diffuse)
 from .recipe_view import free_valence_rms
 from mandacaru.pseudopotentials.orbitals import pseudo_basis
@@ -193,67 +193,48 @@ class TestFrozenPythonOutputs:
             close(strided(table.values), FROZEN[f"{case['tag']}_{i}_v"], 1e-8)
 
 
+@needs_library
 class TestBoxDiagnostic:
-    """The cell that cuts a diffuse tail, on the synthetic grid of the
-    reference (a sheared 4 x 5 x 6 grid, five functions, three diffuse)."""
+    """The cell that cuts a diffuse tail: the engine samples every diffuse function on the grid
+    (``paw::molecular::Setup::diffuse_box``) and the calculator warns and tabulates."""
 
     @staticmethod
-    def _inputs():
-        info = META["box"]
-        grid = SimpleNamespace(
-            X=np.zeros(info["shape"]), Y=np.zeros(info["shape"]),
-            Z=np.zeros(info["shape"]), step=FROZEN["box_step"],
-            shape=tuple(info["shape"]))
-        grid.X.flat[0], grid.Y.flat[0], grid.Z.flat[0] = FROZEN["box_origin"]
-        psi = FROZEN["box_psi"]
-        norms = [float(np.vdot(row, row).real) * info["dV"] for row in psi]
-        functions = [
-            SimpleNamespace(diffuse=flag, center=center,
-                            table=SimpleNamespace(r=FROZEN["box_tables_r"],
-                                                  values=values))
-            for flag, center, values in zip(
-                info["diffuse"], FROZEN["box_centers"],
-                FROZEN["box_tables_v"])]
-        shells = {s: [SimpleNamespace(r_cut=r_cut, accepted=True)]
-                  for s, r_cut in info["r_cut"].items()}
-        return norms, functions, grid, shells
+    def _run(cell):
+        atoms = h2(cell)
+        atoms.calc = Mandacaru(method="rhf", basis={"name": "PAW-LCAO", "diffuse": True},
+                               grid_spacing=0.35)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            atoms.get_potential_energy()
+        cut = [w for w in caught if "the cell cuts" in str(w.message)]
+        return atoms.calc._basis_report["diffuse_box"], cut
 
-    def test_the_ratios_and_the_faces_match_the_reference(self):
-        info = META["box"]
-        norms, functions, grid, shells = self._inputs()
-        with pytest.warns(RuntimeWarning, match="the cell cuts") as caught:
-            ratios, rows = box_diagnostic(norms, functions, info["owners"],
-                                          info["symbols"], grid, shells)
-        assert len(caught) == info["warnings"]
-        close(ratios, FROZEN["box_ratios"], 1e-12)
-        expected = FROZEN["box_rows"]
-        assert [row[0] for row in rows] == [int(a) for a in expected[:, 0]]
-        close([row[2] for row in rows], expected[:, 1], 1e-12)
-        close([row[3] for row in rows], expected[:, 2], 1e-12)
-        close([row[4] for row in rows], expected[:, 3], 1e-12)
+    def test_a_box_that_holds_the_tails_is_silent_and_every_ratio_is_one(self):
+        box, cut = self._run(15.4)
+        assert not cut and box["short"] == 0 and box["worst"] is None
+        assert box["ratios"] and all(abs(ratio - 1.0) < 1e-3 for _f, _a, ratio in box["ratios"])
 
-    def test_only_diffuse_functions_have_a_ratio(self):
-        info = META["box"]
-        norms, functions, grid, shells = self._inputs()
-        with pytest.warns(RuntimeWarning):
-            ratios, _rows = box_diagnostic(norms, functions, info["owners"],
-                                           info["symbols"], grid, shells)
-        flags = info["diffuse"]
-        assert all(np.isnan(r) != f for r, f in zip(ratios, flags))
+    def test_the_face_distance_is_the_distance_to_the_nearest_face(self):
+        box, _cut = self._run(15.4)
+        assert [row[0] for row in box["rows"]] == [0, 1]
+        for _atom, r_cut, face, _ratio in box["rows"]:
+            # The atoms sit within 0.4 A of the center of a 15.4 A cell.
+            assert face == pytest.approx(to_bohr(7.7), abs=to_bohr(0.5))
+            assert 0.0 < r_cut < face
 
-    def test_a_cell_that_holds_the_tail_is_silent(self):
-        info = META["box"]
-        _norms, functions, grid, shells = self._inputs()
-        # The grid norm of each function is its radial norm: ratio one.
-        norms = [_native.diffuse_radial_norm(f.table.r, f.table.values)
-                 for f in functions]
-        with warnings.catch_warnings():
-            warnings.simplefilter("error")
-            ratios, rows = box_diagnostic(norms, functions, info["owners"],
-                                          info["symbols"], grid, shells)
-        assert all(abs(r - 1.0) < 1e-12 for r in ratios if r == r)
-        table = box_table(rows)
-        assert table[0][0] == "atom" and len(table) == 1 + len(rows)
+    def test_a_small_box_is_cut_and_the_worst_function_is_named(self):
+        box, cut = self._run(7.0)
+        assert len(cut) == 1 and box["short"] > 0
+        function, atom, ratio = box["worst"]
+        assert ratio < 1.0 - 1e-4 and atom in (0, 1)
+        assert min(r for _f, _a, r in box["ratios"]) == ratio
+        assert box["ratios"][[f for f, _a, _r in box["ratios"]].index(function)][1] == atom
+
+    def test_the_table_lists_r_cut_against_the_face(self):
+        box, _cut = self._run(7.0)
+        table = box_table(box, ["H", "H"])
+        assert table[0][:3] == ("atom", "symbol", "r_cut_Bohr") and len(table) == 3
+        assert all(row[1] == "H" and float(row[2]) > float(row[4]) for row in table[1:])
 
 
 class TestTheDefaultRecipe:
@@ -447,15 +428,28 @@ class TestMolecule:
         diffuse = atoms.get_potential_energy()
         assert diffuse < plain
 
-    @pytest.mark.xfail(strict=True, reason=(
-        "the molecular PAW route no longer calls diffuse.box_diagnostic, so no "
-        "'the cell cuts' warning is raised (PAW_MIGRATION_LOG.md, A7 / S2: a lost "
-        "feature of the cutover, reported to the owner)"))
     def test_a_small_box_is_warned_about(self):
         atoms = h2(7.0)
         atoms.calc = self._calculator({"name": "PAW-LCAO", "diffuse": True})
         with pytest.warns(RuntimeWarning, match="the cell cuts"):
             atoms.get_potential_energy()
+
+    def test_an_energy_ranked_truncation_of_the_virtuals_is_refused(self):
+        """Diffuse shells make the lowest virtual orbitals, so the 'energy' ranking would fill the
+        register with them (``basis::diffuse::refuse_energy_ranking``); an MP2 ranking is allowed."""
+        def run(active_space):
+            atoms = h2(15.4)
+            atoms.calc = Mandacaru(
+                method="adapt-vqe", basis={"name": "PAW-LCAO", "size": "DZP", "diffuse": True},
+                active_space=active_space, grid_spacing=0.35, pool="fermionic",
+                max_iterations=1, profile=False, trace=False)
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                return atoms.get_potential_energy()
+
+        with pytest.raises(ValueError, match="diffuse function.*ranked by 'energy'"):
+            run({"orbitals": {"occupied": 1, "virtual": 2}})
+        assert np.isfinite(run({"method": "mp2", "orbitals": {"occupied": 1, "virtual": 2}}))
 
     def test_upaw_has_it(self):
         atoms = h2(15.4)

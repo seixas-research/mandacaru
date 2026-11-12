@@ -12,7 +12,7 @@ def test_wannier_full_space_recovers_ase_bands_and_releases_owned_frames():
     calc = Mandacaru(method="dft", xc="lda",
                      basis={"name": "PAW-LCAO", "size": "SZ"},
                      grid_spacing=0.8, kpts={"size": (2, 2, 2), "gamma": True},
-                     resources={"threads": 1})
+                     parallelization={"threads": 1})
     atoms.calc = calc
     atoms.get_potential_energy()
     before = calc.context.memory_used_bytes
@@ -44,7 +44,7 @@ def test_bond_trials_and_frozen_window_keep_the_occupied_band_spectrum():
     calc = Mandacaru(method="dft", xc="lda",
                      basis={"name": "PAW-LCAO", "size": "SZ"},
                      grid_spacing=0.8, kpts={"size": (1, 1, 1), "gamma": True},
-                     resources={"threads": 1})
+                     parallelization={"threads": 1})
     atoms.calc = calc
     atoms.get_potential_energy()
     fermi = calc.get_fermi_level()
@@ -69,7 +69,7 @@ def test_hybrid_wannier_frames_carry_the_exact_exchange():
     calc = Mandacaru(method="dft", xc="hse06",
                      basis={"name": "PAW-LCAO", "size": "SZ", "filter_cutoff": 200},
                      grid_spacing=0.8, kpts={"size": (1, 1, 1), "gamma": True},
-                     resources={"threads": 1}, trace=False)
+                     parallelization={"threads": 1}, trace=False)
     atoms.calc = calc
     atoms.get_potential_energy()
     wannier = calc.wannier(8, guess="sp3", max_iterations=250)

@@ -108,7 +108,7 @@ def test_a_fifty_qubit_shot_run_builds_no_exponential_object(
         num_particles=particles, taper=taper, shots=64, backend_provider="qiskit",
         atomic_units=True, trace=False, max_iterations=1,
         optimizer={"method": "COBYLA", "maxiter": 2, "maxfev": 4},
-        measurement_budget=MEASUREMENT_BUDGET, resources={"threads": 1})
+        measurement_budget=MEASUREMENT_BUDGET, parallelization={"threads": 1})
     landscape = Landscape()
     calc.provider.expectation_batch = landscape
 
@@ -140,7 +140,7 @@ def test_the_rdms_of_a_fifty_qubit_shot_run_are_refused_by_the_budget_without_a_
         method="vqe", pool="fermionic", hamiltonian=hamiltonian(), n_spatial_orbitals=ORBITALS,
         num_particles=(1, 1), shots=64, backend_provider="qiskit", atomic_units=True,
         trace=False, optimizer={"method": "COBYLA", "maxiter": 2, "maxfev": 4},
-        measurement_budget=MEASUREMENT_BUDGET, resources={"threads": 1})
+        measurement_budget=MEASUREMENT_BUDGET, parallelization={"threads": 1})
     landscape = Landscape()
     calc.provider.expectation_batch = landscape
 
@@ -171,7 +171,7 @@ def test_the_default_ceo_pool_of_fifty_qubits_is_refused_before_it_is_planned(pa
         method="adapt-vqe", hamiltonian=hamiltonian(), n_spatial_orbitals=ORBITALS,
         num_particles=particles, shots=64, backend_provider="qiskit", atomic_units=True,
         trace=False, max_iterations=1, optimizer={"method": "COBYLA", "maxiter": 2, "maxfev": 4},
-        resources={"threads": 1})
+        parallelization={"threads": 1})
     landscape = Landscape()
     calc.provider.expectation_batch = landscape
     with pytest.raises(ValueError) as refused:
@@ -192,7 +192,7 @@ def test_every_state_vector_method_of_a_shot_problem_refuses_by_name():
         method="vqe", hamiltonian=hamiltonian(), n_spatial_orbitals=ORBITALS,
         num_particles=(1, 0), shots=64, backend_provider="qiskit", atomic_units=True,
         trace=False, optimizer={"method": "COBYLA", "maxiter": 2, "maxfev": 3},
-        resources={"threads": 1})
+        parallelization={"threads": 1})
     calc.provider.expectation_batch = Landscape()
     result = calc.run()
     problem = calc.problem
@@ -218,7 +218,7 @@ def test_a_sparse_matrix_is_refused_on_a_shot_run():
         Mandacaru(
             method="vqe", hamiltonian=hamiltonian(), n_spatial_orbitals=ORBITALS,
             num_particles=(1, 0), shots=64, backend_provider="qiskit", sparse=True,
-            atomic_units=True, trace=False, resources={"threads": 1}).run()
+            atomic_units=True, trace=False, parallelization={"threads": 1}).run()
 
 
 @pytest.mark.parametrize("sector", [True, False])
@@ -243,7 +243,7 @@ def mps_calculation(particles, *, backend_options, **options):
         num_particles=particles, shots=64, device="AER_mps", atomic_units=True, trace=False,
         max_iterations=1, optimizer={"method": "COBYLA", "maxiter": 4, "maxfev": 4},
         backend_options={"max_bond_dimension": 16, "seed": 5, **backend_options},
-        measurement_budget=MEASUREMENT_BUDGET, resources={"threads": 1}, **options)
+        measurement_budget=MEASUREMENT_BUDGET, parallelization={"threads": 1}, **options)
 
 
 @pytest.mark.parametrize("particles, max_bases_per_job", [((1, 0), None), ((1, 1), 100)])

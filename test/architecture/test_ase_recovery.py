@@ -17,7 +17,7 @@ def h2():
 def test_primary_calculator_is_ase_and_preserves_cache_and_native_ownership():
     atoms = h2()
     with Mandacaru(
-        method="dft", xc="pbe", atoms=atoms, grid_spacing=0.5, resources={"threads": 1}
+        method="dft", xc="pbe", atoms=atoms, grid_spacing=0.5, parallelization={"threads": 1}
     ) as calc:
         assert isinstance(calc, Calculator) and atoms.calc is calc
         energy = atoms.get_potential_energy()
@@ -43,7 +43,7 @@ def test_primary_calculator_is_ase_and_preserves_cache_and_native_ownership():
 def test_failed_geometry_does_not_return_previous_energy():
     atoms = h2()
     with Mandacaru(
-        method="rhf", atoms=atoms, grid_spacing=0.5, resources={"threads": 1}
+        method="rhf", atoms=atoms, grid_spacing=0.5, parallelization={"threads": 1}
     ) as calc:
         old = atoms.get_potential_energy()
         atoms.positions[1] = atoms.positions[0]
@@ -60,7 +60,7 @@ def test_ase_hamiltonian_export_reload_and_direct_quantum_handoff(tmp_path, exte
     atoms = h2()
     path = tmp_path / ("h2." + extension)
     with Mandacaru(
-        method="rhf", atoms=atoms, grid_spacing=0.5, resources={"threads": 1}
+        method="rhf", atoms=atoms, grid_spacing=0.5, parallelization={"threads": 1}
     ) as calc:
         reference = atoms.get_potential_energy()
         assert calc.result.scf.n_occupied == 1
@@ -69,12 +69,12 @@ def test_ase_hamiltonian_export_reload_and_direct_quantum_handoff(tmp_path, exte
         calc.result.save_hamiltonian(path)
         problem = calc.result.as_quantum_problem()
     with Mandacaru(
-        method="adapt-vqe", load_hamiltonian=path, resources={"threads": 1}
+        method="adapt-vqe", load_hamiltonian=path, parallelization={"threads": 1}
     ) as cached:
         result = cached.run()
         assert result.success and result.optimal_energy <= reference
         energy = result.optimal_energy
-    with Mandacaru(method="adapt-vqe", **problem, resources={"threads": 1}) as direct:
+    with Mandacaru(method="adapt-vqe", **problem, parallelization={"threads": 1}) as direct:
         assert direct.n_qubits == 4 and direct.num_particles == (1, 1)
         assert direct.run().optimal_energy == pytest.approx(energy, abs=1e-10)
 
@@ -87,7 +87,7 @@ def test_quantum_state_solver_view_and_checkpoint_have_the_same_physical_state(p
         pool=pool,
         atoms=atoms,
         grid_spacing=0.5,
-        resources={"threads": 1},
+        parallelization={"threads": 1},
     ) as calc:
         atoms.get_potential_energy()
         result = calc.result
@@ -109,7 +109,7 @@ def test_quantum_state_solver_view_and_checkpoint_have_the_same_physical_state(p
 def test_molecular_ase_spectrum_and_native_dos_conserve_the_state_count():
     atoms = h2()
     with Mandacaru(
-        method="rhf", atoms=atoms, grid_spacing=0.5, resources={"threads": 1}
+        method="rhf", atoms=atoms, grid_spacing=0.5, parallelization={"threads": 1}
     ) as calc:
         atoms.get_potential_energy()
         assert calc.get_number_of_spins() == 1
@@ -124,7 +124,7 @@ def test_molecular_ase_spectrum_and_native_dos_conserve_the_state_count():
 def test_ghf_ase_levels_are_singly_occupied_spinors():
     atoms = h2()
     with Mandacaru(
-        method="ghf", atoms=atoms, grid_spacing=0.5, resources={"threads": 1}
+        method="ghf", atoms=atoms, grid_spacing=0.5, parallelization={"threads": 1}
     ) as calc:
         atoms.get_potential_energy()
         levels = calc.get_eigenvalues()

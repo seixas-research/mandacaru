@@ -37,7 +37,7 @@ def spin_orbit_symbols(atoms, options: dict | None = None, family: str = "paw-lc
                   if getattr(load(s, options.get("paw_dataset")), "has_spin_orbit", False))
 
 
-def native_setup(driver, atoms, family, options, moments, spinor, time_reversal, start):
+def native_setup(driver, atoms, family, options, moments, spinor, start):
     """Set the crystal up with the Rust builder (``Context.periodic_problem_from_request``)."""
     if options.get("diffuse"):
         from ..pseudopotentials.diffuse import refuse_crystal

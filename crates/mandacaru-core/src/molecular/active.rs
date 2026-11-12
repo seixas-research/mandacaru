@@ -1,6 +1,6 @@
 //! Integral-direct orbital selection and frozen-natural-orbital Hamiltonians.
 use super::double_factorized::{DoubleFactorized, Representation};
-use super::{correlation, invalid, scf, transform, MeanField, MolecularIntegrals};
+use super::{correlation, frame, invalid, scf, transform, MeanField, MolecularIntegrals};
 use crate::{math::linalg::real_eigen, product, quantum::C64, Result};
 use nalgebra::DMatrix;
 use serde_json::Value;
@@ -34,6 +34,24 @@ fn indices(value: &Value, m: usize) -> Result<Vec<usize>> {
 }
 
 impl MeanField {
+    /// Put the clusters of the natural-orbital `rotation` (columns over the model orbitals)
+    /// that lie inside one `domain` of orbital indices into the deterministic frame of
+    /// [`frame::fix_cluster_gauge`]; their labels are the natural `occupations`. The
+    /// moments are those of the orbitals `model_orbitals * rotation`.
+    fn fix_rotation_frame(
+        &self,
+        integrals: &MolecularIntegrals,
+        rotation: &mut DMatrix<C64>,
+        occupations: &[f64],
+        domain: Vec<usize>,
+    ) -> Result<()> {
+        let basis = self.model_orbitals.map(|v| v.re);
+        let mut lab = frame::lab_moments(integrals);
+        let mut in_model_frame =
+            |block: &DMatrix<f64>, operators: bool| lab(&(&basis * block), operators);
+        frame::fix_cluster_gauge(rotation, occupations, &[domain], &mut in_model_frame)?;
+        Ok(())
+    }
     /// Build only the selected four-index tensor. MP2 first requests an oovv
     /// block from Coulomb factors, never a full source-MO tensor.
     pub fn active_model(
@@ -53,6 +71,7 @@ impl MeanField {
         representation: Representation,
     ) -> Result<transform::Model> {
         self.require_determinant("an active-space selection")?;
+        self.require_frame()?;
         let spec: Value =
             serde_json::from_str(specification).map_err(|e| invalid(e.to_string()))?;
         let object = spec
@@ -227,6 +246,16 @@ impl MeanField {
             });
             occupations.extend_from_slice(mp2.occupied_occupations.as_slice());
             occupations.extend_from_slice(mp2.virtual_occupations.as_slice());
+            // The virtual natural orbitals are arbitrary inside a degenerate occupation: fix
+            // their frame before anything (the threshold, the partners) reads them.
+            if self.frame_covered(integrals) {
+                self.fix_rotation_frame(
+                    integrals,
+                    &mut rotation,
+                    &occupations,
+                    (occupied..m).collect(),
+                )?;
+            }
             correlation_energy = Some(mp2.correlation_energy);
             occupied_density = Some(mp2.occupied_density);
             if let Some(t) = threshold {
@@ -282,6 +311,14 @@ impl MeanField {
         };
         if let Some(t) = threshold.filter(|_| !symmetry) {
             active.retain(|&i| i < occupied || occupations[i] >= t);
+        }
+        if let Some(setup) = &integrals.paw_setup {
+            crate::basis::diffuse::refuse_energy_ranking(
+                method,
+                setup.diffuse_functions(),
+                m - occupied,
+                active.iter().filter(|&&i| i >= occupied).count(),
+            )?;
         }
         if pairs {
             let paired: Vec<usize> = (0..doubly).filter(|i| !core.contains(i)).collect();
@@ -370,6 +407,10 @@ impl MeanField {
                     for (i, &source) in keep.iter().enumerate() {
                         rotation[(source, target)] = C64::new(vectors[(i, keep.len() - 1 - j)], 0.);
                     }
+                }
+                // Likewise the occupied natural orbitals of a degenerate density block.
+                if self.frame_covered(integrals) {
+                    self.fix_rotation_frame(integrals, &mut rotation, &occupations, keep.clone())?;
                 }
             }
         }

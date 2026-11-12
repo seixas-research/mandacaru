@@ -50,6 +50,7 @@ import numpy as np
 
 from .. import _native
 from .mapping import PauliSum
+from ..resources import native_context
 
 #: Identifies a Mandacaru wavefunction checkpoint file.
 FORMAT_TAG = "mandacaru-wavefunction-checkpoint"
@@ -278,8 +279,7 @@ class WavefunctionCheckpoint:
         return fingerprint(self.hamiltonian, atol)
 
     def _native_snapshot(self, resources=None):
-        from .._native import Context
-        return Context(**dict(resources or {})).parse_snapshot(
+        return native_context(resources).parse_snapshot(
             json.dumps(self.to_payload(), allow_nan=False), FORMAT_TAG)
 
     def state_vector(self, *, precision: str='float64', resources=None) -> np.ndarray:
@@ -307,10 +307,9 @@ class WavefunctionCheckpoint:
         h = self.hamiltonian if hamiltonian is None else hamiltonian
         if h is None:
             raise ValueError('no Hamiltonian stored; pass one')
-        from .._native import Context
         payload = self.to_payload()
         payload['hamiltonian'] = _pauli_to_payload(h)
-        return Context(**dict(resources or {})).parse_snapshot(json.dumps(payload, allow_nan=False), FORMAT_TAG).expectation()
+        return native_context(resources).parse_snapshot(json.dumps(payload, allow_nan=False), FORMAT_TAG).expectation()
 
     # -- serialization --------------------------------------------------- #
 
@@ -389,10 +388,9 @@ class WavefunctionCheckpoint:
     def load(cls, path, *, resources=None) -> 'WavefunctionCheckpoint':
         """Read a checkpoint written by :meth:`save`."""
         path = os.fspath(path)
-        from .._native import Context
         if not os.path.exists(path):
             raise FileNotFoundError(path)
-        snapshot = Context(**dict(resources or {})).read_snapshot(path, FORMAT_TAG)
+        snapshot = native_context(resources).read_snapshot(path, FORMAT_TAG)
         return cls.from_payload(json.loads(snapshot.json))
 
     # -- presentation ---------------------------------------------------- #

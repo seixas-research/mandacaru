@@ -6,6 +6,7 @@ pub mod filter;
 pub mod nao_ae;
 pub mod pao;
 pub mod radial;
+pub mod sampling;
 pub mod table;
 use crate::math::SpatialGrid;
 fn invalid(message: impl Into<String>) -> crate::Error {

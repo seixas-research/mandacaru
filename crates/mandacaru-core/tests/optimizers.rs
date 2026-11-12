@@ -465,3 +465,86 @@ fn bfgs_returns_its_inverse_hessian_and_restarts_from_it() {
     assert!(optimizer::minimize_from(&ctx, &start, &options, Some(&inverse[..4]), coupled_quadratic).is_err());
     assert_eq!(ctx.memory_used(), 0);
 }
+
+/// An objective whose gradient is computed only when the optimizer reads it, counting the reads.
+fn deferred<'p>(
+    objective: &'p impl Fn(&[f64]) -> mandacaru_core::Result<(f64, Vec<f64>)>,
+    reads: &'p std::cell::Cell<usize>,
+) -> impl FnMut(&[f64]) -> mandacaru_core::Result<optimizer::Probe<'p>> {
+    move |x| {
+        let energy = objective(x)?.0;
+        let point = x.to_vec();
+        Ok(optimizer::Probe::deferred(energy, move || {
+            reads.set(reads.get() + 1);
+            Ok(objective(&point)?.1)
+        }))
+    }
+}
+
+fn rosenbrock(x: &[f64]) -> mandacaru_core::Result<(f64, Vec<f64>)> {
+    let residual = x[1] - x[0] * x[0];
+    Ok((
+        (1. - x[0]).powi(2) + 100. * residual.powi(2),
+        vec![-2. * (1. - x[0]) - 400. * x[0] * residual, 200. * residual],
+    ))
+}
+
+#[test]
+fn a_deferred_gradient_leaves_every_method_run_unchanged_and_is_read_only_where_a_test_needs_it() {
+    let ctx = Context::new(Some(1), 64 << 20).unwrap();
+    for name in Method::NAMES {
+        let method = Method::parse(name).unwrap();
+        let options = Options {
+            method,
+            max_iterations: 400,
+            max_evaluations: 3000,
+            tolerance: Some(1e-9),
+            ..Default::default()
+        };
+        let cases: [(bool, fn(&[f64]) -> mandacaru_core::Result<(f64, Vec<f64>)>, &[f64]); 2] =
+            [(true, rosenbrock, &[-1.2, 1.]), (false, coupled_quadratic, &[0.3, -0.2, 0.1])];
+        for (is_rosenbrock, objective, start) in cases {
+            let eager = optimizer::minimize(&ctx, start, &options, objective).unwrap();
+            let reads = std::cell::Cell::new(0);
+            let lazy = optimizer::minimize_deferred_from(&ctx, start, &options, None, deferred(&objective, &reads)).unwrap();
+            let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+            assert_eq!(bits(&lazy.parameters), bits(&eager.parameters), "{name}");
+            assert_eq!(lazy.energy.to_bits(), eager.energy.to_bits(), "{name}");
+            assert_eq!(bits(&lazy.history), bits(&eager.history), "{name}");
+            assert_eq!(lazy.steps, eager.steps, "{name}");
+            assert_eq!(lazy.success, eager.success, "{name}");
+            assert_eq!(lazy.message, eager.message, "{name}");
+            assert_eq!(lazy.hessian.as_deref().map(bits), eager.hessian.as_deref().map(bits), "{name}");
+            let evaluations = lazy.history.len();
+            match method {
+                // The three derivative-free methods never read a gradient.
+                Method::Cobyla | Method::NelderMead | Method::Spsa => assert_eq!(reads.get(), 0, "{name}"),
+                // Every iteration accepts one trial on its energy alone: one gradient per
+                // iteration and one at the start, whatever the line search rejected.
+                Method::Slsqp => assert_eq!(reads.get(), lazy.steps + 1, "{name}"),
+                // The Wolfe tests read a gradient only for a trial the energy does not reject.
+                Method::Bfgs | Method::Lbfgs | Method::Cg => {
+                    assert!(reads.get() <= evaluations, "{name}");
+                    assert!(reads.get() > lazy.steps, "{name}");
+                }
+            }
+            if is_rosenbrock && method == Method::Slsqp {
+                assert!(reads.get() < evaluations, "Rosenbrock rejects line-search trials: {} reads of {evaluations}", reads.get());
+            }
+        }
+    }
+    assert_eq!(ctx.memory_used(), 0);
+}
+
+#[test]
+fn a_gradient_that_a_run_never_reads_is_never_checked_and_one_it_reads_is() {
+    let ctx = Context::new(Some(1), 64 << 20).unwrap();
+    let broken = |x: &[f64]| -> mandacaru_core::Result<optimizer::Probe<'static>> {
+        let energy = (x[0] - 0.7).powi(2);
+        Ok(optimizer::Probe::deferred(energy, || Ok(vec![f64::NAN])))
+    };
+    let derivative_free = Options { method: Method::NelderMead, ..Default::default() };
+    assert!(optimizer::minimize_deferred_from(&ctx, &[0.1], &derivative_free, None, broken).is_ok());
+    let quasi_newton = Options { method: Method::Slsqp, ..Default::default() };
+    assert!(optimizer::minimize_deferred_from(&ctx, &[0.1], &quasi_newton, None, broken).is_err());
+}

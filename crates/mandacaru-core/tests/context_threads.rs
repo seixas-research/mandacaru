@@ -6,8 +6,8 @@ use mandacaru_core::{default_threads, hardware_threads, Context};
 fn a_context_without_a_request_takes_the_default_and_a_request_overrides_it() {
     let default = default_threads();
     assert!((1..=mandacaru_kernels::runtime::MAX_THREADS).contains(&default));
-    assert_eq!(Context::new(None, 1 << 20).unwrap().threads(), default);
-    assert_eq!(Context::new(Some(3), 1 << 20).unwrap().threads(), 3);
+    assert_eq!(Context::new(None, 1 << 20).unwrap().width(), default);
+    assert_eq!(Context::new(Some(3), 1 << 20).unwrap().width(), 3);
 }
 
 #[test]
@@ -16,4 +16,12 @@ fn the_hardware_width_is_at_least_one_thread_and_does_not_follow_a_context() {
     assert!(width >= 1);
     let _one = Context::new(Some(1), 1 << 20).unwrap();
     assert_eq!(hardware_threads(), width);
+}
+
+#[test]
+fn concurrent_jobs_share_the_hardware_threads_and_each_keeps_one() {
+    use mandacaru_core::worker_threads;
+    assert_eq!(worker_threads(1), hardware_threads());
+    assert_eq!(worker_threads(0), hardware_threads());
+    assert_eq!(worker_threads(hardware_threads() * 1000), 1);
 }

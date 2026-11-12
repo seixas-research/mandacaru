@@ -78,7 +78,28 @@ fn paw_basis<'py>(
     Ok(out)
 }
 
+/// The states a dataset's basis is built on, `[(l, state, n, semicore, empty, level)]`: every
+/// occupied reference state, then the bound level of every empty channel that has one.
+#[pyfunction]
+fn paw_basis_states<'py>(
+    context: PyRef<'_, PyContext>,
+    py: Python<'py>,
+    payload: &str,
+    tables: &Bound<'py, PyDict>,
+) -> PyResult<Vec<(u32, usize, usize, bool, bool, Option<f64>)>> {
+    let ctx = &context.inner;
+    let dataset = paw_record::import(ctx, payload, tables)?;
+    let states = py
+        .detach(|| basis_recipe::basis_states(ctx, &dataset))
+        .map_err(error)?;
+    Ok(states
+        .into_iter()
+        .map(|s| (s.l, s.state, s.n, s.semicore, s.empty, s.level))
+        .collect())
+}
+
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(paw_basis, m)?)?;
+    m.add_function(wrap_pyfunction!(paw_basis_states, m)?)?;
     Ok(())
 }

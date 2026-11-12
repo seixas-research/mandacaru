@@ -24,12 +24,36 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from mandacaru.basis.multizeta import RadialTable, TabulatedOrbital
+from mandacaru import _native
+from mandacaru.basis.multizeta import RadialTable
 from mandacaru.pseudopotentials import get_paw
+from mandacaru.pseudopotentials.confinement import channel_arrays
+from mandacaru.pseudopotentials.native_context import context
 from mandacaru.pseudopotentials.orbitals import (
-    BOUND_LEVEL, KBProjector, PseudoAtomicOrbital, PseudoShell, _RadialTabulated,
-    basis_states, bound_radial,
-    occupied_states, pseudo_basis, valence_electrons, _lowest_level)
+    KBProjector, PseudoAtomicOrbital, PseudoShell, _RadialTabulated, basis_states, pseudo_basis,
+    valence_electrons)
+from mandacaru.pseudopotentials.record import record_of
+
+#: An empty channel's lowest level is a bound state below this (Hartree).
+BOUND_LEVEL = -1e-3
+
+
+# Views of the native routines these tests pin (the Python wrappers are gone): the lowest
+# level and eigenstate of a channel in the dataset's own operator and the occupied states.
+def _box(pp, l):
+    return float(_native.paw_spectrum_box(context(), *record_of(pp), int(l)))
+
+
+def _lowest_level(pp, l):
+    return float(_native.pao_bound_level(context(), *channel_arrays(pp, int(l)), _box(pp, l)))
+
+
+def bound_radial(pp, l):
+    return _native.pao_bound_radial(context(), *channel_arrays(pp, int(l)), _box(pp, l))[0]
+
+
+def occupied_states(pp):
+    return [state for state in basis_states(pp) if not state.empty]
 
 REFERENCE = Path(__file__).resolve().parents[1] / "migration" / "reference" / "paw"
 META = json.loads((REFERENCE / "orbitals.json").read_text())
@@ -177,8 +201,8 @@ class TestFrozenPythonOutputs:
 
 class TestShells:
     """A zeta, polarization or diffuse shell evaluated by the native table
-    routines, against the multiple-zeta stack's ``TabulatedOrbital`` (the
-    native orbital evaluator): values, slopes and the sampled kind."""
+    routines, against ``_native.radial_orbital_evaluate`` (the
+    engine's orbital evaluator): values, slopes and the sampled kind."""
 
     @pytest.mark.parametrize("l", [0, 1, 2])
     @pytest.mark.parametrize("start", [0.0, 0.02])
@@ -187,14 +211,16 @@ class TestShells:
         table = RadialTable(r, r ** l * np.exp(-r) * (1 + 0.3 * np.cos(r)),
                             l + 1, l, zeta=2, polarization=True)
         shell = PseudoShell(table, -l, center=[0.0, 0.0, 0.0], real=True)
-        old = TabulatedOrbital(table, -l, center=[0.0, 0.0, 0.0], real=True)
         nodes = np.concatenate([np.linspace(0.0, r[-1] - 1e-9, 300),
                                 [r[-1] + 1.0]])
-        close(shell.radial(nodes), old.radial(nodes), 1e-12)
-        close(shell.radial_slope(nodes), old.radial_slope(nodes), 1e-11)
-        assert shell.r_c == old.r_c
-        assert (shell.kind, shell.zeta, shell.state) == (
-            old.kind, old.zeta, old.state)
+        # The orbital evaluator of the engine (confined at the end of the table).
+        for slope, tol in ((False, 1e-12), (True, 1e-11)):
+            old = _native.radial_orbital_evaluate(
+                np.ascontiguousarray(r), np.ascontiguousarray(table.values),
+                np.ascontiguousarray(nodes), l, float(r[-1]), slope)
+            close(shell.radial_slope(nodes) if slope else shell.radial(nodes), old, tol)
+        assert shell.r_c == float(r[-1])
+        assert (shell.kind, shell.zeta, shell.state) == ("polarization", 2, (l + 1, l, -l))
         assert shell.table is table
 
     def test_the_kind_follows_the_table(self):

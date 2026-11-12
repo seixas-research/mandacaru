@@ -175,6 +175,10 @@ pub fn rdms<A: Amplitude>(
     Ok(Rdms { one, two })
 }
 
+/// Determinant columns per fixed chunk of the transition RDMs: the unit whose partial matrices
+/// are added in order, independent of the thread count.
+pub const RDM_CHUNK: usize = 4096;
+
 /// The spin-summed spatial transition density matrices `one[p*m+q] = <bra| E_pq |ket>` and
 /// `two[((p*m+q)*m+r)*m+s] = sum_st <bra| a+_ps a+_qt a_st a_rs |ket>` in one pass over `ket`'s
 /// determinants, split over the context's threads. With `bra == ket` they are
@@ -188,7 +192,8 @@ pub fn spatial_transition_rdms(
 ) -> Result<SpatialRdms> {
     if basis.n != encoding.n_qubits() {
         return Err(Error::Invalid(
-            "the basis is a tapered register: lift the state to the fermionic register first".into(),
+            "the basis is a tapered register: lift the state to the fermionic register first"
+                .into(),
         ));
     }
     if encoding.modes % 2 != 0
@@ -204,7 +209,10 @@ pub fn spatial_transition_rdms(
     let n = encoding.modes;
     let m = n / 2;
     let (m2, m4) = (product(&[m, m])?, product(&[m, m, m, m])?);
-    let workers = ctx.threads().max(1).min(basis.len().max(1));
+    let workers = ctx
+        .width()
+        .max(1)
+        .min(basis.len().div_ceil(RDM_CHUNK).max(1));
     let _memory = ctx.reserve(product(&[workers, m2 + m4, 16])?)?;
     let locate = |occupation| {
         let encoded = encoding.encode(occupation);
@@ -231,7 +239,8 @@ pub fn spatial_transition_rdms(
                 for p in spin_r..spin_r + m {
                     if let Some((target, sign_p)) = ladder(n, first, &[(p, true)]) {
                         if let Some(row) = locate(target) {
-                            one[(p % m) * m + r % m] += bra[row].conj() * amplitude * (sign_r * sign_p);
+                            one[(p % m) * m + r % m] +=
+                                bra[row].conj() * amplitude * (sign_r * sign_p);
                         }
                     }
                 }
@@ -248,7 +257,9 @@ pub fn spatial_transition_rdms(
                             if let Some((target, sign_p)) = ladder(n, third, &[(p, true)]) {
                                 if let Some(row) = locate(target) {
                                     let at = (((p % m) * m + q % m) * m + r % m) * m + s % m;
-                                    two[at] += bra[row].conj() * amplitude * (sign_r * sign_s * sign_q * sign_p);
+                                    two[at] += bra[row].conj()
+                                        * amplitude
+                                        * (sign_r * sign_s * sign_q * sign_p);
                                 }
                             }
                         }
@@ -258,31 +269,42 @@ pub fn spatial_transition_rdms(
         }
         (one, two)
     };
-    let chunk = basis.len().div_ceil(workers);
+    // The columns form fixed chunks of `RDM_CHUNK`, whatever the thread count; each chunk sums
+    // from zero and the chunks are added in order, `workers` at a time: the matrices are the same
+    // on any number of threads (one partial per worker rounded differently).
     let block = &block;
-    let parts: Vec<(Vec<C64>, Vec<C64>)> = if workers <= 1 {
-        vec![block(0, basis.len())]
-    } else {
-        ctx.run(|| {
-            std::thread::scope(|scope| {
-                let handles: Vec<_> = (0..workers)
-                    .map(|w| {
-                        let (start, end) = (w * chunk, ((w + 1) * chunk).min(basis.len()));
-                        mandacaru_kernels::runtime::spawn(scope, move || block(start, end.max(start)))
-                    })
-                    .collect();
-                handles.into_iter().map(|h| h.join().expect("an RDM worker panicked")).collect()
-            })
-        })
-    };
+    let chunks = basis.len().div_ceil(RDM_CHUNK).max(1);
+    let range = |c: usize| (c * RDM_CHUNK, ((c + 1) * RDM_CHUNK).min(basis.len()));
     let mut one = ctx.allocate::<C64>(m2)?;
     let mut two = ctx.allocate::<C64>(m4)?;
-    for (o, t) in &parts {
-        for (a, b) in one.as_mut_slice().iter_mut().zip(o) {
-            *a += b;
-        }
-        for (a, b) in two.as_mut_slice().iter_mut().zip(t) {
-            *a += b;
+    for wave in (0..chunks).step_by(workers) {
+        let last = (wave + workers).min(chunks);
+        let parts: Vec<(Vec<C64>, Vec<C64>)> = if last - wave == 1 {
+            let (start, end) = range(wave);
+            vec![block(start, end)]
+        } else {
+            ctx.run(|| {
+                std::thread::scope(|scope| {
+                    let handles: Vec<_> = (wave..last)
+                        .map(|c| {
+                            let (start, end) = range(c);
+                            mandacaru_kernels::runtime::spawn(scope, move || block(start, end))
+                        })
+                        .collect();
+                    handles
+                        .into_iter()
+                        .map(|h| h.join().expect("an RDM worker panicked"))
+                        .collect()
+                })
+            })
+        };
+        for (o, t) in &parts {
+            for (a, b) in one.as_mut_slice().iter_mut().zip(o) {
+                *a += b;
+            }
+            for (a, b) in two.as_mut_slice().iter_mut().zip(t) {
+                *a += b;
+            }
         }
     }
     Ok(SpatialRdms { m, one, two })

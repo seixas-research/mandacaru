@@ -117,30 +117,10 @@ impl Kernel {
             weights,
         })
     }
-    pub fn actions(
-        &self,
-        context: &Context,
-        source: &[usize],
-        probabilities: &[f64],
-        removal: &[f64],
-    ) -> Result<Actions> {
-        let length = source.len();
-        if removal.len() != length
-            || removal.iter().any(|p| !p.is_finite() || *p <= 0.)
-            || (length > 0 && (removal.iter().sum::<f64>() - 1.).abs() > 1e-9)
-        {
-            return Err(invalid("removal weights must be positive, normalized and one per operator"));
-        }
-        if length > self.max_length
-            || source.iter().any(|i| *i >= self.pool)
-            || probabilities.len() != self.pool
-            || probabilities.iter().any(|p| !p.is_finite() || *p <= 0.)
-            || (probabilities.iter().sum::<f64>() - 1.).abs() > 1e-9
-        {
-            return Err(invalid(
-                "architecture indices and positive normalized proposal weights must match the pool",
-            ));
-        }
+    /// The probability mass of each move kind at a sequence of `length` operators: its weight over
+    /// the weights of the kinds that are possible there (insertion needs room, deletion a
+    /// nonempty sequence, replacement a nonempty sequence and a second operator).
+    fn masses(&self, length: usize) -> [f64; 3] {
         let valid = [length < self.max_length, length > 0, length > 0 && self.pool > 1];
         let normalization = self
             .weights
@@ -156,6 +136,49 @@ impl Kernel {
                 0.
             }
         };
+        [mass(Move::Insert), mass(Move::Delete), mass(Move::Replace)]
+    }
+    fn check_removal(&self, length: usize, removal: &[f64]) -> Result<()> {
+        if removal.len() != length
+            || removal.iter().any(|p| !p.is_finite() || *p <= 0.)
+            || (length > 0 && (removal.iter().sum::<f64>() - 1.).abs() > 1e-9)
+        {
+            return Err(invalid("removal weights must be positive, normalized and one per operator"));
+        }
+        Ok(())
+    }
+    fn check_sequence(&self, source: &[usize]) -> Result<()> {
+        if source.len() > self.max_length || source.iter().any(|i| *i >= self.pool) {
+            return Err(invalid(
+                "architecture indices and positive normalized proposal weights must match the pool",
+            ));
+        }
+        Ok(())
+    }
+    fn check_probabilities(&self, probabilities: &[f64]) -> Result<()> {
+        if probabilities.len() != self.pool
+            || probabilities.iter().any(|p| !p.is_finite() || *p <= 0.)
+            || (probabilities.iter().sum::<f64>() - 1.).abs() > 1e-9
+        {
+            return Err(invalid(
+                "architecture indices and positive normalized proposal weights must match the pool",
+            ));
+        }
+        Ok(())
+    }
+    pub fn actions(
+        &self,
+        context: &Context,
+        source: &[usize],
+        probabilities: &[f64],
+        removal: &[f64],
+    ) -> Result<Actions> {
+        let length = source.len();
+        self.check_removal(length, removal)?;
+        self.check_sequence(source)?;
+        self.check_probabilities(probabilities)?;
+        let masses = self.masses(length);
+        let mass = |kind: Move| masses[kind.index()];
         let capacity = product(&[length.checked_add(1).ok_or(Error::Overflow)?, self.pool, 2])?
             .checked_add(length)
             .ok_or(Error::Overflow)?;
@@ -254,6 +277,65 @@ impl Kernel {
             .map(|(_, p)| p)
             .sum::<f64>()
             .ln())
+    }
+    /// [`Self::log_q`] for the one move kind that connects `source` to `target`, reading only the
+    /// weights of that kind: an insertion reads the operator `probabilities`, a deletion the
+    /// position `removal` weights, a replacement both. A weight the kind does not read may be
+    /// `None`, so a caller need not compute it. The result is bit-equal to [`Self::log_q`]: the
+    /// same mass, the same per-action expression and the same ascending-position sum over the
+    /// actions that match. Sequences that no single edit connects have probability zero.
+    pub fn log_q_matched(
+        &self,
+        target: &[usize],
+        source: &[usize],
+        probabilities: Option<&[f64]>,
+        removal: Option<&[f64]>,
+    ) -> Result<f64> {
+        let length = source.len();
+        self.check_sequence(source)?;
+        let missing = |what: &str| invalid(&format!("the {what} weights of the source state were not computed"));
+        let masses = self.masses(length);
+        let mut terms = Vec::new();
+        if target.len() == length + 1 {
+            let probabilities = probabilities.ok_or_else(|| missing("operator"))?;
+            self.check_probabilities(probabilities)?;
+            for position in 0..=length {
+                if let Some(&operator) = target.get(position) {
+                    let action = Action { kind: Move::Insert, position, operator };
+                    if masses[0] > 0. && operator < self.pool && action.matches(source, target) {
+                        terms.push(masses[0] * probabilities[operator] / (length + 1) as f64);
+                    }
+                }
+            }
+        } else if length == target.len() + 1 {
+            let removal = removal.ok_or_else(|| missing("removal"))?;
+            self.check_removal(length, removal)?;
+            for position in 0..length {
+                let action = Action { kind: Move::Delete, position, operator: 0 };
+                if masses[1] > 0. && action.matches(source, target) {
+                    terms.push(masses[1] * removal[position]);
+                }
+            }
+        } else if length == target.len() {
+            let probabilities = probabilities.ok_or_else(|| missing("operator"))?;
+            let removal = removal.ok_or_else(|| missing("removal"))?;
+            self.check_removal(length, removal)?;
+            self.check_probabilities(probabilities)?;
+            for (position, &current) in source.iter().enumerate() {
+                let operator = target[position];
+                let action = Action { kind: Move::Replace, position, operator };
+                if masses[2] > 0. && operator != current && operator < self.pool && action.matches(source, target) {
+                    let remaining = probabilities
+                        .iter()
+                        .enumerate()
+                        .filter(|(i, _)| *i != current)
+                        .map(|(_, p)| p)
+                        .sum::<f64>();
+                    terms.push(masses[2] * removal[position] * probabilities[operator] / remaining);
+                }
+            }
+        }
+        Ok(terms.iter().sum::<f64>().ln())
     }
 }
 /// The position weights of a deletion or a replacement: `exp(-(|g_i| / max|g|) / T)` over the

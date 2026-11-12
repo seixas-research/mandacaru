@@ -562,10 +562,9 @@ class TestAtomic:
     def test_the_semicore_basis_has_every_occupied_state(self):
         """2s, 3s and 2p each get a function; only the 3s is split and
         polarized (DZP: 2s, 3s x 2, 2p, a p shell from the 3s)."""
-        from mandacaru.pseudopotentials.orbitals import (occupied_states,
-                                                         pseudo_basis)
+        from mandacaru.pseudopotentials.orbitals import basis_states, pseudo_basis
         pp = generated("Na")
-        states = [(s.n, s.l, s.index, s.semicore) for s in occupied_states(pp)]
+        states = [(s.n, s.l, s.index, s.semicore) for s in basis_states(pp) if not s.empty]
         assert states == [(2, 0, 0, True), (3, 0, 1, False), (2, 1, 0, True)]
         unconfined = {"energy_shift": None}
         minimal, _ = pseudo_basis(["Na"], [[0, 0, 0]], {"Na": pp}, options={"size": "SZ", **unconfined})
@@ -628,7 +627,7 @@ class TestAtomic:
         0.28-0.42 rad off at every ghost-free local radius (PBE Be was
         flagged; PBE BeO 10.7 % long).  Its p channel (DEFAULT_HIGHEST_CHANNEL)
         brings that to 0.02 rad; the bound 2p stays out of the basis
-        (SCATTERING_ONLY_CHANNELS), so a minimal Be keeps one orbital."""
+        (the engine's scattering-only channels), so a minimal Be keeps one orbital."""
         from mandacaru.pseudopotentials.orbitals import basis_states
 
         pp = generated("Be")

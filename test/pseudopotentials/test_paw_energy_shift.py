@@ -364,7 +364,7 @@ class TestSplitSchemes:
         assert last[0] < first[0] - 0.5
 
     def test_zeta_split_derives_its_parameter(self):
-        from mandacaru.basis.multizeta import (DEFAULT_SPLIT_NORM,
+        from mandacaru.models.radial import (DEFAULT_SPLIT_NORM,
                                                DEFAULT_TAIL_NORMS,
                                                resolve_split_scheme)
 
@@ -374,7 +374,7 @@ class TestSplitSchemes:
         assert resolve_split_scheme("last-zeta") == (DEFAULT_SPLIT_NORM, None)
 
     def test_an_unknown_scheme_is_refused(self):
-        from mandacaru.basis.multizeta import resolve_split_scheme
+        from mandacaru.models.radial import resolve_split_scheme
 
         with pytest.raises(ValueError, match="zeta_split must be one of"):
             resolve_split_scheme("previous")

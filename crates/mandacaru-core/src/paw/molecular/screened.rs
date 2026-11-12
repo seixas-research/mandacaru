@@ -68,6 +68,32 @@ impl SpinTerms {
         Ok((energy, fock))
     }
 
+    /// The kernels of the spheres' polarization at the spin densities `up`, `down` of the
+    /// orthonormal frame, for [`SphereKernels::apply`].
+    pub fn polarization_kernel(
+        &self,
+        ctx: &Context,
+        up: &DMatrix<f64>,
+        down: &DMatrix<f64>,
+    ) -> Result<SphereKernels> {
+        let kernels = self
+            .spheres
+            .iter()
+            .map(|(species, c)| {
+                self.atoms[*species].polarization.kernel(
+                    ctx,
+                    &(c.transpose() * up * c),
+                    &(c.transpose() * down * c),
+                )
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(SphereKernels {
+            atoms: self.atoms.clone(),
+            spheres: self.spheres.clone(),
+            kernels,
+        })
+    }
+
     /// The non-collinear polarization energy of the spheres (see
     /// [`crate::paw::screened_polarization`]'s `vector`) and its channel Fock matrices
     /// `C O^a C^T` for the four real Pauli components `pauli` (`D_0 = D_uu + D_dd`, ...) of a
@@ -82,8 +108,11 @@ impl SpinTerms {
         let mut energy = 0.;
         let mut fock: [DMatrix<f64>; 4] = std::array::from_fn(|_| DMatrix::zeros(m, m));
         for (species, c) in &self.spheres {
-            let projected: [DMatrix<f64>; 4] = std::array::from_fn(|a| c.transpose() * &pauli[a] * c);
-            let terms = self.atoms[*species].polarization.evaluate_vector(ctx, &projected)?;
+            let projected: [DMatrix<f64>; 4] =
+                std::array::from_fn(|a| c.transpose() * &pauli[a] * c);
+            let terms = self.atoms[*species]
+                .polarization
+                .evaluate_vector(ctx, &projected)?;
             energy += terms.energy;
             for (f, o) in fock.iter_mut().zip(&terms.operators) {
                 *f += c * o * c.transpose();
@@ -133,7 +162,11 @@ fn short_range_potential(
 
 impl Setup {
     /// The species-level screened terms at `omega`, built once per value.
-    pub(super) fn screened_atoms(&self, ctx: &Context, omega: f64) -> Result<Arc<Vec<ScreenedAtom>>> {
+    pub(super) fn screened_atoms(
+        &self,
+        ctx: &Context,
+        omega: f64,
+    ) -> Result<Arc<Vec<ScreenedAtom>>> {
         let mut cache = self
             .screened
             .lock()
@@ -372,5 +405,32 @@ impl Setup {
                 _memory: spin_memory,
             },
         })
+    }
+}
+
+/// The spheres' polarization kernels at one ground state ([`SpinTerms::polarization_kernel`]).
+pub struct SphereKernels {
+    atoms: Arc<Vec<ScreenedAtom>>,
+    spheres: Vec<(usize, DMatrix<f64>)>,
+    kernels: Vec<crate::paw::screened_polarization::Kernel>,
+}
+impl SphereKernels {
+    /// The first-order change of [`SpinTerms::polarization`]'s Fock matrices along the spin
+    /// density changes `d_up`, `d_down` (orthonormal frame): the spheres' part of the kernel of a
+    /// spin-polarizing response (before the hybrid's `-fraction`).
+    pub fn apply(&self, d_up: &DMatrix<f64>, d_down: &DMatrix<f64>) -> Result<[DMatrix<f64>; 2]> {
+        let m = d_up.nrows();
+        let mut fock = [DMatrix::zeros(m, m), DMatrix::zeros(m, m)];
+        for ((species, c), kernel) in self.spheres.iter().zip(&self.kernels) {
+            let project = |d: &DMatrix<f64>| c.transpose() * d * c;
+            let [a, b] = self.atoms[*species].polarization.linear_response(
+                kernel,
+                &project(d_up),
+                &project(d_down),
+            )?;
+            fock[0] += c * a * c.transpose();
+            fock[1] += c * b * c.transpose();
+        }
+        Ok(fock)
     }
 }

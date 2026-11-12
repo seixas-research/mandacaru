@@ -205,7 +205,8 @@ fn check(uniform: bool, move_weights: [f64; 3], seed: u64) {
     let pool = problem.pool.len();
     assert_eq!(pool, 8, "the model's pool is the eight singles and doubles");
     let options = Options {
-        max_steps: 4000,
+        // Long enough that the gradient chain (seed 11) sources all 73 sequences; 4000 missed [6, 4].
+        max_steps: 20000,
         max_length: 2,
         move_weights,
         temperatures: [TEMPERATURE; 2],

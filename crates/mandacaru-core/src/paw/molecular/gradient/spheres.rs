@@ -117,7 +117,7 @@ pub(super) fn local_force(
         Ok(local_force)
     };
 
-    let workers = integrals.context.threads().max(1).min(n_atoms.max(1));
+    let workers = integrals.context.width().max(1).min(n_atoms.max(1));
     if workers <= 1 {
         let mut total = vec![0.; 3 * positions.len()];
         for a in 0..n_atoms {

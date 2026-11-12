@@ -1,10 +1,11 @@
-//! Gauge-invariant subspace projection and Wilson-loop analysis primitives.
+//! Gauge-invariant subspace projection and projected densities of states (Berry phases and
+//! Wilson loops are `periodic::berry`).
 use super::{invalid, Crystal, PeriodicResult};
 use crate::{
     math::{linalg::eigen, storage::MatrixSource},
     product,
     quantum::C64,
-    Buffer, Context, Result,
+    Buffer, Result,
 };
 use nalgebra::{DMatrix, DVector};
 pub struct Projection {
@@ -134,50 +135,4 @@ pub fn projectability(
         weights,
         hamiltonians,
     })
-}
-pub fn wilson_loop(
-    ctx: &Context,
-    links: &[C64],
-    count: usize,
-    occupied: usize,
-    tolerance: f64,
-) -> Result<(f64, f64)> {
-    if count == 0
-        || occupied == 0
-        || links.len() != product(&[count, occupied, occupied])?
-        || !tolerance.is_finite()
-        || tolerance <= 0.
-        || tolerance >= 1.
-        || links.iter().any(|v| !v.re.is_finite() || !v.im.is_finite())
-    {
-        return Err(invalid(
-            "invalid Wilson-loop dimensions, values or tolerance",
-        ));
-    }
-    let _memory = ctx.reserve(product(&[occupied, occupied, 16, 20])?)?;
-    let mut phase = 0.;
-    let mut minimum = 1f64;
-    for i in 0..count {
-        let a = DMatrix::from_row_slice(
-            occupied,
-            occupied,
-            &links[i * occupied * occupied..(i + 1) * occupied * occupied],
-        );
-        let svd = a.svd(true, true);
-        let singular = svd.singular_values.min();
-        minimum = minimum.min(singular);
-        if !singular.is_finite() || singular < tolerance {
-            return Err(invalid(
-                "singular occupied-space link: Berry phase is undefined",
-            ));
-        }
-        // Polar unitarization keeps the determinant near unit modulus even
-        // when a nonsingular raw determinant would underflow or overflow.
-        let unitary = svd.u.unwrap() * svd.v_t.unwrap();
-        phase += unitary.lu().determinant().arg();
-    }
-    Ok((
-        (phase + std::f64::consts::PI).rem_euclid(2. * std::f64::consts::PI) - std::f64::consts::PI,
-        minimum,
-    ))
 }

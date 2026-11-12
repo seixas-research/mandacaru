@@ -235,6 +235,14 @@ pub fn inner<A: Amplitude>(a: &[A], b: &[A]) -> C64 {
 pub fn inner_wide<A: Amplitude>(a: &[A], b: &[C64]) -> C64 {
     a.iter().zip(b).map(|(x, y)| x.widen().conj() * y).sum()
 }
+/// [`inner_wide`] restricted to `rows` (ascending, without repeats): the same sum, in the same
+/// order, over the listed rows only. It is bit-equal to `inner_wide(a, b)` when `a` is finite
+/// and every row of `b` off `rows` is `+0`: such a row adds a product of a finite number with
+/// `+0`, which is `+0` or `-0`, and a sum that started at `+0` is never `-0` (a round-to-nearest
+/// sum is `-0` only when both addends are), so adding `+-0` leaves its bits unchanged.
+pub fn inner_wide_rows<A: Amplitude>(a: &[A], b: &[C64], rows: &[usize]) -> C64 {
+    rows.iter().map(|&r| a[r].widen().conj() * b[r]).sum()
+}
 pub fn finite<A: Amplitude>(a: &[A]) -> bool {
     a.iter().all(|c| {
         let c = c.widen();

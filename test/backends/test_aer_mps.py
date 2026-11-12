@@ -38,7 +38,7 @@ def calculation(**options):
     options.setdefault("optimizer", {"method": "COBYLA", "maxiter": 0})
     return Mandacaru(method="vqe", hamiltonian=hamiltonian(), n_spatial_orbitals=ORBITALS,
                      num_particles=(1, 1), atomic_units=True, trace=False,
-                     resources={"threads": 1}, **options)
+                     parallelization={"threads": 1}, **options)
 
 
 class TestTheDevice:

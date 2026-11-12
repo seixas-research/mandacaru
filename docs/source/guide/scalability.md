@@ -33,14 +33,16 @@ atoms.calc = Mandacaru(method="adapt-vqe",
                        pool="fermionic",
                        sector=True,
                        sparse=True,
-                       resources={"threads": 2,
-                                  "memory_limit_bytes": 2 * 1024**3})
+                       parallelization={"threads": 2},
+                       resources={"memory_limit_bytes": 2 * 1024**3})
 atoms.get_potential_energy()
 print(f"peak native memory: {atoms.calc.context.memory_peak_bytes / 2**20:.0f} MiB")
 ```
 
-`resources` configures the native context: `threads`, `memory_limit_bytes`
-(32 GiB by default) and `scratch_dir`. The context refuses an allocation that
+Two options configure the native context. `parallelization` sets the processors
+(here two threads; [Parallel layout](#dft-parallel-layout) for a crystal's `kpts`
+level). `resources` sets the memory: `memory_limit_bytes` (32 GiB by default),
+`disk_offload_bytes` and `scratch_dir`. The context refuses an allocation that
 would exceed the limit, rather than exhausting the machine, and reports its peak
 as `calc.context.memory_peak_bytes` and `result.timings["memory_peak_bytes"]`.
 Raise the limit for a larger problem.

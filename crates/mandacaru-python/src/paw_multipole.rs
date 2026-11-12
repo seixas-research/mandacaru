@@ -5,7 +5,7 @@ use super::{array, copy, error, Array, PyContext};
 use mandacaru_core::paw::{
     core_correction,
     multipole::{self, gaunt, gaunt_grid},
-    multipole_pairs::{self as pairs, ChannelWaves, Pair},
+    multipole_pairs::{self as pairs, pair_cut, ChannelWaves, Pair},
 };
 use numpy::{Complex64, PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods};
 use pyo3::{exceptions::PyValueError, prelude::*, types::PyDict};
@@ -144,7 +144,8 @@ fn paw_radial_moments<'py>(
     py: Python<'py>,
     l: usize,
     r: PyReadonlyArray1<'py, f64>,
-    r_cut: f64,
+    r_cut1: f64,
+    r_cut2: f64,
     ae1: PyReadonlyArray2<'py, f64>,
     smooth1: PyReadonlyArray2<'py, f64>,
     ae2: PyReadonlyArray2<'py, f64>,
@@ -161,7 +162,7 @@ fn paw_radial_moments<'py>(
             pairs::radial_moments(
                 &Pair {
                     r: &r,
-                    r_cut,
+                    r_cut: pair_cut(r_cut1, r_cut2),
                     ae: [&ae1, &ae2],
                     smooth: [&s1, &s2],
                     waves,
@@ -179,7 +180,8 @@ fn paw_radial_remainder<'py>(
     py: Python<'py>,
     l: usize,
     r: PyReadonlyArray1<'py, f64>,
-    r_cut: f64,
+    r_cut1: f64,
+    r_cut2: f64,
     ae1: PyReadonlyArray2<'py, f64>,
     smooth1: PyReadonlyArray2<'py, f64>,
     ae2: PyReadonlyArray2<'py, f64>,
@@ -204,7 +206,7 @@ fn paw_radial_remainder<'py>(
                 ctx,
                 &Pair {
                     r: &r,
-                    r_cut,
+                    r_cut: pair_cut(r_cut1, r_cut2),
                     ae: [&ae1, &ae2],
                     smooth: [&s1, &s2],
                     waves,

@@ -16,9 +16,37 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from mandacaru.pseudopotentials.core_correction import (crossover_radius,
-                                                        partial_core_density,
-                                                        smooth_core_density)
+from mandacaru import _native
+from mandacaru.pseudopotentials.native_context import context
+
+DEFAULT_CROSSOVER = 1.0
+
+
+def _array(values):
+    return np.ascontiguousarray(values, dtype=float)
+
+
+# Views of the native partial-core-density routines (the Python wrappers are gone).
+def crossover_radius(r, core, valence, ratio=DEFAULT_CROSSOVER):
+    return _native.paw_crossover_radius(context(), _array(r), _array(core), _array(valence),
+                                        float(ratio))
+
+
+def smooth_core_density(r, core, r_nlcc):
+    return _native.paw_smooth_core_density(context(), _array(r), _array(core), float(r_nlcc))
+
+
+def partial_core_density(r, core, valence, r_nlcc=None, ratio=DEFAULT_CROSSOVER):
+    out = _native.paw_partial_core_density(
+        context(), _array(r), _array(core), _array(valence),
+        None if r_nlcc is None else float(r_nlcc), float(ratio))
+    if out["r_nlcc"] is None:
+        return out["density"], {"applied": False, "r_nlcc": None,
+                                "reason": "the core density never exceeds "
+                                          "the valence density"}
+    return out["density"], {key: out[key] for key in (
+        "r_nlcc", "amplitude", "wavevector", "core_electrons", "partial_core_electrons")} | {
+        "applied": True}
 
 
 def grid(points=4000, r_max=20.0):

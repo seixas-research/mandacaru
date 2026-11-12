@@ -32,12 +32,12 @@ fn inside<T>(f: impl FnOnce() -> T) -> T {
 
 /// The blocks a region of `work` over `units` independent pieces splits into: one below
 /// [`PARALLEL_WORK`], inside another region, or without a pool; otherwise up to the context's
-/// thread count (`Context::threads`, whatever the environment says).
+/// width (`Context::width`, whatever the environment says).
 pub(crate) fn threads_for(ctx: &Context, work: usize, units: usize) -> usize {
     if work < PARALLEL_WORK || INSIDE.with(|flag| flag.get()) || ctx.pool().is_none() {
         1
     } else {
-        ctx.threads().min(units).max(1)
+        ctx.width().min(units).max(1)
     }
 }
 

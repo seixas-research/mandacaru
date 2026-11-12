@@ -261,6 +261,67 @@ _ALGORITHMS = [
   doi     = {10.1103/RevModPhys.66.899}
 }""", "the polarization as a geometric phase (get_polarization)",
          verified=True, topics=("polarization", "berry phase")),
+    _ref("Berry1984", """
+@article{Berry1984,
+  author  = {Berry, Michael V.},
+  title   = {Quantal phase factors accompanying adiabatic changes},
+  journal = {Proc. R. Soc. Lond. A},
+  volume  = {392},
+  pages   = {45--57},
+  year    = {1984},
+  doi     = {10.1098/rspa.1984.0023}
+}""", "the geometric phase (get_berry_phase)",
+         verified=False, topics=("berry phase",)),
+    _ref("Yu2011", """
+@article{Yu2011,
+  author  = {Yu, Rui and Qi, Xiao Liang and Bernevig, Andrei and Fang, Zhong and
+             Dai, Xi},
+  title   = {Equivalent expression of {$\\mathbb{Z}_2$} topological invariant for
+             band insulators using the non-{A}belian {B}erry connection},
+  journal = {Phys. Rev. B},
+  volume  = {84},
+  pages   = {075119},
+  year    = {2011},
+  doi     = {10.1103/PhysRevB.84.075119}
+}""", "the Wilson-loop Wannier charge centers (get_berry_phase)",
+         verified=False, topics=("berry phase", "wilson loop")),
+    _ref("Fukui2005", """
+@article{Fukui2005,
+  author  = {Fukui, Takahiro and Hatsugai, Yasuhiro and Suzuki, Hiroshi},
+  title   = {Chern Numbers in Discretized {B}rillouin Zone: Efficient Method of
+             Computing (Spin) {H}all Conductances},
+  journal = {J. Phys. Soc. Jpn.},
+  volume  = {74},
+  pages   = {1674--1677},
+  year    = {2005},
+  doi     = {10.1143/JPSJ.74.1674}
+}""", "the lattice Berry curvature and Chern number (get_berry_curvature, "
+         "get_chern_number)", verified=False, topics=("berry phase", "chern number")),
+    _ref("Thouless1982", """
+@article{Thouless1982,
+  author  = {Thouless, D. J. and Kohmoto, M. and Nightingale, M. P. and
+             den Nijs, M.},
+  title   = {Quantized {H}all Conductance in a Two-Dimensional Periodic Potential},
+  journal = {Phys. Rev. Lett.},
+  volume  = {49},
+  pages   = {405--408},
+  year    = {1982},
+  doi     = {10.1103/PhysRevLett.49.405}
+}""", "the quantized Hall conductivity of an insulator "
+         "(get_anomalous_hall_conductivity)",
+         verified=False, topics=("berry phase", "anomalous hall")),
+    _ref("Xiao2010", """
+@article{Xiao2010,
+  author  = {Xiao, Di and Chang, Ming-Che and Niu, Qian},
+  title   = {Berry phase effects on electronic properties},
+  journal = {Rev. Mod. Phys.},
+  volume  = {82},
+  pages   = {1959--2007},
+  year    = {2010},
+  doi     = {10.1103/RevModPhys.82.1959}
+}""", "the Berry curvature and its Hall conductivity, the sign convention "
+         "(get_berry_curvature, get_anomalous_hall_conductivity)",
+         verified=False, topics=("berry phase", "anomalous hall")),
     _ref("Vanderbilt2000", """
 @article{Vanderbilt2000,
   author  = {Vanderbilt, David},
@@ -1271,6 +1332,65 @@ _ALGORITHMS = [
   year    = {1991}
 }""", "marching tetrahedra, the isosurface extraction of Viewer3D "
          "(math::isosurface)", verified=False, topics=("isosurface", "viewer")),
+    _ref("RungeGross1984", """
+@article{RungeGross1984,
+  author  = {Runge, Erich and Gross, E. K. U.},
+  title   = {Density-functional theory for time-dependent systems},
+  journal = {Phys. Rev. Lett.},
+  volume  = {52},
+  pages   = {997--1000},
+  year    = {1984},
+  doi     = {10.1103/PhysRevLett.52.997}
+}""", "the foundation of time-dependent DFT, behind get_excitations",
+         verified=False, topics=("excited states",)),
+    _ref("Casida1995", """
+@incollection{Casida1995,
+  author    = {Casida, Mark E.},
+  title     = {Time-dependent density functional response theory for molecules},
+  booktitle = {Recent Advances in Density Functional Methods, Part I},
+  editor    = {Chong, Delano P.},
+  publisher = {World Scientific},
+  pages     = {155--192},
+  year      = {1995}
+}""", "the Casida equations of linear-response TDDFT (get_excitations, "
+         "approximation='casida'; molecular::excitations)", verified=False,
+         topics=("excited states",)),
+    _ref("HirataHeadGordon1999", """
+@article{HirataHeadGordon1999,
+  author  = {Hirata, So and Head-Gordon, Martin},
+  title   = {Time-dependent density functional theory within the
+             {Tamm-Dancoff} approximation},
+  journal = {Chem. Phys. Lett.},
+  volume  = {314},
+  pages   = {291--299},
+  year    = {1999},
+  doi     = {10.1016/S0009-2614(99)01149-5}
+}""", "the Tamm-Dancoff approximation of linear-response TDDFT (get_excitations, "
+         "approximation='tda')", verified=False, topics=("excited states",)),
+    _ref("StratmannScuseriaFrisch1998", """
+@article{StratmannScuseriaFrisch1998,
+  author  = {Stratmann, R. Eric and Scuseria, Gustavo E. and Frisch, Michael J.},
+  title   = {An efficient implementation of time-dependent density-functional
+             theory for the calculation of excitation energies of large molecules},
+  journal = {J. Chem. Phys.},
+  volume  = {109},
+  pages   = {8218--8224},
+  year    = {1998},
+  doi     = {10.1063/1.477483}
+}""", "the paired Davidson solver of the Casida equations (math::davidson::lowest_paired)",
+         verified=False, topics=("excited states",)),
+    _ref("Martin2003", """
+@article{Martin2003,
+  author  = {Martin, Richard L.},
+  title   = {Natural transition orbitals},
+  journal = {J. Chem. Phys.},
+  volume  = {118},
+  pages   = {4775--4777},
+  year    = {2003},
+  doi     = {10.1063/1.1558471}
+}""", "natural transition orbitals of an excitation "
+         "(Excitations.natural_transition_orbitals)", verified=False,
+         topics=("excited states",)),
 ]
 
 # --------------------------------------------------------------------------- #

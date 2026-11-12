@@ -6,25 +6,24 @@ struct Sample {
     x: Vec<f64>,
     value: f64,
 }
-fn evaluate(
+fn evaluate<'p>(
     x: Vec<f64>,
     options: &Options,
     history: &mut Vec<f64>,
-    objective: &mut impl FnMut(&[f64]) -> Result<(f64, Vec<f64>)>,
+    objective: &mut impl FnMut(&[f64]) -> Result<Probe<'p>>,
 ) -> Result<Option<Sample>> {
     if history.len() >= options.max_evaluations {
         return Ok(None);
     }
-    let (value, g) = objective(&x)?;
-    validate(value, &g, x.len())?;
+    let value = objective(&x)?.checked_energy()?;
     history.push(value);
     Ok(Some(Sample { x, value }))
 }
-pub(super) fn minimize(
+pub(super) fn minimize<'p>(
     ctx: &Context,
     initial: &[f64],
     options: &Options,
-    mut objective: impl FnMut(&[f64]) -> Result<(f64, Vec<f64>)>,
+    mut objective: impl FnMut(&[f64]) -> Result<Probe<'p>>,
 ) -> Result<Outcome> {
     let n = initial.len();
     let _work = ctx.reserve(product(&[

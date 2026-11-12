@@ -126,7 +126,7 @@ class TestAngularCoupling:
     def test_the_real_coupling_is_the_complex_one_transformed(self):
         """Every four-orbital coupling of s, p and d functions, the real
         harmonics against the complex ones rotated shell by shell."""
-        from mandacaru.basis._angular import real_harmonic_transform
+        real_harmonic_transform = _native.real_harmonic_transform
 
         shells = [0, 1, 2]
         U = {l: real_harmonic_transform(l) for l in shells}
@@ -531,8 +531,11 @@ class TestTheDShellAgainstItsRadialIntegrals:
 
     def test_the_tensor_is_the_slater_combination(self):
         from mandacaru.pseudopotentials import get_paw
-        from mandacaru.pseudopotentials.multipoles import (partial_waves,
-                                                           shape_function)
+        from mandacaru.pseudopotentials.multipoles import partial_waves
+        from mandacaru.pseudopotentials.native_context import context
+
+        def shape_function(radius, r_g, L):
+            return _native.paw_shape_function(context(), np.ascontiguousarray(radius), r_g, L)
 
         vanadium = get_paw("V")
         r_g = float(vanadium.compensation_radius)

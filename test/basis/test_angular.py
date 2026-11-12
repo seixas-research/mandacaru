@@ -8,19 +8,37 @@
 
 """The spherical harmonics every atom-centered basis function is built on.
 
-:func:`~mandacaru.basis._angular.spherical_harmonic` evaluates the
-recurrence itself; SciPy's routine is the reference the complex harmonics
-must reproduce, phases and all, and the real ones are those transformed by
-:func:`~mandacaru.basis._angular.real_harmonic_transform`.
+``_native.spherical_harmonic_evaluate`` evaluates the recurrence itself; SciPy's routine is the
+reference the complex harmonics must reproduce, phases and all, and the real ones are those
+transformed by ``_native.real_harmonic_transform``.
 """
 
 import numpy as np
 import pytest
 from scipy import special
 
-from mandacaru.basis._angular import (real_harmonic_transform,
-                                      spherical_harmonic,
-                                      spherical_harmonic_gradient)
+from mandacaru import _native
+
+
+def real_harmonic_transform(l):
+    return _native.real_harmonic_transform(int(l))
+
+
+def spherical_harmonic(l, m, theta, phi, *, real):
+    """The harmonic at broadcast angles (zero above the degree), as the engine returns it."""
+    t, p = np.broadcast_arrays(np.asarray(theta, dtype=np.float64), np.asarray(phi, dtype=np.float64))
+    if abs(m) > l:
+        return np.zeros(t.shape, dtype=np.float64 if real else np.complex128)
+    return np.asarray(_native.spherical_harmonic_evaluate(
+        l, m, np.ascontiguousarray(t.ravel()), np.ascontiguousarray(p.ravel()), real)).reshape(t.shape)
+
+
+def spherical_harmonic_gradient(l, m, x, y, z, *, real):
+    shape = np.shape(x)
+    value, gradient = _native.spherical_harmonic_gradient_evaluate(
+        l, m, *(np.ascontiguousarray(a, dtype=np.float64).ravel() for a in (x, y, z)), real)
+    return (np.asarray(value).reshape(shape),
+            tuple(np.asarray(g).reshape(shape) for g in gradient))
 
 
 @pytest.fixture(scope="module")
