@@ -497,6 +497,7 @@ impl MolecularIntegrals {
         {
             return Err(invalid("SCF continuation needs a converged collinear HF frame with matching orthonormal orbitals and valid controls"));
         }
+        self.require_hartree_fock_core()?;
         self.context.run(|| {
             // Factorization and SCF mixing do not run simultaneously. Release
             // the factorization's FFT/column scratch before reserving DIIS
@@ -555,6 +556,7 @@ impl MolecularIntegrals {
                 "invalid SCF method, occupation, iteration budget or tolerance",
             ));
         }
+        self.require_hartree_fock_core()?;
         if self.paw_setup.as_ref().is_some_and(|s| s.has_spin_orbit()) {
             return Err(crate::Error::Unsupported(
                 "Hartree-Fock of a molecule with spin-orbit datasets is not available: the spin-orbit \
@@ -867,6 +869,7 @@ impl MeanField {
             .is_some()
     }
     pub fn model(&self, integrals: &MolecularIntegrals) -> Result<Arc<Model>> {
+        integrals.require_hartree_fock_core()?;
         self.require_frame()?;
         let mut cache = self.model.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(model) = cache.as_ref() {

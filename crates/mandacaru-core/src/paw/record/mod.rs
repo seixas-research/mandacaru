@@ -20,7 +20,7 @@
 //! - `values.rs`: the local potential and its slope from the table.
 //!
 //! Refusals, all of them `Error::Invalid("paw record: ...")`: a format other
-//! than `mandacaru-pseudopotential`, a version above 2, a family other than
+//! than `mandacaru-pseudopotential`, a version above 3, a family other than
 //! `paw-lcao` / `upaw-lcao`, a bare-matrix (first-order) spin-orbit entry,
 //! spin-orbit projectors off the dataset's radial grid, a missing norm
 //! correction (there is no recovery), an unknown or missing key. The only
@@ -38,15 +38,30 @@ pub mod values;
 use std::collections::BTreeMap;
 
 use crate::paw::invalid;
-use crate::{Buffer, Reservation, Result};
+use crate::{Buffer, Context, Reservation, Result};
 
-pub use files::{reload_errors, tree_cost, Parts, RELOAD_LEVEL_TOLERANCE, WriteSpec, TREE_BYTES_PER_MEMBER, TREE_BYTES_PER_VALUE};
+pub use files::{
+    reload_errors, tree_cost, Parts, WriteSpec, RELOAD_LEVEL_TOLERANCE, TREE_BYTES_PER_MEMBER,
+    TREE_BYTES_PER_VALUE,
+};
 pub use values::LocalPotential;
 
 /// `format` of every dataset file.
 pub const FORMAT_TAG: &str = "mandacaru-pseudopotential";
-/// Newest `version` this build reads and the one it writes.
-pub const FORMAT_VERSION: u64 = 2;
+/// Newest `version` this build reads, and the one it writes for a record that carries its
+/// core states ([`PawDataset::core_states`]).
+pub const FORMAT_VERSION: u64 = 3;
+/// The version of a record without core states: what a version-2 file read back is written as.
+pub const CORE_FREE_VERSION: u64 = 2;
+/// The most core states a record may declare: every `(n, l)` with `n <= 7` and `l < n`.
+pub const MAX_CORE_STATES: usize = 28;
+/// The radial exchange-correlation schemes a record's core states may name as the one its
+/// reference atom was solved with (`PawDataset::core_scheme`): the legacy `AtomSolver` of the
+/// first library and the production `Variational` (`models::xc_scheme`).
+pub const CORE_SCHEMES: [&str; 2] = ["atom-solver", "variational"];
+/// The first bytes of what [`PawDataset::content_sha256`] hashes: a new content encoding gets a
+/// new tag.
+pub const CONTENT_TAG: &str = "mandacaru-paw-content/1\n";
 /// Key of the Parquet metadata that holds the JSON payload.
 pub const METADATA_KEY: &str = "mandacaru.pseudopotential";
 
@@ -185,6 +200,23 @@ pub struct SpinOrbit {
     pub level_errors: Array,
 }
 
+/// One occupied core subshell of the reference atom (format version 3).
+///
+/// `orbital` is `u = r R(r)` on the dataset's radial grid, the function the generator summed
+/// into `core_density` (`sum occupation u^2 / (4 pi r^2)`, `paw::generate::core`); for a
+/// Dirac atom it is the `(2j+1)`-weighted average of the two `j` levels, as that sum used. It is
+/// the column `core_wave_n{n}_l{l}` ([`PawDataset::core_table`]).
+#[derive(Debug)]
+pub struct CoreState {
+    pub n: u32,
+    pub l: u32,
+    /// Electrons in the subshell, `0 < occupation <= 2 (2l + 1)`.
+    pub occupation: f64,
+    /// The level's eigenvalue in the reference atom, Hartree.
+    pub energy: f64,
+    pub orbital: Buffer<f64>,
+}
+
 /// A PAW dataset: scalars, the radial tables and the per-channel matrices.
 ///
 /// Every field is public so a consumer reads what it needs without a copy. A record comes from
@@ -223,6 +255,15 @@ pub struct PawDataset {
     pub valence_density: Buffer<f64>,
     pub core_density: Buffer<f64>,
     pub smooth_core_density: Buffer<f64>,
+    /// The occupied core subshells of the reference atom, in the order the core density is
+    /// summed (format version 3). `None` for a version-2 file, which never had them: it is not a
+    /// default and is not listed in `defaults_applied`.
+    pub core_states: Option<Vec<CoreState>>,
+    /// The radial exchange-correlation scheme the core states were solved with, one of
+    /// [`CORE_SCHEMES`], when the record says (an upgraded format-2 file: the scheme identified
+    /// by its own stored core density, owner Q22). Bookkeeping like `core_states`: not part of the
+    /// content digest.
+    pub core_scheme: Option<String>,
     /// The keys the file did not carry and a default filled in (a file written
     /// before they existed): `"semicore_subshells"` and
     /// `"channels.<l>.occupations"`. Empty for a file with the full schema.
@@ -242,9 +283,50 @@ impl PawDataset {
         self.r.as_slice().len()
     }
 
+    /// The column name of the core state `(n, l)`.
+    pub fn core_table(n: u32, l: u32) -> String {
+        format!("core_wave_n{n}_l{l}")
+    }
+
+    /// SHA-256 (lowercase hex) of the record's content: a tag, then the payload text without
+    /// `version` and `core_states` (`emit::content_text`, stride 1, unrounded: the record as it
+    /// is held), then every radial table except the core states, each as its name, its length
+    /// and its values' little-endian bytes. Two records with the same physics content have the
+    /// same digest whatever file, codec or format version they came from: a version-2 dataset
+    /// and its version-3 upgrade, which only adds the core states, share it.
+    pub fn content_sha256(&self, ctx: &Context) -> Result<String> {
+        let (text, _memory) = emit::content_text(ctx, self)?;
+        let mut hasher = crate::paw::digest::Hasher::new();
+        hasher.update(CONTENT_TAG.as_bytes());
+        hasher.update(&(text.len() as u64).to_le_bytes());
+        hasher.update(text.as_bytes());
+        let tables = self.tables();
+        let core = self.core_states.as_ref().map_or(0, Vec::len);
+        for (name, values) in &tables[..tables.len() - core] {
+            hasher.update(&(name.len() as u64).to_le_bytes());
+            hasher.update(name.as_bytes());
+            hasher.update(&(values.len() as u64).to_le_bytes());
+            for value in values.iter() {
+                hasher.update(&value.to_le_bytes());
+            }
+        }
+        Ok(hasher.finish())
+    }
+
+    /// The format version the record is written as: 3 when it carries its core states, 2 when
+    /// it does not (a version-2 file read back is written unchanged).
+    pub fn format_version(&self) -> u64 {
+        if self.core_states.is_some() {
+            FORMAT_VERSION
+        } else {
+            CORE_FREE_VERSION
+        }
+    }
+
     /// Every radial table with the name of its Parquet column, in file order:
     /// the six dataset tables, then per channel and projector index the
-    /// all-electron wave, the pseudo wave, the projector and the raw projector.
+    /// all-electron wave, the pseudo wave, the projector and the raw projector,
+    /// then the core states (format version 3) in their order.
     pub fn tables(&self) -> Vec<(String, &[f64])> {
         let mut out: Vec<(String, &[f64])> = vec![
             ("r".into(), self.r.as_slice()),
@@ -273,6 +355,9 @@ impl PawDataset {
                     channel.raw_projectors[i].as_slice(),
                 ));
             }
+        }
+        for state in self.core_states.iter().flatten() {
+            out.push((Self::core_table(state.n, state.l), state.orbital.as_slice()));
         }
         out
     }

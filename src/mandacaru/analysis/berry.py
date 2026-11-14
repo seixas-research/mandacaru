@@ -239,3 +239,137 @@ class AnomalousHall:
             fermi=_user(raw.get("fermi", 0.0), "energy", atomic),
             scf_electron_error=float(raw.get("scf_electron_error", 0.0)),
         )
+
+
+@dataclass(frozen=True)
+class WannierChargeCenterFlow:
+    r"""The flow of the hybrid Wannier charge centers of a k plane (Soluyanov and Vanderbilt).
+
+    The plane is normal to ``G_normal`` at the fractional ``offset``; the strings run along
+    ``G_direction`` (``length`` points) and ``G_transverse`` is the flow parameter ``k_perp``.
+    ``wannier_charge_centers`` is ``(samples, n)``: the eigenphases of each string's Wilson loop,
+    fractional along ``G_direction`` in [0, 1), ascending, at the transverse coordinates
+    ``k_perp`` (chosen adaptively: an interval is bisected where a center moves by more than a
+    quarter of the largest gap; ``strings`` counts the strings computed).
+
+    A time-reversal-invariant plane (``half``: the offset is 0 or 1/2, the crystal is
+    time-reversal invariant and the bands are the occupied ones) is flown over
+    :math:`k_\perp\in[0,1/2]`, between its two time-reversal-invariant lines, where the centers
+    are Kramers pairs. ``z2`` is the parity of the number of times they cross the middle of the
+    largest gap between consecutive centers (``gap_midpoints`` and ``gaps`` per sample; the line
+    follows the largest gap, and the centers it passes over count as crossings, ``crossings``).
+    A spin-degenerate crystal (``spin_degenerate``: no spin-orbit coupling) holds every center
+    twice, once per spin, so ``z2`` is the zero of that doubled manifold. Any other plane is flown
+    over the whole period and ``winding``, the total displacement of the centers, is its Chern
+    number (oriented as :meth:`~mandacaru.Mandacaru.get_chern_number`, along
+    :math:`\mathbf G_a\times\mathbf G_b` for the cyclic in-plane directions).
+    """
+
+    normal: int
+    direction: int
+    transverse: int
+    offset: float
+    length: int
+    k_perp: np.ndarray
+    wannier_charge_centers: np.ndarray
+    half: bool
+    winding: int | None
+    z2: int | None
+    crossings: int | None
+    gap_midpoints: np.ndarray | None = None
+    gaps: np.ndarray | None = None
+    spin_degenerate: bool = False
+    bands: tuple = ()
+    strings: int = 0
+    minimum_singular_value: float = 1.0
+
+    @classmethod
+    def from_native(cls, raw):
+        lines, gaps = raw["lines"], raw["gaps"]
+        return cls(
+            normal=int(raw["normal"]),
+            direction=int(raw["direction"]),
+            transverse=int(raw["transverse"]),
+            offset=float(raw["offset"]),
+            length=int(raw["length"]),
+            k_perp=np.asarray(raw["k_perp"]),
+            wannier_charge_centers=np.asarray(raw["centers"]),
+            half=bool(raw["half"]),
+            winding=None if raw["winding"] is None else int(raw["winding"]),
+            z2=None if raw["z2"] is None else int(raw["z2"]),
+            crossings=None if raw["crossings"] is None else int(raw["crossings"]),
+            gap_midpoints=None if lines is None else np.asarray(lines),
+            gaps=None if gaps is None else np.asarray(gaps),
+            spin_degenerate=bool(raw["spin_degenerate"]),
+            bands=tuple(raw["bands"]),
+            strings=int(raw["strings"]),
+            minimum_singular_value=float(raw["minimum_singular_value"]),
+        )
+
+
+@dataclass(frozen=True)
+class Z2Invariant:
+    r"""The Z2 topological invariant of a time-reversal-invariant insulator.
+
+    ``indices`` is :math:`(\nu_0;\nu_1\nu_2\nu_3)` for a crystal (``strong`` and ``weak``), or the
+    one index of a single plane (``strong`` and ``weak`` are then ``None``). :math:`\nu_j` is the
+    index of the plane :math:`k_j=1/2` and :math:`\nu_0` that of :math:`k_j=0` plus it, mod 2,
+    the same for the three ``j``; ``planes`` maps ``(j, half)`` to the index of the plane
+    :math:`k_j = 0` (``half = 0``) or :math:`1/2` (``half = 1``).
+
+    ``method`` is ``"flow"`` (the parity of the crossings of the Wannier-center flow of each
+    plane, ``flows``, one :class:`WannierChargeCenterFlow` per plane in ``j``-major order) or
+    ``"parity"`` (the Fu-Kane product of the inversion eigenvalues of the occupied Kramers pairs
+    at the eight time-reversal-invariant points; ``parity`` then lists, per point, its fractional
+    ``index``, the number of occupied states ``occupied`` and of those with parity ``-1``
+    (``minus``), ``delta`` (the product over the pairs), ``energies`` (eV) and ``parities`` of the
+    occupied and the lowest empty levels, and the ``inversion_center`` in fractional
+    coordinates). A spin-degenerate crystal (no spin-orbit coupling) has index zero.
+    """
+
+    method: str
+    indices: tuple
+    strong: int | None
+    weak: tuple | None
+    planes: dict
+    flows: tuple = ()
+    parity: tuple | None = None
+    inversion_center: tuple | None = None
+    spin_degenerate: bool = False
+    strings: tuple = ()
+
+    @classmethod
+    def from_native(cls, raw, atomic=False):
+        detail = raw["parity"]
+        parity = None
+        if detail is not None:
+            parity = tuple(
+                {
+                    "index": tuple(int(i) for i in t["index"]),
+                    "occupied": int(t["occupied"]),
+                    "minus": int(t["minus"]),
+                    "delta": int(t["delta"]),
+                    "residual": float(t["residual"]),
+                    "energies": _user(t["energies"], "energy", atomic),
+                    "parities": np.asarray(t["parities"], dtype=int),
+                }
+                for t in detail["trims"]
+            )
+        flows = tuple(WannierChargeCenterFlow.from_native(f) for f in raw["flows"])
+        degenerate = (
+            bool(detail["spin_degenerate"]) if detail is not None
+            else bool(flows) and all(f.spin_degenerate for f in flows)
+        )
+        strong, weak = int(raw["strong"]), tuple(int(w) for w in raw["weak"])
+        return cls(
+            method=str(raw["method"]),
+            indices=(strong, *weak),
+            strong=strong,
+            weak=weak,
+            planes={tuple(k): int(v) for k, v in raw["planes"].items()},
+            flows=flows,
+            parity=parity,
+            inversion_center=None if detail is None else tuple(detail["center"]),
+            spin_degenerate=degenerate,
+            strings=tuple(raw["size"]),
+        )

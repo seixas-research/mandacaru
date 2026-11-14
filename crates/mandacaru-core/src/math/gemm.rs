@@ -6,10 +6,17 @@ use nalgebra::{DMatrix, DMatrixView, DMatrixViewMut};
 use num_complex::Complex64;
 
 /// Hermitian Gram matrix of column-major complex samples, with no adjoint copy.
-pub fn complex_gram(values: &[Complex64], rows: usize, columns: usize, scale: f64) -> Result<DMatrix<Complex64>> {
+pub fn complex_gram(
+    values: &[Complex64],
+    rows: usize,
+    columns: usize,
+    scale: f64,
+) -> Result<DMatrix<Complex64>> {
     validate(values.len(), rows, columns, rows)?;
     if rows == 0 || columns == 0 || !scale.is_finite() {
-        return Err(Error::Invalid("invalid complex Gram dimensions or scale".into()));
+        return Err(Error::Invalid(
+            "invalid complex Gram dimensions or scale".into(),
+        ));
     }
     let mut out = DMatrix::zeros(columns, columns);
     let input = DMatrixView::from_slice(values, rows, columns);
@@ -21,6 +28,76 @@ pub fn complex_gram(values: &[Complex64], rows: usize, columns: usize, scale: f6
         }
     }
     Ok(out)
+}
+
+/// `op(A) B` for complex column-major matrices, `op` the identity or (with `adjoint`) the
+/// conjugate transpose, by four real products of the real and imaginary planes (the platform
+/// `multiply`): a complex matrix product in nalgebra's generic loops is several times slower.
+pub fn complex_product(
+    a: DMatrixView<'_, Complex64>,
+    adjoint: bool,
+    b: DMatrixView<'_, Complex64>,
+) -> Result<DMatrix<Complex64>> {
+    let (rows, inner) = if adjoint {
+        (a.ncols(), a.nrows())
+    } else {
+        (a.nrows(), a.ncols())
+    };
+    let columns = b.ncols();
+    if inner != b.nrows() {
+        return Err(Error::Invalid(
+            "complex matrix product dimensions disagree".into(),
+        ));
+    }
+    if rows == 0 || columns == 0 || inner == 0 {
+        return Ok(DMatrix::zeros(rows, columns));
+    }
+    // The planes of `op(A)` (`rows x inner`) and of `B` (`inner x columns`), column-major.
+    let mut left = [vec![0.; rows * inner], vec![0.; rows * inner]];
+    for i in 0..rows {
+        for j in 0..inner {
+            let value = if adjoint { a[(j, i)].conj() } else { a[(i, j)] };
+            left[0][i + rows * j] = value.re;
+            left[1][i + rows * j] = value.im;
+        }
+    }
+    let mut right = [vec![0.; inner * columns], vec![0.; inner * columns]];
+    for j in 0..columns {
+        for i in 0..inner {
+            let value = b[(i, j)];
+            right[0][i + inner * j] = value.re;
+            right[1][i + inner * j] = value.im;
+        }
+    }
+    let mut planes = [vec![0.; rows * columns], vec![0.; rows * columns]];
+    // Re = Ar Br - Ai Bi, Im = Ar Bi + Ai Br.
+    for (plane, l, r, alpha) in [(0, 0, 0, 1.), (0, 1, 1, -1.), (1, 0, 1, 1.), (1, 1, 0, 1.)] {
+        multiply(
+            MatrixRef {
+                values: &left[l],
+                rows,
+                columns: inner,
+                leading: rows,
+            },
+            MatrixRef {
+                values: &right[r],
+                rows: inner,
+                columns,
+                leading: inner,
+            },
+            MatrixMut {
+                values: &mut planes[plane],
+                rows,
+                columns,
+                leading: rows,
+            },
+            alpha,
+            1.,
+        )?;
+    }
+    Ok(DMatrix::from_fn(rows, columns, |i, j| {
+        Complex64::new(planes[0][i + rows * j], planes[1][i + rows * j])
+    }))
 }
 
 pub struct MatrixRef<'a> {

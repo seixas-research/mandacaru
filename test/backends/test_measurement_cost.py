@@ -40,6 +40,9 @@ from mandacaru.backends.measurement import (DEFAULT_MEASUREMENT_BUDGET,
                                             resolve_measurement_budget)
 from mandacaru.backends.providers import QiskitProvider, qpu_usage
 from mandacaru.core.mapping import PauliSum
+import itertools
+import random
+from mandacaru import _native
 
 qiskit = pytest.importorskip("qiskit")
 
@@ -446,3 +449,59 @@ class TestTheRunBudget:
                          backend_options={"run_budget": {"jobs": 10}})
         with pytest.raises(RunBudgetExceeded, match="jobs 201 > 10"):
             calc.get_potential_energy(h2())
+
+
+def _packed(loads, limit):
+    jobs, current, load = [], [], 0
+    for index, bases in enumerate(loads):
+        if current and limit and load + bases > limit:
+            jobs.append((current, load))
+            current, load = [], 0
+        current.append(index)
+        load += bases
+    if current:
+        jobs.append((current, load))
+    return jobs
+
+
+def test_a_rounded_total_is_pythons_round_of_the_running_sum():
+    rng = random.Random(3)
+    for _ in range(400):
+        values = [rng.uniform(0.0, 40.0) for _ in range(rng.randint(1, 4))]
+        digits = rng.choice([2, 4])
+        assert _native.round_total(values, digits) == round(sum(values), digits)
+    assert _native.round_total([2.675], 2) == round(2.675, 2) == 2.67
+    assert _native.round_total([1.23456], 4) == round(1.23456, 4) == 1.2346
+
+
+def test_the_device_force_cost_is_the_old_formula():
+    for rotations, circuits, bases, shots in itertools.product([0, 3, 17], [0, 40], [1, 5], [0, 1000]):
+        rdm = 1 + 2 * rotations
+        instances = circuits + rdm * bases
+        assert _native.device_force_cost(rotations, circuits, bases, shots) == (
+            rdm, instances, instances * shots)
+
+
+def test_the_jobs_pack_as_the_python_loop_packed_them():
+    rng = random.Random(5)
+    for _ in range(300):
+        loads = [rng.randint(1, 9) for _ in range(rng.randint(0, 12))]
+        for limit in (None, 0, 1, 4, 9, 30):
+            assert _native.pack_jobs(loads, limit) == _packed(loads, limit)
+
+
+def test_the_gate_tally_counts_as_the_provider_profiles_did():
+    skipped = ["barrier", "measure", "reset", "delay"]
+    names = ["h", "cx", "rz", "ecr", "rzz", "barrier", "swap", "u", "measure", "cz"]
+    rng = random.Random(8)
+    for _ in range(100):
+        counts = {name: rng.randint(0, 5) for name in rng.sample(names, rng.randint(1, len(names)))}
+        gates = [(name, 0, count) for name, count in counts.items()]
+        entanglers = ["cz", "cx", "ecr", "rzz", "swap"]
+        _entangling, single, total = _native.gate_tally(gates, skipped, entanglers)
+        assert single == sum(v for k, v in counts.items() if k not in skipped and k not in entanglers)
+        assert total == sum(counts.values())
+        assert _native.gate_tally([(k, 0, v) for k, v in counts.items()], [], [])[2] == sum(counts.values())
+    assert _native.gate_tally([("CNot", 0, 1), ("H", 0, 1), ("CNot", 0, 1)], [], ["CNot"]) == (2, 1, 3)
+    arity = [("fsim", 2, 3), ("rx", 1, 2), ("barrier", 4, 1)]
+    assert _native.gate_tally(arity, ["barrier"]) == (3, 2, 6)

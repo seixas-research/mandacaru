@@ -131,3 +131,10 @@ class TestRealHarmonics:
             for axis in range(3):
                 expected = row @ np.array([g[axis] for g in gradients])
                 assert np.abs(expected - gradient[axis]).max() < 1e-11
+
+
+def test_the_magnetic_numbers_of_a_shell_run_from_minus_l_to_l():
+    for l in range(0, 8):
+        assert _native.magnetic_numbers(l) == list(range(-l, l + 1))
+
+

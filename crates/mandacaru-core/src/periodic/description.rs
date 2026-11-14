@@ -209,7 +209,7 @@ fn declared_bytes(
         names = sum(&[
             names,
             d["file"].as_str().map_or(0, str::len),
-            d["sha256"].as_str().map_or(0, str::len),
+            d["content_sha256"].as_str().map_or(0, str::len),
         ])?;
     }
     let basis = sites["projector_basis"]
@@ -330,7 +330,7 @@ impl Description {
         for d in list(&sites["datasets"], "the sites block's dataset files")? {
             datasets.push((
                 d["file"].as_str().unwrap_or("").to_string(),
-                d["sha256"].as_str().unwrap_or("").to_string(),
+                crate::paw::digest::pinned_content(d)?.to_string(),
             ));
         }
         let projector_basis = sites["projector_basis"]
@@ -494,7 +494,7 @@ impl Description {
             "centers": self.centers,
             "projector_basis": self.projector_basis,
             "datasets": self.datasets.iter()
-                .map(|(file, sha256)| serde_json::json!({"file": file, "sha256": sha256}))
+                .map(|(file, digest)| serde_json::json!({"file": file, "content_sha256": digest}))
                 .collect::<Vec<_>>(),
         });
         (setup, sites)

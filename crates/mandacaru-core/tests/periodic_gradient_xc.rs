@@ -81,7 +81,7 @@ fn input(case: &Case, files: Vec<(String, String)>) -> SetupInput {
 }
 
 fn check(case: &Case) -> f64 {
-    use mandacaru_core::paw::digest::sha256_file;
+    use mandacaru_core::paw::digest::dataset_content_sha256;
     let started = std::time::Instant::now();
     let ctx = context();
     let mut species: Vec<&str> = vec![case.symbols[0]];
@@ -93,7 +93,7 @@ fn check(case: &Case) -> f64 {
         .iter()
         .map(|symbol| {
             let path = root.join(format!("{symbol}.parquet"));
-            (path.to_string_lossy().into_owned(), sha256_file(&path).unwrap())
+            (path.to_string_lossy().into_owned(), dataset_content_sha256(&ctx, &path).unwrap())
         })
         .collect();
     let datasets: Vec<_> = species.iter().map(|s| Arc::new(dataset(&ctx, case.library(), s))).collect();
@@ -158,7 +158,7 @@ fn force_of(case: &Case) -> f64 {
         .iter()
         .map(|symbol| {
             let path = root.join(format!("{symbol}.parquet"));
-            let digest = mandacaru_core::paw::digest::sha256_file(&path).unwrap();
+            let digest = mandacaru_core::paw::digest::dataset_content_sha256(&ctx, &path).unwrap();
             (path.to_string_lossy().into_owned(), digest)
         })
         .collect();
@@ -338,7 +338,7 @@ fn a_spin_orbit_pbe_rvv10_crystal_force_is_the_reconverged_finite_difference() {
 #[test]
 #[ignore = "diagnostic: a step scan of reconverged SCFs; run: cargo test --profile release-test -p mandacaru-core --test periodic_gradient_xc -- --ignored --nocapture step_scan"]
 fn step_scan() {
-    use mandacaru_core::paw::digest::sha256_file;
+    use mandacaru_core::paw::digest::dataset_content_sha256;
     for spinor in [false, true] {
         let case = Case {
             label: if spinor { "AuH SOC r2SCAN" } else { "AuH r2SCAN" },
@@ -356,7 +356,7 @@ fn step_scan() {
             .iter()
             .map(|s| {
                 let path = root.join(format!("{s}.parquet"));
-                (path.to_string_lossy().into_owned(), sha256_file(&path).unwrap())
+                (path.to_string_lossy().into_owned(), dataset_content_sha256(&ctx, &path).unwrap())
             })
             .collect();
         let datasets: Vec<_> = ["Au", "H"].iter().map(|s| Arc::new(dataset(&ctx, case.library(), s))).collect();

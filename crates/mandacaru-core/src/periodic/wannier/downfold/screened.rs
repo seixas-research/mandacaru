@@ -283,13 +283,7 @@ fn long_wavelength_head(
     cutoff: f64,
     bands: usize,
 ) -> Result<f64> {
-    let provider = wannier.provider.as_ref().ok_or_else(|| {
-        Error::Unsupported(
-            "the long-wavelength limit of the screening needs the periodic setup the Wannier \
-             functions were built from; this result has none"
-                .into(),
-        )
-    })?;
+    let provider = &wannier.setup;
     let crystal: &Crystal = &wannier.crystal;
     let ctx = &crystal.context;
     let points = crystal.grid.index.points();

@@ -4,59 +4,130 @@
 # lower the row (python scripts/numerics_budget.py --ratchet); only the owner
 # raises a number or moves a `dies` later, by committing it.
 #
+# Gate version 2 (2026-11-13) counts addsub neg cmp tern nloops (the numeric tests), ase (ASE
+# geometry calls), drops the unit-constant exemption and enforces every counter in every tier.
 # Zero tier (pseudopotentials/ basis/ integrals/ models/ integrations/paw*): a module without a row is budgeted at
-# zero on every counter, sloc included. A row is dated (wave, dies) while it has
+# zero on every counter, sloc included. Every tier enforces every counter, `sloc` included. A row is dated (wave, dies) while it has
 # any hard counter or policy to port; an undated row names a closed category
 # (validation, hand-off, unit, result-view, log-table) and shows no hard counter.
 # Tiers A and Q (everything else) are ratchet-only: growth stops, no date.
-# Counters: np scipy matmul meth math ctypes dyn dloops dcomp bi imp (hard);
-# aloops acomp arith arithmax sloc (soft, zero tier). Omitted means 0.
+# Counters: np scipy matmul meth math ctypes dyn dloops dcomp ase bi imp (hard);
+# aloops acomp arith arithmax addsub neg cmp tern nloops sloc (soft, every tier). Omitted means 0.
 # [[exception]] entries waive the counters of one function; their counts must
 # match the measurement exactly and are subtracted from the module row.
 
+[gate]
+version = 2
+
 [tier_total]
-zero_sloc = 3286
+zero_sloc = 3164
 
 [module]
-"analysis/proposals.py" = { dloops = 2 }
-"backends/providers.py" = { dyn = 1, dloops = 1, dcomp = 2 }
-"basis/__init__.py" = { sloc = 30, category = "hand-off" }
-"basis/atomic_solver.py" = { sloc = 94, category = "hand-off" }
+"__init__.py" = { sloc = 21 }
+"__main__.py" = { sloc = 4 }
+"analysis/berry.py" = { addsub = 2, nloops = 2, sloc = 222 }
+"analysis/bloch.py" = { sloc = 25 }
+"analysis/correlation.py" = { cmp = 1, sloc = 33 }
+"analysis/excitations.py" = { cmp = 2, sloc = 102 }
+"analysis/expressibility.py" = { sloc = 15 }
+"analysis/fields.py" = { sloc = 90 }
+"analysis/kspace.py" = { cmp = 1, tern = 1, sloc = 69 }
+"analysis/proposals.py" = { bi = 1, arith = 1, arithmax = 1, cmp = 2, tern = 1, sloc = 73 }
+"analysis/real_time.py" = { cmp = 1, sloc = 55 }
+"analysis/states.py" = { sloc = 83 }
+"backend_policy.py" = { sloc = 6 }
+"backends/__init__.py" = { sloc = 27 }
+"backends/hardware.py" = { sloc = 153 }
+"backends/measurement.py" = { bi = 6, cmp = 5, tern = 3, sloc = 133 }
+"backends/providers.py" = { dyn = 1, bi = 10, imp = 24, aloops = 3, arith = 4, arithmax = 2, cmp = 5, sloc = 739 }
+"basis/__init__.py" = { sloc = 29, category = "hand-off" }
+"basis/atomic_solver.py" = { cmp = 1, tern = 1, nloops = 1, sloc = 85, category = "hand-off" }
 "basis/base.py" = { sloc = 12, category = "hand-off" }
-"basis/filtering.py" = { arithmax = 1, sloc = 123, category = "hand-off" }
-"basis/multizeta.py" = { sloc = 32, category = "hand-off" }
+"basis/filtering.py" = { cmp = 4, nloops = 1, sloc = 116, category = "hand-off" }
+"basis/multizeta.py" = { addsub = 2, cmp = 1, sloc = 32, category = "hand-off" }
 "basis/relativity.py" = { sloc = 108, category = "hand-off" }
-"core/checkpoint.py" = { dcomp = 2 }
-"core/mapping.py" = { dcomp = 1 }
-"core/serialization.py" = { dcomp = 1 }
+"calculation.py" = { bi = 3, imp = 1, addsub = 3, cmp = 26, nloops = 4, sloc = 1866 }
+"circuits/profiling.py" = { imp = 5, sloc = 89 }
+"cli.py" = { arith = 1, arithmax = 1, sloc = 108 }
+"core/__init__.py" = { bi = 1, sloc = 41 }
+"core/atomic.py" = { sloc = 21 }
+"core/ccmh.py" = { cmp = 2, sloc = 126 }
+"core/checkpoint.py" = { bi = 1, cmp = 2, sloc = 244 }
+"core/dipole.py" = { addsub = 1, cmp = 5, sloc = 52 }
+"core/kzk.py" = { sloc = 86 }
+"core/mapping.py" = { bi = 2, imp = 1, arith = 1, arithmax = 1, addsub = 3, cmp = 3, nloops = 2, sloc = 251 }
+"core/mpc.py" = { sloc = 196 }
+"core/serialization.py" = { bi = 2, addsub = 3, cmp = 2, tern = 2, sloc = 192 }
+"hubbard.py" = { bi = 1, sloc = 104 }
 "integrals/__init__.py" = { sloc = 2, category = "hand-off" }
 "integrals/grid.py" = { sloc = 70, category = "result-view" }
-"integrations/paw.py" = { sloc = 47, category = "validation" }
+"integrations/ase.py" = { sloc = 45 }
+"integrations/ase_properties.py" = { bi = 1, acomp = 1, arith = 1, arithmax = 1, cmp = 5, tern = 1, sloc = 300 }
+"integrations/basis_recipe.py" = { cmp = 1, sloc = 73 }
+"integrations/basis_report.py" = { bi = 7, sloc = 155 }
+"integrations/berry.py" = { arith = 1, arithmax = 1, addsub = 2, cmp = 7, tern = 1, nloops = 1, sloc = 148 }
+"integrations/bloch.py" = { acomp = 1, arith = 1, arithmax = 1, cmp = 6, nloops = 1, sloc = 220 }
+"integrations/circuits.py" = { cmp = 6, nloops = 2, sloc = 256 }
+"integrations/device_forces.py" = { cmp = 1, sloc = 107 }
+"integrations/excitations.py" = { sloc = 39 }
+"integrations/history.py" = { addsub = 4, cmp = 8, nloops = 1, sloc = 92 }
+"integrations/kspace.py" = { cmp = 5, nloops = 2, sloc = 86 }
+"integrations/measurement_scheme.py" = { sloc = 50 }
+"integrations/paw.py" = { cmp = 1, nloops = 1, sloc = 47, category = "validation" }
 "integrations/paw_molecular.py" = { sloc = 80, category = "hand-off" }
-"models/basis.py" = { arith = 2, arithmax = 2, sloc = 293, category = "validation" }
-"models/datasets.py" = { sloc = 32, category = "validation" }
+"integrations/real_time.py" = { addsub = 1, cmp = 1, sloc = 55 }
+"integrations/reporting.py" = { addsub = 5, cmp = 2, tern = 2, sloc = 236 }
+"integrations/run_log_fields.py" = { addsub = 2, cmp = 5, tern = 2, sloc = 271 }
+"integrations/search.py" = { bi = 1, arith = 2, arithmax = 2, cmp = 7, nloops = 1, sloc = 138 }
+"integrations/setup_block.py" = { bi = 2, addsub = 1, sloc = 98 }
+"integrations/tapering.py" = { cmp = 1, tern = 1, nloops = 1, sloc = 32 }
+"integrations/transfer.py" = { cmp = 2, sloc = 54 }
+"integrations/wannier.py" = { bi = 1, cmp = 8, tern = 1, nloops = 1, sloc = 210 }
+"models/basis.py" = { cmp = 5, tern = 4, sloc = 286, category = "validation" }
+"models/datasets.py" = { cmp = 2, tern = 1, sloc = 32, category = "validation" }
 "models/elements.py" = { sloc = 3, category = "hand-off" }
-"models/radial.py" = { sloc = 69, category = "validation" }
+"models/radial.py" = { cmp = 3, nloops = 1, sloc = 68, category = "validation" }
 "models/setup.py" = { sloc = 19, category = "hand-off" }
+"optimizers/__init__.py" = { sloc = 4 }
+"optimizers/optim.py" = { sloc = 20 }
 "pseudopotentials/__init__.py" = { sloc = 16, category = "hand-off" }
-"pseudopotentials/build_cli.py" = { sloc = 213, category = "hand-off" }
-"pseudopotentials/confinement.py" = { sloc = 201, category = "validation" }
+"pseudopotentials/build_cli.py" = { addsub = 8, cmp = 2, nloops = 3, sloc = 169, category = "hand-off" }
+"pseudopotentials/confinement.py" = { cmp = 6, sloc = 200, category = "validation" }
 "pseudopotentials/dataset.py" = { sloc = 35, category = "hand-off" }
 "pseudopotentials/defects.py" = { sloc = 91, category = "validation" }
-"pseudopotentials/diagnostics.py" = { sloc = 75, category = "hand-off" }
-"pseudopotentials/diffuse.py" = { sloc = 207, category = "validation" }
+"pseudopotentials/diagnostics.py" = { cmp = 1, sloc = 75, category = "hand-off" }
+"pseudopotentials/diffuse.py" = { cmp = 7, tern = 1, nloops = 1, sloc = 207, category = "validation" }
 "pseudopotentials/environment.py" = { sloc = 196, category = "hand-off" }
 "pseudopotentials/families.py" = { sloc = 152, category = "validation" }
-"pseudopotentials/generation.py" = { sloc = 125, category = "validation" }
-"pseudopotentials/io.py" = { sloc = 136, category = "hand-off" }
-"pseudopotentials/library_cli.py" = { acomp = 1, arith = 2, arithmax = 1, sloc = 180, category = "hand-off" }
+"pseudopotentials/generation.py" = { cmp = 1, nloops = 1, sloc = 125, category = "validation" }
+"pseudopotentials/io.py" = { addsub = 1, nloops = 1, sloc = 136, category = "hand-off" }
+"pseudopotentials/library_cli.py" = { acomp = 1, arith = 1, arithmax = 1, addsub = 2, cmp = 2, tern = 1, nloops = 1, sloc = 180, category = "hand-off" }
 "pseudopotentials/multipoles.py" = { sloc = 26, category = "hand-off" }
 "pseudopotentials/native_context.py" = { sloc = 5, category = "hand-off" }
-"pseudopotentials/orbitals.py" = { sloc = 155, category = "hand-off" }
-"pseudopotentials/paw.py" = { sloc = 269, category = "hand-off" }
-"pseudopotentials/record.py" = { sloc = 190, category = "hand-off" }
-"utils/banner.py" = { dyn = 3 }
-"utils/logging.py" = { dloops = 7, dcomp = 3 }
+"pseudopotentials/orbitals.py" = { cmp = 1, sloc = 155, category = "hand-off" }
+"pseudopotentials/paw.py" = { addsub = 2, cmp = 1, tern = 1, sloc = 213, category = "hand-off" }
+"pseudopotentials/record.py" = { addsub = 1, nloops = 1, sloc = 194, category = "hand-off" }
+"resources.py" = { bi = 2, cmp = 3, nloops = 1, sloc = 117 }
+"results.py" = { imp = 1, cmp = 7, tern = 3, nloops = 1, sloc = 560 }
+"specifications.py" = { cmp = 1, sloc = 110 }
+"structure.py" = { cmp = 2, sloc = 92 }
+"units.py" = { cmp = 1, tern = 1, sloc = 47 }
+"utils/__init__.py" = { bi = 1, sloc = 36 }
+"utils/banner.py" = { addsub = 2, tern = 1, nloops = 2, sloc = 71 }
+"utils/bibliography.py" = { bi = 2, addsub = 5, nloops = 1, sloc = 2287 }
+"utils/bxsf.py" = { aloops = 1, arith = 1, arithmax = 1, addsub = 8, cmp = 1, nloops = 5, sloc = 47 }
+"utils/citations.py" = { addsub = 6, nloops = 2, sloc = 297 }
+"utils/cube.py" = { bi = 2, cmp = 1, sloc = 57 }
+"utils/logging.py" = { bi = 14, aloops = 1, arith = 9, arithmax = 6, addsub = 47, neg = 1, cmp = 23, tern = 3, nloops = 5, sloc = 1312 }
+"utils/memory.py" = { bi = 4, aloops = 1, arith = 3, arithmax = 2, addsub = 1, cmp = 2, nloops = 1, sloc = 68 }
+"utils/profiling.py" = { bi = 4, arith = 4, arithmax = 2, addsub = 5, sloc = 112 }
+"utils/shell_config.py" = { arith = 1, arithmax = 1, sloc = 102 }
+"utils/viewer.py" = { bi = 1, imp = 6, neg = 1, cmp = 10, nloops = 1, sloc = 292 }
+"version.py" = { sloc = 1 }
+"workflows/nested_otoc.py" = { imp = 3, cmp = 3, sloc = 127 }
+"workflows/qpe.py" = { imp = 4, cmp = 7, sloc = 394 }
+"workflows/quantum_echoes.py" = { cmp = 8, sloc = 141 }
+"workflows/time_evolution.py" = { imp = 4, arith = 3, arithmax = 2, cmp = 5, sloc = 153 }
 
 [[exception]]
 module = "basis/__init__.py"
@@ -64,13 +135,6 @@ function = "__dir__"
 bi = 1
 category = "hand-off"
 reason = "sorted() lists the lazy export names"
-
-[[exception]]
-module = "models/basis.py"
-function = "_parse_dunning"
-bi = 1
-category = "validation"
-reason = "caps the contraction depth of a requested basis name"
 
 [[exception]]
 module = "models/datasets.py"
@@ -153,7 +217,6 @@ reason = "sorted per-element entries of a basis label"
 module = "basis/filtering.py"
 function = "filter_radial"
 bi = 2
-arith = 1
 category = "log-table"
 reason = "sorted option names of the cache key and the refusal, and the percentage of the warning text"
 
@@ -163,20 +226,6 @@ function = "build"
 bi = 1
 category = "validation"
 reason = "sorts the unexpected basis option names for the error text"
-
-[[exception]]
-module = "pseudopotentials/build_cli.py"
-function = "_build_one"
-bi = 3
-category = "log-table"
-reason = "sorted channel entries of the printed report"
-
-[[exception]]
-module = "pseudopotentials/build_cli.py"
-function = "build_one"
-bi = 1
-category = "log-table"
-reason = "sorted warning notes of the printed report"
 
 [[exception]]
 module = "pseudopotentials/diffuse.py"
@@ -221,13 +270,6 @@ category = "log-table"
 reason = "sorted channel numbers of the printed summary"
 
 [[exception]]
-module = "pseudopotentials/build_cli.py"
-function = "reload_errors"
-bi = 1
-category = "hand-off"
-reason = "orders the channels handed to the engine's read-back check"
-
-[[exception]]
 module = "pseudopotentials/defects.py"
 function = "defect_message"
 dcomp = 6
@@ -253,13 +295,6 @@ reason = "sorts the unexpected keyword names for the error text"
 
 [[exception]]
 module = "pseudopotentials/record.py"
-function = "_channel"
-bi = 1
-category = "hand-off"
-reason = "counts the partial waves a record holds"
-
-[[exception]]
-module = "pseudopotentials/record.py"
 function = "record_of"
 dloops = 1
 bi = 1
@@ -281,3 +316,81 @@ dloops = 1
 bi = 2
 category = "hand-off"
 reason = "the exit status is the largest status over the library families"
+
+[[exception]]
+module = "backends/providers.py"
+function = "QiskitProvider._submission_key"
+dcomp = 1
+category = "hand-off"
+reason = "hashes the sorted generator terms into the submission cache key"
+
+[[exception]]
+module = "backends/providers.py"
+function = "QiskitProvider.compiled"
+dcomp = 1
+category = "hand-off"
+reason = "keys the transpiled-template cache by the sorted generator terms"
+
+[[exception]]
+module = "core/checkpoint.py"
+function = "_pauli_to_payload"
+dcomp = 1
+category = "hand-off"
+reason = "lists the sorted Pauli terms of the checkpoint payload"
+
+[[exception]]
+module = "core/mapping.py"
+function = "PauliSum.__repr__"
+dcomp = 1
+category = "log-table"
+reason = "prints the sorted terms of the repr"
+
+[[exception]]
+module = "core/serialization.py"
+function = "save_hamiltonian"
+dcomp = 1
+category = "hand-off"
+reason = "lists the sorted Pauli terms of the file payload"
+
+[[exception]]
+module = "utils/logging.py"
+function = "Logger._iteration_heading"
+dloops = 1
+category = "log-table"
+reason = "pads the column headings of the iteration table"
+
+[[exception]]
+module = "utils/logging.py"
+function = "Logger._write_fields_and_tables"
+dloops = 2
+dcomp = 1
+category = "log-table"
+reason = "column widths and rows of the printed fields and tables"
+
+[[exception]]
+module = "utils/logging.py"
+function = "Logger.start_scf_iterations"
+dcomp = 1
+category = "log-table"
+reason = "column widths of the SCF iteration table"
+
+[[exception]]
+module = "utils/logging.py"
+function = "Logger.write_chain_step"
+dloops = 2
+category = "log-table"
+reason = "pads the chain-step row to the table columns"
+
+[[exception]]
+module = "utils/logging.py"
+function = "Logger.write_iteration"
+dloops = 2
+category = "log-table"
+reason = "pads the iteration row to the table columns"
+
+[[exception]]
+module = "utils/logging.py"
+function = "_ascii_table"
+dcomp = 1
+category = "log-table"
+reason = "column widths of a printed table"

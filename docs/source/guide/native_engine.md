@@ -104,14 +104,17 @@ retains its original context, so configure that context at its origin:
 | Molecular PAW | HF, semilocal Kohn–Sham and variational methods, exact valence one-center terms, RHF/UHF/KS forces, smooth fields and augmentation-charge accounting; on a spin-orbit dataset (`lda-fr`, `pbe-fr`), spinor (noncollinear) Kohn–Sham with the PAW spin-orbit projector term for `lda`, `pbe`, `pbe+rvv10`, `r2scan` and `hse06`, with analytic forces; the reference state is a `ghf`-shaped spinor state carrying the functional | Frozen-core exchange for an empty or single closed-1s core only; a molecule on a spin-orbit dataset needs `method="dft"` (every other method raises `NotImplementedError`) and takes no DFT+U; no PAW forces for spinor Hartree–Fock; no stress for a molecule |
 | Molecular DFT | `lda`, `pbe`, `r2scan`, `hse06`, `pbe+rvv10`, `r2scan+rvv10` | Forces: analytic for all-electron and PAW-LCAO bases (HSE06 and the rVV10 pairings included, [Forces](forces_relaxation.md)) |
 | Periodic DFT | LDA, PBE, r²SCAN, HSE06 (always on the whole k mesh) and rVV10 pairings, occupations, spectra, analytic forces and stress (Rust, rVV10 included); DFT+U on one `d` or `f` shell per element (Dudarev or Liechtenstein, fully localized limit, linear-response U, on a symmetry-reduced k mesh; analytic forces and stress; [DFT+U](dft_u.md)) | The crystal is built entirely in Rust; DFT+U needs a scalar-relativistic dataset and a semilocal functional, and its forces and stress raise for a hybrid |
-| Quantum methods | UCCSD and HVA VQE, fermionic/qubit/QEB/CEO/spin-orbit ADAPT, shared subspace searches, VASQA and VALSQA with their ranker and graph proposal models, Z2 tapering and the double-factorized two-body representation | Other ansätze and the GHF quantum handoff remain unported |
+| Quantum methods | UCCSD and HVA VQE, fermionic/qubit/QEB/CEO/spin-orbit ADAPT, shared subspace searches, VASQA and VALSQA with their ranker and graph proposal models, Z2 tapering and the double-factorized two-body representation | Other ansätze and the GHF quantum handoff remain unported; the forces of a quantum method on a crystal are central finite differences (the analytic force is designed, not built) and its stress raises |
 | Correlation | Closed-shell and open-shell MP2/FNO active spaces, thresholds, frozen cores and correlating-pair constraints | `dlpno-mp2` is closed shell only; correlating pairs do not combine with symmetry-preserving selection |
 | Persistence | Native JSON and Parquet Hamiltonians, native Parquet pseudopotential datasets, crystals and completed checkpoints; the Parquet container, Snappy and ZSTD decoding and ZSTD encoding are in Rust, with no Python Parquet package ([Parquet files](#native-parquet)) | Parquet files with nulls, nested columns or GZIP, Brotli and LZ4 pages raise; provider job lifecycle integration remains incomplete |
 
 Unsupported combinations raise errors. What is planned but not yet available is
 collected in [not yet available](#not-yet-available), and the
-[audit](../development/native_cutover.md) records the numerical Python that the
-numerics budget still counts. A complete exchange–correlation catalog is not enabled. A checkpoint
+[cutover page](../development/native_cutover.md) records what is native, what is
+still partial and what raises. By its boundary the numerical migration is
+complete: the Python that remains is validation, hand-off, result views and log
+tables. One item is still orchestrated from Python, the finite-difference forces
+of a quantum method on a crystal. A complete exchange–correlation catalog is not enabled. A checkpoint
 supplies a compatible warm start and, for SLSQP and BFGS, the optimizer's
 curvature estimate ([checkpoints](checkpoints_qpe.md)); it does not restore a
 partially completed iteration.

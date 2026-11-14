@@ -28,8 +28,8 @@ functional theory for molecules and crystals.
 
 The numerical engine is written in Rust, and Python is the interface: input
 validation, the ASE integration, result views, plotting and the quantum SDK
-adapters. The move from Python to Rust is not finished yet; see
-[Migration to Rust](#migration-to-rust).
+adapters. The numerical work has moved from Python to Rust; the open engine
+work is listed in [Migration to Rust](#migration-to-rust).
 
 ## Getting Started
 
@@ -205,9 +205,10 @@ Braket devices and Cirq's exact simulator are selected the same way through
 
 ## Migration to Rust
 
-The numerical engine is moving from Python to Rust, and the move is not
-complete. The rule is that numerical work moves to Rust first, every caller is
-identified, and only then is the Python deleted: there is no Python fallback
+The numerical engine has moved from Python to Rust: no numerical work is left
+in the Python package, which validates options, hands arrays to the engine and
+builds the result views. Each routine moved to Rust first, every caller was
+identified, and only then was the Python deleted: there is no Python fallback
 and no execution selector. An option the native engine cannot honor raises an
 error. It never selects a different calculation.
 
@@ -242,9 +243,9 @@ error. It never selects a different calculation.
 5. Extend circuit execution to the multi-reference methods, continue device
    runs, and hand a GHF reference to the quantum methods.
 6. Parallelize the rest of the crystal engine over the new `parallelization`
-   layout (the hybrid exchange, forces and stress, post-processing). The basis,
-   dataset and PAW adapter modules no longer hold numerical Python: they hand
-   over to the Rust engine.
+   layout (forces and stress, post-processing, an automatic layout), and move
+   the last Python-orchestrated step into the engine: the finite-difference
+   forces of quantum methods on crystals (to be replaced by the analytic force).
 7. Write the SCF log while the run proceeds, not only when it ends.
 
 The [native engine status](https://mandacaru.readthedocs.io/en/latest/development/native_cutover.html)

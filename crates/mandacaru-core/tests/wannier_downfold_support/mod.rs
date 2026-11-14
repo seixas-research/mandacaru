@@ -3,14 +3,13 @@
 #![allow(dead_code)]
 use crate::setup_shells_support::dataset;
 use mandacaru_core::{
-    paw::digest::sha256_file,
     periodic::{
         setup::parse::{create_setup, AtomSpec, SetupInput},
         solver::Options as Scf,
         wannier::{
             downfold::{CoulombBox, Request},
-            model, sampling,
-            setup::{Setup, Wannier},
+            model,
+            setup::Wannier,
             Options,
         },
     },
@@ -39,7 +38,11 @@ pub fn chain_on(size: [usize; 3], moments: Option<[f64; 2]>, threads: usize) -> 
     let path = root.join("H.parquet");
     let files = vec![(
         path.to_string_lossy().into_owned(),
-        sha256_file(&path).unwrap(),
+        mandacaru_core::paw::digest::dataset_content_sha256(
+            &mandacaru_core::Context::new(Some(1), 1 << 30).unwrap(),
+            &path,
+        )
+        .unwrap(),
     )];
     let cell = [6., 8., 8.];
     let input = SetupInput {
@@ -85,30 +88,21 @@ pub fn chain_on(size: [usize; 3], moments: Option<[f64; 2]>, threads: usize) -> 
             .unwrap(),
     );
     assert!(state.converged);
-    let description = crystal.description.as_ref().unwrap();
     let request = json!({
         "size": size,
         "trials": [
             {"center": [2.3, 4., 4.], "orbital": "s", "label": "H0"},
             {"center": [3.7, 4., 4.], "orbital": "s", "label": "H1"},
         ],
-        "centers": description.centers,
-        "channel_labels": description.channels.iter()
-            .map(|c| json!([c.0, c.1, c.2])).collect::<Vec<_>>(),
     });
-    let mut wannier = Setup::from_json(crystal.clone(), state, &request.to_string()).unwrap();
-    let count = size.iter().product::<usize>();
-    let fractional: Vec<[f64; 3]> = (0..count)
-        .map(|k| sampling::mesh_point(size, k).unwrap())
-        .collect();
-    let weights = vec![1. / count as f64; count];
-    for point in setup.matrices_at(&ctx, &fractional, &weights).unwrap() {
-        wannier.add_point(point).unwrap();
-    }
-    let wannier = wannier
-        .with_provider(Some(setup.clone()))
-        .finish(&Options::default())
-        .unwrap();
+    let wannier = Wannier::build(
+        crystal,
+        state,
+        setup,
+        &request.to_string(),
+        &Options::default(),
+    )
+    .unwrap();
     assert!(wannier.channels[0].localized.converged);
     (ctx, wannier)
 }
@@ -189,7 +183,11 @@ pub fn supercell(
     let path = root.join("H.parquet");
     let files = vec![(
         path.to_string_lossy().into_owned(),
-        sha256_file(&path).unwrap(),
+        mandacaru_core::paw::digest::dataset_content_sha256(
+            &mandacaru_core::Context::new(Some(1), 1 << 30).unwrap(),
+            &path,
+        )
+        .unwrap(),
     )];
     let cell = [6. * size as f64, 8., 8.];
     let mut atoms = vec![];

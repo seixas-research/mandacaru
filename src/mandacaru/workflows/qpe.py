@@ -76,43 +76,31 @@ class QPEMemoryEstimate:
     working_bytes: int
     unitary_bytes: int
     available_bytes: int
-
-    @property
-    def total_bytes(self) -> int:
-        return self.working_bytes + self.unitary_bytes
-
-    @property
-    def fraction(self) -> float | None:
-        """Share of the available memory the run would claim."""
-        if not self.available_bytes:
-            return None
-        return self.total_bytes / self.available_bytes
+    #: The bytes a run claims: the working set and the dense unitary.
+    total_bytes: int
+    #: ``n_system + n_evaluation``: the qubits of the simulated register.
+    total_qubits: int
+    #: Share of the available memory the run would claim (``None``: none is known).
+    fraction: float | None
+    #: The available memory in GiB.
+    available_gib: float
 
     def summary(self) -> str:
-        avail = f"{self.available_bytes / 2**30:.2f} GiB"
         share = (
             ""
             if self.fraction is None
-            else f" = {100 * self.fraction:.1f}% of the {avail} available"
+            else f" = {_native.percent(self.fraction):.1f}% of the {self.available_gib:.2f} GiB available"
         )
+        human = _native.human_bytes
         return (
-            f"QPE statevector: {self.n_system} system + {self.n_evaluation} evaluation qubits -> 2^{self.n_system + self.n_evaluation} amplitudes ({_human(self.statevector_bytes)}); working set {_human(self.working_bytes)}"
+            f"QPE statevector: {self.n_system} system + {self.n_evaluation} evaluation qubits -> 2^{self.total_qubits} amplitudes ({human(self.statevector_bytes)}); working set {human(self.working_bytes)}"
             + (
-                f" + {_human(self.unitary_bytes)} for the dense unitary"
+                f" + {human(self.unitary_bytes)} for the dense unitary"
                 if self.unitary_bytes
                 else ""
             )
-            + f" = {_human(self.total_bytes)}{share}"
+            + f" = {human(self.total_bytes)}{share}"
         )
-
-
-def _human(n_bytes: int) -> str:
-    value = float(n_bytes)
-    for unit in ("B", "KiB", "MiB", "GiB", "TiB", "PiB"):
-        if value < 1024 or unit == "PiB":
-            return f"{value:.2f} {unit}" if unit != "B" else f"{int(value)} B"
-        value /= 1024
-    return f"{value:.2f} PiB"
 
 
 def qpe_memory_estimate(
@@ -130,14 +118,19 @@ def qpe_memory_estimate(
     """
     state_dtype(precision)
     n, t = (int(n_system), int(n_evaluation))
-    statevector, working, unitary, _dense = _native.qpe_memory(n, t, dense, precision)
+    available = memory.available_memory_bytes()
+    raw = _native.qpe_memory_report(n, t, available, dense, precision)
     return QPEMemoryEstimate(
         n_system=n,
         n_evaluation=t,
-        statevector_bytes=statevector,
-        working_bytes=working,
-        unitary_bytes=unitary,
-        available_bytes=memory.available_memory_bytes(),
+        statevector_bytes=raw["statevector"],
+        working_bytes=raw["working"],
+        unitary_bytes=raw["unitary"],
+        available_bytes=available,
+        total_bytes=raw["total"],
+        total_qubits=raw["qubits"],
+        fraction=raw["fraction"],
+        available_gib=raw["gibibytes"],
     )
 
 
@@ -168,7 +161,8 @@ def check_memory(
         elif verbose:
             print(text)
         return True
-    message = f"QPE would need {_human(estimate.total_bytes)}, {100 * share:.0f}% of the {_human(estimate.available_bytes)} available (limit {100 * float(fraction):.0f}%).  Reduce the evaluation qubits or the system register, or free memory."
+    human = _native.human_bytes
+    message = f"QPE would need {human(estimate.total_bytes)}, {_native.percent(share):.0f}% of the {human(estimate.available_bytes)} available (limit {_native.percent(float(fraction)):.0f}%).  Reduce the evaluation qubits or the system register, or free memory."
     if policy == "abort":
         raise MemoryError(f"refusing to start: {message}")
     if policy == "prompt":
@@ -284,7 +278,7 @@ class QPEResult:
         if self.exact_energies is not None:
             e0 = _native.array_minimum(np.asarray(self.exact_energies, dtype=float))
             lines.append(
-                f"  exact ground state: {e0:+.8f} {u} (|<E0|Psi>|^2 = {self.ground_state_overlap:.4f}; reading error {self.energy - e0:+.3e} {u})"
+                f"  exact ground state: {e0:+.8f} {u} (|<E0|Psi>|^2 = {self.ground_state_overlap:.4f}; reading error {_native.difference(self.energy, e0):+.3e} {u})"
             )
         return "\n".join(lines)
 
@@ -421,9 +415,7 @@ class QuantumPhaseEstimation:
                 (int(n), list(ref), list(gens), theta),
             )
         psi = np.asarray(initial_state, dtype=self._dtype).ravel()
-        n = psi.size.bit_length() - 1
-        if n < 0 or 2**n != psi.size:
-            raise ValueError(f"a state vector needs 2^n amplitudes, got {psi.size}")
+        n = _native.state_qubits(int(psi.size))
         if self.hamiltonian is None:
             raise ValueError(
                 "pass hamiltonian= when the initial state is a state vector"
@@ -556,16 +548,17 @@ class QuantumPhaseEstimation:
             provider = QiskitProvider()
         t = self.n_evaluation_qubits
         lo, hi = self._window(hamiltonian)
-        shifted = hamiltonian + PauliSum.identity(n) * -lo
+        shift, evolution_time = _native.qpe_unitary(lo, hi)
         unitary = PauliEvolutionGate(
-            shifted.to_sparse_pauli_op(),
-            time=-2.0 * np.pi / (hi - lo),
+            hamiltonian.shifted(shift).to_sparse_pauli_op(),
+            time=evolution_time,
             synthesis=MatrixExponential(),
         )
         preparation = provider.build(*problem)
-        qc = QuantumCircuit(t + n, name="qpe")
-        qc.compose(preparation, qubits=list(range(t, t + n)), inplace=True)
-        qc.compose(PhaseEstimation(t, unitary), qubits=list(range(t + n)), inplace=True)
+        width, system_wires = _native.qpe_layout(t, n)
+        qc = QuantumCircuit(width, name="qpe")
+        qc.compose(preparation, qubits=system_wires, inplace=True)
+        qc.compose(PhaseEstimation(t, unitary), qubits=list(range(width)), inplace=True)
         return qc
 
     @staticmethod

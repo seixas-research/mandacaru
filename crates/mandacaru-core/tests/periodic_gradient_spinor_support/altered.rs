@@ -16,7 +16,7 @@ use mandacaru_core::{
     quantum::C64,
     Result,
 };
-use std::cell::RefCell;
+use std::sync::Mutex;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Wrong {
@@ -44,7 +44,7 @@ pub struct SpinorAltered<'a> {
     /// The crystal, its copy without the spin-orbit matrix, and the SCF options.
     scalar: Option<(&'a Crystal, &'a Crystal, Options)>,
     /// The bands of the output density for the Hamiltonian without spin-orbit, formed by `fields`.
-    spectrum: RefCell<Vec<Vec<Bands>>>,
+    spectrum: Mutex<Vec<Vec<Bands>>>,
 }
 
 impl<'a> SpinorAltered<'a> {
@@ -53,7 +53,7 @@ impl<'a> SpinorAltered<'a> {
             inner,
             wrong,
             scalar: None,
-            spectrum: RefCell::new(Vec::new()),
+            spectrum: Mutex::new(Vec::new()),
         }
     }
 
@@ -182,7 +182,7 @@ impl Derivatives for SpinorAltered<'_> {
         if let Some((crystal, without, options)) = &self.scalar {
             let densities = scf::densities(crystal, &state.bands)?;
             let output = scf::output_fields(crystal, &densities, q)?;
-            *self.spectrum.borrow_mut() = scf::rediagonalize(without, &output, options, &[], &[])?;
+            *self.spectrum.lock().unwrap() = scf::rediagonalize(without, &output, options, &[], &[])?;
         }
         self.inner.fields(state, q)
     }
@@ -199,7 +199,7 @@ impl Derivatives for SpinorAltered<'_> {
         let bands = self.inner.bands(spin, k, fields, hubbard)?;
         Ok(if self.wrong == Wrong::ScalarEigenvalues {
             Bands {
-                eigenvalues: self.spectrum.borrow()[spin][k].eigenvalues.clone(),
+                eigenvalues: self.spectrum.lock().unwrap()[spin][k].eigenvalues.clone(),
                 ..bands
             }
         } else {

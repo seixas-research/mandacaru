@@ -13,7 +13,7 @@ from .. import _native
 def configure(driver, *, max_steps, min_length, max_length, move_weights,
               temperature, length_penalty, warm_start, replace_start,
               screen_insertions, proposal_temperature, proposal, record, seed,
-              proposal_model=None):
+              proposal_model=None, replicas=1, replica_spacing=2.0):
     if min_length != 0:
         raise ValueError("architecture search starts at the empty sequence; min_length must be zero")
     if proposal not in ("gradient", "uniform") or replace_start not in ("zero", "inherit"):
@@ -21,9 +21,13 @@ def configure(driver, *, max_steps, min_length, max_length, move_weights,
     if type(warm_start) is not bool:
         raise TypeError("warm_start must be a boolean")
     for name, value in (("max_steps", max_steps), ("max_length", max_length),
-                        ("screen_insertions", screen_insertions)):
-        if type(value) is not int or value < (1 if name == "max_length" else 0):
-            raise ValueError(f"{name} must be a {'positive' if name == 'max_length' else 'nonnegative'} integer")
+                        ("screen_insertions", screen_insertions), ("replicas", replicas)):
+        positive = name in ("max_length", "replicas")
+        if type(value) is not int or value < (1 if positive else 0):
+            raise ValueError(f"{name} must be a {'positive' if positive else 'nonnegative'} integer")
+    if (isinstance(replica_spacing, bool) or not isinstance(replica_spacing, (int, float))
+            or not replica_spacing >= 1 or replica_spacing == float("inf")):
+        raise ValueError("replica_spacing must be a finite number of at least 1")
     names = ("insert", "delete", "replace")
     if move_weights is None:
         weights = [1.] * 3
@@ -49,6 +53,10 @@ def configure(driver, *, max_steps, min_length, max_length, move_weights,
         raise ValueError("record requires a directory or MANDACARU_PROPOSAL_DATA")
     if screen_insertions and destination is None:
         raise ValueError("screen_insertions records its measurements; supply a record directory")
+    if replicas > 1 and (screen_insertions or 0. in temperatures):
+        raise ValueError("replica exchange needs a nonzero temperature and no screen_insertions")
+    if replicas == 1 and replica_spacing != 2.0:
+        raise ValueError("replica_spacing requires replicas > 1")
     driver._search_record = None if destination is None else Path(destination)
     if proposal_model is not None and driver.method != "valsqa":
         raise ValueError("proposal_model requires valsqa")
@@ -61,7 +69,8 @@ def configure(driver, *, max_steps, min_length, max_length, move_weights,
                           screen_insertions=screen_insertions,
                           proposal_temperature=proposal_temperature,
                           proposal=proposal, record=destination is not None,
-                          seed=secrets.randbits(64) if seed is None else seed)
+                          seed=secrets.randbits(64) if seed is None else seed,
+                          replicas=replicas, replica_spacing=float(replica_spacing))
 
 
 def run(driver, initial_parameters):

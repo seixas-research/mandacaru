@@ -131,3 +131,50 @@ fn the_gradient_integrals_are_antisymmetric() {
         check_antisymmetry(&library_water(&ctx, set), &format!("{set} water"), 1e-12);
     }
 }
+
+/// Library water with the projectors in `basis` (`"raw"` or `"dual"`).
+fn library_water_in(ctx: &Context, basis: &str) -> MolecularIntegrals {
+    let mut arrays = mandacaru_core::paw::molecular::Arrays::new();
+    let (o, h) = (
+        paw_molecular_support::dataset::read(ctx, "lda-sr", "O"),
+        paw_molecular_support::dataset::read(ctx, "lda-sr", "H"),
+    );
+    let oxygen = paw_molecular_support::dataset::species(ctx, &mut arrays, &o);
+    let hydrogen = paw_molecular_support::dataset::species(ctx, &mut arrays, &h);
+    paw_molecular_support::molecule(
+        ctx,
+        &[8, 1, 1],
+        &[[6.11, 6.07, 6.12], [7.55, 6.04, 5.07], [4.57, 5.95, 5.03]],
+        12.,
+        0.5,
+        (vec![oxygen, hydrogen], vec![0, 1, 1], arrays),
+        basis,
+        &paw_molecular_support::analytic_shells(&[0, 1, 2]),
+    )
+}
+
+#[test]
+fn the_one_center_operators_do_not_depend_on_the_projector_basis() {
+    // The raw and dual projector bases are two coordinates of one PAW transform: every operator
+    // in the orthonormal frame (overlap folded in, position, gradient) must agree between them to
+    // the quadrature, or one of them applies a one-center block in the wrong basis.
+    let ctx = Context::new(Some(2), 1 << 30).unwrap();
+    let raw = library_water_in(&ctx, "raw");
+    let dual = library_water_in(&ctx, "dual");
+    let scale = |m: &DMatrix<f64>| m.amax().max(1e-300);
+    let (rp, dp) = (
+        position_integrals(&raw, [0.; 3]).unwrap(),
+        position_integrals(&dual, [0.; 3]).unwrap(),
+    );
+    let (rg, dg) = (
+        gradient_integrals(&raw).unwrap(),
+        gradient_integrals(&dual).unwrap(),
+    );
+    for axis in 0..3 {
+        let position = (&rp[axis] - &dp[axis]).amax() / scale(&rp[axis]);
+        let gradient = (&rg[axis] - &dg[axis]).amax() / scale(&rg[axis]);
+        eprintln!("axis {axis}: raw - dual, position {position:.3e}, gradient {gradient:.3e}");
+        assert!(position < 1e-6, "position axis {axis}: {position:e}");
+        assert!(gradient < 1e-6, "gradient axis {axis}: {gradient:e}");
+    }
+}

@@ -46,7 +46,7 @@ def _channel(tables: dict, l: int, entry: dict, view, v_local, v_screened):
         pseudo_radial=waves["pseudo"][0], v_screened=v_screened, v_ionic=v_local,
         occupation=float(entry["occupation"]),
         occupations=[float(o) for o in entry["occupations"]],
-        norm_error=float(abs(q[0, 0])),
+        norm_error=_native.max_abs(q[:1, :1]),
         reference_energies=[float(e) for e in entry["reference_energies"]],
         wavevectors=[np.asarray(v, float) for v in entry["wavevectors"]],
         wave_coefficients=[np.asarray(c, float) for c in entry["wave_coefficients"]],
@@ -122,7 +122,7 @@ def dataset_from_record(payload: str, tables: dict, *, warn: bool = True):
         semicore_subshells=tuple(tuple(int(x) for x in o)
                                  for o in meta["semicore_subshells"]),
         nlcc=dict(meta["nlcc"]), spin_orbit=spin_orbit,
-        defects=read_defects(meta["defects"]))
+        defects=read_defects(meta["defects"]), core_states=meta.get("core_states") or [])
     if warn:
         warn_defects(dataset, dataset.family)
     return dataset
@@ -231,6 +231,10 @@ def write_dataset(pp, path, *, stride: int = 1, format: str | None = None,
     read back, and moved into place only if the read-back is what was written.
     """
     path = os.fspath(path)
+    if pp.core_states:
+        raise ValueError(f"{pp.symbol} was read with its core states (dataset format 3), which "
+                         "this view does not carry: writing it would drop them; copy the file, or "
+                         "write it natively (_native.paw_build, _native.paw_upgrade_core_states)")
     if format is None:
         format = _EXTENSION_FORMATS.get(os.path.splitext(path)[1].lower(),
                                         DEFAULT_FORMAT)

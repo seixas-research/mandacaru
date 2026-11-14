@@ -15,12 +15,15 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+from mandacaru import _native
 from mandacaru.integrations import run_log_fields as fields
 from mandacaru.units import BOHR_TO_ANGSTROM, HARTREE_TO_EV
+import itertools
 
 
 def grid(shape, step):
-    return SimpleNamespace(shape=list(shape), step_bohr=np.asarray(step, dtype=float))
+    """A real native grid: the view reads its orthogonality and spacings from the engine."""
+    return _native.SpatialGrid(list(shape), [0.0, 0.0, 0.0], np.asarray(step, dtype=float))
 
 
 def driver(**options):
@@ -273,7 +276,7 @@ def search(**options):
                   temperatures=[0.1 / HARTREE_TO_EV, 0.001 / HARTREE_TO_EV],
                   length_penalty=0.5 / HARTREE_TO_EV, warm_start=True, replace_start="zero",
                   screen_insertions=0, proposal_temperature=0.1, proposal="gradient",
-                  record=False, seed=7)
+                  record=False, seed=7, replicas=1, replica_spacing=2.0)
     values.update(options)
     return values
 
@@ -328,12 +331,21 @@ class TestTheSearchSetup:
 
     def test_the_summary_lines_are_the_chains_outcome(self):
         result = SimpleNamespace(
-            energy_unit="eV", final_energy=-1.5, num_architectures=9,
+            energy_unit="eV", final_energy=-1.5, num_architectures=9, replica_swaps=None,
             acceptance_by_move={"insert": (2, 5), "delete": (0, 3), "replace": (1, 2)})
         assert fields.search_summary(result) == {
             "final_energy_eV": "-1.5000000000",
             "acceptance_by_move": "insert 2/5, delete 0/3, replace 1/2",
             "num_architectures": 9}
+        result.replica_swaps = (7, 40)
+        assert fields.search_summary(result)["replica_swaps"] == "7/40"
+
+    def test_replicas_are_written_only_when_asked(self):
+        plain = fields.search_setup(driver(_search=search()), search_result())
+        assert "replicas" not in plain and "replica_spacing" not in plain
+        block = fields.search_setup(driver(_search=search(replicas=4, replica_spacing=1.5)),
+                                    search_result())
+        assert block["replicas"] == 4 and block["replica_spacing"] == "1.5"
 
 
 class TestTheSearchLineage:
@@ -437,3 +449,11 @@ class TestTheHubbardLines:
         )
         keys = list(fields.hubbard(result))
         assert keys == ["hubbard_energy_eV", "hubbard_Ni_d", "hubbard_O_p"]
+
+
+def test_the_spin_facts_are_the_ones_the_log_and_the_magmom_printed():
+    for alpha, beta in itertools.product(range(0, 6), repeat=2):
+        moment, multiplicity, polarized = _native.spin_summary(alpha, beta)
+        assert moment == float(alpha - beta)
+        assert multiplicity == abs(alpha - beta) + 1
+        assert polarized == (alpha != beta)

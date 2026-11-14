@@ -2,7 +2,8 @@
 //! No numerics here; `mandacaru_core::periodic::berry` computes every value (atomic units).
 use super::{array, error, periodic::PyPeriodicResult};
 use mandacaru_core::periodic::{
-    berry::{curvature, hall, polarization, strings, Bands, Sampler},
+    berry::{curvature, flow, hall, parity, polarization, strings, Bands},
+    bloch_mesh::Sampler,
     setup::PeriodicSetup,
 };
 use pyo3::{exceptions::PyNotImplementedError, prelude::*, types::PyDict};
@@ -225,5 +226,153 @@ pub(crate) fn anomalous_hall<'py>(
     out.set_item("fermi", h.fermi)?;
     out.set_item("scf_electron_error", h.scf_electron_error)?;
     out.set_item("warnings", h.warnings.clone())?;
+    Ok(out)
+}
+
+fn flow_dict<'py>(py: Python<'py>, f: &flow::PlaneFlow) -> PyResult<Bound<'py, PyDict>> {
+    let samples = f.flow.k.len();
+    let width = f.flow.centers.first().map_or(0, Vec::len);
+    let out = PyDict::new(py);
+    out.set_item("normal", f.normal)?;
+    out.set_item("direction", f.direction)?;
+    out.set_item("transverse", f.transverse)?;
+    out.set_item("offset", f.offset)?;
+    out.set_item("length", f.length)?;
+    out.set_item("k_perp", array(py, &[samples], f.flow.k.clone())?)?;
+    out.set_item(
+        "centers",
+        array(
+            py,
+            &[samples, width],
+            f.flow.centers.iter().flatten().copied().collect(),
+        )?,
+    )?;
+    out.set_item("half", f.half)?;
+    out.set_item("winding", f.winding)?;
+    out.set_item("z2", f.z2.as_ref().map(|z| z.parity))?;
+    out.set_item("crossings", f.z2.as_ref().map(|z| z.crossings))?;
+    out.set_item(
+        "lines",
+        f.z2.as_ref()
+            .map(|z| array(py, &[samples], z.lines.clone()))
+            .transpose()?,
+    )?;
+    out.set_item(
+        "gaps",
+        f.z2.as_ref()
+            .map(|z| array(py, &[samples], z.gaps.clone()))
+            .transpose()?,
+    )?;
+    out.set_item("spin_degenerate", f.spin_degenerate)?;
+    out.set_item("bands", f.bands)?;
+    out.set_item("minimum_singular_value", f.minimum)?;
+    out.set_item("strings", f.strings)?;
+    Ok(out)
+}
+
+pub(crate) fn wannier_flow<'py>(
+    result: &PyPeriodicResult,
+    py: Python<'py>,
+    normal: usize,
+    direction: usize,
+    size: [usize; 3],
+    offset: f64,
+    range: Option<(usize, usize)>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let setup = setup(result)?;
+    let (crystal, state) = (&*result.crystal, &*result.inner);
+    let plane = py
+        .detach(|| {
+            let sampler = Sampler::new(crystal, state, setup)?;
+            flow::plane_flow(&sampler, normal, direction, size, offset, bands(range))
+        })
+        .map_err(error)?;
+    flow_dict(py, &plane)
+}
+
+pub(crate) fn z2_invariant<'py>(
+    result: &PyPeriodicResult,
+    py: Python<'py>,
+    size: [usize; 3],
+    method: &str,
+) -> PyResult<Bound<'py, PyDict>> {
+    let setup = setup(result)?;
+    let (crystal, state) = (&*result.crystal, &*result.inner);
+    let out = PyDict::new(py);
+    out.set_item("size", size.to_vec())?;
+    out.set_item("method", method)?;
+    match method {
+        "flow" => {
+            let found = py
+                .detach(|| {
+                    let sampler = Sampler::new(crystal, state, setup)?;
+                    flow::indices(&sampler, size)
+                })
+                .map_err(error)?;
+            out.set_item("strong", found.strong)?;
+            out.set_item("weak", found.weak.to_vec())?;
+            let planes = PyDict::new(py);
+            let mut table = Vec::with_capacity(6);
+            for (c, pair) in found.planes.iter().enumerate() {
+                for (half, plane) in pair.iter().enumerate() {
+                    planes.set_item((c, half), plane.z2.as_ref().map_or(0, |z| z.parity))?;
+                    table.push(flow_dict(py, plane)?);
+                }
+            }
+            out.set_item("planes", planes)?;
+            out.set_item("flows", table)?;
+            out.set_item("parity", py.None())?;
+        }
+        "parity" => {
+            let found = py
+                .detach(|| {
+                    let sampler = Sampler::new(crystal, state, setup)?;
+                    parity::parity(&sampler)
+                })
+                .map_err(error)?;
+            out.set_item("strong", found.strong)?;
+            out.set_item("weak", found.weak.to_vec())?;
+            let planes = PyDict::new(py);
+            for (c, pair) in found.planes.iter().enumerate() {
+                for (half, z) in pair.iter().enumerate() {
+                    planes.set_item((c, half), *z)?;
+                }
+            }
+            out.set_item("planes", planes)?;
+            out.set_item("flows", Vec::<Bound<'py, PyDict>>::new())?;
+            let detail = PyDict::new(py);
+            detail.set_item("center", found.inversion.center.to_vec())?;
+            detail.set_item("spin_degenerate", found.spin_degenerate)?;
+            let mut trims = Vec::with_capacity(found.trims.len());
+            for t in &found.trims {
+                let row = PyDict::new(py);
+                row.set_item("index", t.index.to_vec())?;
+                row.set_item("occupied", t.occupied)?;
+                row.set_item("minus", t.minus)?;
+                row.set_item("delta", t.delta)?;
+                row.set_item("residual", t.residual)?;
+                row.set_item(
+                    "energies",
+                    array(
+                        py,
+                        &[t.levels.len()],
+                        t.levels.iter().map(|l| l.energy).collect(),
+                    )?,
+                )?;
+                row.set_item(
+                    "parities",
+                    t.levels.iter().map(|l| l.parity).collect::<Vec<i8>>(),
+                )?;
+                trims.push(row);
+            }
+            detail.set_item("trims", trims)?;
+            out.set_item("parity", detail)?;
+        }
+        other => {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "a Z2 method is 'flow' or 'parity'; got {other:?}"
+            )))
+        }
+    }
     Ok(out)
 }

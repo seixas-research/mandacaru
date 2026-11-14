@@ -220,7 +220,11 @@ pub fn sites(fixture: &Value, library: &str) -> Value {
             serde_json::json!({
                 "symbol": symbol,
                 "file": path.to_str().unwrap(),
-                "sha256": mandacaru_core::paw::digest::sha256_file(&path).unwrap(),
+                "content_sha256": mandacaru_core::paw::digest::dataset_content_sha256(
+                    &mandacaru_core::Context::new(Some(1), 1 << 30).unwrap(),
+                    &path,
+                )
+                .unwrap(),
             })
         })
         .collect();

@@ -73,6 +73,18 @@ def test_lih_forces_and_stress_follow_the_reconverged_finite_difference():
     check_stress("lih")
 
 
+def test_the_stress_asked_after_the_forces_is_the_stress_asked_alone():
+    """The forces and the stress of one result share the geometry, the quadrature and the frozen state: the number
+    does not depend on which of them is asked first (the same SCF, one result each)."""
+    first, record = crystal("lih")
+    first.get_forces()
+    after_forces = first.get_stress()
+    alone, _ = crystal("lih")
+    assert np.allclose(after_forces, alone.get_stress(), atol=1e-12, rtol=0)
+    assert np.allclose(after_forces, record["stress_ev_angstrom3"], atol=ENGINE_STRESS)
+    assert np.allclose(first.get_forces(), alone.get_forces(), atol=1e-12, rtol=0)
+
+
 def test_hse06_forces_and_stress_follow_the_reconverged_finite_difference():
     check_forces("lih_hse06")
     check_stress("lih_hse06")

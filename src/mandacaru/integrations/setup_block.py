@@ -8,6 +8,10 @@ symmetry, k-point reduction, matrices, PAW spheres) is built in Rust.
 
 from __future__ import annotations
 
+import numpy as np
+
+from .. import _native
+
 
 def ion_width(grid):
     """The Gaussian ion width (Bohr) of the local-potential split; ``None`` keeps the Rust default,
@@ -51,9 +55,8 @@ def native_setup(driver, atoms, family, options, moments, spinor, start):
 
     cell = atoms.cell.array
     if driver._explicit_grid is None:
-        c0, c1, c2 = cell[0], cell[1], cell[2]
-        center = [0.5 * (c0[i] + c1[i] + c2[i]) for i in range(3)]
-        g = Grid(center=center, box_size=0.0,
+        # `center=None`: the Rust grid centers itself on the middle of the cell.
+        g = Grid(center=None, box_size=0.0,
                  grid_spacing=driver._grid_spacing, units="angstrom", cell=cell, periodic=True)
     else:
         g = driver._explicit_grid
@@ -67,7 +70,9 @@ def native_setup(driver, atoms, family, options, moments, spinor, start):
     _warn_functional_mismatch(datasets, driver.xc)
 
     atoms_spec = []
-    scaled = atoms.get_scaled_positions()
+    scaled = _native.fractional_coordinates(
+        np.ascontiguousarray(cell, dtype=float), np.ascontiguousarray(atoms.positions, dtype=float),
+        [bool(p) for p in atoms.pbc], True)
     for i, symbol in enumerate(symbols):
         species_idx = unique_species.index(symbol)
         m = float(moments[i]) if hasattr(moments, "__getitem__") else 0.0

@@ -12,13 +12,14 @@ from ..units import from_hartree, to_angstrom, to_bohr, to_hartree
 def _trials(guess, atoms):
     centers = to_bohr(atoms.positions)
     if isinstance(guess, str) and guess in ("bonds", "sp3"):
-        from ase.neighborlist import neighbor_list
-
-        first, vectors = neighbor_list("iD", atoms, 6.0)
+        # The neighbors within 6 Angstrom of every atom, periodic images included, are the engine's.
+        neighbors = _native.neighbor_vectors(
+            np.ascontiguousarray(atoms.cell.array, dtype=float), [bool(p) for p in atoms.pbc],
+            np.ascontiguousarray(atoms.positions, dtype=float), 6.0)
         key = "neighbors" if guess == "sp3" else "bond_neighbors"
         return [
             dict(center=center.tolist(), label=f"{atom.symbol}{i}",
-                 **{key: to_bohr(vectors[first == i]).tolist()})
+                 **{key: to_bohr(neighbors[i]).tolist()})
             for i, (atom, center) in enumerate(zip(atoms, centers))
         ]
     if isinstance(guess, dict):
@@ -47,15 +48,11 @@ def calculate(calculation, n_functions, *, guess, windows, bands, kpts,
               max_iterations, tolerance, step):
     if calculation.result is None or calculation.result.periodic is None:
         raise RuntimeError("run periodic DFT before constructing Wannier functions")
-    problem = calculation.periodic_problem
-    centers, channels = problem.centers, problem.channel_labels
     atoms = calculation.atoms
     mesh = calculation._kpts_spec if kpts is None else kpts
     size = mesh["size"] if isinstance(mesh, dict) else mesh
     spec = dict(size=[int(n) for n in size], bands=bands,
-                n_functions=n_functions, trials=_trials(guess, atoms),
-                centers=centers,
-                channel_labels=channels)
+                n_functions=n_functions, trials=_trials(guess, atoms))
     if windows is not None:
         if not isinstance(windows, dict) or "outer" not in windows:
             raise ValueError("Wannier windows specify an outer energy pair and an optional frozen pair in eV")
@@ -63,9 +60,9 @@ def calculate(calculation, n_functions, *, guess, windows, bands, kpts,
             name: None if pair is None else [to_hartree(float(e), "eV") for e in pair]
             for name, pair in windows.items()
         }
-    setup = calculation.result.periodic.wannier_setup(json.dumps(spec, allow_nan=False))
-    setup.add_points_at(_native.mesh_fractions(spec["size"]))
-    native = setup.localize(max_iterations=max_iterations, tolerance=tolerance, step=step)
+    native = calculation.result.periodic.wannier(
+        json.dumps(spec, allow_nan=False), max_iterations=max_iterations, tolerance=tolerance,
+        step=step)
     return (WannierResult(native, 0) if native.n_spins == 1 else SpinWannierResult(native))
 
 
@@ -241,6 +238,14 @@ class WannierResult:
     @property
     def labels(self):
         return tuple(self._snapshot["labels"])
+
+    @property
+    def trial_weights(self):
+        """``(n_functions, n_trials)``: ``|<w_n|g_m>|^2``, the weight of trial orbital ``m``
+        (labeled by :attr:`labels`) in function ``n``. A localized function need not keep the
+        character of the trial it started from, so select functions by these weights (for
+        example the two of largest ``e_g`` weight on an atom), not by index."""
+        return self._snapshot["trial_weights"].copy()
 
     @property
     def kpoints(self):

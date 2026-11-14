@@ -1035,6 +1035,18 @@ impl Encoding {
                 0
             }
     }
+    /// The register width of `modes` spin-orbitals under `mapping`: the modes, two fewer for the
+    /// reduced parity encoding, which fixes two qubits by the particle numbers.
+    pub fn register_qubits(mapping: &str, modes: usize) -> Result<usize> {
+        match mapping {
+            "jordan_wigner" | "parity" | "bravyi_kitaev" => Ok(modes),
+            "parity_reduced" if modes >= 2 => Ok(modes - 2),
+            "parity_reduced" => Err(invalid("parity_reduced needs at least two spin-orbitals")),
+            other => Err(invalid(&format!(
+                "unknown mapping {other:?}; use jordan_wigner, parity, parity_reduced or bravyi_kitaev"
+            ))),
+        }
+    }
     fn transform(&self, bits: u64, rows: &[u64]) -> u64 {
         rows.iter().enumerate().fold(0, |out, (i, row)| {
             out | (((bits & row).count_ones() as u64 % 2) * bit(self.modes, i))

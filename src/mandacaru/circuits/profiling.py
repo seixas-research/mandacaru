@@ -24,6 +24,7 @@ from functools import lru_cache
 
 import numpy as np
 
+from .. import _native
 from ..core.mapping import PauliSum
 
 
@@ -43,7 +44,6 @@ class CircuitMetrics:
 
 
 def _terms_key(generator: PauliSum, time: float = 1.0) -> tuple[tuple[str, float], ...]:
-    from .. import _native
     # The Hermitian generator i G of the anti-Hermitian G, in Rust: its real coefficients.
     rotated = _native.pauli_term_scale(
         [(label, complex(c).real, complex(c).imag) for label, c in generator.simplify().terms.items()],
@@ -109,7 +109,7 @@ def _profile_qiskit_cached(n_qubits: int, occupied: tuple[int, ...],
     return (int(counts.get("cx", 0)),
             int(compiled.depth()),
             int(counts.get("u", 0)),
-            int(sum(counts.values())))
+            _native.gate_tally([(name, 0, int(count)) for name, count in counts.items()], [], [])[2])
 
 
 def profile_ansatz(n_qubits: int, occupied: tuple[int, ...],

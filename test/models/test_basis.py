@@ -24,6 +24,7 @@ from mandacaru import _native, estimate_qubits
 from mandacaru.integrations.ase import geometry_from_atoms
 from mandacaru.models.basis import NAMED_BASIS_SETS, GaussianRecipe, parse_basis_name
 from mandacaru.specifications import basis_specification
+from mandacaru.units import ANGSTROM_TO_BOHR
 
 REQUESTED = {
     "sto": ["STO-3G", "STO-4G", "STO-5G", "STO-6G"],
@@ -194,3 +195,27 @@ class TestIntegration:
         """More flexibility cannot raise the variational minimum."""
         energies = {name: hartree_fock(h2, name, 0.25)[0] for name in ("cc-pVDZ", "3-21G", "STO-3G")}
         assert energies["cc-pVDZ"] < energies["3-21G"] < energies["STO-3G"] + 1e-6
+
+
+def test_the_dunning_ladder_is_the_rule_the_recipe_parser_wrote():
+    for X in range(2, 7):
+        for core_corr in (False, True):
+            ladder = _native.dunning_ladder(X, core_corr)
+            assert tuple(ladder["valence"]) == (4,) + (1,) * (X - 1)
+            assert [tuple(p) for p in ladder["polarization"]] == [(2 + k, X - 1 - k) for k in range(X - 1)]
+            assert [tuple(p) for p in ladder["polarization_h"]] == [(1 + k, X - 1 - k) for k in range(X - 1)]
+            assert [tuple(t) for t in ladder["tight"]] == ([(0, X - 1), (1, X - 1)] if core_corr else [])
+            assert ladder["core"] == min(4 + 2 * X, 10)
+    with pytest.raises(ValueError):
+        _native.dunning_ladder(1, False)
+    from mandacaru.models.basis import parse_basis_name
+    recipe = parse_basis_name("aug-cc-pCVTZ")
+    assert (recipe.core, recipe.valence, recipe.diffuse_present) == ((10,), (4, 1, 1), True)
+    assert recipe.polarization == ((2, 2), (3, 1)) and recipe.tight == ((0, 2), (1, 2))
+
+
+def test_the_nao_ae_wall_is_the_scaled_onset_and_width_and_their_sum():
+    for onset, width in [(3.0, 1.0), (2.5, 0.7), (0.0, 2.0)]:
+        scaled_onset, scaled_width = onset * ANGSTROM_TO_BOHR, width * ANGSTROM_TO_BOHR
+        assert _native.nao_ae_wall_radii(onset, width) == (
+            scaled_onset, scaled_width, scaled_onset + scaled_width)

@@ -54,7 +54,8 @@ pub use chain::{projection_forces, ProjectionForces};
 type Matrix = DMatrix<C64>;
 
 /// How the basis functions of the grid pair move with their atoms.
-pub trait Motion {
+/// `Sync`: the target points of the exchange derivative run on the k-point lanes, which share it.
+pub trait Motion: Sync {
     /// The atom each basis function belongs to.
     fn owner(&self) -> &[usize];
     /// `d chi_mu(k) / d c_mu^axis` at mesh point `k`: the derivative of the Bloch sums (the
@@ -129,7 +130,7 @@ impl Gradient {
 /// The explicit terms of the exchange derivative for the density matrices `matrices` (the
 /// layout of `Crystal::hybrid_exchange`), with the compensation charges and the one-center
 /// model of `augmentation`.
-pub fn explicit<M: MatrixSource>(
+pub fn explicit<M: MatrixSource + Sync>(
     c: &Crystal,
     matrices: &[M],
     screening: Screening,

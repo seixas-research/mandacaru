@@ -82,7 +82,11 @@ impl PyExcitations {
         )?;
         out.set_item(
             "transition_velocities_bohr_inverse",
-            array(py, &[n, 3], e.transition_velocities.iter().flatten().copied().collect())?,
+            array(
+                py,
+                &[n, 3],
+                e.transition_velocities.iter().flatten().copied().collect(),
+            )?,
         )?;
         let channels = e.channels.len();
         let per_channel = |all: &[Vec<DMatrix<f64>>]| -> PyResult<Vec<Array<'py, f64>>> {
@@ -110,11 +114,17 @@ impl PyExcitations {
         )?;
         out.set_item(
             "virtual",
-            e.channels.iter().map(|c| c.virtual_orbitals).collect::<Vec<_>>(),
+            e.channels
+                .iter()
+                .map(|c| c.virtual_orbitals)
+                .collect::<Vec<_>>(),
         )?;
         out.set_item(
             "orbital_energies_ha",
-            e.channels.iter().map(|c| c.orbital_energies.clone()).collect::<Vec<_>>(),
+            e.channels
+                .iter()
+                .map(|c| c.orbital_energies.clone())
+                .collect::<Vec<_>>(),
         )?;
         out.set_item("spin_squared", e.spin_squared.clone())?;
         out.set_item("reference_spin_squared", e.reference_spin_squared)?;
@@ -151,7 +161,13 @@ impl PyExcitations {
         root: usize,
         channel: usize,
     ) -> PyResult<Array<'py, f64>> {
-        rows(py, &self.inner.transition_density(root, channel).map_err(error)?)
+        rows(
+            py,
+            &self
+                .inner
+                .transition_density(root, channel)
+                .map_err(error)?,
+        )
     }
 }
 

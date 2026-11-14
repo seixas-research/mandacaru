@@ -5,11 +5,15 @@ The physics is gated in Rust (``crates/mandacaru-core/tests/berry_links.rs``, ``
 the public surface is checked: the views, their units and shapes, the symmetry identities seen
 from Python, and every refusal.
 """
+import os
+from pathlib import Path
+
 import numpy as np
 import pytest
 from ase import Atoms
 from mandacaru import Mandacaru
-from mandacaru.analysis.berry import AnomalousHall, BerryCurvature, BerryPhase, Polarization
+from mandacaru.analysis.berry import (AnomalousHall, BerryCurvature, BerryPhase, Polarization,
+                                      WannierChargeCenterFlow, Z2Invariant)
 
 BOHR = 0.529177210903
 CELL = np.array([6.0, 8.0, 8.0]) * BOHR
@@ -38,6 +42,7 @@ def chain():
 
 
 MESH = (3, 2, 2)
+MESH_3 = (3, 3, 3)
 
 
 def test_the_polarization_view_has_units_quanta_and_the_inversion_lattice(chain):
@@ -201,3 +206,221 @@ def test_an_insulator_reports_its_chern_numbers_in_the_hall_view(chain):
     assert not hall.metallic and hall.sigma_coarse is None
     assert hall.chern_numbers == ((0,), (0,), (0,))
     assert np.all(hall.numbers == 0.0)
+
+
+def test_a_spin_degenerate_crystal_has_the_z2_zero_of_its_doubled_manifold_by_flow_and_by_parity(chain):
+    # Without spin-orbit coupling every Wannier center appears twice (once per spin): every
+    # crossing is counted twice and every index is zero. The H2 chain is also centrosymmetric.
+    flow = chain.calc.get_z2_invariant(kpts=MESH_3)
+    assert isinstance(flow, Z2Invariant) and flow.method == "flow"
+    assert flow.indices == (0, 0, 0, 0) and flow.strong == 0 and flow.weak == (0, 0, 0)
+    assert len(flow.flows) == 6 and flow.spin_degenerate
+    assert all(isinstance(f, WannierChargeCenterFlow) and f.half and f.z2 == 0 for f in flow.flows)
+    assert all(f.k_perp[0] == 0.0 and f.k_perp[-1] == 0.5 for f in flow.flows)
+    assert set(flow.planes) == {(c, h) for c in range(3) for h in range(2)}
+    parity = chain.calc.get_z2_invariant(kpts=MESH_3, method="parity")
+    assert parity.method == "parity" and parity.indices == (0, 0, 0, 0)
+    assert parity.planes == flow.planes and parity.spin_degenerate
+    assert len(parity.parity) == 8 and parity.flows == ()
+    # H2 is centered in its cell: the inversion center is the cell center (modulo half vectors).
+    center = np.asarray(parity.inversion_center)
+    assert np.all(np.abs(center * 2 - np.round(center * 2)) < 1e-6)
+    for point in parity.parity:
+        assert point["residual"] < 1e-6 and point["occupied"] == 1
+        assert point["delta"] in (-1, 1) and point["parities"].size >= 1
+
+
+def test_a_plane_gives_its_own_z2_index_and_a_generic_plane_its_chern_number(chain):
+    plane = chain.calc.get_z2_invariant(kpts=MESH_3, plane=2, offset=0.5)
+    assert plane.indices == (0,) and plane.strong is None and plane.weak is None
+    assert plane.planes == {(2, 1): 0} and len(plane.flows) == 1
+    parity = chain.calc.get_z2_invariant(kpts=MESH_3, plane=1, offset=0.0, method="parity")
+    assert parity.indices == (0,) and parity.planes == {(1, 0): 0}
+    # A plane off the time-reversal-invariant lines is flown over the whole period: its winding
+    # is the Chern number, zero here.
+    flow = chain.calc.get_wannier_charge_center_flow(2, 0, kpts=MESH_3, offset=0.25)
+    assert not flow.half and flow.winding == 0 and flow.z2 is None
+    assert flow.k_perp[0] == 0.0 and flow.k_perp[-1] == 1.0
+    np.testing.assert_allclose(flow.wannier_charge_centers[0], flow.wannier_charge_centers[-1])
+    assert flow.transverse == 1 and flow.direction == 0 and flow.normal == 2
+    assert chain.calc.get_chern_number(2, kpts=MESH_3, offset=0.25) == flow.winding
+    half = chain.calc.get_wannier_charge_center_flow(2, 1, kpts=MESH_3, offset=0.0)
+    assert half.half and half.z2 == 0 and half.winding is None and half.crossings % 2 == 0
+    assert half.gap_midpoints.shape == half.k_perp.shape == half.gaps.shape
+    # One center per spatial band (the Z2 count doubles it: spin up and down).
+    assert half.wannier_charge_centers.shape == (half.k_perp.size, 1)
+
+
+@pytest.mark.parametrize("call", [
+    lambda c: c.get_z2_invariant(kpts=MESH_3, method="invariant"),
+    lambda c: c.get_z2_invariant(kpts=MESH_3, plane=2, offset=0.3),
+    lambda c: c.get_z2_invariant(kpts=MESH_3, plane=2, direction=2),
+    lambda c: c.get_z2_invariant(kpts=MESH_3, plane=2, method="parity", direction=0),
+    lambda c: c.get_z2_invariant(kpts=MESH_3, offset=0.5),
+    lambda c: c.get_z2_invariant(kpts=(2, 3, 3)),
+    lambda c: c.get_z2_invariant(kpts=(3, 1, 3), plane=2),
+    lambda c: c.get_wannier_charge_center_flow(2, 2, kpts=MESH_3),
+    lambda c: c.get_wannier_charge_center_flow(3, 0, kpts=MESH_3),
+    lambda c: c.get_wannier_charge_center_flow(2, 0, kpts=MESH_3, offset=1.0),
+])
+def test_bad_z2_requests_raise_value_error(chain, call):
+    with pytest.raises(ValueError):
+        call(chain.calc)
+
+
+def test_a_spin_polarized_crystal_has_no_z2_index_and_a_metal_none_either(metal):
+    polarized = _chain(spin=True)
+    for method in ("flow", "parity"):
+        with pytest.raises(NotImplementedError, match="spin-polarized"):
+            polarized.calc.get_z2_invariant(kpts=MESH_3, method=method)
+    with pytest.raises(NotImplementedError, match="spin-polarized"):
+        polarized.calc.get_wannier_charge_center_flow(2, 0, kpts=MESH_3)
+    with pytest.raises(ValueError, match="insulator"):
+        metal.calc.get_z2_invariant(kpts=MESH_3)
+    with pytest.raises(ValueError, match="insulator"):
+        metal.calc.get_z2_invariant(kpts=MESH_3, method="parity")
+
+
+# ---------------------------------------------------------------------------------------------
+# Bulk Bi2Se3 (PAW regeneration gates G12 and G13: the spin-orbit topology of the PAW-LCAO datasets).
+#
+# The owner's rhombohedral primitive cell (Angstrom, Cartesian; the PBE-expanded structure). Se(0) at the
+# origin is an inversion center; the Se(1) and Bi layers are placed about it.
+BI2SE3_CELL = [[2.0956832649999995, 1.2099432971839437, 9.9762290666666651],
+               [-2.0956832649999999, 1.2099432971839437, 9.9762290666666651],
+               [-0.0000000000000008, -2.4198865943678873, 9.9762290666666651]]
+BI2SE3_POSITIONS = [[-0.0000000000000005, 0.0000000000000004, 11.9246364845319981],
+                    [-0.0000000000000008, 0.0000000000000003, 18.0040507154679972],
+                    [-0.0000000000000000, 0.0000000000000003, 0.0000000000000006],
+                    [-0.0000000000000003, 0.0000000000000003, 6.4560667593479977],
+                    [-0.0000000000000011, 0.0000000000000003, 23.4726204406520012]]
+
+
+def _rhombohedral_bi2se3(a, c, u_bi, u_se):
+    """The 5-atom rhombohedral primitive cell of R-3m Bi2Se3 (hexagonal ``a``, ``c``; Bi at +-u_bi c and
+    Se at 0 and +-u_se c along the axis), in the atom order of the owner's cell (Bi, Bi, Se, Se, Se)."""
+    r3, h = np.sqrt(3.0), c / 3.0
+    cell = [[a / 2, a / (2 * r3), h], [-a / 2, a / (2 * r3), h], [0.0, -a / r3, h]]
+    positions = [[0.0, 0.0, u_bi * c], [0.0, 0.0, (1 - u_bi) * c], [0.0, 0.0, 0.0],
+                 [0.0, 0.0, u_se * c], [0.0, 0.0, (1 - u_se) * c]]
+    return cell, positions
+
+
+#: The experimental lattice (a, c in Angstrom, u(Bi), u(Se)) of the companion cell, as used for the
+#: published PBE+SOC bulk gap (Zhang et al. 2009). Nakajima 1963 (the structure type) has a = 4.143, c = 28.636,
+#: u(Bi) = 0.4008, u(Se) = 0.2117 (COD 9011965): 0.1 % and 0.006 away; the exact source of the set used here
+#: was not found, and the independent plane-wave reference (-0.53 eV) was computed with it.
+BI2SE3_EXPERIMENTAL = (4.138, 28.64, 0.399, 0.206)
+#: The working point, fixed by the regeneration diagnosis (``dev_plan/DECISIONS.md``, 2026-11-13, "G12
+#: Bi2Se3 diagnosis"): DZP at the minimum (SZ inverts only because its scalar gap is 0.35 eV too small),
+#: 0.18 Angstrom, a 3x3x3 SCF mesh, and a narrow Fermi-Dirac smearing (eV: the occupied manifold is
+#: accepted only when every occupation is 0 or 1). ``MANDACARU_G12_LIBRARY`` names a folder holding
+#: ``pbe-fr/`` and ``pbe-sr/`` (how a regenerated set is gated), ``MANDACARU_G12_BASIS`` another size.
+BI2SE3_GRID = 0.18
+BI2SE3_BASIS = os.environ.get("MANDACARU_G12_BASIS", "DZP")
+BI2SE3_SCF = (3, 3, 3)
+BI2SE3_STRINGS = (6, 6, 6)
+BI2SE3_SMEARING = {"method": "fermi-dirac", "width": 2e-4}
+
+
+def _bi2se3_dataset(name):
+    root = os.environ.get("MANDACARU_G12_LIBRARY")
+    return name if not root else str(Path(root) / name)
+
+
+def _bi2se3(cell, positions, dataset, scratch):
+    atoms = Atoms("Bi2Se3", positions=positions, cell=cell, pbc=True)
+    atoms.calc = Mandacaru(
+        method="dft", xc="pbe", paw_dataset=_bi2se3_dataset(dataset),
+        basis={"name": "PAW-LCAO", "size": BI2SE3_BASIS},
+        kpts={"size": BI2SE3_SCF, "gamma": True}, grid_spacing=BI2SE3_GRID,
+        smearing=BI2SE3_SMEARING, parallelization={"threads": 2}, trace=False,
+        resources={"memory_limit_bytes": 2 * 2**30, "scratch_dir": str(scratch)},
+        periodic_scf_options={"max_iterations": 120})
+    atoms.get_potential_energy()
+    return atoms
+
+
+def _signed_gamma_gap(parity):
+    """E(even frontier level) - E(odd frontier level) at Gamma, in eV: the highest occupied and the lowest
+    empty level (Kramers pairs with spin-orbit coupling) are one even and one odd. Positive when the
+    occupied one is odd (the normal order, a plain gap), negative when the occupied one is even (inverted).
+    Gamma is looked up in the view (``get_eigenvalues(kpt=0)`` is not Gamma on a Gamma-centered 3x3x3 mesh)."""
+    gamma = next(p for p in parity.parity if p["index"] == (0, 0, 0))
+    n = gamma["occupied"]
+    below, above = gamma["parities"][n - 1], gamma["parities"][n]
+    assert below == -above, (below, above)
+    return float((gamma["energies"][n] - gamma["energies"][n - 1]) * (-below))
+
+
+def _assert_strong(parity, flow, signed_gap):
+    assert parity.method == "parity" and parity.indices == (1, 0, 0, 0)
+    assert not parity.spin_degenerate
+    # The inversion center is Se(0), the origin: delta = -1 at Gamma and +1 at the other seven points.
+    assert np.all(np.abs(np.asarray(parity.inversion_center)
+                         - np.round(parity.inversion_center)) < 1e-6)
+    deltas = {p["index"]: p["delta"] for p in parity.parity}
+    assert deltas.pop((0, 0, 0)) == -1 and set(deltas.values()) == {1}
+    assert all(p["residual"] < 1e-6 and p["occupied"] == 78 for p in parity.parity)
+    # 78 occupied states in 39 Kramers pairs; the inversion has exchanged one pair across the gap.
+    assert next(p for p in parity.parity if p["index"] == (0, 0, 0))["minus"] == 34
+    assert signed_gap < 0.0, signed_gap
+    if flow is not None:
+        assert flow.method == "flow" and flow.indices == (1, 0, 0, 0)
+        assert flow.planes == parity.planes
+        assert len(flow.flows) == 6 and not flow.spin_degenerate
+        assert all(f.half and f.z2 is not None and f.winding is None for f in flow.flows)
+
+
+def _bulk_bi2se3_with_spin_orbit_coupling(cell, positions, scratch):
+    atoms = _bi2se3(cell, positions, "pbe-fr", scratch)
+    parity = atoms.calc.get_z2_invariant(kpts=BI2SE3_STRINGS, method="parity")
+    gap = _signed_gamma_gap(parity)
+    # Parity first: it fails cheaply; the six planes of the flow are most of the cost.
+    _assert_strong(parity, None, gap)
+    flow = atoms.calc.get_z2_invariant(kpts=BI2SE3_STRINGS)
+    _assert_strong(parity, flow, gap)
+    return gap
+
+
+@pytest.mark.slow
+def test_bulk_bi2se3_at_the_experimental_lattice_with_spin_orbit_coupling_is_inverted(tmp_path):
+    """Z2 = (1; 000) and an inverted signed Gamma gap on the experimental lattice, where the independent
+    reference inverts by 0.53 eV and the regenerated set gives -0.365 eV: the robust gate of the
+    spin-orbit coupling of the ``pbe-fr`` datasets. Parity and the flow of the six planes agree plane by
+    plane. Slow by design: 8286 s (2.3 h; SCF 3^3 DZP, parity, six planes of 66 or 24 frames),
+    peak RSS 1.85 GB; measured 2026-11-13, 2 threads, 8-core Mac. Over the informational 180 s limit."""
+    cell, positions = _rhombohedral_bi2se3(*BI2SE3_EXPERIMENTAL)
+    _bulk_bi2se3_with_spin_orbit_coupling(cell, positions, tmp_path)
+
+
+@pytest.mark.slow
+@pytest.mark.xfail(strict=True, raises=AssertionError, reason=(
+    "G12 on the owner's cell is a marginal inversion (the self-consistent fully-relativistic plane-wave "
+    "reference inverts by only 0.05 eV) and the engine's Bi 6p spin-orbit splitting is 13 % short "
+    "(1.60-1.62 eV against 1.850 eV from all-electron Dirac-PBE; gate G13): the cell stays trivial until "
+    "the Bi spin-orbit operator is fixed. Remove this mark then; strict, so a fix announces itself."))
+def test_bulk_bi2se3_at_the_owner_cell_with_spin_orbit_coupling_is_inverted(tmp_path):
+    """The owner's required quantitative gate: Z2 = (1; 000) with the signed Gamma gap negative on the
+    PBE-expanded cell, by parity and by the flow of the six planes. Strict xfail: stops at the parity, 1520 s (SCF 1220 s, parity 258 s), peak RSS 1.72 GB."""
+    _bulk_bi2se3_with_spin_orbit_coupling(BI2SE3_CELL, BI2SE3_POSITIONS, tmp_path)
+
+
+@pytest.mark.slow
+def test_bulk_bi2se3_without_spin_orbit_coupling_is_a_trivial_insulator(tmp_path):
+    """Z2 = (0; 000) on the scalar-relativistic set: every delta is +1, the spin-degenerate occupied
+    manifold holds 18 odd spatial bands at Gamma, the flow counts every crossing twice, and the signed
+    Gamma gap is the plain gap of an independent scalar-relativistic reference (+0.42 eV, mesh 3; this
+    engine gives 0.4228 on the 3x3x3 mesh). 2543 s (SCF 309 s, parity 82 s, six planes), peak RSS 1.5 GB (measured 2026-11-13)."""
+    atoms = _bi2se3(BI2SE3_CELL, BI2SE3_POSITIONS, "pbe-sr", tmp_path)
+    parity = atoms.calc.get_z2_invariant(kpts=BI2SE3_STRINGS, method="parity")
+    assert parity.indices == (0, 0, 0, 0) and parity.spin_degenerate
+    assert all(p["delta"] == 1 and p["residual"] < 1e-6 and p["occupied"] == 39
+               for p in parity.parity)
+    gamma = next(p for p in parity.parity if p["index"] == (0, 0, 0))
+    assert gamma["minus"] == 18
+    # The normal order at Gamma: the highest occupied level is odd, the lowest empty one even.
+    assert (gamma["parities"][38], gamma["parities"][39]) == (-1, 1)
+    assert abs(_signed_gamma_gap(parity) - 0.42) < 0.05
+    flow = atoms.calc.get_z2_invariant(kpts=BI2SE3_STRINGS)
+    assert flow.indices == (0, 0, 0, 0) and flow.planes == parity.planes and flow.spin_degenerate

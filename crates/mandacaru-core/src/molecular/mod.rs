@@ -13,6 +13,7 @@ pub mod integrals;
 pub mod local_correlation;
 pub mod multipoles;
 pub mod observables;
+pub mod realtime;
 pub mod occupation;
 pub mod periodic;
 pub mod spinor_dft;

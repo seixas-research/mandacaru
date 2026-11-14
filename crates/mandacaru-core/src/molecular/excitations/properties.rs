@@ -1,8 +1,8 @@
 //! Transition moments, oscillator strengths, dominant transitions, natural transition orbitals
 //! and the one-center diagnostic of the solved roots.
 use super::{
-    invalid, response::Response, unrestricted::Unrestricted, Channel, Excitations, Request,
-    Solved, Spin, Transition,
+    invalid, response::Response, unrestricted::Unrestricted, Channel, Excitations, Request, Solved,
+    Spin, Transition,
 };
 use crate::{
     math::linalg::real_eigen,
@@ -236,12 +236,18 @@ pub(super) fn assemble_unrestricted(
         std::array::from_fn(|s| std::array::from_fn(|axis| blocks(&r[axis], s)));
     let velocities: [[DMatrix<f64>; 3]; 2] =
         std::array::from_fn(|s| std::array::from_fn(|axis| blocks(&g[axis], s)));
-    let one_center = match (&integrals.paw_setup, reference.functional.is_some(), &integrals.corrections) {
+    let one_center = match (
+        &integrals.paw_setup,
+        reference.functional.is_some(),
+        &integrals.corrections,
+    ) {
         (Some(setup), true, Some(corrections)) => {
             let count = setup.one_center_factor_count();
             let pairs = &corrections.pairs;
             if count > pairs.factors.len() {
-                return Err(invalid("PAW one-center factors disagree with the pair corrections"));
+                return Err(invalid(
+                    "PAW one-center factors disagree with the pair corrections",
+                ));
             }
             Some(
                 pairs.factors[..count]
@@ -258,7 +264,11 @@ pub(super) fn assemble_unrestricted(
     let s_z = 0.5 * (particles[0] as f64 - particles[1] as f64);
     let (oa, ob) = (particles[0], particles[1]);
     let reference_spin_squared = s_z * (s_z + 1.) + ob as f64
-        - overlap.view((0, 0), (oa, ob)).iter().map(|x| x * x).sum::<f64>();
+        - overlap
+            .view((0, 0), (oa, ob))
+            .iter()
+            .map(|x| x * x)
+            .sum::<f64>();
     let channels = (0..2)
         .map(|s| {
             let (o, v) = operator.channel(s);
@@ -302,7 +312,8 @@ pub(super) fn assemble_unrestricted(
             std::array::from_fn(|axis| (0..2).map(|s| dipoles[s][axis].dot(&plus[s])).sum());
         let p: [f64; 3] =
             std::array::from_fn(|axis| (0..2).map(|s| velocities[s][axis].dot(&minus[s])).sum());
-        out.oscillator_strengths.push(2. / 3. * omega * mu.iter().map(|x| x * x).sum::<f64>());
+        out.oscillator_strengths
+            .push(2. / 3. * omega * mu.iter().map(|x| x * x).sum::<f64>());
         out.transition_dipoles.push(mu);
         out.velocity_oscillator_strengths
             .push(2. / 3. * p.iter().map(|x| x * x).sum::<f64>() / omega);
@@ -322,9 +333,13 @@ pub(super) fn assemble_unrestricted(
             }
         }
         transitions.sort_by(|x, y| {
-            y.weight.total_cmp(&x.weight).then(
-                (x.channel, x.occupied, x.virtual_orbital).cmp(&(y.channel, y.occupied, y.virtual_orbital)),
-            )
+            y.weight
+                .total_cmp(&x.weight)
+                .then((x.channel, x.occupied, x.virtual_orbital).cmp(&(
+                    y.channel,
+                    y.occupied,
+                    y.virtual_orbital,
+                )))
         });
         let keep = transitions
             .iter()
@@ -338,7 +353,12 @@ pub(super) fn assemble_unrestricted(
         let mut values = Vec::new();
         for block in &plus {
             if block.nrows() > 0 && block.ncols() > 0 {
-                values.extend(real_eigen(block * block.transpose())?.0.into_iter().map(|v| v.max(0.)));
+                values.extend(
+                    real_eigen(block * block.transpose())?
+                        .0
+                        .into_iter()
+                        .map(|v| v.max(0.)),
+                );
             }
         }
         let total: f64 = values.iter().sum();
@@ -346,7 +366,8 @@ pub(super) fn assemble_unrestricted(
             return Err(invalid("an excitation amplitude vanishes"));
         }
         values.sort_by(|a, b| b.total_cmp(a));
-        out.nto_weights.push(values.iter().map(|v| v / total).collect());
+        out.nto_weights
+            .push(values.iter().map(|v| v / total).collect());
         if let (Some(factors), Some(shifts)) = (&one_center, out.one_center_hartree.as_mut()) {
             // First order in the missing Coulomb-type kernel, 2 sum_P w_P (sum_s L^P_s . T_s)^2 / 2.
             shifts.push(

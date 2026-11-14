@@ -59,8 +59,9 @@ class Grid:
 
     Parameters
     ----------
-    center : array_like, shape (3,)
-        Cartesian center of the box, in ``units``.
+    center : array_like, shape (3,), or None
+        Cartesian center of the box, in ``units``. ``None`` with a ``cell`` centers the grid on
+        the middle of the cell (half the sum of its vectors).
     box_size : float or array_like, shape (3,)
         Half-edge length of the cube, in ``units`` (the box spans
         ``center ± box_size``).  A length-3 value gives an orthorhombic box with

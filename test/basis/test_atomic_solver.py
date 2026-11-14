@@ -24,7 +24,7 @@ def ground_state_config(z):
     """The aufbau filling of oxygen or iron."""
     return AUFBAU[z]
 from mandacaru.basis.atomic_solver import (hartree_potential, lda_correlation,
-                                           lda_exchange, lda_xc,
+                                           lda_exchange,
                                            relaxed_configuration, solve_atom,
                                            solve_radial)
 
@@ -183,8 +183,9 @@ class TestSolveAtomInterface:
         assert atom.relativity == "dirac"
         assert atom.details["relativistic_exchange"]
         assert set(atom.eigenvalues_j) >= {(2, 1, 1), (2, 1, -2), (2, 0, -1)}
-        assert atom.spin_orbit_splitting(2, 1) > 0.0
-        assert atom.spin_orbit_splitting(2, 0) == 0.0
+        levels = atom.eigenvalues_j
+        assert levels[(2, 1, -2)] - levels[(2, 1, 1)] > 0.0   # j = l + 1/2 above j = l - 1/2
+        assert (2, 0, 0) not in levels                         # an s shell has one j
 
 
 #: NIST LSD reference eigenvalues (Hartree) for closed-shell atoms.
@@ -244,7 +245,9 @@ class TestAtomicSolver:
         assert np.allclose(potential[far], 1.0 / r[far], rtol=1e-4)
 
     def test_lda_xc_is_negative(self):
-        e_xc, v_xc = lda_xc(np.array([0.01, 0.1, 1.0]))
+        rho = np.array([0.01, 0.1, 1.0])
+        e_xc = lda_exchange(rho)[0] + lda_correlation(rho)[0]
+        v_xc = lda_exchange(rho)[1] + lda_correlation(rho)[1]
         assert np.all(e_xc < 0) and np.all(v_xc < 0)
 
     def test_lda_terms_follow_the_closed_forms(self):

@@ -13,8 +13,9 @@
 //! - Hartree-Fock: the Coulomb and exchange terms of the SCF's own pair factors (`eri()`, the
 //!   one-center `DeltaW` included), transformed to the canonical orbitals once.
 //!
-//! [`Response::difference`] is `(A - B) y`: the orbital-energy differences plus the exchange
-//! part, which is the only piece of these kernels that sees the antisymmetric part of `dD`.
+//! [`Response::difference`] is `(A - B) y`: the orbital-energy differences plus the exchange and
+//! +U parts, the only pieces of these kernels that see the antisymmetric part of `dD` (the
+//! meta-GGA kinetic density depends on its symmetric part only).
 //! The grid passes run on the calculator's lanes, one trial vector per task, each serial and in
 //! a fixed order, so the result is the same for every thread count.
 use super::{invalid, Coupling, Spin};
@@ -44,7 +45,12 @@ pub(super) struct Factors {
 }
 impl Factors {
     /// The factors of `eri` (and their `oo`, `vv` blocks when `exchange`), in `orbitals`.
-    pub(super) fn new(eri: &Eri, orbitals: &DMatrix<f64>, o: usize, exchange: bool) -> Result<Self> {
+    pub(super) fn new(
+        eri: &Eri,
+        orbitals: &DMatrix<f64>,
+        o: usize,
+        exchange: bool,
+    ) -> Result<Self> {
         let m = orbitals.nrows();
         let (co, cv) = (orbitals.columns(0, o), orbitals.columns(o, m - o));
         let mut out = Self {
@@ -124,6 +130,9 @@ struct Lane {
     potentials: Buffer<f64>,
     total: Buffer<C64>,
     hartree: Buffer<C64>,
+    /// Meta-GGA work arrays: the changes of the gradient (`6 n`) and kinetic density (`2 n`) of
+    /// both spins, and the kernel's changes of `v_tau` (`2 n`) and the flux (`6 n`).
+    meta: Option<[Buffer<f64>; 4]>,
 }
 
 /// The closed-shell response operator of one spin symmetry and kernel.
@@ -150,6 +159,10 @@ pub struct Response<'a> {
     /// A screened hybrid's spheres and the ground-state density, for the spin-polarizing
     /// (triplet) part of their semilocal short-range exchange.
     polarization: Option<crate::paw::molecular::SphereKernels>,
+    /// The r2SCAN kernel and the gradients of the canonical orbitals (`[axis][orbital][point]`).
+    meta: Option<(xc_kernel::MetaKernel, Buffer<f64>)>,
+    /// The +U kernel.
+    hubbard: Option<super::hubbard::HubbardKernel>,
 }
 
 /// What a reference needs to be for this module, or the reason it is refused.
@@ -191,25 +204,12 @@ pub(super) fn check_reference(integrals: &MolecularIntegrals, reference: &MeanFi
                 .into(),
         );
     }
-    if integrals
-        .corrections
-        .as_ref()
-        .is_some_and(|c| c.hubbard.is_some())
-    {
-        return unsupported("linear response with hubbard_u is not implemented yet".into());
-    }
     if let Some(name) = reference.functional.as_deref() {
         let definition = crate::models::functional(name)?;
         if definition.nonlocal_b.is_some() {
             return unsupported(format!(
                 "linear response with xc='{name}' needs the nonlocal (rVV10) kernel, which is not \
                  implemented; neglecting it would run a different calculation"
-            ));
-        }
-        if definition.requires_tau {
-            return unsupported(format!(
-                "linear response with the meta-GGA xc='{name}' is not implemented yet; \
-                 xc='lda', xc='pbe' and xc='hse06' are"
             ));
         }
     }
@@ -265,7 +265,13 @@ impl<'a> Response<'a> {
                     integrals,
                     std::slice::from_ref(density),
                     name,
-                    None,
+                    // A meta-GGA's Fock matrix needs the orbital gradients, as in the SCF.
+                    if crate::models::functional(name)?.requires_tau {
+                        Some(dft::orbital_gradients(integrals)?)
+                    } else {
+                        None
+                    }
+                    .as_ref(),
                     screening.as_ref(),
                 )?;
                 (fock[0].map(|z| z.re), Some(fields))
@@ -311,6 +317,8 @@ impl<'a> Response<'a> {
             factor_coulomb: false,
             exchange: 0.,
             polarization: None,
+            meta: None,
+            hubbard: None,
         };
         if coupling == Coupling::Independent {
             return Ok(response);
@@ -333,7 +341,17 @@ impl<'a> Response<'a> {
                             .collect();
                     }
                 }
-                if coupling == Coupling::Adiabatic {
+                let requires_tau = crate::models::functional(name)?.requires_tau;
+                if coupling == Coupling::Adiabatic && requires_tau {
+                    let kernel = super::meta::ground_kernel(
+                        integrals,
+                        std::slice::from_ref(density),
+                        fields.valence.as_slice(),
+                    )?;
+                    let gradients = super::meta::gradient_samples(integrals, &response.orbitals)?;
+                    response.meta = Some((kernel, gradients));
+                }
+                if coupling == Coupling::Adiabatic && !requires_tau {
                     let semilocal = crate::models::functional(name)?.semilocal;
                     let n = integrals.grid.index.points();
                     let mut rho = ctx.copy_slice(fields.valence.as_slice())?;
@@ -354,8 +372,20 @@ impl<'a> Response<'a> {
                         relativistic,
                     )?);
                 }
-                if response.poisson || response.xc.is_some() {
+                if response.poisson || response.xc.is_some() || response.meta.is_some() {
                     response.samples = Some(mo_samples(integrals, &response.orbitals)?);
+                }
+                if coupling == Coupling::Adiabatic {
+                    if let Some(model) = integrals
+                        .corrections
+                        .as_ref()
+                        .and_then(|c| c.hubbard.as_ref())
+                    {
+                        response.hubbard = Some(super::hubbard::HubbardKernel::new(
+                            model,
+                            &[(&response.orbitals, o)],
+                        ));
+                    }
                 }
                 if coupling == Coupling::Adiabatic {
                     if let Some(screening) = screening.take() {
@@ -463,6 +493,10 @@ impl<'a> Response<'a> {
                     *k -= factors.exchange(y, 1.) * self.exchange;
                 }
             }
+            if let Some(hubbard) = &self.hubbard {
+                let ctx = &self.integrals.context;
+                *k += &hubbard.apply(ctx, self.hubbard_mode(), std::slice::from_ref(y), false)?[0];
+            }
             if let Some(kernels) = &self.polarization {
                 // dD_up = dD, dD_dn = -dD about D_up = D_dn = D; the polarization's first
                 // derivative vanishes there, its second does not.
@@ -494,7 +528,23 @@ impl<'a> Response<'a> {
                 out.set_column(c, &nalgebra::DVector::from_vec(self.flat(&k)));
             }
         }
+        if let Some(hubbard) = &self.hubbard {
+            for c in 0..block.ncols() {
+                let y = self.matrix(block.column(c).as_slice());
+                let k = hubbard.apply(&self.integrals.context, self.hubbard_mode(), &[y], true)?;
+                let column = nalgebra::DVector::from_vec(self.flat(&k[0]));
+                let total = out.column(c) + column;
+                out.set_column(c, &total);
+            }
+        }
         Ok(out)
+    }
+    fn hubbard_mode(&self) -> super::hubbard::Mode {
+        if self.spin == Spin::Singlet {
+            super::hubbard::Mode::Singlet
+        } else {
+            super::hubbard::Mode::Triplet
+        }
     }
     fn diagonal_times(&self, block: &DMatrix<f64>) -> DMatrix<f64> {
         DMatrix::from_fn(block.nrows(), block.ncols(), |r, c| {
@@ -530,10 +580,22 @@ impl<'a> Response<'a> {
             potentials: ctx.allocate(2 * n)?,
             total: ctx.allocate(if self.poisson { n } else { 0 })?,
             hartree: ctx.allocate(if self.poisson { n } else { 0 })?,
+            meta: match self.meta {
+                Some(_) => Some([
+                    ctx.allocate(6 * n)?,
+                    ctx.allocate(2 * n)?,
+                    ctx.allocate(2 * n)?,
+                    ctx.allocate(6 * n)?,
+                ]),
+                None => None,
+            },
         })
     }
     /// The grid part of the kernel of one trial matrix: Hartree and XC.
     fn grid_kernel(&self, y: &DMatrix<f64>, lane: &mut Lane) -> Result<DMatrix<f64>> {
+        if self.meta.is_some() {
+            return self.meta_grid_kernel(y, lane);
+        }
         let grid = &self.integrals.grid;
         let n = grid.index.points();
         let singlet = self.spin == Spin::Singlet;
@@ -564,6 +626,86 @@ impl<'a> Response<'a> {
         }
         self.elements(&potential[..n])
     }
+    /// The grid part of the kernel of one trial matrix for r2SCAN: Hartree and the meta-GGA
+    /// kernel of the density, gradient and kinetic-density changes (`super::meta`).
+    fn meta_grid_kernel(&self, y: &DMatrix<f64>, lane: &mut Lane) -> Result<DMatrix<f64>> {
+        let grid = &self.integrals.grid;
+        let n = grid.index.points();
+        let m = self.o + self.v;
+        let singlet = self.spin == Spin::Singlet;
+        let (kernel, gradients) = self
+            .meta
+            .as_ref()
+            .ok_or_else(|| invalid("this response has no meta-GGA kernel"))?;
+        let samples = self
+            .samples
+            .as_ref()
+            .ok_or_else(|| invalid("this response has no orbital samples"))?;
+        let [d_gradient, d_tau, tau_out, flux] = lane
+            .meta
+            .as_mut()
+            .ok_or_else(|| invalid("a meta-GGA lane has no work arrays"))?;
+        // One spin's changes; the other spin's are equal (singlet) or opposite (triplet).
+        super::meta::changes(
+            samples.as_slice(),
+            gradients.as_slice(),
+            n,
+            m,
+            self.o,
+            y,
+            lane.density.as_mut_slice(),
+            &mut d_gradient.as_mut_slice()[..3 * n],
+            &mut d_tau.as_mut_slice()[..n],
+        )?;
+        let sign = if singlet { 1. } else { -1. };
+        {
+            let (density, spins) = (lane.density.as_slice(), lane.spins.as_mut_slice());
+            for k in 0..n {
+                spins[k] = density[k];
+                spins[n + k] = sign * density[k];
+            }
+            let g = d_gradient.as_mut_slice();
+            for k in 0..3 * n {
+                g[3 * n + k] = sign * g[k];
+            }
+            let t = d_tau.as_mut_slice();
+            for k in 0..n {
+                t[n + k] = sign * t[k];
+            }
+        }
+        let potential = lane.potentials.as_mut_slice();
+        kernel.apply(
+            lane.spins.as_slice(),
+            d_gradient.as_slice(),
+            d_tau.as_slice(),
+            xc_kernel::MetaChange {
+                local: potential,
+                tau: tau_out.as_mut_slice(),
+                flux: flux.as_mut_slice(),
+            },
+        )?;
+        if let Some(poisson) = lane.poisson.as_mut() {
+            let (density, total) = (lane.density.as_slice(), lane.total.as_mut_slice());
+            for k in 0..n {
+                total[k] = C64::new(2. * density[k], 0.);
+            }
+            poisson.solve_into(lane.total.as_slice(), lane.hartree.as_mut_slice())?;
+            for (p, h) in potential[..n].iter_mut().zip(lane.hartree.as_slice()) {
+                *p += h.re;
+            }
+        }
+        super::meta::elements(
+            samples.as_slice(),
+            gradients.as_slice(),
+            n,
+            m,
+            self.o,
+            &potential[..n],
+            &tau_out.as_slice()[..n],
+            &flux.as_slice()[..3 * n],
+            grid.index.dv(),
+        )
+    }
     /// `dn(r) = 2 sum_ia y_ia phi_i(r) phi_a(r)`, the density change of one spin.
     pub(super) fn density(&self, y: &DMatrix<f64>, out: &mut [f64]) -> Result<()> {
         let samples = self
@@ -571,7 +713,14 @@ impl<'a> Response<'a> {
             .as_ref()
             .ok_or_else(|| invalid("this response has no orbital samples"))?
             .as_slice();
-        pair_density(samples, self.integrals.grid.index.points(), self.o, self.v, y, out)
+        pair_density(
+            samples,
+            self.integrals.grid.index.points(),
+            self.o,
+            self.v,
+            y,
+            out,
+        )
     }
     /// `<i| w |a> = dv sum_r phi_i(r) w(r) phi_a(r)` of a local potential `w`.
     fn elements(&self, potential: &[f64]) -> Result<DMatrix<f64>> {

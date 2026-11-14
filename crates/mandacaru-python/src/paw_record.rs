@@ -73,6 +73,19 @@ fn paw_record_read<'py>(
     export(py, ctx, &dataset)
 }
 
+/// The content digest of the dataset file at `path` (`paw::digest::dataset_content_sha256`): the
+/// physics a crystal snapshot pins a dataset by, not the file's bytes.
+#[pyfunction]
+fn paw_content_sha256(
+    context: PyRef<'_, PyContext>,
+    py: Python<'_>,
+    path: &str,
+) -> PyResult<String> {
+    let ctx = &context.inner;
+    py.detach(|| mandacaru_core::paw::digest::dataset_content_sha256(ctx, Path::new(path)))
+        .map_err(error)
+}
+
 #[pyfunction]
 #[pyo3(signature = (context, path, payload, tables, *, stride = 1, format = "parquet", codec = "zstd"))]
 fn paw_record_write(
@@ -130,20 +143,10 @@ fn paw_local_value<'py>(
     ))
 }
 
-/// `{l: shift}` of the channels whose bound levels moved by more than the reload tolerance between
-/// the dataset as generated and as read back; both arguments are `[(l, levels)]` in the same order.
-#[pyfunction]
-fn paw_reload_errors(
-    before: Vec<(usize, Vec<f64>)>,
-    after: Vec<(usize, Vec<f64>)>,
-) -> std::collections::BTreeMap<usize, f64> {
-    mandacaru_core::paw::record::reload_errors(&before, &after)
-}
-
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("RELOAD_LEVEL_TOLERANCE", mandacaru_core::paw::record::RELOAD_LEVEL_TOLERANCE)?;
-    m.add_function(wrap_pyfunction!(paw_reload_errors, m)?)?;
     m.add_function(wrap_pyfunction!(paw_record_read, m)?)?;
+    m.add_function(wrap_pyfunction!(paw_content_sha256, m)?)?;
     m.add_function(wrap_pyfunction!(paw_record_write, m)?)?;
     m.add_function(wrap_pyfunction!(paw_local_value, m)?)?;
     Ok(())

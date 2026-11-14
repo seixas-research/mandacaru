@@ -35,8 +35,7 @@ from ase import Atoms
 
 from mandacaru import Mandacaru
 from mandacaru.core.mpc import spatial_rdms
-from mandacaru.core.ccmh import (QUADRATIC_REGIME_SPREAD, CCMHCorrection,
-                                 ccmh_correction, structure_factor)
+from mandacaru.core.ccmh import CCMHCorrection, ccmh_correction, structure_factor
 from mandacaru.core.mpc import FiniteSizeCorrection
 from mandacaru.optimizers import Optimizer
 
@@ -166,7 +165,7 @@ class TestTheQuadraticRegimeIsChecked:
         with pytest.warns(RuntimeWarning, match="quadratic regime"):
             result = ccmh_correction(chain_structure, volume=2699.3, n_cells=2)
         assert not result.reliable
-        assert result.quadratic_spread > QUADRATIC_REGIME_SPREAD
+        assert result.quadratic_spread > 0.5       # the engine's quadratic-regime limit
 
     def test_a_flat_ratio_is_not_flagged(self):
         """A synthetic ``S = c k^2`` must pass without a warning."""
@@ -212,6 +211,9 @@ class TestTheCorrectionRecord:
         assert result.density == pytest.approx(density)
         assert result.plasma_frequency == pytest.approx(omega_p)
         assert result.rpa_limit == pytest.approx(1.0 / (2 * omega_p))
+        # what the RPA limit would give: pi / (volume omega_p), from the engine
+        assert result.rpa_correction == pytest.approx(np.pi / (1000.0 * omega_p), rel=1e-14)
+        assert result.correction_per_cell == pytest.approx(result.correction / 8)
 
     def test_the_scopes_are_kept_apart(self):
         from mandacaru.core.ccmh import StructureFactor

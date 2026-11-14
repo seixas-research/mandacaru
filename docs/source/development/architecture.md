@@ -58,10 +58,11 @@ Python, so there is one list of exchange-correlation functionals.
 
 ## The Python layer
 
-`src/mandacaru/` is the interface layer. Any numerics that still sit in it are
-awaiting their move to Rust and are tracked by the numerics budget on the cutover
-page (its zero tier, which covers the basis, pseudopotential and PAW-adapter
-modules, shows no hard counter), and no new numerical routine is added in Python.
+`src/mandacaru/` is the interface layer. By the boundary of the cutover page it
+holds no numerics: what the numerics budget there still counts is option
+validation, array hand-off, result views, log tables and one SDK import probe
+(the zero tier, which covers the basis, pseudopotential and PAW-adapter modules,
+shows no hard counter), and no new numerical routine is added in Python.
 
 | Module | Role |
 | --- | --- |

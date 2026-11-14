@@ -8,13 +8,14 @@
 //! ```text
 //! "sites": { "centers": [[x, y, z], ...]          (Bohr, one per atom, in the grid's frame)
 //!            "projector_basis": "raw" | "dual",   (the basis the projections were built in)
-//!            "datasets": [{"symbol", "file", "sha256"}, ...] }   (one per atom)
+//!            "datasets": [{"symbol", "file", "content_sha256"}, ...] }   (one per atom)
 //! ```
 //!
-//! The engine reads each dataset file through [`PawDataset`], refuses it if its SHA-256 is not
-//! the recorded one (the projections were built from that exact file) and builds the species'
-//! screened one-center terms once, here, so a hybrid that cannot be completed fails at
-//! construction and never runs without its spheres. A hybrid crystal without the block raises.
+//! The engine reads each dataset file through [`PawDataset`], refuses it if its content digest
+//! (`paw::digest`) is not the recorded one (the projections were built from that physics) and
+//! builds the species' screened one-center terms once, here, so a hybrid that cannot be
+//! completed fails at construction and never runs without its spheres. A hybrid crystal without
+//! the block raises.
 use super::{
     invalid,
     screened_augmentation::{Augmentation, OneCenter},
@@ -31,8 +32,8 @@ use super::{
 use crate::{
     math::{storage::MatrixSource, SpatialGrid},
     paw::{
-        digest::sha256_file, onecenter::Basis, pair_tables::layout, record::PawDataset,
-        screened_atom::screened, species_tables::SpeciesTables,
+        onecenter::Basis, pair_tables::layout, record::PawDataset, screened_atom::screened,
+        species_tables::SpeciesTables,
     },
     quantum::C64,
     Context, Result,
@@ -91,7 +92,10 @@ impl Hybrid {
         for entry in datasets {
             let key = (
                 text(&entry["file"], "the dataset file of every atom (a dataset not read from a file cannot be handed over)")?,
-                text(&entry["sha256"], "the SHA-256 of every dataset file")?,
+                match crate::paw::digest::pinned_content(entry)? {
+                    "" => return Err(invalid("the sites block needs the content SHA-256 of every dataset")),
+                    digest => digest,
+                },
             );
             kind.push(match files.iter().position(|f| *f == key) {
                 Some(at) => at,
@@ -106,12 +110,12 @@ impl Hybrid {
         let mut radii = Vec::new();
         for (file, digest) in files {
             let path = Path::new(file);
-            if sha256_file(path)? != digest {
+            let record = PawDataset::read(ctx, path)?;
+            if record.content_sha256(ctx)? != digest {
                 return Err(invalid(format!(
-                    "{file} is not the dataset file the snapshot was built from (SHA-256 differs)"
+                    "{file} is not the dataset file the snapshot was built from (content SHA-256 differs)"
                 )));
             }
-            let record = PawDataset::read(ctx, path)?;
             let tables = SpeciesTables::from_record(ctx, &record, basis)?;
             let view = tables.view();
             let projectors = layout(&view);

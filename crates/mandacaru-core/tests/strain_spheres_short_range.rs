@@ -1,5 +1,5 @@
 //! The strain derivative of the short-range local matrix of an atom's sphere
-//! (`periodic::setup::strain_spheres::short_range_strain`, AS-2): `V_sr^A` is the atom's OWN radial
+//! (`periodic::setup::sphere_table::SphereTable::strain`, AS-2): `V_sr^A` is the atom's OWN radial
 //! potential on its rigid quadrature sphere, so only the two functions move,
 //! `dV_ab = sum_x w v [conj(d chi_mu) chi_nu + conj(chi_mu) d chi_nu]` with
 //! `d chi = A_ab - s_b G_a`, and there is no potential term (`du_A = 0`).
@@ -18,7 +18,13 @@ mod setup_shells_support;
 mod strain_samples_support;
 mod strain_spheres_support;
 
-use mandacaru_core::periodic::setup::{pulay::Matrix, strain_spheres::short_range_strain};
+use mandacaru_core::{
+    periodic::setup::{
+        basis_gradient::ShortRange, pulay::Matrix, shells::Shells, sphere_table::SphereTable,
+    },
+    Context,
+};
+use nalgebra::Matrix3;
 use num_complex::Complex64;
 use setup_gradients_support::context;
 use setup_pulay_support::{gap, peak, KPOINT};
@@ -36,6 +42,66 @@ const IDENTITY: f64 = 1e-12;
 /// jumps of the third derivative that the moving points cross), 4e-9 at 2e-5.
 const FD_STEP: f64 = 2e-5;
 
+/// The matrix `d V_A / d eps_ab` of every sphere, rebuilt from the contraction of
+/// `SphereTable::strain` with the Hermitian basis of the `m x m` matrices (the library never forms
+/// the matrix: `Re tr[H dV]` with `H = (e_ij + e_ji) / 2` is `Re dV_ij`, with `H = i (e_ij - e_ji) / 2`
+/// it is `Im dV_ij`).
+fn short_range_matrices(
+    ctx: &Context,
+    shells: &Shells,
+    lattice: &Matrix3<f64>,
+    k: [f64; 3],
+    spheres: &[ShortRange<'_>],
+) -> Vec<[[Matrix; 3]; 3]> {
+    let m = shells.functions();
+    let units: Vec<[[f64; 3]; 3]> = (0..9)
+        .map(|index| {
+            let mut e = [[0.; 3]; 3];
+            e[index / 3][index % 3] = 1.;
+            e
+        })
+        .collect();
+    let mut basis = Vec::new();
+    let mut at = Vec::new();
+    for i in 0..m {
+        for j in i..m {
+            let mut re = Matrix::zeros(m, m);
+            re[(i, j)] += Complex64::new(0.5, 0.);
+            re[(j, i)] += Complex64::new(0.5, 0.);
+            let mut im = Matrix::zeros(m, m);
+            if i != j {
+                im[(i, j)] = Complex64::new(0., 0.5);
+                im[(j, i)] = Complex64::new(0., -0.5);
+            }
+            basis.push(re);
+            basis.push(im);
+            at.push((i, j));
+        }
+    }
+    spheres
+        .iter()
+        .map(|sphere| {
+            let values = SphereTable::new(ctx, shells, lattice, sphere)
+                .unwrap()
+                .strain(k, &units, &basis);
+            std::array::from_fn(|a| {
+                std::array::from_fn(|b| {
+                    let mut out = Matrix::zeros(m, m);
+                    for (pair, &(i, j)) in at.iter().enumerate() {
+                        let value = Complex64::new(
+                            values[2 * pair][a * 3 + b],
+                            values[2 * pair + 1][a * 3 + b],
+                        );
+                        out[(i, j)] = value;
+                        out[(j, i)] = value.conj();
+                    }
+                    out
+                })
+            })
+        })
+        .collect()
+}
+
 /// `swapped`: the control that reads component `(b, a)` for `(a, b)`; it can only bite when the
 /// strain derivative of the matrix is not symmetric in `a, b` (the antisymmetric part is a rotation
 /// of the neighbors about the sphere, and is tiny where no neighbor reaches the sphere).
@@ -43,8 +109,7 @@ fn check(local: &Local, pairs: &[(usize, usize)], transposed: Control, swapped: 
     let ctx = context();
     let start = std::time::Instant::now();
     let spheres = local.spheres();
-    let got =
-        short_range_strain(&ctx, &local.shells, &local.cell.lattice, KPOINT, &spheres).unwrap();
+    let got = short_range_matrices(&ctx, &local.shells, &local.cell.lattice, KPOINT, &spheres);
     let transposed_strain = (transposed != Control::Skip).then(|| {
         let l = local.cell.lattice;
         assert!(
@@ -52,7 +117,7 @@ fn check(local: &Local, pairs: &[(usize, usize)], transposed: Control, swapped: 
             "{}: the skew guard needs a lattice that is not symmetric",
             local.name
         );
-        short_range_strain(&ctx, &local.shells, &l.transpose(), KPOINT, &spheres).unwrap()
+        short_range_matrices(&ctx, &local.shells, &l.transpose(), KPOINT, &spheres)
     });
     let mut worst = (0f64, 0f64);
     // The smallest miss of the controls that must bite, in units of the gate.

@@ -2,7 +2,9 @@
 //! geometry: the distances of the square lattice, the high-symmetry points of every named
 //! lattice lying on the zone boundary (and at their known Cartesian positions), the mesh points
 //! on a path, and the orbits of the point group, weights summing to one.
-use mandacaru_core::periodic::kpath::{convention, irreducible_zone, select, BandPath, Metric};
+use mandacaru_core::periodic::kpath::{
+    convention, interpolate, irreducible_zone, select, BandPath, Metric,
+};
 use mandacaru_core::periodic::spectrum;
 use mandacaru_core::Context;
 use nalgebra::{Matrix3, Vector3};
@@ -164,9 +166,10 @@ fn the_square_lattice_path_has_the_distances_of_its_zone() {
     // The k-points are the vertices and the mesh points between them.
     let k: Vec<_> = selected.kpoints.iter().map(|k| [k[0], k[1]]).collect();
     assert_eq!(k.len(), 7);
-    assert_eq!(k[1], [0.25, 0.]);
-    assert_eq!(k[2], [0.5, 0.]);
-    assert_eq!(k[3], [0.5, 0.25]);
+    // X lies along the second reciprocal vector (ASE's square), so G -> X climbs the second axis
+    assert_eq!(k[1], [0., 0.25]);
+    assert_eq!(k[2], [0., 0.5]);
+    assert_eq!(k[3], [0.25, 0.5]);
     assert_eq!(k[5], [0.25, 0.25]);
 }
 
@@ -179,11 +182,11 @@ fn a_mesh_that_misses_a_vertex_reports_it_and_keeps_the_points_it_has() {
     let selected = select(&path, &Metric::new(&cell, PLANE).unwrap(), &mesh.full).unwrap();
     assert!(!selected.complete());
     assert_eq!(selected.missing, ["X", "M"]);
-    // G, (1/3, 0) on the first segment, (1/3, 1/3) on the diagonal, and G again.
+    // G, (0, 1/3) on the first segment, (1/3, 1/3) on the diagonal, and G again.
     let k: Vec<_> = selected.kpoints.iter().map(|k| [k[0], k[1]]).collect();
     assert_eq!(k.len(), 4);
     assert!(k[0] == [0., 0.] && k[3] == [0., 0.]);
-    assert!((k[1][0] - 1. / 3.).abs() < 1e-12 && k[1][1] == 0.);
+    assert!(k[1][0] == 0. && (k[1][1] - 1. / 3.).abs() < 1e-12);
     assert!((k[2][0] - 1. / 3.).abs() < 1e-12 && (k[2][1] - 1. / 3.).abs() < 1e-12);
     let unit = PI / 2.6;
     assert!((selected.distances[1] - unit * 2. / 3.).abs() < 1e-12);
@@ -388,3 +391,89 @@ fn an_orthorhombic_cell_follows_the_increasing_length_order_of_its_convention() 
         assert!(message.contains("increasing order"), "{message}");
     }
 }
+
+#[test]
+fn a_sampled_path_shares_its_points_by_segment_length_and_ends_on_the_last_vertex() {
+    // Reference: the points ASE's `cell.bandpath("GXG", npoints=5)` and `npoints=9` give on a
+    // cubic cell. The first of two equal segments gets round(2.5) = 2 points (ties to even), so
+    // it holds only its start; the second takes the rest.
+    let cell = diagonal(2.0, 2.0, 2.0);
+    let band = BandPath::named(&cell, ALL, Some("GXG")).unwrap();
+    let metric = Metric::new(&cell, ALL).unwrap();
+    let five = interpolate(&band, &metric, 5).unwrap();
+    let third = 1.0 / 3.0;
+    let expected = [[0., 0., 0.], [0., 0.5, 0.], [0., 0.5 - 0.5 * third, 0.], [0., 0.5 - 1.0 * third, 0.], [0.; 3]];
+    for (got, want) in five.kpoints.iter().zip(expected) {
+        for a in 0..3 {
+            assert!((got[a] - want[a]).abs() < 1e-15, "{got:?} {want:?}");
+        }
+    }
+    let nine = interpolate(&band, &metric, 9).unwrap();
+    assert_eq!(nine.kpoints.len(), 9);
+    let ys: Vec<f64> = nine.kpoints.iter().map(|k| k[1]).collect();
+    let want = [0., 1. / 6., 1. / 3., 0.5, 0.4, 0.3, 0.2, 0.1, 0.];
+    for (y, w) in ys.iter().zip(want) {
+        assert!((y - w).abs() < 1e-15, "{ys:?}");
+    }
+    // distances accumulate the segment lengths; the vertices sit at 0, L and 2L (L = pi / a)
+    let l = PI / 2.0;
+    assert!((nine.vertex_distances[2] - 2.0 * l).abs() < 1e-14 && (nine.vertex_distances[1] - l).abs() < 1e-14);
+    assert!(interpolate(&band, &metric, 1).is_err());
+}
+
+#[test]
+fn a_comma_adds_no_length_and_every_run_ends_on_its_last_vertex() {
+    let cell = diagonal(2.0, 2.0, 2.0);
+    let band = BandPath::named(&cell, ALL, Some("GX,MR")).unwrap();
+    let metric = Metric::new(&cell, ALL).unwrap();
+    let sampled = interpolate(&band, &metric, 12).unwrap();
+    // the first run's last vertex X is in the list, then the second run starts at M
+    assert!(sampled.kpoints.contains(&[0., 0.5, 0.]) && sampled.kpoints.contains(&[0.5, 0.5, 0.]));
+    assert_eq!(sampled.kpoints.last().unwrap(), &[0.5, 0.5, 0.5]);
+    assert_eq!(sampled.vertex_distances.len(), 4);
+    assert_eq!(sampled.vertex_distances[1], sampled.vertex_distances[2], "the jump has no length");
+}
+
+#[test]
+fn a_rhombohedral_cell_takes_its_points_from_its_angle() {
+    // Setyawan and Curtarolo: alpha = 70 degrees is RHL1, alpha = 110 degrees RHL2; the points
+    // come from the one angle, whatever the Cartesian orientation of the three vectors.
+    let rhombohedral = |alpha: f64| {
+        let c = alpha.to_radians().cos();
+        // three unit vectors with pairwise cosine c
+        let a1 = Vector3::new(1., 0., 0.);
+        let a2 = Vector3::new(c, (1. - c * c).sqrt(), 0.);
+        let a3x = c;
+        let a3y = (c - c * c) / (1. - c * c).sqrt();
+        let a3z = (1. - a3x * a3x - a3y * a3y).sqrt();
+        Matrix3::from_rows(&[a1.transpose(), a2.transpose(), Vector3::new(a3x, a3y, a3z).transpose()])
+    };
+    let near = convention(&rhombohedral(70.), ALL).unwrap();
+    assert_eq!(near.name, "rhombohedral-1");
+    assert_eq!(near.default_path, "GLB1,BZGX,QFP1Z,LP");
+    let c = 70f64.to_radians().cos();
+    let eta = (1. + 4. * c) / (2. + 4. * c);
+    let b = near.point("B").unwrap();
+    assert!((b[0] - eta).abs() < 1e-12 && b[1] == 0.5 && (b[2] - (1. - eta)).abs() < 1e-12);
+    let far = convention(&rhombohedral(110.), ALL).unwrap();
+    assert_eq!(far.name, "rhombohedral-2");
+    assert_eq!(far.default_path, "GPZQGFP1Q1LZ");
+    assert_eq!(far.point("Z").unwrap(), [0.5, -0.5, 0.5]);
+    // the three special rhombohedral angles keep their own names
+    assert_eq!(convention(&rhombohedral(60.), ALL).unwrap().name, "fcc");
+    assert_eq!(convention(&rhombohedral(90.), ALL).unwrap().name, "cubic");
+}
+
+#[test]
+fn the_two_dimensional_conventions_are_ases() {
+    // The square: X on the second axis, the path MGXM; the rectangle's path closes on S; the
+    // 60 degree hexagonal plane's M lies on the second axis, as in ASE's `cell.bandpath`.
+    let square = convention(&diagonal(3., 3., 15.), PLANE).unwrap();
+    assert_eq!(square.point("X").unwrap(), [0., 0.5, 0.]);
+    assert_eq!(square.default_path, "MGXM");
+    let rectangle = convention(&diagonal(3., 4., 15.), PLANE).unwrap();
+    assert_eq!(rectangle.default_path, "GXSYGS");
+    let sixty = rows([[2.46, 0., 0.], [2.46 * 0.5, 2.46 * 0.75_f64.sqrt(), 0.], [0., 0., 15.]]);
+    assert_eq!(convention(&sixty, PLANE).unwrap().point("M").unwrap(), [0., -0.5, 0.]);
+}
+

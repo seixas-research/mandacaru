@@ -15,11 +15,7 @@ use super::super::{
     },
     Crystal,
 };
-use crate::{
-    paw::{digest::sha256_file, record::PawDataset},
-    quantum::C64,
-    Error, Result,
-};
+use crate::{paw::record::PawDataset, quantum::C64, Error, Result};
 use nalgebra::Matrix3;
 use std::{collections::BTreeMap, path::Path, sync::Arc};
 
@@ -77,13 +73,13 @@ impl Setup {
                         .into(),
                 ));
             }
-            let path = Path::new(file);
-            if sha256_file(path)? != digest {
+            let record = PawDataset::read(ctx, Path::new(file))?;
+            if record.content_sha256(ctx)? != digest {
                 return Err(invalid(format!(
-                    "{file} is not the dataset file the snapshot was built from (SHA-256 differs)"
+                    "{file} is not the dataset file the snapshot was built from (content SHA-256 differs)"
                 )));
             }
-            records.push(PawDataset::read(ctx, path)?);
+            records.push(record);
         }
         let atoms: Vec<Atom> = d
             .centers

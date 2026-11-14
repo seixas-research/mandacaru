@@ -3,7 +3,7 @@
 use crate::arrays::{array, copy, error};
 use crate::context::PyContext;
 use mandacaru_core::periodic::kpath::{
-    irreducible_zone as reduce, select, BandPath, Metric, PathPoints,
+    interpolate, irreducible_zone as reduce, select, BandPath, Metric, PathPoints,
 };
 use mandacaru_core::periodic::spectrum;
 use nalgebra::Matrix3;
@@ -94,6 +94,62 @@ pub fn band_path<'py>(
     path_dict(py, &selected)
 }
 
+/// The band path of `path` (named points, `None` for the lattice's default path) or of the
+/// explicit `points` (no lattice convention is read) through the cell (`cell` rows, `pbc`)
+/// sampled with `npoints` points shared among its segments by their lengths, as a band-structure
+/// plot wants it (`kpath::interpolate`): `{"kpoints" (n, 3) fractional, "distances",
+/// "vertex_distances", "path" (the text; the labels joined for explicit points), "labels",
+/// "special_points" (every named point of the lattice, or the labeled explicit ones, fractional),
+/// "convention"}`.
+#[pyfunction]
+#[pyo3(signature=(cell, pbc, npoints, path=None, points=None))]
+pub fn ase_band_path<'py>(
+    py: Python<'py>,
+    cell: PyReadonlyArray2<'py, f64>,
+    pbc: [bool; 3],
+    npoints: usize,
+    path: Option<&str>,
+    points: Option<Vec<(String, [f64; 3])>>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let lattice = lattice(&cell)?;
+    let explicit = points.clone();
+    let (band, metric) = band_path_of(&lattice, pbc, path, points)?;
+    let sampled = interpolate(&band, &metric, npoints).map_err(error)?;
+    let special = PyDict::new(py);
+    let text = match explicit {
+        Some(points) => {
+            for (label, fractional) in points.iter().filter(|(label, _)| !label.is_empty()) {
+                special.set_item(label, *fractional)?;
+            }
+            let labels: Vec<&str> = points.iter().map(|(label, _)| label.as_str()).collect();
+            if labels.iter().all(|label| !label.is_empty()) { labels.concat() } else { String::new() }
+        }
+        None => {
+            let convention =
+                mandacaru_core::periodic::kpath::convention(&lattice, pbc).map_err(error)?;
+            let axes: Vec<usize> = (0..3).filter(|&a| pbc[a]).collect();
+            for (label, local) in &convention.points {
+                let mut fractional = [0.; 3];
+                for (component, &axis) in axes.iter().enumerate() {
+                    fractional[axis] = local[component];
+                }
+                special.set_item(*label, fractional)?;
+            }
+            path.unwrap_or(convention.default_path).to_string()
+        }
+    };
+    let n = sampled.kpoints.len();
+    let out = PyDict::new(py);
+    out.set_item("kpoints", array(py, &[n, 3], sampled.kpoints.concat())?)?;
+    out.set_item("distances", array(py, &[n], sampled.distances.clone())?)?;
+    out.set_item("vertex_distances", sampled.vertex_distances.clone())?;
+    out.set_item("path", text)?;
+    out.set_item("labels", band.vertices.iter().map(|v| v.label.clone()).collect::<Vec<_>>())?;
+    out.set_item("special_points", special)?;
+    out.set_item("convention", &band.convention)?;
+    Ok(out)
+}
+
 /// The space group of the cell and the irreducible zone of the `size` mesh under it.
 #[pyfunction]
 #[pyo3(signature=(context, cell, positions, numbers, size, *, gamma=false, symprec=1e-5))]
@@ -153,6 +209,7 @@ pub fn irreducible_zone<'py>(
 
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(band_path, m)?)?;
+    m.add_function(wrap_pyfunction!(ase_band_path, m)?)?;
     m.add_function(wrap_pyfunction!(irreducible_zone, m)?)?;
     Ok(())
 }

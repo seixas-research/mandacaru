@@ -31,6 +31,7 @@ from mandacaru.workflows import qpe as qpe_module
 from mandacaru.core import PauliSum, load_checkpoint
 from mandacaru.utils import memory
 from mandacaru.units import HARTREE_TO_EV
+from mandacaru import _native
 
 
 @pytest.fixture(scope="module")
@@ -302,3 +303,50 @@ class TestPrecision:
             QuantumPhaseEstimation(precision=precision)
         with pytest.raises(ValueError, match="precision"):
             qpe_memory_estimate(4, 10, precision=precision)
+
+
+def _human(n_bytes):
+    value = float(n_bytes)
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB", "PiB"):
+        if value < 1024 or unit == "PiB":
+            return f"{value:.2f} {unit}" if unit != "B" else f"{int(value)} B"
+        value /= 1024
+    return f"{value:.2f} PiB"
+
+
+@pytest.mark.parametrize("n_bytes", [0, 1, 1023, 1024, 1536, 10 ** 6, 3 * 2 ** 30 // 2, 2 ** 50, 5 * 2 ** 60])
+def test_a_byte_count_prints_as_the_python_helper_did(n_bytes):
+    assert _native.human_bytes(n_bytes) == _human(n_bytes)
+
+
+def test_the_qpe_memory_report_is_the_old_estimate_with_its_totals():
+    for system, evaluation, precision in [(4, 10, "float64"), (4, 10, "float32"), (30, 20, "float64")]:
+        report = _native.qpe_memory_report(system, evaluation, 2 ** 33, None, precision)
+        amplitude = 16 if precision == "float64" else 8
+        assert report["statevector"] == amplitude * 2 ** (system + evaluation)
+        assert report["working"] == 3 * report["statevector"]
+        assert report["unitary"] == (16 * 4 ** system if system <= 12 else 0)
+        assert report["total"] == report["working"] + report["unitary"]
+        assert report["fraction"] == report["total"] / 2 ** 33
+        assert report["qubits"] == system + evaluation
+        assert report["gibibytes"] == 2 ** 33 / 2 ** 30
+    assert _native.qpe_memory_report(4, 10, 0)["fraction"] is None
+    with pytest.raises(ValueError):
+        _native.qpe_memory_report(0, 4, 1)
+
+
+def test_the_qpe_unitary_and_the_state_sizes_are_the_old_expressions():
+    for lo, hi in [(-3.2, 1.7), (0.0, 1.0), (-1.0e-3, 2.5)]:
+        shift, time = _native.qpe_unitary(lo, hi)
+        assert shift == -lo and time == -2.0 * np.pi / (hi - lo)
+    with pytest.raises(ValueError):
+        _native.qpe_unitary(1.0, 1.0)
+    for evaluation, system in [(1, 1), (3, 2), (8, 4)]:
+        width, wires = _native.qpe_layout(evaluation, system)
+        assert width == evaluation + system and wires == list(range(evaluation, evaluation + system))
+    for n in range(0, 12):
+        assert _native.state_qubits(2 ** n) == n
+    for size in (0, 3, 12, 100):
+        with pytest.raises(ValueError, match="needs 2\\^n amplitudes"):
+            _native.state_qubits(size)
+    assert _native.sign_phase(-1) == np.pi and _native.sign_phase(1) == 0.0

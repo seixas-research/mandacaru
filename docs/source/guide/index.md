@@ -15,6 +15,7 @@ native_engine
 dft
 dft_u
 excited_states
+real_time
 pseudopotentials
 basis_sets
 nao_ae

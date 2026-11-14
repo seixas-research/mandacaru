@@ -152,3 +152,38 @@ fn the_norm_of_a_stored_state_is_the_root_of_its_float64_inner_product() {
     assert_eq!(norm(&[num_complex::Complex32::new(3., 4.), num_complex::Complex32::new(0., 12.)]), 13.);
     assert_eq!(norm::<C64>(&[]), 0.);
 }
+
+#[test]
+fn the_qpe_unitary_shifts_by_minus_the_window_floor_and_runs_for_a_full_period() {
+    use mandacaru_core::quantum::dynamics::{qpe_layout, qpe_unitary, sign_phase, state_qubits};
+    let (shift, time) = qpe_unitary(-2.0, 0.5).unwrap();
+    assert_eq!(shift, 2.0);
+    assert_eq!(time, -2.0 * std::f64::consts::PI / 2.5);
+    assert!(qpe_unitary(1.0, 1.0).is_err() && qpe_unitary(f64::NAN, 1.0).is_err());
+    assert_eq!(qpe_layout(3, 2).unwrap(), (5, vec![3, 4]));
+    assert!(qpe_layout(0, 2).is_err());
+    assert_eq!(state_qubits(16).unwrap(), 4);
+    assert!(state_qubits(12).is_err() && state_qubits(0).is_err());
+    assert_eq!(sign_phase(-1.0), std::f64::consts::PI);
+    assert_eq!(sign_phase(1.0), 0.0);
+}
+
+#[test]
+fn an_exported_circuit_slices_the_time_and_phases_the_identity_part() {
+    let ctx = context();
+    let terms = [
+        ("ZI".to_string(), C64::new(0.5, 0.)),
+        ("XX".to_string(), C64::new(-0.25, 0.)),
+        ("II".to_string(), C64::new(0.75, 0.)),
+    ];
+    let p = Propagator::new(&ctx, 2, &terms, 2).unwrap();
+    let (constant, rotations) = p.schedule();
+    let (phase, angles) = p.circuit_plan(0.6, 3).unwrap();
+    assert_eq!(phase, -0.6 * constant);
+    assert_eq!(angles.len(), rotations.len());
+    for ((label, angle), (l, weight)) in angles.iter().zip(&rotations) {
+        assert_eq!(label, l);
+        assert_eq!(*angle, 0.6 * weight / 3.0);
+    }
+    assert!(p.circuit_plan(0.6, 0).is_err() && p.circuit_plan(f64::NAN, 1).is_err());
+}

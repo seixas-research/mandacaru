@@ -101,8 +101,9 @@ pub fn sites(fixture: &Value, library: &str) -> Value {
         .map(|z| {
             let symbol = symbol(z.as_u64().unwrap());
             let path = dataset_file(library, symbol);
+            let ctx = mandacaru_core::Context::new(Some(1), 1 << 30).unwrap();
             json!({"symbol": symbol, "file": path.to_str().unwrap(),
-                   "sha256": mandacaru_core::paw::digest::sha256_file(&path).unwrap()})
+                   "content_sha256": mandacaru_core::paw::digest::dataset_content_sha256(&ctx, &path).unwrap()})
         })
         .collect();
     json!({"centers": centers, "projector_basis": "raw", "datasets": datasets})

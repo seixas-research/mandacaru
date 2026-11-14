@@ -33,6 +33,7 @@ METHODS = {
     "vasqa": Capability(True, True, True, "fermionic"),
     "valsqa": Capability(True, True, True, "fermionic"),
 }
+from . import _native
 from ._native import FUNCTIONALS as _FUNCTIONALS
 from .resources import native_context
 
@@ -83,8 +84,6 @@ def basis_specification(value):
         split, tails = resolve_split_scheme(spec.get("zeta_split"))
         radius = spec.get("r_c")
         if radius is None:
-            from . import _native
-
             shift = float(spec.get("energy_shift", 0.03))
             if not shift > 0:
                 raise ValueError("energy_shift must be positive")
@@ -100,14 +99,12 @@ def basis_specification(value):
         )
     if name == "NAO-AE":
         from .models.radial import NAO_AE_DEFAULTS
-        from .units import ANGSTROM_TO_BOHR
 
         if set(spec) - NAO_AE_DEFAULTS.keys():
             raise TypeError(f"NAO-AE accepts {tuple(NAO_AE_DEFAULTS)}")
         result = dict(NAO_AE_DEFAULTS, **spec)
-        result["onset"] *= ANGSTROM_TO_BOHR
-        result["width"] *= ANGSTROM_TO_BOHR
-        result["wall_radius"] = result["onset"] + result["width"]
+        result["onset"], result["width"], result["wall_radius"] = _native.nao_ae_wall_radii(
+            result["onset"], result["width"])
         return dict(name=name, **result)
     if name in ("per_element", "gaussian"):
         return dict(name=name, **spec)
@@ -142,5 +139,5 @@ def estimate_qubits(atoms, *, basis="HAO", mapping="jordan_wigner", resources=No
         basis_spec=json.dumps(basis_specification(basis)),
     )
     return QubitEstimate(
-        2 * count - (2 if mapping == "parity_reduced" else 0), count, mapping
+        _native.register_qubits(mapping, _native.spin_orbital_count(count)), count, mapping
     )

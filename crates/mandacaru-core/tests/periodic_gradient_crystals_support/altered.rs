@@ -17,7 +17,7 @@ use mandacaru_core::{
     quantum::C64,
     Result,
 };
-use std::cell::RefCell;
+use std::sync::Mutex;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Wrong {
@@ -89,7 +89,7 @@ pub struct Altered<'a> {
     /// The crystal and the SCF options a hybrid variant re-diagonalizes with.
     hybrid: Option<(&'a Crystal, Options)>,
     /// The semilocal bands of the output density, formed by `fields`.
-    semilocal: RefCell<Vec<Vec<Bands>>>,
+    semilocal: Mutex<Vec<Vec<Bands>>>,
 }
 
 impl<'a> Altered<'a> {
@@ -113,7 +113,7 @@ impl<'a> Altered<'a> {
             layout,
             wrong,
             hybrid: None,
-            semilocal: RefCell::new(Vec::new()),
+            semilocal: Mutex::new(Vec::new()),
         }
     }
 
@@ -237,7 +237,7 @@ impl Derivatives for Altered<'_> {
                 .hybrid
                 .as_ref()
                 .expect("a hybrid variant needs Altered::hybrid");
-            *self.semilocal.borrow_mut() = semilocal_bands(crystal, state, q, options);
+            *self.semilocal.lock().unwrap() = semilocal_bands(crystal, state, q, options);
         }
         self.inner.fields(state, q)
     }
@@ -259,9 +259,9 @@ impl Derivatives for Altered<'_> {
         let hybrid = self.inner.bands(spin, k, fields, hubbard)?;
         let semilocal = |cache: &Vec<Vec<Bands>>| cache[spin][k].clone();
         Ok(match self.wrong {
-            Wrong::NoExchangeInBands => semilocal(&self.semilocal.borrow()),
+            Wrong::NoExchangeInBands => semilocal(&self.semilocal.lock().unwrap()),
             Wrong::SemilocalEigenvalues => Bands {
-                eigenvalues: semilocal(&self.semilocal.borrow()).eigenvalues,
+                eigenvalues: semilocal(&self.semilocal.lock().unwrap()).eigenvalues,
                 ..hybrid
             },
             _ => hybrid,

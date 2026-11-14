@@ -259,8 +259,8 @@ class QuantumEchoes:
         vt_psi = self._evolution._evolve(
             self._kick._apply_operator(forward), time, steps, inverse=True)
         amplitude = complex(*state_inner(psi, echo))
-        response = (state_inner(echo, self._kick._apply_operator(echo))[0]
-                    - state_inner(psi, v_psi)[0])
+        response = _native.difference(
+            state_inner(echo, self._kick._apply_operator(echo))[0], state_inner(psi, v_psi)[0])
         return QuantumEchoesResult(
             state=echo, amplitude=amplitude, fidelity=_native.modulus_squared(amplitude.real, amplitude.imag),
             response=response, correlation=complex(*state_inner(v_psi, vt_psi)),

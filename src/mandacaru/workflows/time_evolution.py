@@ -208,14 +208,12 @@ class SuzukiTrotter:
         time = _finite_real(time, "time")
         steps = _positive_integer(steps, "steps")
         circuit = QuantumCircuit(self.n_qubits)
-        constant, rotations = self._native.schedule()
-        circuit.global_phase = -time * constant
+        phase, angles = self._native.circuit_plan(time, steps)
+        circuit.global_phase = phase
         for _ in range(steps):
-            for label, weight in rotations:
+            for label, angle in angles:
                 circuit.append(
-                    PauliEvolutionGate(
-                        SparsePauliOp(label), time=time * weight / steps
-                    ),
+                    PauliEvolutionGate(SparsePauliOp(label), time=angle),
                     range(self.n_qubits),
                 )
         return circuit.inverse() if inverse else circuit

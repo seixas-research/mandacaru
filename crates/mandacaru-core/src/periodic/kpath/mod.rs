@@ -12,12 +12,14 @@
 //! Lengths are in whatever unit the cell is given; k-space distances come back in its inverse
 //! and include the factor `2 pi`.
 pub mod convention;
+pub mod interpolate;
 pub mod select;
 pub mod zone;
 
 use crate::periodic::invalid;
 use crate::Result;
 pub use convention::{convention, Convention};
+pub use interpolate::{interpolate, Interpolated};
 use nalgebra::{DMatrix, Matrix3};
 pub use select::{select, PathPoints};
 pub use zone::{irreducible_zone, Zone, AUDIT_TOLERANCE};

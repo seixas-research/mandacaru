@@ -297,33 +297,35 @@ pub fn rediagonalize(
             "one Hubbard matrix per spin channel for a DFT+U crystal, none otherwise",
         ));
     }
-    let mut eigenvalues = Vec::new();
-    let mut coefficients = Vec::new();
-    for s in 0..c.spins {
-        for (k, data) in c.points.iter().enumerate() {
-            // A spinor diagonalization takes every Pauli field channel at once, as `solve` does.
-            let local = if c.spinor {
-                fields.local.as_slice()
-            } else {
-                &fields.local.as_slice()[s * n..(s + 1) * n]
-            };
-            // A spinor's single spin block holds every Pauli channel of v_tau.
-            let kinetic = fields.kinetic.as_ref().map(|v| {
-                if c.spinor { v.as_slice() } else { &v.as_slice()[s * n..(s + 1) * n] }
-            });
-            let (eps, coefficient, _) = solver::diagonalize_with_exchange(
-                c,
-                data,
-                local,
-                fields.moments.as_slice(),
-                kinetic,
-                hubbard.get(s),
-                exchange.get(s * c.points.len() + k),
-            )?;
-            eigenvalues.push(eps);
-            coefficients.push(coefficient);
-        }
-    }
+    // One task per spin channel and k-point (`s * nk + k`) on the k-point lanes, each the serial
+    // diagonalization; the bands come back in that order, whatever the layout.
+    let nk = c.points.len();
+    let tasks = c.spins * nk;
+    let mut lanes = vec![(); c.context.lanes(crate::Level::Kpts, tasks)];
+    let solved = c.context.map_tasks(crate::Level::Kpts, &mut lanes, tasks, |_, idx| {
+        let (s, k) = (idx / nk, idx % nk);
+        // A spinor diagonalization takes every Pauli field channel at once, as `solve` does.
+        let local = if c.spinor {
+            fields.local.as_slice()
+        } else {
+            &fields.local.as_slice()[s * n..(s + 1) * n]
+        };
+        // A spinor's single spin block holds every Pauli channel of v_tau.
+        let kinetic = fields.kinetic.as_ref().map(|v| {
+            if c.spinor { v.as_slice() } else { &v.as_slice()[s * n..(s + 1) * n] }
+        });
+        let (eps, coefficient, _) = solver::diagonalize_with_exchange(
+            c,
+            &c.points[k],
+            local,
+            fields.moments.as_slice(),
+            kinetic,
+            hubbard.get(s),
+            exchange.get(idx),
+        )?;
+        Ok((eps, coefficient))
+    })?;
+    let (eigenvalues, coefficients): (Vec<_>, Vec<_>) = solved.into_iter().unzip();
     let weights: Vec<f64> = (0..c.spins)
         .flat_map(|_| c.points.iter().map(|p| p.weight))
         .collect();

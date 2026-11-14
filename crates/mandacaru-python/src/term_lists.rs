@@ -19,6 +19,12 @@ fn outward<K>(terms: Vec<(K, C64)>) -> Vec<(K, f64, f64)> {
 pub fn pauli_term_sum(terms: Vec<Pauli>) -> PyResult<Vec<Pauli>> {
     term_lists::sum(inward(terms)).map(outward).map_err(error)
 }
+/// The canonical digest of a Pauli sum (`term_lists::pauli_fingerprint`): 32 hex digits, the
+/// same for two sums that agree to `atol`.
+#[pyfunction]
+pub fn pauli_fingerprint(n_qubits: usize, terms: Vec<Pauli>, atol: f64) -> PyResult<String> {
+    term_lists::pauli_fingerprint(n_qubits, &inward(terms), atol).map_err(error)
+}
 /// Every coefficient times `real + i imaginary` (`term_lists::scale`).
 #[pyfunction]
 pub fn pauli_term_scale(terms: Vec<Pauli>, real: f64, imaginary: f64) -> PyResult<Vec<Pauli>> {

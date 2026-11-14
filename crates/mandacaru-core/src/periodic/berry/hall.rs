@@ -178,8 +178,8 @@ fn all_links(
         .map(|s| {
             let mut out: [Vec<DMatrix<C64>>; 3] = std::array::from_fn(|_| vec![]);
             for (d, links) in out.iter_mut().enumerate() {
-                for p in 0..lattice.points() {
-                    let at = lattice.indices(p);
+                for p in 0..lattice.mesh.points() {
+                    let at = lattice.mesh.indices(p);
                     if at.iter().any(|i| i % stride != 0) {
                         links.push(DMatrix::zeros(0, 0));
                         continue;
@@ -220,9 +220,9 @@ fn plane_numbers(
     };
     for c in 0..3 {
         let [a, b] = plane_axes(c)?;
-        let (na, nb) = (lattice.size[a] / stride, lattice.size[b] / stride);
+        let (na, nb) = (lattice.mesh.size[a] / stride, lattice.mesh.size[b] / stride);
         for s in 0..channels {
-            for layer in (0..lattice.size[c]).step_by(stride) {
+            for layer in (0..lattice.mesh.size[c]).step_by(stride) {
                 let mut point_levels = Vec::with_capacity(na * nb);
                 let mut point_occupations = Vec::with_capacity(na * nb);
                 let mut along_a = Vec::with_capacity(na * nb);
@@ -233,7 +233,7 @@ fn plane_numbers(
                         at[a] = i * stride;
                         at[b] = j * stride;
                         at[c] = layer;
-                        let p = lattice.index(at);
+                        let p = lattice.mesh.index(at);
                         point_levels.push(levels[s][p].clone());
                         point_occupations.push(occupations[s][p].clone());
                         along_a.push(links[s][a][p].clone());
@@ -299,7 +299,7 @@ pub fn intrinsic(sampler: &Sampler, size: [usize; 3]) -> Result<Hall> {
             })
             .collect();
         let rows: Vec<Vec<f64>> = levels.iter().flatten().cloned().collect();
-        let weights = vec![1. / lattice.points() as f64; rows.len()];
+        let weights = vec![1. / lattice.mesh.points() as f64; rows.len()];
         let mu = spectrum::fermi(&rows, &weights, c.electrons, smearing, width, full)?;
         let needed = rows
             .iter()
@@ -320,7 +320,7 @@ pub fn intrinsic(sampler: &Sampler, size: [usize; 3]) -> Result<Hall> {
             .flatten()
             .map(|e| full * smearing.occupation((e - mu) / width))
             .sum::<f64>()
-            / lattice.points() as f64
+            / lattice.mesh.points() as f64
     };
     let scf_electron_error = electrons_at(state.fermi) - c.electrons;
     let occupy = |e: &f64| full * smearing.occupation((e - mu) / width);

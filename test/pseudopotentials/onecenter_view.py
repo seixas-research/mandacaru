@@ -21,7 +21,7 @@ from mandacaru.pseudopotentials.multipoles import partial_waves
 from mandacaru.pseudopotentials.native_context import context
 
 #: Core orbitals of the re-solved reference atoms, keyed by the dataset file
-#: (``source``, ``source_sha256``): one solve per file and process.
+#: (``source``, ``content_sha256``): one solve per file and process.
 _CORE_ORBITALS: dict = {}
 
 
@@ -281,7 +281,7 @@ class OneCenterHybrid:
 
 def _dataset_file_key(dataset):
     source = getattr(dataset, "source", None)
-    digest = getattr(dataset, "source_sha256", None)
+    digest = getattr(dataset, "content_sha256", None)
     if source is None or digest is None:
         return None
     return (str(source), str(digest))
@@ -297,7 +297,7 @@ def core_orbitals(dataset) -> list:
     the aufbau split of that atom with the dataset's ``frozen_subshells``
     moved into the core and its ``semicore_subshells`` out of it.  Cached on
     the dataset and, for a dataset read from a file, per file
-    (``source``, ``source_sha256``).  The orbitals reproduce the stored
+    (``source``, ``content_sha256``).  The orbitals reproduce the stored
     ``core_density`` (``dataset._core_density_error`` records the
     difference, in electrons).
     """
@@ -518,3 +518,32 @@ class OneCenterExact:
             context(), np.ascontiguousarray(C, dtype=complex),
             np.ascontiguousarray(dC, dtype=complex), members, factors,
             not (np.iscomplexobj(C) or np.iscomplexobj(dC)))
+
+
+def paw_projectors(symbols, positions, datasets, units: str = "angstrom",
+                   projector_basis: str = None, *, real: bool = True):
+    """The :class:`~mandacaru.pseudopotentials.orbitals.KBProjector` set of the atoms: every
+    radial projector of every ``(atom, l, m)`` in the ``projector_basis`` of
+    ``PAWDataset.projector_set`` (each records it as ``projector_basis``), with real spherical
+    harmonics (a molecule) or complex ones (``real=False``, a crystal). A test scaffold: the
+    production builds run the projectors inside Rust."""
+    from mandacaru.pseudopotentials.orbitals import KBProjector
+    from mandacaru.pseudopotentials.paw import DEFAULT_PROJECTOR_BASIS
+
+    projector_basis = DEFAULT_PROJECTOR_BASIS if projector_basis is None else projector_basis
+    projectors = []
+    for index, (symbol, position) in enumerate(zip(symbols, positions)):
+        pp = datasets[symbol]
+        for l in range(8):
+            if l not in pp.projectors:
+                continue
+            functions, D, _q = pp.projector_set(l, projector_basis)
+            for m in range(-l, l + 1):
+                for i, p in enumerate(functions):
+                    projector = KBProjector(
+                        pp, l, m, center=position, units=units,
+                        atom_index=index, index=i, radial=p,
+                        kb_energy=float(D[i, i]), real=real)
+                    projector.projector_basis = projector_basis
+                    projectors.append(projector)
+    return projectors

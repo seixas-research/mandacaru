@@ -53,6 +53,18 @@ impl Propagator {
         (self.constant, rotations)
     }
 
+    /// What an exported circuit of `steps` slices of `time` is made of: the global phase
+    /// `-time constant` of the identity part and, for one slice, each ordered Pauli rotation as
+    /// `(label, time weight / steps)`; the circuit repeats the slice `steps` times.
+    pub fn circuit_plan(&self, time: f64, steps: usize) -> Result<(f64, Vec<(String, f64)>)> {
+        if steps == 0 || !time.is_finite() {
+            return Err(invalid("a circuit needs a finite time and at least one step"));
+        }
+        let (constant, rotations) = self.schedule();
+        let angles = rotations.into_iter().map(|(label, weight)| (label, time * weight / steps as f64)).collect();
+        Ok((-time * constant, angles))
+    }
+
     pub fn new(ctx: &Context, n: usize, terms: &[(String, C64)], order: usize) -> Result<Self> {
         if order != 1 && (order == 0 || order % 2 != 0) {
             return Err(invalid("order must be 1 or a positive even integer"));
@@ -378,6 +390,51 @@ pub struct QpeMemory {
     pub working: u128,
     pub unitary: u128,
     pub dense: bool,
+}
+
+impl QpeMemory {
+    /// The bytes a run claims: the working set and the dense unitary (the state is part of it).
+    pub fn total(&self) -> u128 {
+        self.working + self.unitary
+    }
+}
+
+/// `(shift, time)` of the unitary `exp(-i time (H + shift))` whose phases read the energies of
+/// the window `[lo, hi]`: the Hamiltonian is shifted by `-lo` and evolved for `-2 pi / (hi - lo)`,
+/// so an energy `E` has the phase `(E - lo) / (hi - lo)`.
+pub fn qpe_unitary(lo: f64, hi: f64) -> Result<(f64, f64)> {
+    if !lo.is_finite() || !hi.is_finite() || hi <= lo {
+        return Err(invalid("the QPE window must be finite with hi above lo"));
+    }
+    Ok((-lo, -2.0 * std::f64::consts::PI / (hi - lo)))
+}
+
+/// `(width, system wires)` of a QPE circuit of `evaluation` evaluation qubits and `system` system
+/// qubits: the evaluation register first, then the system register on the wires after it.
+pub fn qpe_layout(evaluation: usize, system: usize) -> Result<(usize, Vec<usize>)> {
+    if evaluation == 0 || system == 0 {
+        return Err(invalid("need at least one system and one evaluation qubit"));
+    }
+    let width = evaluation.checked_add(system).ok_or(Error::Overflow)?;
+    Ok((width, (evaluation..width).collect()))
+}
+
+/// The qubits of a state vector of `amplitudes` entries: `n` for `2^n`; any other length raises.
+pub fn state_qubits(amplitudes: usize) -> Result<usize> {
+    if amplitudes == 0 || !amplitudes.is_power_of_two() {
+        return Err(Error::Invalid(format!("a state vector needs 2^n amplitudes, got {amplitudes}")));
+    }
+    Ok(amplitudes.trailing_zeros() as usize)
+}
+
+/// The global phase of a Pauli string with the real sign `sign`: `pi` for a negative sign (the
+/// string multiplies the state by `-1 = exp(i pi)`), else zero.
+pub fn sign_phase(sign: f64) -> f64 {
+    if sign < 0. {
+        std::f64::consts::PI
+    } else {
+        0.
+    }
 }
 
 /// Size a QPE simulation before allocating anything: `amplitude_bytes 2^(n+t)` for the state,

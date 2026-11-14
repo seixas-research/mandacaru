@@ -22,7 +22,7 @@ fn label(key: &Key) -> String {
     }
 }
 
-fn diagnosis_dict<'py>(py: Python<'py>, d: &Diagnosis) -> PyResult<Bound<'py, PyDict>> {
+pub(crate) fn diagnosis_dict<'py>(py: Python<'py>, d: &Diagnosis) -> PyResult<Bound<'py, PyDict>> {
     let out = PyDict::new(py);
     out.set_item("ghosts", d.ghosts.clone())?;
     let scalar = PyDict::new(py);
@@ -100,7 +100,9 @@ fn paw_diagnose<'py>(
         Err(diagnose::Error::Failed(failure)) => return Err(error(failure)),
     };
     if levels {
-        out.set_item("levels", ghost_levels(py, ctx, &dataset)?)?;
+        let (spectra, errors) = ghost_levels_and_errors(py, ctx, &dataset)?;
+        out.set_item("levels", spectra)?;
+        out.set_item("level_errors", errors)?;
     }
     Ok(out)
 }
@@ -112,24 +114,56 @@ fn ghost_levels<'py>(
     ctx: &mandacaru_core::Context,
     dataset: &mandacaru_core::paw::record::PawDataset,
 ) -> PyResult<Bound<'py, PyDict>> {
+    Ok(ghost_levels_and_errors(py, ctx, dataset)?.0)
+}
+
+/// `({l: levels}, {l: eps_0 - reference energy 0})`: the levels the ghost test reads and how far
+/// the lowest one lies from the channel's first reference energy.
+fn ghost_levels_and_errors<'py>(
+    py: Python<'py>,
+    ctx: &mandacaru_core::Context,
+    dataset: &mandacaru_core::paw::record::PawDataset,
+) -> PyResult<(Bound<'py, PyDict>, Bound<'py, PyDict>)> {
     let all = py
-        .detach(|| -> mandacaru_core::Result<Vec<(usize, Vec<f64>)>> {
+        .detach(|| -> mandacaru_core::Result<Vec<(usize, Vec<f64>, f64)>> {
             let smooth = Smooth::scalar(ctx, dataset)?;
             smooth
                 .angular_momenta()
                 .into_iter()
                 .map(|l| {
                     let channel = smooth.channel(l).expect("listed channel");
-                    Ok((l, diagnose::spectrum::ghost_levels(ctx, &smooth, channel)?))
+                    let levels = diagnose::spectrum::ghost_levels(ctx, &smooth, channel)?;
+                    let error = levels[0] - channel.energies[0];
+                    Ok((l, levels, error))
                 })
                 .collect()
         })
         .map_err(error)?;
-    let spectra = PyDict::new(py);
-    for (l, values) in all {
+    let (spectra, errors) = (PyDict::new(py), PyDict::new(py));
+    for (l, values, difference) in all {
         spectra.set_item(l, values)?;
+        errors.set_item(l, difference)?;
     }
-    Ok(spectra)
+    Ok((spectra, errors))
+}
+
+/// The radius beyond which each channel's projectors vanish and its smooth wave obeys the
+/// all-electron equation again, `{l: radius}`: the channel's own cutoff or the local potential's
+/// when that is larger (`view::Channel::projector_radius`).
+#[pyfunction]
+fn paw_projector_radii<'py>(
+    context: PyRef<'_, PyContext>,
+    py: Python<'py>,
+    payload: &str,
+    tables: &Bound<'py, PyDict>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let smooth = smooth_of(&context.inner, payload, tables)?;
+    let radii = PyDict::new(py);
+    for l in smooth.angular_momenta() {
+        let channel = channel_of(&smooth, l)?;
+        radii.set_item(l, channel.projector_radius(smooth.r_cut_local))?;
+    }
+    Ok(radii)
 }
 
 /// The ghost-test levels of every channel of a record (no all-electron atom needed).
@@ -333,11 +367,40 @@ fn paw_quality<'py>(
     Ok(out)
 }
 
+/// The `j` splitting of every spin-orbit channel of a Dirac record through the engine's operator in
+/// its DZP basis (`paw::engine_spin_orbit`) next to the all-electron Dirac one of the record:
+/// `{l: {"engine", "dirac", "state", "passes"}}`, Hartree. `passes` is gate G13 (2 percent or 10 meV).
+#[pyfunction]
+fn paw_spin_orbit_splittings<'py>(
+    context: PyRef<'_, PyContext>,
+    py: Python<'py>,
+    payload: &str,
+    tables: &Bound<'py, PyDict>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let ctx = &context.inner;
+    let dataset = paw_record::import(ctx, payload, tables)?;
+    let found = py
+        .detach(|| mandacaru_core::paw::engine_spin_orbit::splittings(ctx, &dataset))
+        .map_err(error)?;
+    let out = PyDict::new(py);
+    for s in found {
+        let row = PyDict::new(py);
+        row.set_item("engine", s.engine)?;
+        row.set_item("dirac", s.dirac)?;
+        row.set_item("state", s.state)?;
+        row.set_item("passes", s.passes())?;
+        out.set_item(s.l, row)?;
+    }
+    Ok(out)
+}
+
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(paw_quality, m)?)?;
     m.add_function(wrap_pyfunction!(paw_diagnose, m)?)?;
     m.add_function(wrap_pyfunction!(paw_levels, m)?)?;
     m.add_function(wrap_pyfunction!(paw_ghost_levels, m)?)?;
+    m.add_function(wrap_pyfunction!(paw_projector_radii, m)?)?;
+    m.add_function(wrap_pyfunction!(paw_spin_orbit_splittings, m)?)?;
     m.add_function(wrap_pyfunction!(paw_intruding_s_miss, m)?)?;
     m.add_function(wrap_pyfunction!(paw_spectrum_box, m)?)?;
     m.add_function(wrap_pyfunction!(paw_reference_atom, m)?)?;

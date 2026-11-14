@@ -171,7 +171,9 @@ inside it) keeps the same member of it every time: the one the frame puts at tha
 position. Mean-field energies and forces are unchanged; only the orbitals the
 ansatz is built on are fixed.
 
-What stays arbitrary, because the frame does not cover it:
+What stays arbitrary, because the frame does not cover it (on a restricted or
+unrestricted reference, an active space that splits an exactly degenerate group of
+such orbitals is guarded, below):
 
 * a `ghf` reference and spinor states (every Kramers pair is a cluster, which
   needs a spin-aware operator);
@@ -182,6 +184,29 @@ What stays arbitrary, because the frame does not cover it:
   raises: the Hamiltonian or the active space is refused, since a truncated
   ansatz on it would depend on the eigensolver's round-off. The same holds for
   an orbital to which none of the fixed functionals gives a sign.
+
+**An active space that splits a group the frame does not fix.** On a supercell
+of a crystal exactly degenerate orbitals are generic (the `+-k` pairs of a
+k-point mesh), and there nothing fixes which members of a group the SCF returned.
+Where the frame does not cover a restricted or unrestricted reference, the
+partition of the orbitals into frozen, active and deleted is checked against the
+exactly degenerate groups (labels within 1e-8), and a partition that splits a
+group is guarded:
+
+* the energy run still works, and its run log carries a `warning` line in the
+  `[ACTIVE SPACE]` block naming each split group and the orbitals of it that are
+  frozen, active and deleted ([the run log](../reference/run_log.md)): the energy
+  depends on the eigensolver's choice among the members;
+* the force is refused with `NotImplementedError`, because a finite difference
+  of such an energy is not a derivative ([crystals](bloch.md)); an analytic
+  variational force on a molecule whose reference the frame does not cover is
+  refused the same way.
+
+The remedy is an active space that keeps each group whole: choose the counts
+or indices so that the cut falls between groups. A molecule on a restricted or unrestricted aufbau reference keeps the
+deterministic cut described above and is never refused for it. The check
+compares the partition with the groups; it does not test whether a truncated
+ansatz keeps a kept-whole group's symmetry.
 
 The analytic force of a truncated ansatz has one known limitation on an
 unrestricted reference ([the forces guide](#forces-variational)).

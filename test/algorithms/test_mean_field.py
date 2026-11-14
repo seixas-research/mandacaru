@@ -159,7 +159,7 @@ def test_classical_options_cannot_silently_request_quantum_work(option):
     {"seed": 3}, {"max_length": 5}, {"min_length": 1}, {"temperature": 0.05},
     {"length_penalty": 0.01}, {"warm_start": False}, {"replace_start": "inherit"},
     {"proposal_temperature": 0.5}, {"proposal": "uniform"},
-    {"move_weights": {"insert": 1.0}}])
+    {"move_weights": {"insert": 1.0}}, {"replicas": 2}, {"replica_spacing": 3.0}])
 def test_search_controls_are_refused_outside_the_search_methods(method, option):
     """These steer the architecture search of vasqa and valsqa only."""
     with pytest.raises(ValueError, match="does not use"):

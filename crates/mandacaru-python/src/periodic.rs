@@ -186,19 +186,6 @@ impl PyCrystal {
         self.inner.time_reversal
     }
     #[getter]
-    fn centers(&self) -> Option<Vec<[f64; 3]>> {
-        self.setup.as_ref().map(|s| s.centers.clone())
-    }
-    #[getter]
-    fn channel_labels(&self) -> Option<Vec<[i64; 3]>> {
-        self.setup.as_ref().map(|s| {
-            s.channels
-                .iter()
-                .map(|&(a, l, m)| [a as i64, l as i64, m as i64])
-                .collect()
-        })
-    }
-    #[getter]
     fn kpoints(&self) -> Option<Vec<[f64; 3]>> {
         self.setup.as_ref().map(|s| s.kpoints_cart.clone())
     }
@@ -308,6 +295,7 @@ impl PyCrystal {
             inner: Arc::new(inner),
             crystal: self.inner.clone(),
             setup: self.setup.clone(),
+            response: std::sync::OnceLock::new(),
         })
     }
     #[pyo3(signature=(result, *,alphas=None))]
@@ -393,6 +381,19 @@ pub struct PyPeriodicResult {
     pub inner: Arc<PeriodicResult>,
     pub crystal: Arc<Crystal>,
     pub setup: Option<Arc<mandacaru_core::periodic::setup::PeriodicSetup>>,
+    /// The geometry, quadrature and frozen state a force and a stress of this result share, formed
+    /// by the first of them.
+    response: std::sync::OnceLock<mandacaru_core::periodic::response::Response>,
+}
+
+impl PyPeriodicResult {
+    fn response(&self) -> mandacaru_core::Result<&mandacaru_core::periodic::response::Response> {
+        if let Some(response) = self.response.get() {
+            return Ok(response);
+        }
+        let response = mandacaru_core::periodic::response::Response::new(&self.crystal)?;
+        Ok(self.response.get_or_init(|| response))
+    }
 }
 
 impl Drop for PyPeriodicResult {
@@ -440,23 +441,45 @@ impl PyPeriodicResult {
         }
         Ok(out)
     }
-    fn wannier_setup(
+    /// Maximally localized Wannier functions of the converged crystal, as `request_json` asks
+    /// (`size`, `trials`, `n_functions`, `windows` in Hartree, `bands`). The mesh frames, the
+    /// PAW geometry and the localization are native; a crystal loaded from a snapshot (no setup)
+    /// raises `NotImplementedError`.
+    #[pyo3(signature=(request_json, *, max_iterations=2000, tolerance=1e-10, step=0.5))]
+    fn wannier(
         &self,
         py: Python<'_>,
-        metadata_json: &str,
-    ) -> PyResult<super::wannier::PyWannierSetup> {
+        request_json: &str,
+        max_iterations: usize,
+        tolerance: f64,
+        step: f64,
+    ) -> PyResult<super::wannier::PyWannierResult> {
+        let setup = self.setup.clone().ok_or_else(|| {
+            pyo3::exceptions::PyNotImplementedError::new_err(
+                "Wannier functions need states on a full k mesh, which only the native periodic \
+                 setup makes; a crystal loaded from a snapshot has none",
+            )
+        })?;
+        let options = mandacaru_core::periodic::wannier::Options {
+            max_iterations,
+            tolerance,
+            step,
+            ..Default::default()
+        };
+        let (crystal, state) = (self.crystal.clone(), self.inner.clone());
         let inner = py
             .detach(|| {
-                mandacaru_core::periodic::wannier::setup::Setup::from_json(
-                    self.crystal.clone(),
-                    self.inner.clone(),
-                    metadata_json,
+                mandacaru_core::periodic::wannier::setup::Wannier::build(
+                    crystal,
+                    state,
+                    setup,
+                    request_json,
+                    &options,
                 )
             })
             .map_err(error)?;
-        Ok(super::wannier::PyWannierSetup {
-            inner: Some(inner),
-            setup: self.setup.clone(),
+        Ok(super::wannier::PyWannierResult {
+            inner: Arc::new(inner),
         })
     }
     /// The analytic force `-dF/dtau` per atom, Hartree/Bohr, shape `(n_atoms, 3)`, of the
@@ -464,7 +487,7 @@ impl PyPeriodicResult {
     /// `NotImplementedError` naming the cause for everything the engine does not differentiate.
     fn forces<'py>(&self, py: Python<'py>) -> PyResult<Array<'py, f64>> {
         let forces = py
-            .detach(|| mandacaru_core::periodic::response::forces(&self.crystal, &self.inner))
+            .detach(|| self.response()?.forces(&self.crystal, &self.inner))
             .map_err(error)?;
         array(
             py,
@@ -473,18 +496,17 @@ impl PyPeriodicResult {
         )
     }
     /// The analytic stress at the pins of the crystal, Hartree/Bohr^3: `sigma = (g + g^T) / (2 Omega)`
-    /// with `g_ab = dF/d eps_ab` (`gradient`, Hartree, unsymmetrized), the antisymmetric part
-    /// `(g - g^T) / 2` (Hartree, a diagnostic) and the cell `volume` (Bohr^3). The 3x3 arrays are
-    /// row-major `[a][b]`; the Voigt order and units are the Python caller's.
+    /// with `g_ab = dF/d eps_ab` (`gradient`, Hartree, symmetrized and averaged over the point group
+    /// of the mesh) and the cell `volume` (Bohr^3). The 3x3 arrays are row-major `[a][b]`; the
+    /// Voigt order and units are the Python caller's.
     fn stress<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let stress = py
-            .detach(|| mandacaru_core::periodic::response::stress(&self.crystal, &self.inner))
+            .detach(|| self.response()?.stress(&self.crystal, &self.inner))
             .map_err(error)?;
         let out = PyDict::new(py);
         for (name, tensor) in [
             ("sigma", stress.sigma),
             ("gradient", stress.gradient),
-            ("antisymmetric", stress.antisymmetric),
         ] {
             out.set_item(
                 name,
@@ -520,6 +542,32 @@ impl PyPeriodicResult {
         bands: Option<(usize, usize)>,
     ) -> PyResult<Bound<'py, PyDict>> {
         super::berry::berry_curvature(self, py, normal, size, offset, bands)
+    }
+    /// The Wannier-center flow of the plane normal to `G_normal` at the fractional `offset`, with
+    /// strings along `G_direction` of the mesh `size` (`periodic::berry::flow`).
+    #[pyo3(signature=(normal, direction, size, *, offset=0.0, bands=None))]
+    fn wannier_flow<'py>(
+        &self,
+        py: Python<'py>,
+        normal: usize,
+        direction: usize,
+        size: [usize; 3],
+        offset: f64,
+        bands: Option<(usize, usize)>,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        super::berry::wannier_flow(self, py, normal, direction, size, offset, bands)
+    }
+    /// The Z2 indices `(nu_0; nu_1 nu_2 nu_3)` of the occupied bands, from the Wannier-center flows
+    /// of the six time-reversal-invariant planes (`method="flow"`, `periodic::berry::flow`) or the
+    /// Fu-Kane parity product (`method="parity"`, `periodic::berry::parity`).
+    #[pyo3(signature=(size, *, method="flow"))]
+    fn z2_invariant<'py>(
+        &self,
+        py: Python<'py>,
+        size: [usize; 3],
+        method: &str,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        super::berry::z2_invariant(self, py, size, method)
     }
     /// The Berry-phase polarization of an insulator from the string mesh `size`
     /// (`periodic::berry::polarization`), e/Bohr^2.

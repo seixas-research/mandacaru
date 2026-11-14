@@ -6,7 +6,7 @@ use super::{
 };
 use crate::{
     math::linalg::eigen,
-    periodic::{Crystal, PeriodicResult},
+    periodic::{bloch_mesh::MeshIndex, Crystal, PeriodicResult},
     product,
     quantum::C64,
     Buffer, Context, Reservation, Result,
@@ -27,6 +27,11 @@ pub struct Channel {
     pub density_bvk: Buffer<C64>,
     pub hoppings: Hoppings,
     pub size: [usize; 3],
+    /// `[n * trials + m]`: `|<w_n0|g_m>|^2`, the weight of the trial orbital `m` (normalized,
+    /// smooth part of the states, no one-center term) in the home-cell function `n`. The trial
+    /// order is the one that seeded the gauge, but a localized function need not keep its
+    /// trial's character: select functions by these weights, not by index.
+    pub trial_weights: Vec<f64>,
 }
 pub struct Hoppings {
     pub vectors: Buffer<[i32; 3]>,
@@ -35,9 +40,13 @@ pub struct Hoppings {
 }
 pub struct Localization<'a> {
     pub size: [usize; 3],
-    pub augmentation: &'a Augmentation,
+    pub augmentation: &'a Augmentation<'a>,
     pub trials: &'a [Trial],
     pub windows: Option<&'a Windows>,
+    /// Reciprocal lattice vectors `G_j` as columns (1/Bohr).
+    pub reciprocal: Matrix3<f64>,
+    /// Refuse a subspace with a Chern number ([`super::chern_guard`]) before localizing it.
+    pub chern_guard: bool,
 }
 
 /// Rectangular polar factor, with explicit rank validation. Singular trials
@@ -70,6 +79,8 @@ pub fn localize_channel(
         augmentation,
         trials,
         windows,
+        reciprocal,
+        chern_guard,
     } = settings;
     let ctx = &c.context;
     let mesh = sampling::overlap_mesh(c, &frames, size, augmentation)?;
@@ -121,7 +132,6 @@ pub fn localize_channel(
             &mesh,
             &projections,
             &masks,
-            None,
             &disentangle::Options::default(),
         )?;
         let initial = selected
@@ -141,9 +151,39 @@ pub fn localize_channel(
             true,
         )
     };
+    if chern_guard {
+        // The Chern number is a property of the subspace, so the initial gauge serves.
+        let index = MeshIndex::new(size, [0.; 3])?;
+        let mut along = Vec::with_capacity(frames.len());
+        for k in 0..frames.len() {
+            let mut row: [Option<Matrix>; 3] = [None, None, None];
+            for (j, slot) in row.iter_mut().enumerate() {
+                if size[j] < 2 {
+                    continue;
+                }
+                let next = index.advance(k, j, 1);
+                let b: [f64; 3] = (reciprocal.column(j) / size[j] as f64).into();
+                let link = sampling::link(c, &frames[k], &frames[next], b, augmentation)?;
+                *slot = Some(initial[k].adjoint() * link * &initial[next]);
+            }
+            along.push(row);
+        }
+        super::chern_guard(&index, &along)?;
+    }
     let centers = trials.iter().map(|t| t.center).collect::<Vec<_>>();
     let localized = localize(ctx, &mesh, &initial, Some(&centers), options)?;
     drop(mesh);
+    // <w_n0|g_m> = (1/N) sum_k (U_k^+ A_k)_nm, A_k the projections of the Bloch states on the
+    // Bloch sums of the trials (both normalized).
+    let mut overlap = Matrix::zeros(functions, trials.len());
+    for (gauge, projection) in localized.gauge.iter().zip(&projections) {
+        overlap += gauge.adjoint() * projection;
+    }
+    let trial_weights = overlap
+        .transpose()
+        .iter()
+        .map(|v| v.norm_sqr() / (frames.len() * frames.len()) as f64)
+        .collect();
     let n = product(&size)?;
     let count = product(&[n, functions, functions])?;
     let mut hk = ctx.allocate::<C64>(count)?;
@@ -196,6 +236,7 @@ pub fn localize_channel(
         density_bvk,
         hoppings,
         size,
+        trial_weights,
     })
 }
 

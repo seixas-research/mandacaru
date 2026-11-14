@@ -23,6 +23,11 @@ recorded with ``--ratchet``):
 ``math``    ``math``/``cmath`` calls, bare names from ``from math import ...``
             included; constants and ``isfinite`` are plumbing
 ``ctypes``  ctypes, cffi, numba and jax imports
+``ase``     ASE numeric calls: ``neighbor_list``, ``get_scaled_positions``,
+            ``cell.reciprocal``, ``cell.bandpath``, ``repeat`` (the supercell),
+            ``get_volume``, ``cellpar``, ``get_center_of_mass``, ``get_distances``
+            and the other geometry measures of ``Atoms``/``Cell``. The geometry
+            is computed in Rust and handed to ASE as numbers
 ``dyn``     eval/exec/compile/``__import__``, ``importlib.import_module`` (a
             relative or ``mandacaru`` name is a package import, not evasion),
             ``globals()``/``vars()``/``sys.modules`` indexing, a bare
@@ -35,10 +40,30 @@ recorded with ``--ratchet``):
             non-literal argument
 ``imp``     zero tier only: an import outside the allowlist
 
-Soft counters (zero tier, exact in the same way): ``aloops``/``acomp`` (loops
-and comprehensions that only do operator arithmetic), ``arith`` (operator
-arithmetic outside strings and unit conversions), ``arithmax`` (the largest
+Soft counters (exact in the same way, in EVERY tier): ``aloops``/``acomp``
+(loops and comprehensions that only do ``* / ** // %``), ``arith`` (those
+operators on data; a multiplication by a unit constant counts too, because a
+unit conversion is ``_native.to_user_units``; ``[0.0] * n`` repeats a list display
+and is not arithmetic), ``arithmax`` (the largest
 ``arith`` of one function) and ``sloc`` (code lines, docstrings excluded).
+
+Numeric-test counters (soft, added 2026-11-13, every tier). They count what the
+arithmetic of a physical quantity looks like, never identity, membership or the
+test of a name against a string, ``None`` or a boolean:
+
+``addsub``  ``+`` and ``-`` (augmented too) unless an operand is a string, an
+            f-string, a list/tuple/set/dict literal or comprehension, or the
+            call of a string or collection producer (``str``, ``list``,
+            ``tuple``, ``.join``, ``.format`` ...): concatenation is not a sum
+``neg``     unary minus of anything but a literal (``-1`` is a constant)
+``cmp``     an ordering comparison (``< <= > >=``) unless an operand is a
+            string, a tuple or ``None``; ``==``/``!=`` only against a numeric
+            literal (``x != 0``). ``is``, ``in`` and tests against ``None``,
+            booleans and strings never count
+``tern``    a conditional expression whose test or branches hold a counted
+            arithmetic, negation or comparison (``a if a > b else b``)
+``nloops``  loops and comprehensions whose body holds a counted ``addsub``,
+            ``neg``, ``cmp`` or ``tern`` and no counted data operation
 
 An unlisted module of the zero tier is budgeted at zero on every counter,
 ``sloc`` included, so a new file needs a row. A tier A or Q module is
@@ -71,14 +96,21 @@ PACKAGE = ROOT / "src/mandacaru"
 BUDGET = ROOT / "test/architecture/python_numerics_budget.toml"
 BUDGET_RELATIVE = "test/architecture/python_numerics_budget.toml"
 
-HARD_COMMON = ("np", "scipy", "matmul", "meth", "math", "ctypes", "dyn", "dloops", "dcomp")
+HARD_COMMON = ("np", "scipy", "matmul", "meth", "math", "ctypes", "dyn", "dloops", "dcomp", "ase")
 HARD_ZERO = HARD_COMMON + ("bi", "imp")
-SOFT_ZERO = ("aloops", "acomp", "arith", "arithmax", "sloc")
+NUMERIC_TESTS = ("addsub", "neg", "cmp", "tern", "nloops")
+SOFT_ZERO = ("aloops", "acomp", "arith", "arithmax") + NUMERIC_TESTS + ("sloc",)
+# Every counter is enforced in every tier: a module of tier A or Q is held to the same
+# measurement as one of the zero tier, and differs only in having no date to die by.
 TIER_KEYS = {
     "zero": HARD_ZERO + SOFT_ZERO,
-    "a": HARD_COMMON,
-    "q": HARD_COMMON,
+    "a": HARD_ZERO + SOFT_ZERO,
+    "q": HARD_ZERO + SOFT_ZERO,
 }
+# The counters the committed budget did not yet have: a row compared with a budget of an older
+# gate version is not "looser" because it lists them (see :func:`monotone`).
+GATE_VERSION = 2
+NEW_COUNTERS = ("ase",) + NUMERIC_TESTS
 # An undated row of the zero tier must stay in one of these closed categories
 # and must show none of the hard counters (after its [[exception]] waivers).
 CLOSED_CATEGORIES = ("validation", "hand-off", "unit", "result-view", "log-table")
@@ -86,12 +118,12 @@ CLEAN_COUNTERS = HARD_ZERO
 ROW_FIELDS = ("category", "wave", "dies", "allow_imports")
 # An exception waives the additive counters of one function; the maximum and
 # the line count of a module are not additive.
-WAIVABLE = HARD_ZERO + ("aloops", "acomp", "arith")
+WAIVABLE = HARD_ZERO + ("aloops", "acomp", "arith") + NUMERIC_TESTS
 # A closed-category exception (validation, hand-off, unit, result-view,
 # log-table) is the scalar helper of an option check or a printed table, so it
 # may waive only these. np, scipy, matmul, meth, math, ctypes, dyn and imp need
 # a dated exception.
-CLOSED_WAIVABLE = ("bi", "dloops", "dcomp", "aloops", "acomp", "arith")
+CLOSED_WAIVABLE = ("bi", "dloops", "dcomp", "aloops", "acomp", "arith") + NUMERIC_TESTS
 # In the zero tier no exception, dated or not, waives these: an evasion route
 # (dyn) or an import outside the allowlist (a row's allow_imports names it).
 NEVER_WAIVABLE_ZERO = ("dyn", "imp")
@@ -140,7 +172,30 @@ ARITHMETIC = (ast.Mult, ast.Div, ast.Pow, ast.FloorDiv, ast.Mod)
 # ase submodules that are data tables or API, not numerics. ase.geometry,
 # ase.neighborlist and ase.spacegroup are numerics: they are not here.
 ASE_ALLOWED = ("ase.atoms", "ase.io", "ase.units", "ase.data", "ase.calculators", "ase.spectrum")
+# A module of ASE that computes (the k-point routines) of which only a container may be imported:
+# ``BandPath`` is what a ``BandStructure`` needs, the k-path itself is the engine's. Any other
+# name of it scores as an import outside the allowlist.
+ASE_NAME_ALLOWED = {"ase.dft.kpoints": frozenset({"BandPath"})}
 ASE_NAMES = frozenset({"Atoms", "io", "units", "data", "calculators", "spectrum"})
+# Methods of an ``Atoms``, a ``Cell`` and the neighbor-list module that compute geometry.
+ASE_NUMERIC_METHODS = frozenset(
+    {
+        "neighbor_list", "get_scaled_positions", "reciprocal", "bandpath", "repeat",
+        "get_volume", "cellpar", "get_center_of_mass", "get_distances", "get_all_distances",
+        "get_angle", "get_dihedral", "get_moments_of_inertia", "scaled_positions",
+        "complete", "standard_form", "minkowski_reduce", "niggli_reduce",
+    }
+)
+# ``repeat`` is also a numpy and itertools function: those receivers are not ASE.
+NOT_ASE_RECEIVERS = frozenset({"itertools", "np", "numpy", "it"})
+# A call of one of these yields a string or a collection: ``+`` on it concatenates.
+CONCATENATION_CALLS = frozenset(
+    {"str", "repr", "format", "list", "tuple", "set", "dict", "frozenset", "sorted", "bytes",
+     "join", "strip", "lstrip", "rstrip", "lower", "upper", "title", "replace", "split",
+     "splitlines", "tolist", "keys", "values", "items", "encode", "decode", "hexdigest",
+     "rjust", "ljust", "center", "name", "basename", "dirname", "resolve", "with_suffix",
+     "get_chemical_symbols", "get_positions"}
+)
 STDLIB = frozenset(sys.stdlib_module_names)
 
 
@@ -186,21 +241,46 @@ def is_literal(node):
     return False
 
 
-def unit_names(package):
-    """Public names of ``units.py``: converting by them is not numerics."""
-    path = Path(package) / "units.py"
-    names = set()
-    if path.is_file():
-        for node in ast.parse(path.read_text(encoding="utf-8")).body:
-            if isinstance(node, ast.Assign):
-                names.update(
-                    t.id for t in node.targets
-                    if isinstance(t, ast.Name) and not t.id.startswith("_")
-                )
-            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                if not node.name.startswith("_"):
-                    names.add(node.name)
-    return frozenset(names)
+def is_sequence_literal(node):
+    """A list, tuple, set or dict display or a comprehension: ``+`` on it concatenates."""
+    return isinstance(
+        node,
+        (ast.List, ast.Tuple, ast.Set, ast.Dict, ast.ListComp, ast.SetComp, ast.DictComp,
+         ast.GeneratorExp, ast.Starred),
+    )
+
+
+def produces_text_or_collection(node):
+    """Whether ``node`` is a string, a collection display or the call of a producer of one."""
+    if is_string(node) or is_sequence_literal(node):
+        return True
+    if isinstance(node, ast.Call):
+        func = node.func
+        name = func.id if isinstance(func, ast.Name) else getattr(func, "attr", None)
+        return name in CONCATENATION_CALLS
+    if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Add, ast.Mod)):
+        return produces_text_or_collection(node.left) or produces_text_or_collection(node.right)
+    return False
+
+
+def numeric_literal(node):
+    """An int, float or complex constant (a boolean is not a number here), possibly negated."""
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.USub, ast.UAdd)):
+        return numeric_literal(node.operand)
+    return (
+        isinstance(node, ast.Constant)
+        and isinstance(node.value, (int, float, complex))
+        and not isinstance(node.value, bool)
+    )
+
+
+def non_numeric_side(node):
+    """A string, bytes, tuple, list, ``None`` or Ellipsis: not an operand of a numeric test."""
+    if isinstance(node, (ast.Tuple, ast.List, ast.Set, ast.Dict, ast.JoinedStr)):
+        return True
+    return isinstance(node, ast.Constant) and (
+        node.value is None or node.value is Ellipsis or isinstance(node.value, (str, bytes))
+    )
 
 
 def code_lines(tree):
@@ -383,8 +463,7 @@ class Aliases:
 class Scan(ast.NodeVisitor):
     """One module: counts, per-function counts and the import targets."""
 
-    def __init__(self, tree, units=frozenset(), exports=None, here=(), alias_names=frozenset()):
-        self.units = units
+    def __init__(self, tree, exports=None, here=(), alias_names=frozenset()):
         self.alias_names = alias_names  # names that stand for numpy or math somewhere in the package
         self.counts = collections.Counter()
         self.functions = collections.defaultdict(collections.Counter)
@@ -470,6 +549,10 @@ class Scan(ast.NodeVisitor):
                 for name in names:
                     if name not in ASE_NAMES:
                         self._import_target(f"ase.{name}", node)
+            elif module in ASE_NAME_ALLOWED:
+                for name in names:
+                    if name not in ASE_NAME_ALLOWED[module]:
+                        self._import_target(f"{module}.{name}", node)
             else:
                 self._import_target(module, node)
         else:
@@ -540,8 +623,12 @@ class Scan(ast.NodeVisitor):
                     self.named_imports.update(id(arg) for arg in node.args[:1])
             elif name in self.import_module:
                 self._dynamic_import(node)
+            if name in {"neighbor_list", "get_scaled_positions"}:
+                self.bump("ase", node, event=False)
         elif isinstance(func, ast.Attribute):
             owner = dotted(func.value)
+            if func.attr in ASE_NUMERIC_METHODS and self._ase_receiver(func.value):
+                self.bump("ase", node, event=False)
             if func.attr == "import_module" and owner in self.importlib:
                 self._dynamic_import(node)
             elif func.attr in NUMERIC_METHODS:
@@ -549,6 +636,11 @@ class Scan(ast.NodeVisitor):
                 if head not in self.numpy and head not in self.math_modules:
                     self.bump("meth", node)
         self.generic_visit(node)
+
+    def _ase_receiver(self, node):
+        """Whether the receiver of a method named like an ASE geometry call may be ASE's."""
+        head = (dotted(node) or "").split(".")[0]
+        return head not in NOT_ASE_RECEIVERS and head not in self.numpy and head not in self.math_modules
 
     def _dynamic_import(self, node):
         """``import_module``: a package-relative literal is not evasion."""
@@ -583,58 +675,115 @@ class Scan(ast.NodeVisitor):
             self.bump("matmul", node)
         elif self._is_arithmetic(node):
             self.bump("arith", event=False)
+        elif self._is_addsub(node):
+            self.bump("addsub", event=False)
         self.generic_visit(node)
 
     def visit_AugAssign(self, node):
         if isinstance(node.op, ast.MatMult):
             self.bump("matmul", node)
-        elif isinstance(node.op, ARITHMETIC) and not (
-            is_string(node.value) or self._unit(node.value)
-        ):
+        elif self._aug_arithmetic(node):
             self.bump("arith", event=False)
+        elif self._aug_addsub(node):
+            self.bump("addsub", event=False)
         self.generic_visit(node)
 
-    def _unit(self, node):
-        if isinstance(node, ast.Name):
-            return node.id in self.units
-        if isinstance(node, ast.Attribute):
-            return node.attr in self.units
-        if isinstance(node, ast.Call):
-            return self._unit(node.func)
-        return False
+    def visit_UnaryOp(self, node):
+        if self._is_neg(node):
+            self.bump("neg", event=False)
+        self.generic_visit(node)
 
+    def visit_Compare(self, node):
+        if self._is_cmp(node):
+            self.bump("cmp", event=False)
+        self.generic_visit(node)
+
+    def visit_IfExp(self, node):
+        if self._is_tern(node):
+            self.bump("tern", event=False)
+        self.generic_visit(node)
+
+    # -- what counts as a numeric operation ----------------------------------
     def _is_arithmetic(self, node):
         if not isinstance(node.op, ARITHMETIC):
             return False
         left, right = node.left, node.right
         if is_string(left) or is_string(right):
             return False
-        if isinstance(left, ast.Constant) and isinstance(right, ast.Constant):
+        if isinstance(node.op, ast.Mult) and (is_sequence_literal(left) or is_sequence_literal(right)):
+            return False  # `[0.0] * n` repeats a list; it multiplies no number
+        return not (isinstance(left, ast.Constant) and isinstance(right, ast.Constant))
+
+    def _is_addsub(self, node):
+        if not isinstance(node.op, (ast.Add, ast.Sub)):
             return False
-        return not (self._unit(left) or self._unit(right))
+        left, right = node.left, node.right
+        if produces_text_or_collection(left) or produces_text_or_collection(right):
+            return False
+        return not (isinstance(left, ast.Constant) and isinstance(right, ast.Constant))
+
+    def _aug_arithmetic(self, node):
+        return isinstance(node.op, ARITHMETIC) and not is_string(node.value)
+
+    def _aug_addsub(self, node):
+        return isinstance(node.op, (ast.Add, ast.Sub)) and not produces_text_or_collection(node.value)
+
+    def _is_neg(self, node):
+        return isinstance(node.op, ast.USub) and not isinstance(node.operand, ast.Constant)
+
+    def _is_cmp(self, node):
+        sides = [node.left] + list(node.comparators)
+        for op, left, right in zip(node.ops, sides, sides[1:]):
+            if non_numeric_side(left) or non_numeric_side(right):
+                continue
+            if isinstance(op, (ast.Lt, ast.LtE, ast.Gt, ast.GtE)):
+                return True
+            if isinstance(op, (ast.Eq, ast.NotEq)) and (numeric_literal(left) or numeric_literal(right)):
+                return True
+        return False
+
+    def _counted(self, node):
+        """Whether ``node`` itself is a counted arithmetic, negation or comparison."""
+        if isinstance(node, ast.BinOp):
+            return self._is_arithmetic(node) or self._is_addsub(node)
+        if isinstance(node, ast.AugAssign):
+            return self._aug_arithmetic(node) or self._aug_addsub(node)
+        if isinstance(node, ast.UnaryOp):
+            return self._is_neg(node)
+        if isinstance(node, ast.Compare):
+            return self._is_cmp(node)
+        return False
+
+    def _is_tern(self, node):
+        return any(
+            self._counted(inner)
+            for part in (node.test, node.body, node.orelse)
+            for inner in ast.walk(part)
+        )
 
     # -- loops and comprehensions -------------------------------------------
     def _loop(self, node, loop_key, comp_key):
         self.generic_visit(node)
         data = False
         arithmetic = False
+        tests = False
         for inner in ast.walk(node):
             if id(inner) in self.events:
                 data = True
                 break
             if isinstance(inner, ast.BinOp) and self._is_arithmetic(inner):
                 arithmetic = True
-            elif (
-                isinstance(inner, ast.AugAssign)
-                and isinstance(inner.op, ARITHMETIC)
-                and not (is_string(inner.value) or self._unit(inner.value))
-            ):
+            elif isinstance(inner, ast.AugAssign) and self._aug_arithmetic(inner):
                 arithmetic = True
+            elif self._counted(inner) or (isinstance(inner, ast.IfExp) and self._is_tern(inner)):
+                tests = True
         key = loop_key if comp_key is None else comp_key
         if data:
             self.bump("d" + key, event=False)
         elif arithmetic:
             self.bump("a" + key, event=False)
+        elif tests:
+            self.bump("nloops", event=False)
 
     def visit_For(self, node):
         self._loop(node, "loops", None)
@@ -647,13 +796,13 @@ class Scan(ast.NodeVisitor):
     visit_ListComp = visit_SetComp = visit_DictComp = visit_GeneratorExp = _comprehension
 
 
-def measure_source(source, units=frozenset(), exports=None, here=(), alias_names=frozenset()):
+def measure_source(source, exports=None, here=(), alias_names=frozenset()):
     """Counters of one module's source: ``counts``, ``functions``, ``imports``.
 
     ``exports``, ``here`` and ``alias_names`` come from :func:`package_aliases`;
     without them a name imported from another module of the package is unknown.
     """
-    scan = Scan(ast.parse(source), units, exports, here, alias_names)
+    scan = Scan(ast.parse(source), exports, here, alias_names)
     counts = {key: scan.counts[key] for key in HARD_ZERO + SOFT_ZERO}
     return {
         "counts": counts,
@@ -700,7 +849,6 @@ def package_aliases(trees):
 def measure_package(package=PACKAGE):
     """``{relative path: measurement}`` for every module of the package."""
     package = Path(package)
-    units = unit_names(package)
     sources = {
         path.relative_to(package).as_posix(): path.read_text(encoding="utf-8")
         for path in package_modules(package)
@@ -708,7 +856,7 @@ def measure_package(package=PACKAGE):
     exports, alias_names = package_aliases({r: ast.parse(t) for r, t in sources.items()})
     return {
         relative: measure_source(
-            text, units, exports, tuple(relative.split("/")[:-1]), alias_names
+            text, exports, tuple(relative.split("/")[:-1]), alias_names
         )
         for relative, text in sources.items()
     }
@@ -736,6 +884,7 @@ def load_budget(path=BUDGET):
         "module": data.get("module", {}),
         "exception": data.get("exception", []),
         "tier_total": data.get("tier_total", {}),
+        "gate": data.get("gate", {}),
     }
 
 
@@ -754,13 +903,15 @@ HEADER = """\
 # lower the row (python scripts/numerics_budget.py --ratchet); only the owner
 # raises a number or moves a `dies` later, by committing it.
 #
+# Gate version 2 (2026-11-13) counts addsub neg cmp tern nloops (the numeric tests), ase (ASE
+# geometry calls), drops the unit-constant exemption and enforces every counter in every tier.
 # Zero tier (pseudopotentials/ basis/ integrals/ models/ integrations/paw*): a module without a row is budgeted at
-# zero on every counter, sloc included. A row is dated (wave, dies) while it has
+# zero on every counter, sloc included. Every tier enforces every counter, `sloc` included. A row is dated (wave, dies) while it has
 # any hard counter or policy to port; an undated row names a closed category
 # (validation, hand-off, unit, result-view, log-table) and shows no hard counter.
 # Tiers A and Q (everything else) are ratchet-only: growth stops, no date.
-# Counters: np scipy matmul meth math ctypes dyn dloops dcomp bi imp (hard);
-# aloops acomp arith arithmax sloc (soft, zero tier). Omitted means 0.
+# Counters: np scipy matmul meth math ctypes dyn dloops dcomp ase bi imp (hard);
+# aloops acomp arith arithmax addsub neg cmp tern nloops sloc (soft, every tier). Omitted means 0.
 # [[exception]] entries waive the counters of one function; their counts must
 # match the measurement exactly and are subtracted from the module row.
 """
@@ -769,6 +920,9 @@ HEADER = """\
 def dump_budget(budget):
     """Deterministic TOML text of a budget (tomllib reads, this writes)."""
     lines = [HEADER]
+    lines.append("[gate]")
+    lines.append(f"version = {GATE_VERSION}")
+    lines.append("")
     total = budget.get("tier_total", {})
     lines.append("[tier_total]")
     for key in sorted(total):
@@ -971,19 +1125,41 @@ def label_changes(where, before, now):
     return failures
 
 
+def gate_version(budget):
+    """The version of the gate a budget was written for (1 before the field existed)."""
+    return int(budget.get("gate", {}).get("version", 1))
+
+
+def old_tracked(tier):
+    """The counters a version-1 gate enforced for a tier: the others are new, not looser."""
+    if tier == "zero":
+        return tuple(k for k in HARD_ZERO + SOFT_ZERO if k not in NEW_COUNTERS)
+    return tuple(k for k in HARD_COMMON if k not in NEW_COUNTERS)
+
+
 def monotone(old, new):
-    """Failures when ``new`` is looser than ``old`` (the committed budget)."""
+    """Failures when ``new`` is looser than ``old`` (the committed budget).
+
+    A budget written for an older gate version cannot bound the counters that version did not
+    count, so those are compared from the first version that has them: nothing is "looser" than
+    a number that never existed. A module without a row of an old gate stood at zero on the
+    counters it did track, so its first row must still be zero on them.
+    """
     failures = []
-    keys = HARD_ZERO + SOFT_ZERO
+    older = gate_version(old) < gate_version(new)
     for relative, row in sorted(new["module"].items()):
         before = old["module"].get(relative)
+        keys = old_tracked(tier_of(relative)) if older else HARD_ZERO + SOFT_ZERO
         if before is None:
-            failures.append(f"{relative}: row added since the committed budget (the owner adds rows by committing)")
-            continue
+            if not older:
+                failures.append(f"{relative}: row added since the committed budget (the owner adds rows by committing)")
+                continue
+            before = {}
         for key in keys:
             if row.get(key, 0) > before.get(key, 0):
                 failures.append(f"{relative}: {key} rose from {before.get(key, 0)} to {row.get(key, 0)}")
-        failures.extend(label_changes(relative, before, row))
+        if relative in old["module"]:
+            failures.extend(label_changes(relative, before, row))
         for target in set(row.get("allow_imports", ())) - set(before.get("allow_imports", ())):
             failures.append(f"{relative}: allow_imports gained {target}")
     old_items = {(i.get("module"), i.get("function")): i for i in old["exception"]}
@@ -993,6 +1169,7 @@ def monotone(old, new):
         if before is None:
             failures.append(f"{where}: exception added since the committed budget")
             continue
+        keys = old_tracked(tier_of(item.get("module", ""))) if older else HARD_ZERO + SOFT_ZERO
         for key in keys:
             if item.get(key, 0) > before.get(key, 0):
                 failures.append(f"{where}: waived {key} rose from {before.get(key, 0)} to {item.get(key, 0)}")
@@ -1019,6 +1196,7 @@ def committed_budget(root=ROOT):
         "module": data.get("module", {}),
         "exception": data.get("exception", []),
         "tier_total": data.get("tier_total", {}),
+        "gate": data.get("gate", {}),
     }
 
 
@@ -1032,7 +1210,18 @@ def ratchet(measured, budget):
     waived = waivers(budget)
     notes = []
     rows = {}
-    for relative, row in budget["module"].items():
+    older = gate_version(budget) < GATE_VERSION
+    introduced = {
+        tier: tuple(k for k in TIER_KEYS[tier] if k not in old_tracked(tier)) if older else ()
+        for tier in TIER_KEYS
+    }
+    # A module of the zero tier or of tier A/Q that had no row stood at zero on the counters the
+    # old gate tracked; the loop below only visits listed rows, so unlisted measured modules join.
+    listed = dict(budget["module"])
+    if older:
+        for relative in measured:
+            listed.setdefault(relative, {})
+    for relative, row in listed.items():
         if relative not in measured:
             notes.append(f"{relative}: removed (module is gone)")
             continue
@@ -1041,6 +1230,14 @@ def ratchet(measured, budget):
         new = {k: v for k, v in row.items() if k in ROW_FIELDS}
         for key in keys:
             budgeted = row.get(key, 0)
+            if key in introduced.get(tier_of(relative), ()):
+                # A counter the committed gate did not count has no number to lower: it starts
+                # at what is measured, once, and only a budget of an older gate version gets it.
+                new_value = counts[key]
+                if new_value:
+                    new[key] = new_value
+                    notes.append(f"{relative}: {key} introduced at {new_value}")
+                continue
             value = min(budgeted, counts[key])
             if value < budgeted:
                 notes.append(f"{relative}: {key} {budgeted} -> {value}")
@@ -1079,7 +1276,8 @@ def ratchet(measured, budget):
     if total < tier_total.get("zero_sloc", total):
         notes.append(f"tier_total.zero_sloc {tier_total['zero_sloc']} -> {total}")
         tier_total["zero_sloc"] = total
-    return {"module": rows, "exception": exceptions, "tier_total": tier_total}, notes
+    return {"module": rows, "exception": exceptions, "tier_total": tier_total,
+            "gate": {"version": GATE_VERSION}}, notes
 
 
 # --------------------------------------------------------------------------

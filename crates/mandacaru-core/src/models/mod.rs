@@ -18,6 +18,7 @@ pub mod selection;
 pub mod spectrum;
 pub mod spherical;
 pub mod spin_orbit;
+pub mod time_spectrum;
 pub mod ts;
 pub mod xc;
 pub mod xc_kernel;

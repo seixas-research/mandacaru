@@ -417,7 +417,7 @@ fn the_static_polarizability_is_the_finite_field_curvature() {
         let (coarse, fine) = (curvature(4e-3, &mut energy), curvature(2e-3, &mut energy));
         let finite_field = (4. * fine - coarse) / 3.;
         assert!(
-            (finite_field - alpha).abs() < 1e-4 * alpha.abs(),
+            (finite_field - alpha).abs() < 1e-6 * alpha.abs(),
             "{method}: response {alpha} against finite field {finite_field}"
         );
     }
@@ -686,7 +686,7 @@ fn unsupported_references_raise_by_name() {
     singlet.spin = Some(Spin::Singlet);
     let error = excitations(&integrals, &open, &singlet).err().unwrap();
     assert!(error.to_string().contains("spin-conserving"), "{error}");
-    for (name, word) in [("r2scan", "meta-GGA")] {
+    for (name, word) in [("pbe+rvv10", "rVV10")] {
         let state = reference(&integrals, name);
         let error = excitations(&integrals, &state, &Request::new(1))
             .err()
@@ -1408,8 +1408,12 @@ fn check_unrestricted_channel_with(
 fn the_unrestricted_kernel_is_the_derivative_of_the_fock_on_an_open_shell() {
     // V1 and V1b on NH2: UKS LDA and PBE (partial core, relativistic exchange factor) and UHF.
     let ctx = Context::new(Some(2), 1 << 30).unwrap();
+    // Each functional on its own library set (PBE on `pbe-sr`, as a calculation selects it).
+    let pbe = library_amidogen(&ctx, "pbe-sr");
+    let state = unrestricted_reference(&pbe, "pbe", [4, 3]);
+    check_unrestricted_channel(&pbe, &state, "NH2 pbe on pbe-sr");
     let integrals = library_amidogen(&ctx, "lda-sr");
-    for method in ["lda", "pbe", "uhf"] {
+    for method in ["lda", "uhf"] {
         let state = unrestricted_reference(&integrals, method, [4, 3]);
         check_unrestricted_channel(&integrals, &state, &format!("NH2 {method}"));
     }
@@ -1562,7 +1566,7 @@ fn unrestricted_roots_satisfy_the_dense_sum_rule_and_polarizability_identities()
         let finite_field = (4. * fine - coarse) / 3.;
         energy(0.);
         assert!(
-            (finite_field - alpha).abs() < 1e-4 * alpha.abs(),
+            (finite_field - alpha).abs() < 1e-6 * alpha.abs(),
             "{method}: response {alpha} against finite field {finite_field}"
         );
         // The doublet reference and its roots: <S^2> near 3/4, never below it by more than round-off.
@@ -1573,7 +1577,8 @@ fn unrestricted_roots_satisfy_the_dense_sum_rule_and_polarizability_identities()
             "{method}: <S^2> {s2:?}"
         );
     }
-    // V12: the same state, one and four threads.
+    // V12: the same state, one and four threads (PBE on its own set, `pbe-sr`).
+    let mut integrals = library_amidogen(&ctx, "pbe-sr");
     let state = unrestricted_reference(&integrals, "pbe", [4, 3]);
     let four = Context::new(Some(4), 1 << 30).unwrap();
     let one = integrals.context.clone();
@@ -1636,5 +1641,385 @@ fn an_all_electron_closed_shell_through_the_unrestricted_path_is_a_singlet_and_a
             assert!((found.oscillator_strengths[1] - singlet.oscillator_strengths[0]).abs() < 1e-8);
             assert!(found.oscillator_strengths[0].abs() < 1e-12);
         }
+    }
+}
+
+#[test]
+#[ignore = "slow: 34 s (measured 2026-11-12); run: cargo test --profile release-test -p mandacaru-core --test molecular_excitations -- --ignored the_unrestricted_screened_hybrid_kernel_on_an_open_shell"]
+fn the_unrestricted_screened_hybrid_kernel_on_an_open_shell_is_the_derivative_of_the_fock() {
+    // V1 for HSE06 on NH2 (`pbe-sr`): both spin blocks, the short-range exchange of each spin and
+    // the spheres' polarization at the polarized reference. Step 1e-5: larger steps carry tail
+    // points across the hole model's kink at t = 1 (Q17, kept by the owner).
+    let ctx = Context::new(Some(2), 1 << 30).unwrap();
+    let integrals = library_amidogen(&ctx, "pbe-sr");
+    let state = unrestricted_reference(&integrals, "hse06", [4, 3]);
+    check_unrestricted_channel_with(&integrals, &state, "NH2 hse06 on pbe-sr", 1e-5);
+}
+
+#[test]
+fn the_meta_gga_kernel_is_the_derivative_of_the_fock() {
+    // V1 for r2SCAN: the kinetic-density and product-rule gradient responses, restricted singlet
+    // and triplet on H2 (HAO and synthetic PAW). The open shell is the next test.
+    let ctx = Context::new(Some(2), 1 << 30).unwrap();
+    for (integrals, label) in [
+        (hydrogen(&ctx), "HAO H2"),
+        (paw_hydrogen(&ctx, &[0, 1]), "PAW H2"),
+    ] {
+        let state = reference(&integrals, "r2scan");
+        for spin in [Spin::Singlet, Spin::Triplet] {
+            check_symmetric_channel(
+                &integrals,
+                &state,
+                spin,
+                &format!("{label} r2scan {spin:?}"),
+            );
+        }
+    }
+}
+
+#[test]
+#[ignore = "slow: 16 s (measured 2026-11-12); run: cargo test --profile release-test -p mandacaru-core --test molecular_excitations -- --ignored the_unrestricted_meta_gga_kernel"]
+fn the_unrestricted_meta_gga_kernel_on_an_open_shell_is_the_derivative_of_the_fock() {
+    // V1 for r2SCAN on NH2 (`pbe-sr`, partial core with its kinetic density), both spin blocks.
+    let ctx = Context::new(Some(2), 1 << 30).unwrap();
+    let amidogen = library_amidogen(&ctx, "pbe-sr");
+    let state = unrestricted_reference(&amidogen, "r2scan", [4, 3]);
+    check_unrestricted_channel(&amidogen, &state, "NH2 r2scan on pbe-sr");
+}
+
+#[test]
+fn a_rounding_sized_negative_total_gradient_contraction_is_zero_and_a_real_one_raises() {
+    // `suu + 2 sud + sdd` cancels to rounding where the spin gradients are opposite. The point is
+    // the H2 midpoint of the triplet trial density that raised "must be nonnegative"
+    // (sigma = -1.65e-24 against suu + sdd = 2.6e-8, half an ulp of the sum).
+    use mandacaru_core::models::xc;
+    let (suu, sud, sdd) = (
+        1.3044386476184982e-8,
+        -1.3044386475288054e-8,
+        1.3044386474391124e-8,
+    );
+    assert!(suu + 2. * sud + sdd < 0.);
+    let point = |sud: f64| {
+        [
+            0.11695117185962953,
+            0.11696117484947544,
+            suu,
+            sud,
+            sdd,
+            0.05,
+            0.05,
+        ]
+    };
+    let (energy, partials) = xc::point_partials("r2scan", point(sud), false).unwrap();
+    let (zero, _) = xc::point_partials("r2scan", point(-0.5 * (suu + sdd)), false).unwrap();
+    assert!(energy.is_finite() && partials.iter().all(|v| v.is_finite()));
+    assert!(
+        (energy - zero).abs() < 1e-12 * zero.abs(),
+        "{energy} against {zero}"
+    );
+    // The second derivatives take the same path.
+    let (_, _, hessian) = xc::point_hessian_meta(point(sud)).unwrap();
+    assert!(hessian.iter().flatten().all(|v| v.is_finite()));
+    // A contraction that is negative by more than rounding is not a gradient field.
+    let error = xc::point_partials("r2scan", point(-0.6 * (suu + sdd)), false)
+        .err()
+        .expect("a genuinely negative contraction must raise")
+        .to_string();
+    assert!(error.contains("must be nonnegative"), "{error}");
+}
+
+#[test]
+fn meta_gga_roots_satisfy_the_dense_and_sum_rule_identities() {
+    // V3 and V4 for r2SCAN: the kinetic density depends on the symmetric part of the density
+    // matrix only, so A - B is the gap and the Casida strengths sum to the bare ones.
+    let ctx = Context::new(Some(1), 512 << 20).unwrap();
+    let integrals = paw_hydrogen(&ctx, &[0, 1]);
+    let state = reference(&integrals, "r2scan");
+    let response = Response::new(&integrals, &state, Spin::Singlet, Coupling::Adiabatic).unwrap();
+    let n = response.dimension();
+    let (sum, difference) = dense(&response);
+    let delta = DMatrix::from_diagonal(&DVector::from_column_slice(response.delta()));
+    assert!(
+        (&difference - &delta).amax() < 1e-14,
+        "A - B is diagonal for a meta-GGA"
+    );
+    let root = symmetric_root(&difference);
+    let (squares, _) = real_eigen(&root * &sum * &root).unwrap();
+    let casida = excitations(
+        &integrals,
+        &state,
+        &request(n, Approximation::Casida, Spin::Singlet),
+    )
+    .unwrap();
+    for (k, e) in casida.energies.iter().enumerate() {
+        assert!((e - squares[k].sqrt()).abs() < 1e-10, "Casida root {k}");
+    }
+    let d = dipole_blocks(&integrals, &response);
+    for axis in 0..3 {
+        let weighted: f64 = casida
+            .energies
+            .iter()
+            .zip(&casida.transition_dipoles)
+            .map(|(w, mu)| w * mu[axis] * mu[axis])
+            .sum();
+        let bare: f64 = 2.
+            * d[axis]
+                .iter()
+                .zip(response.delta())
+                .map(|(x, w)| w * x * x)
+                .sum::<f64>();
+        assert!(
+            (weighted - bare).abs() < 1e-9 * bare.abs().max(1e-8),
+            "axis {axis}"
+        );
+    }
+}
+
+/// Copper hydride from the `lda-sr` library (Cu 3d shell, a real occupation near 10) with a +U
+/// shell on the copper d channel when `hubbard` is `Some((form, U, J))` (eV), and its electron
+/// count. The synthetic hydrogen d shell this replaces holds about 1e-8 electrons, so its +U
+/// kernel (about U n_d) sat below the 1e-8 guards and, in the finite-difference test, under the
+/// Hartree and xc kernels by ten orders of magnitude (2026-11-12).
+fn copper_hydride(ctx: &Context, hubbard: Option<(&str, f64, f64)>) -> (MolecularIntegrals, usize) {
+    let mut arrays = mandacaru_core::paw::molecular::Arrays::new();
+    let copper = dataset::read(ctx, "lda-sr", "Cu");
+    let electrons = copper.valence_charge.round() as usize + 1;
+    let copper = dataset::species(ctx, &mut arrays, &copper);
+    let hydrogen = dataset::species(ctx, &mut arrays, &dataset::read(ctx, "lda-sr", "H"));
+    // Copper has a frozen core: Kohn-Sham only, so the build is told to allow it.
+    let mut extra = vec![("allow_heavy_dft", serde_json::Value::Bool(true))];
+    if let Some((form, u, j)) = hubbard {
+        let request = format!(r#"{{"Cu": {{"l": "d", "U": {u}, "J": {j}, "form": "{form}"}}}}"#);
+        extra.push(("hubbard", serde_json::Value::String(request)));
+    }
+    let integrals = paw_molecular_support::molecule_with(
+        ctx,
+        &[29, 1],
+        &[[8.5, 8.5, 7.12], [8.5, 8.5, 9.88]],
+        17.,
+        0.5,
+        (vec![copper, hydrogen], vec![0, 1], arrays),
+        "raw",
+        &analytic_shells(&[0, 1, 2]),
+        &extra,
+    );
+    (integrals, electrons)
+}
+/// The share of the +U term in the oracle's response to the density change the V1 test applies
+/// (`check_symmetric_channel`): the largest occupied-empty entry of the central difference of
+/// `reference_fock` with the +U shell minus the same without it, over the largest entry with it.
+/// The oracle is independent of the kernel under test. A finite-difference test in which +U is
+/// a rounding-sized part of the whole cannot fail for a wrong +U term, so every +U test asserts
+/// this share is large against its tolerance.
+fn hubbard_share(
+    with: &MolecularIntegrals,
+    plain: &MolecularIntegrals,
+    state: &MeanField,
+    spin: Spin,
+) -> f64 {
+    let response = Response::new(with, state, spin, Coupling::Adiabatic).unwrap();
+    let (o, v) = (response.occupied(), response.virtual_orbitals());
+    let c = response.orbitals();
+    let y = response.matrix(trial(o * v, 0.731).as_slice());
+    let change = c.columns(0, o) * &y * c.columns(o, v).transpose();
+    let change = (&change + change.transpose()).map(|x| C64::new(x, 0.));
+    let d = &state.densities[0];
+    let h = 1e-4;
+    let derivative = |integrals: &MolecularIntegrals| {
+        let fock = |sign: f64| {
+            let step = &change * C64::new(sign * h, 0.);
+            let f = match spin {
+                Spin::Singlet => reference_fock(integrals, state, &[d + &step]).unwrap(),
+                _ => reference_fock(integrals, state, &[d + &step, d - &step]).unwrap(),
+            };
+            f[0].map(|z| z.re)
+        };
+        c.columns(0, o).transpose() * ((fock(1.) - fock(-1.)) / (2. * h)) * c.columns(o, v)
+    };
+    let (u, p) = (derivative(with), derivative(plain));
+    (&u - &p).amax() / u.amax()
+}
+/// [`hubbard_share`] of the unrestricted response (the change `check_unrestricted_channel` uses).
+fn unrestricted_hubbard_share(
+    with: &MolecularIntegrals,
+    plain: &MolecularIntegrals,
+    state: &MeanField,
+) -> f64 {
+    let response = Unrestricted::new(with, state, Coupling::Adiabatic).unwrap();
+    let blocks = response.matrices(trial(response.dimension(), 0.731).as_slice());
+    let changes: Vec<DMatrix<C64>> = (0..2)
+        .map(|s| {
+            let (o, v) = response.channel(s);
+            let c = response.orbitals(s);
+            let d = c.columns(0, o) * &blocks[s] * c.columns(o, v).transpose();
+            (&d + d.transpose()).map(|x| C64::new(x, 0.))
+        })
+        .collect();
+    let h = 1e-4;
+    let derivative = |integrals: &MolecularIntegrals| -> Vec<DMatrix<f64>> {
+        let fock = |sign: f64| {
+            let displaced: Vec<DMatrix<C64>> = (0..2)
+                .map(|s| &state.densities[s] + &changes[s] * C64::new(sign * h, 0.))
+                .collect();
+            reference_fock(integrals, state, &displaced).unwrap()
+        };
+        let (p, m) = (fock(1.), fock(-1.));
+        (0..2)
+            .map(|s| {
+                let (o, v) = response.channel(s);
+                let c = response.orbitals(s);
+                let f = ((&p[s] - &m[s]) / C64::new(2. * h, 0.)).map(|z| z.re);
+                c.columns(0, o).transpose() * f * c.columns(o, v)
+            })
+            .collect()
+    };
+    let (u, p) = (derivative(with), derivative(plain));
+    let top = |m: &[DMatrix<f64>]| m.iter().fold(0f64, |t, x| t.max(x.amax()));
+    let moved: Vec<DMatrix<f64>> = u.iter().zip(&p).map(|(a, b)| a - b).collect();
+    top(&moved) / top(&u)
+}
+/// The smallest share of the +U part of a kernel a +U test accepts: a missing or wrong +U term
+/// then moves the finite difference by at least 1e-3 of the kernel, against its 1e-6 gate.
+const MIN_HUBBARD_SHARE: f64 = 1e-3;
+/// The smallest +U kernel entry (Hartree) the closed-form tests accept: measurably nonzero,
+/// where the synthetic hydrogen d shell this replaces gave 3e-12.
+const MIN_HUBBARD_KERNEL: f64 = 1e-5;
+
+#[test]
+fn the_hubbard_kernel_is_the_derivative_of_the_fock() {
+    // V1 for +U, both forms: restricted singlet and triplet, and the unrestricted CuH+, each with
+    // a guard that the +U part is a measurable share of the kernel.
+    let ctx = Context::new(Some(2), 1 << 30).unwrap();
+    let (plain, electrons) = copper_hydride(&ctx, None);
+    for (form, u, j) in [("dudarev-fll", 20., 0.), ("liechtenstein-fll", 20., 3.)] {
+        let (integrals, _) = copper_hydride(&ctx, Some((form, u, j)));
+        assert!(integrals.corrections.as_ref().unwrap().hubbard.is_some());
+        let state = integrals
+            .kohn_sham("lda", [electrons / 2, electrons / 2], false, &options())
+            .unwrap();
+        assert!(state.converged);
+        for spin in [Spin::Singlet, Spin::Triplet] {
+            let share = hubbard_share(&integrals, &plain, &state, spin);
+            println!("{form} {spin:?}: +U share of the kernel {share:.3e}");
+            assert!(
+                share > MIN_HUBBARD_SHARE,
+                "{form} {spin:?}: +U share {share:e}"
+            );
+            check_symmetric_channel(&integrals, &state, spin, &format!("{form} {spin:?}"));
+        }
+        let cation = unrestricted_reference(&integrals, "lda", [electrons / 2, electrons / 2 - 1]);
+        let share = unrestricted_hubbard_share(&integrals, &plain, &cation);
+        println!("{form} CuH+: +U share of the kernel {share:.3e}");
+        assert!(share > MIN_HUBBARD_SHARE, "{form} CuH+: +U share {share:e}");
+        check_unrestricted_channel(&integrals, &cation, &format!("{form} CuH+"));
+    }
+}
+
+#[test]
+fn the_hubbard_kernel_has_the_dudarev_antisymmetric_channel() {
+    // V1b for +U, against the closed form: the Dudarev potential is u_eff (1/2 - n), so along an
+    // imaginary Hermitian change iA of the occupations its change is -u_eff i A, and the A - B
+    // kernel is -u_eff P_o A P_v^T with A = P_o^T y P_v - (P_o^T y P_v)^T, P = C^T Q.
+    let ctx = Context::new(Some(1), 1 << 30).unwrap();
+    let (integrals, electrons) = copper_hydride(&ctx, Some(("dudarev-fll", 20., 0.)));
+    let state = integrals
+        .kohn_sham("lda", [electrons / 2, electrons / 2], false, &options())
+        .unwrap();
+    assert!(state.converged);
+    let model = integrals
+        .corrections
+        .as_ref()
+        .unwrap()
+        .hubbard
+        .as_ref()
+        .unwrap()
+        .clone();
+    for spin in [Spin::Singlet, Spin::Triplet] {
+        let response = Response::new(&integrals, &state, spin, Coupling::Adiabatic).unwrap();
+        let (o, v) = (response.occupied(), response.virtual_orbitals());
+        let c = response.orbitals();
+        let y = trial(o * v, 0.53);
+        let ym = response.matrix(y.as_slice());
+        let kernel = response
+            .antisymmetric_kernel(&DMatrix::from_column_slice(o * v, 1, y.as_slice()))
+            .unwrap();
+        let kernel = response.matrix(kernel.column(0).as_slice());
+        let mut expected = DMatrix::<f64>::zeros(o, v);
+        for shell in &model.shells {
+            let (po, pv) = (
+                c.columns(0, o).transpose() * &shell.q,
+                c.columns(o, v).transpose() * &shell.q,
+            );
+            let x = po.transpose() * &ym * &pv;
+            expected -= &po * (&x - x.transpose()) * pv.transpose() * shell.u_eff();
+        }
+        println!("{spin:?}: +U antisymmetric kernel {:.3e}", expected.amax());
+        assert!(
+            expected.amax() > MIN_HUBBARD_KERNEL,
+            "{spin:?}: the +U antisymmetric kernel {:e} is too small to test",
+            expected.amax()
+        );
+        assert!(
+            (&kernel - &expected).amax() < 1e-12 * expected.amax(),
+            "{spin:?}"
+        );
+    }
+}
+
+#[test]
+fn hubbard_roots_satisfy_the_dense_and_sum_rule_identities() {
+    // V3 and V4 with +U: A - B carries the +U antisymmetric channel, and the sum rule holds with it.
+    let ctx = Context::new(Some(1), 1 << 30).unwrap();
+    let (integrals, electrons) = copper_hydride(&ctx, Some(("liechtenstein-fll", 20., 3.)));
+    let state = integrals
+        .kohn_sham("lda", [electrons / 2, electrons / 2], false, &options())
+        .unwrap();
+    assert!(state.converged);
+    let response = Response::new(&integrals, &state, Spin::Singlet, Coupling::Adiabatic).unwrap();
+    let n = response.dimension();
+    let (sum, difference) = dense(&response);
+    let delta = DMatrix::from_diagonal(&DVector::from_column_slice(response.delta()));
+    println!(
+        "A - B differs from the gap by {:.3e}",
+        (&difference - &delta).amax()
+    );
+    assert!(
+        (&difference - &delta).amax() > MIN_HUBBARD_KERNEL,
+        "A - B carries the +U term"
+    );
+    let (tda, _) = real_eigen((&sum + &difference) * 0.5).unwrap();
+    let root = symmetric_root(&difference);
+    let (squares, _) = real_eigen(&root * &sum * &root).unwrap();
+    let found = excitations(
+        &integrals,
+        &state,
+        &request(n, Approximation::TammDancoff, Spin::Singlet),
+    )
+    .unwrap();
+    for (k, e) in found.energies.iter().enumerate() {
+        assert!((e - tda[k]).abs() < 1e-10, "TDA root {k}");
+    }
+    let casida = excitations(
+        &integrals,
+        &state,
+        &request(n, Approximation::Casida, Spin::Singlet),
+    )
+    .unwrap();
+    for (k, e) in casida.energies.iter().enumerate() {
+        assert!((e - squares[k].sqrt()).abs() < 1e-10, "Casida root {k}");
+    }
+    let d = dipole_blocks(&integrals, &response);
+    for axis in 0..3 {
+        let weighted: f64 = casida
+            .energies
+            .iter()
+            .zip(&casida.transition_dipoles)
+            .map(|(w, mu)| w * mu[axis] * mu[axis])
+            .sum();
+        let exact = 2. * d[axis].dot(&(&difference * &d[axis]));
+        assert!(
+            (weighted - exact).abs() < 1e-9 * exact.abs().max(1e-8),
+            "axis {axis}"
+        );
     }
 }

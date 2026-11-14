@@ -1,9 +1,11 @@
-//! SHA-256 of a file, streamed in blocks of 64 KiB, for the check that a dataset file read by the
-//! engine is the one a snapshot was built from. The digest is the lowercase hex of the file
-//! bytes, the string the Python reader records as `source_sha256`.
+//! SHA-256 in lowercase hex: of bytes, and of a dataset's
+//! content ([`dataset_content_sha256`], `PawDataset::content_sha256`), the digest a crystal
+//! snapshot pins a dataset by. The content digest covers what the record holds for the physics
+//! (its payload and tables without the format version and the core states), not the bytes of the
+//! file, so a version-2 dataset and its version-3 upgrade have the same one.
 use super::invalid;
 use crate::Result;
-use std::{fs::File, io::Read, path::Path};
+use std::path::Path;
 
 const K: [u32; 64] = [
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
@@ -16,7 +18,8 @@ const K: [u32; 64] = [
     0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
 ];
 
-struct Hasher {
+/// A streaming SHA-256.
+pub(crate) struct Hasher {
     state: [u32; 8],
     block: [u8; 64],
     filled: usize,
@@ -24,7 +27,7 @@ struct Hasher {
 }
 
 impl Hasher {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             state: [
                 0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
@@ -75,7 +78,7 @@ impl Hasher {
             *s = s.wrapping_add(x);
         }
     }
-    fn update(&mut self, mut bytes: &[u8]) {
+    pub(crate) fn update(&mut self, mut bytes: &[u8]) {
         self.length += bytes.len() as u64;
         while !bytes.is_empty() {
             let take = (64 - self.filled).min(bytes.len());
@@ -88,7 +91,7 @@ impl Hasher {
             }
         }
     }
-    fn finish(mut self) -> String {
+    pub(crate) fn finish(mut self) -> String {
         let bits = self.length * 8;
         self.update(&[0x80]);
         while self.filled != 56 {
@@ -106,18 +109,30 @@ pub fn sha256(bytes: &[u8]) -> String {
     hasher.finish()
 }
 
-/// SHA-256 of the file at `path`, lowercase hex.
-pub fn sha256_file(path: &Path) -> Result<String> {
-    let mut file = File::open(path).map_err(|e| invalid(format!("{}: {e}", path.display())))?;
-    let mut hasher = Hasher::new();
-    let mut buffer = vec![0u8; 1 << 16];
-    loop {
-        let read = file
-            .read(&mut buffer)
-            .map_err(|e| invalid(format!("{}: {e}", path.display())))?;
-        if read == 0 {
-            return Ok(hasher.finish());
-        }
-        hasher.update(&buffer[..read]);
+/// The content digest of the dataset file at `path` (`PawDataset::content_sha256`), the record
+/// read under `ctx`'s budget like any dataset.
+pub fn dataset_content_sha256(ctx: &crate::Context, path: &Path) -> Result<String> {
+    super::record::PawDataset::read(ctx, path)?.content_sha256(ctx)
+}
+
+/// The content digest a crystal snapshot's dataset entry pins (its `content_sha256`), `""` when the
+/// entry names none (a dataset that was not read from a file: the snapshot loads, and a force or a
+/// hybrid sphere that must read the file again refuses it). An entry that still pins the file's
+/// bytes (`sha256`, the layout before content digests) is refused with the remedy: such a crystal
+/// is saved again. A saved crystal's energy stands regardless: the crystal loader
+/// (`periodic::input`) sets the snapshot's description aside on this refusal and raises it only
+/// when a force, a stress or a hybrid sphere asks for the files; a new setup request
+/// (`periodic::setup::parse_input_json`) is refused outright.
+pub fn pinned_content(entry: &serde_json::Value) -> Result<&str> {
+    match (entry.get("content_sha256"), entry.get("sha256")) {
+        (Some(value), _) => value
+            .as_str()
+            .ok_or_else(|| invalid("a dataset's content_sha256 must be a string")),
+        (None, Some(_)) => Err(invalid(
+            "this crystal was saved when snapshots pinned a dataset by the SHA-256 of its file's \
+             bytes; datasets are now pinned by their content (content_sha256): build the crystal \
+             again from its structure and save it again",
+        )),
+        (None, None) => Ok(""),
     }
 }

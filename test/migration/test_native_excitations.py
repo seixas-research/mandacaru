@@ -7,7 +7,8 @@ from pathlib import Path
 
 import pytest
 
-from .freeze_excitations import NUM_STATES, SETTINGS, multiplets, system
+from .freeze_excitations import (NUM_STATES, SETTINGS, functional_and_approximation,
+                                 multiplets, system)
 from mandacaru import Mandacaru
 
 REFERENCE = json.loads((Path(__file__).parent / "reference" / "excitations.json").read_text())
@@ -18,10 +19,10 @@ STRENGTH_TOLERANCE = 1e-7
 
 @pytest.mark.parametrize("key", sorted(REFERENCE["cases"]))
 def test_water_excitations_match_the_frozen_values(key):
-    atoms, spin = system(key)
-    xc, approximation = key.removeprefix("NH2/").split("/")[:2]
+    atoms, spin, extra = system(key)
+    xc, approximation = functional_and_approximation(key)
     frozen = REFERENCE["cases"][key]
-    atoms.calc = Mandacaru(xc=xc, **SETTINGS)
+    atoms.calc = Mandacaru(xc=xc, **SETTINGS, **extra)
     found = atoms.calc.get_excitations(NUM_STATES, approximation=approximation, spin=spin,
                                        tolerance=1e-8)
     assert len(found.energies) == len(frozen["energies_eV"])

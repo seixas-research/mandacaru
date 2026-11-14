@@ -36,7 +36,7 @@ mod periodic_gradient_crystals_support;
 mod periodic_stress_crystals_support;
 
 use mandacaru_core::{
-    paw::{digest::sha256_file, record::PawDataset},
+    paw::{digest::dataset_content_sha256, record::PawDataset},
     periodic::{
         screened_exchange::ExxDivTreatment,
         setup::{create_setup, parse_input_json, PeriodicSetup},
@@ -121,7 +121,7 @@ impl Case {
             datasets.push(Arc::new(PawDataset::read(&ctx, &path).unwrap()));
             species_files.push((
                 path.to_str().unwrap().to_string(),
-                sha256_file(&path).unwrap(),
+                dataset_content_sha256(&ctx, &path).unwrap(),
             ));
         }
         let files = atoms

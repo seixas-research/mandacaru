@@ -36,9 +36,10 @@ use super::{
     },
     ions::LocalPotential,
     pulay::{
-        core_gradient, core_kinetic_gradient, grid_cross, kinetic_cross, mesh_dot, projection,
-        projection_gradient, short_range_gradients, tau_cross, KSamples, Matrix, Mesh,
+        core_gradient, core_kinetic_gradient, cross_streamed, kinetic_setup, mesh_dot, tau_cross,
+        KSamples, Ket, Matrix, Mesh,
     },
+    projection_table::{SetupTables, ProjectionTable},
     shapes::{Shapes, Sites},
     shells::Shells,
     spheres::Projector,
@@ -58,7 +59,8 @@ use crate::{
     quantum::C64,
     Context, Error, Reservation, Result,
 };
-use std::cell::{OnceCell, RefCell};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::thread::ThreadId;
 
 /// Gates of the geometry tie of [`SetupDerivatives::with_scf`]: the change of basis between the
 /// setup's lattice and the grid's cell is an integer matrix to `CELL_TOLERANCE`, and the ion table
@@ -119,8 +121,8 @@ pub struct Fields {
     /// ([`SetupDerivatives::with_scf`]): the Fermi level needs the whole mesh, so
     /// [`Derivatives::bands`] returns these.
     bands: Vec<Vec<Bands>>,
-    hats: OnceCell<Vec<[C64; 3]>>,
-    ions: OnceCell<Vec<[C64; 3]>>,
+    hats: OnceLock<Vec<[C64; 3]>>,
+    ions: OnceLock<Vec<[C64; 3]>>,
     _held: Option<Reservation>,
 }
 
@@ -133,11 +135,19 @@ impl Fields {
             moments,
             kinetic: None,
             bands: Vec::new(),
-            hats: OnceCell::new(),
-            ions: OnceCell::new(),
+            hats: OnceLock::new(),
+            ions: OnceLock::new(),
             _held: None,
         }
     }
+}
+
+/// The row-center derivatives of the grid terms at one k-point, three `m x m` matrices each:
+/// the overlap, the local potential of every channel of the fields, and the kinetic operator.
+pub struct GridCross {
+    overlap: [Matrix; 3],
+    local: Vec<[Matrix; 3]>,
+    kinetic: [Matrix; 3],
 }
 
 /// The geometry provider.
@@ -151,11 +161,18 @@ pub struct SetupDerivatives<'a> {
     operators: Operators,
     spin_orbit: Option<spinor::SpinOrbitData<'a>>,
     mesh: Mesh,
-    samples: RefCell<Option<KSamples>>,
-    spheres: RefCell<Option<(usize, Vec<[Matrix; 3]>)>>,
-    dense: OnceCell<DenseGradients>,
-    linear: OnceCell<Vec<Vec<[C64; 3]>>>,
-    constants: OnceCell<Vec<[f64; 3]>>,
+    /// The derivative samples of the last k-point of each thread (one thread: the serial
+    /// engine's one cache; with k-point lanes, one per lane), dropped for that thread's next.
+    samples: Mutex<Vec<(ThreadId, Arc<KSamples>)>>,
+    spheres: Mutex<Vec<(ThreadId, usize, Arc<Vec<[Matrix; 3]>>)>>,
+    /// The streamed grid terms of the last k-point of each thread, formed once for all four.
+    grids: Mutex<Vec<(ThreadId, usize, Arc<GridCross>)>>,
+    dense: OnceLock<DenseGradients>,
+    /// The image-resolved projections, formed once for every k-point and shared with whoever
+    /// holds the same cache ([`SetupDerivatives::with_projections`]).
+    projections: Arc<SetupTables>,
+    linear: OnceLock<Vec<Vec<[C64; 3]>>>,
+    constants: OnceLock<Vec<[f64; 3]>>,
     scf: Option<(&'a Crystal, Options)>,
     /// The operations of a symmetry-reduced mesh (from the SCF crystal), averaged over by the engine.
     point_group: Option<PointGroup>,
@@ -210,11 +227,13 @@ impl<'a> SetupDerivatives<'a> {
             functions,
             operators,
             spin_orbit: None,
-            samples: RefCell::new(None),
-            spheres: RefCell::new(None),
-            dense: OnceCell::new(),
-            linear: OnceCell::new(),
-            constants: OnceCell::new(),
+            samples: Mutex::new(Vec::new()),
+            spheres: Mutex::new(Vec::new()),
+            grids: Mutex::new(Vec::new()),
+            dense: OnceLock::new(),
+            projections: Arc::new(SetupTables::new()),
+            linear: OnceLock::new(),
+            constants: OnceLock::new(),
             scf: None,
             point_group: None,
         })
@@ -324,16 +343,15 @@ impl<'a> SetupDerivatives<'a> {
         fields: &Fields,
     ) -> Result<[Matrix; 3]> {
         match term {
-            Term::Overlap => self.with_samples(k, |s| grid_cross(self.ctx, &self.mesh, s, None)),
-            Term::Kinetic => self.with_samples(k, |s| {
-                kinetic_cross(self.ctx, self.inputs.grid, &self.mesh, s)
-            }),
+            Term::Overlap => self.with_grid(k, fields, |g| g.overlap.clone()),
+            Term::Kinetic => self.with_grid(k, fields, |g| g.kinetic.clone()),
             Term::Local => {
-                let v = fields
+                let channel = fields
                     .local
                     .get(spin)
+                    .map(|_| spin)
                     .ok_or_else(|| invalid("crystal gradient: one local potential per spin"))?;
-                self.with_samples(k, |s| grid_cross(self.ctx, &self.mesh, s, Some(v)))
+                self.with_grid(k, fields, |g| g.local[channel].clone())
             }
             Term::KineticDensity => {
                 let (blocks, _) = fields.kinetic.as_ref().ok_or_else(|| {
@@ -367,25 +385,98 @@ impl<'a> SetupDerivatives<'a> {
     /// Runs `f` on the derivative samples of k-point `k`, forming them once for the four terms.
     fn with_samples<T>(&self, k: usize, f: impl FnOnce(&KSamples) -> Result<T>) -> Result<T> {
         let kpoint = self.kpoint(k)?;
-        let mut cache = self.samples.borrow_mut();
-        if cache.as_ref().is_none_or(|s| s.k != kpoint) {
-            *cache = None; // release the previous k-point before the next is reserved
-            *cache = Some(KSamples::new(
-                self.ctx,
-                self.inputs.shells,
-                &self.inputs.sites.lattice,
-                &self.mesh,
-                kpoint,
-            )?);
+        let thread = std::thread::current().id();
+        let lock = || self.samples.lock().unwrap_or_else(|e| e.into_inner());
+        let held = lock()
+            .iter()
+            .find(|(owner, s)| *owner == thread && s.k == kpoint)
+            .map(|(_, s)| s.clone());
+        let samples = match held {
+            Some(samples) => samples,
+            None => {
+                // Release this thread's previous k-point before the next is reserved.
+                lock().retain(|(owner, _)| *owner != thread);
+                let samples = Arc::new(KSamples::new(
+                    self.ctx,
+                    self.inputs.shells,
+                    &self.inputs.sites.lattice,
+                    &self.mesh,
+                    kpoint,
+                )?);
+                lock().push((thread, samples.clone()));
+                samples
+            }
+        };
+        f(&samples)
+    }
+
+    /// The grid terms of k-point `k`, streamed over blocks of mesh points and formed once for the
+    /// overlap, every local channel and the kinetic operator (the kinetic ket is the one array of
+    /// the size of the mesh and the basis; nothing else is).
+    pub(super) fn with_grid<T>(
+        &self,
+        k: usize,
+        fields: &Fields,
+        f: impl FnOnce(&GridCross) -> T,
+    ) -> Result<T> {
+        let kpoint = self.kpoint(k)?;
+        let thread = std::thread::current().id();
+        let lock = || self.grids.lock().unwrap_or_else(|e| e.into_inner());
+        let held = lock()
+            .iter()
+            .find(|(owner, held, _)| *owner == thread && *held == k)
+            .map(|(_, _, blocks)| blocks.clone());
+        if let Some(blocks) = held {
+            return Ok(f(&blocks));
         }
-        f(cache.as_ref().expect("formed above"))
+        lock().retain(|(owner, _, _)| *owner != thread);
+        let kinetic = kinetic_setup(
+            self.ctx,
+            self.inputs.grid,
+            &self.mesh,
+            self.inputs.shells,
+            &self.inputs.sites.lattice,
+            kpoint,
+            false,
+        )?;
+        let mut kets: Vec<Ket> = vec![Ket::Weighted(None)];
+        kets.extend(fields.local.iter().map(|v| Ket::Weighted(Some(v))));
+        kets.push(Ket::Columns(&kinetic.ket));
+        let mut rows = cross_streamed(
+            self.ctx,
+            self.inputs.shells,
+            &self.inputs.sites.lattice,
+            &self.mesh,
+            kpoint,
+            &kets,
+        )?;
+        drop(kets);
+        drop(kinetic);
+        let kinetic = rows.pop().ok_or_else(|| invalid("the kinetic cross is missing"))?;
+        let overlap = rows.remove(0);
+        let grid = Arc::new(GridCross {
+            overlap,
+            local: rows,
+            kinetic,
+        });
+        lock().push((thread, k, grid.clone()));
+        Ok(f(&grid))
     }
 
     /// `G_A` of every sphere at k-point `k`, shared by the rows' share and the sphere's share.
     fn with_spheres<T>(&self, k: usize, f: impl FnOnce(&[[Matrix; 3]]) -> T) -> Result<T> {
         let kpoint = self.kpoint(k)?;
-        let mut cache = self.spheres.borrow_mut();
-        if cache.as_ref().is_none_or(|(held, _)| *held != k) {
+        let thread = std::thread::current().id();
+        let lock = || self.spheres.lock().unwrap_or_else(|e| e.into_inner());
+        let held = lock()
+            .iter()
+            .find(|(owner, held, _)| *owner == thread && *held == k)
+            .map(|(_, _, blocks)| blocks.clone());
+        if let Some(blocks) = held {
+            return Ok(f(&blocks));
+        }
+        lock().retain(|(owner, _, _)| *owner != thread);
+        {
             let spheres: Vec<ShortRange> = self
                 .inputs
                 .sites
@@ -398,16 +489,46 @@ impl<'a> SetupDerivatives<'a> {
                     sigma: self.inputs.sites.sigma,
                 })
                 .collect();
-            let blocks = short_range_gradients(
+            let tables = self.projections.short_range(
                 self.ctx,
                 self.inputs.shells,
                 &self.inputs.sites.lattice,
-                kpoint,
                 &spheres,
             )?;
-            *cache = Some((k, blocks));
+            let blocks: Vec<[Matrix; 3]> = tables
+                .iter()
+                .map(|table| table.gradient(kpoint, self.functions))
+                .collect();
+            let blocks = Arc::new(blocks);
+            lock().push((thread, k, blocks.clone()));
+            Ok(f(&blocks))
         }
-        Ok(f(&cache.as_ref().expect("formed above").1))
+    }
+
+    /// The projections of the scalar projectors on the Bloch sums of every k-point.
+    fn projection_table(&self) -> Result<&ProjectionTable> {
+        self.projections.scalar(
+            self.ctx,
+            self.inputs.shells,
+            &self.inputs.sites.lattice,
+            self.inputs.projectors,
+        )
+    }
+
+    /// The same for the spin-orbit union projectors of a spinor crystal.
+    pub(super) fn spin_orbit_table(&self) -> Result<&ProjectionTable> {
+        self.projections.spin_orbit(
+            self.ctx,
+            self.inputs.shells,
+            &self.inputs.sites.lattice,
+            self.spin_orbit_data()?.projectors,
+        )
+    }
+
+    /// Reads the projections from `cache`, which a stress of the same setup shares.
+    pub fn with_projections(mut self, cache: Arc<SetupTables>) -> Self {
+        self.projections = cache;
+        self
     }
 
     fn hats<'f>(&self, fields: &'f Fields) -> Result<&'f [[C64; 3]]> {
@@ -500,6 +621,9 @@ impl Derivatives for SetupDerivatives<'_> {
     fn layout(&self) -> &Layout {
         &self.layout
     }
+    fn context(&self) -> Option<&Context> {
+        Some(self.ctx)
+    }
     fn blocks(&self) -> &[Matrix] {
         &self.operators.blocks
     }
@@ -510,23 +634,10 @@ impl Derivatives for SetupDerivatives<'_> {
         &self.operators.ion_operator
     }
     fn projection(&self, k: usize) -> Result<Matrix> {
-        let c = projection(
-            self.ctx,
-            self.inputs.shells,
-            &self.inputs.sites.lattice,
-            self.kpoint(k)?,
-            self.inputs.projectors,
-        )?;
-        Ok(self.frame(c))
+        Ok(self.frame(self.projection_table()?.value(self.kpoint(k)?)?))
     }
     fn projection_gradient(&self, k: usize) -> Result<[Matrix; 3]> {
-        let g = projection_gradient(
-            self.ctx,
-            self.inputs.shells,
-            &self.inputs.sites.lattice,
-            self.kpoint(k)?,
-            self.inputs.projectors,
-        )?;
+        let g = self.projection_table()?.gradient(self.kpoint(k)?)?;
         Ok(g.map(|g| self.frame(g)))
     }
     fn cross(&self, spin: usize, k: usize, term: Term, fields: &Fields) -> Result<[Matrix; 3]> {
@@ -649,24 +760,10 @@ impl Derivatives for SetupDerivatives<'_> {
         self.spin_orbit_data().map(|so| &so.operator)
     }
     fn spin_orbit_projection(&self, k: usize) -> Result<Matrix> {
-        let so = self.spin_orbit_data()?;
-        projection(
-            self.ctx,
-            self.inputs.shells,
-            &self.inputs.sites.lattice,
-            self.kpoint(k)?,
-            so.projectors,
-        )
+        self.spin_orbit_table()?.value(self.kpoint(k)?)
     }
     fn spin_orbit_projection_gradient(&self, k: usize) -> Result<[Matrix; 3]> {
-        let so = self.spin_orbit_data()?;
-        projection_gradient(
-            self.ctx,
-            self.inputs.shells,
-            &self.inputs.sites.lattice,
-            self.kpoint(k)?,
-            so.projectors,
-        )
+        self.spin_orbit_table()?.gradient(self.kpoint(k)?)
     }
 
     fn exchange_gradient(&self, state: &State) -> Result<hybrid_gradient::Gradient> {

@@ -26,8 +26,7 @@ Everything numerical about one is native (``mandacaru-core``):
 What stays here is the :class:`PAWDataset` / :class:`PAWChannel` view (arrays by channel, the
 local potential through the engine's spline), the library readers and writers
 (:func:`get_paw`, :func:`get_upaw`; the libraries are written by ``mandacaru-build``),
-the projector blocks the periodic setup reads (:func:`paw_projectors` and its block builders,
-which die with the periodic setup) and the registration of the two families.
+and the registration of the two families.
 
 UPAW-LCAO (``basis="UPAW-LCAO"``) is the same construction at ``norm_deficit = 0``
 (Ivanov *et al.*, arXiv:2408.03159): the transformation is unitary and the overlap operator
@@ -183,15 +182,21 @@ class PAWDataset(PseudoPotential):
     #: What the search of :func:`generate_paw` noted (:class:`~.generation.SearchReport`);
     #: ``None`` for a dataset read from a file.
     search: SearchReport | None = None
+    #: The core states of the format-3 file it was read from, which this view does not hold.
+    core_states: list = field(default_factory=list)
 
     def projector_radius(self, l: int) -> float:
         """Radius beyond which channel ``l``'s projectors vanish and the
         smooth wave obeys the all-electron equation: its own ``r_cut``, or
         the local potential's ``r_cut_local`` when that is larger
         (the engine's channel assembly, ``paw::generate::assemble``)."""
-        r_c = float(self.channels[int(l)].r_cut)
-        r_l = float(self.r_cut_local)
-        return r_c if r_c > r_l else r_l
+        radii = self.__dict__.get("_projector_radii")
+        if radii is None:
+            from .record import record_of
+
+            radii = self._projector_radii = _native.paw_projector_radii(
+                context(), *record_of(self))
+        return float(radii[int(l)])
 
     @property
     def has_spin_orbit(self) -> bool:
@@ -257,45 +262,6 @@ class PAWDataset(PseudoPotential):
         functions = list(channel.raw_projectors) if basis == "raw" else list(channel.projectors)
         return functions, D, q
 
-    def multipole_moments(self, l1: int, l2: int, L: int,
-                          basis: str = DEFAULT_PROJECTOR_BASIS) -> np.ndarray:
-        r"""``Delta^{(L)}_{ij}`` between channels ``l1`` and ``l2``, in the
-        projectors' basis.
-
-        The radial half of the compensation multipole (see
-        :mod:`mandacaru.pseudopotentials.multipoles`); ``l1 == l2`` and ``L == 0``
-        gives back :attr:`PAWChannel.overlap_correction`.  ``"raw"`` applies the
-        same :math:`B^{-1}\cdot B^{-T}` transformation the coupling and overlap
-        blocks get, once per side.
-        """
-        from .multipoles import radial_moments
-
-        key = (int(l1), int(l2), int(L), str(basis))
-        cache = getattr(self, "_multipole_cache", None)
-        if cache is None:
-            cache = self._multipole_cache = {}
-        if key not in cache:
-            if int(l1) == int(l2) and int(L) == 0:
-                # The monopole is stored exactly; reconstructing it from the
-                # tabulated waves agrees only to ~1e-8, which the raw basis's
-                # large B^{-1} amplifies to ~1e-4.  Use the stored value so the
-                # L = 0 term stays bit-for-bit what the monopole-only code had.
-                delta = np.asarray(self.channels[int(l1)].overlap_correction,
-                                   dtype=float)
-            else:
-                delta = radial_moments(self, l1, l2, L)
-            if basis == "raw":
-                delta = _native.paw_multipole_transform(
-                    context(),
-                    np.ascontiguousarray(self.channels[int(l1)].vanderbilt, dtype=np.float64),
-                    np.ascontiguousarray(self.channels[int(l2)].vanderbilt, dtype=np.float64),
-                    np.ascontiguousarray(delta, dtype=np.float64),
-                )
-            elif basis != "dual":
-                raise ValueError(f"unknown projector basis {basis!r}")
-            cache[key] = delta
-        return cache[key]
-
     def __repr__(self) -> str:
         sorted_channels = sorted(self.channels)
         channels = ", ".join(f"l={l}x{len(self.projectors.get(l, []))}"
@@ -307,62 +273,6 @@ class PAWDataset(PseudoPotential):
                 f"deficit={_deficit_label(self.norm_deficit)}"
                 f"{', GHOSTED' if (self.defects or {}).get('ghosts') else ''}"
                 f"{', SCATTERING OFF' if (self.defects or {}).get('phases') else ''})")
-
-
-# --------------------------------------------------------------------------- #
-# The projector blocks of the periodic setup (they die with it).
-# --------------------------------------------------------------------------- #
-
-def paw_projectors(symbols, positions, datasets, units: str = "angstrom",
-                   projector_basis: str = DEFAULT_PROJECTOR_BASIS, *,
-                   real: bool = True):
-    """The :class:`~.orbitals.KBProjector` set: every radial projector of
-    every ``(atom, l, m)``, in the ``projector_basis`` of
-    :meth:`PAWDataset.projector_set` (each projector records it as
-    ``projector_basis`` so the block builders transform consistently), with
-    real spherical harmonics (a molecule) or complex ones (``real=False``, a
-    crystal).  The compensation channels follow the projectors'."""
-    from .orbitals import KBProjector
-
-    projectors = []
-    for index, (symbol, position) in enumerate(zip(symbols, positions)):
-        pp = datasets[symbol]
-        for l in range(8):
-            if l not in pp.projectors:
-                continue
-            functions, D, _q = pp.projector_set(l, projector_basis)
-            for m in range(-l, l + 1):
-                for i, p in enumerate(functions):
-                    projector = KBProjector(
-                        pp, l, m, center=position, units=units,
-                        atom_index=index, index=i, radial=p,
-                        kb_energy=float(D[i, i]), real=real)
-                    projector.projector_basis = projector_basis
-                    projectors.append(projector)
-    return projectors
-
-
-def _blocks(projectors, symbols, datasets, which) -> dict:
-    blocks = {}
-    for projector in projectors:
-        key = projector.block_key
-        if key not in blocks:
-            pp = datasets[symbols[projector.atom_index]]
-            _f, D, q = pp.projector_set(projector.l, getattr(projector, "projector_basis", DEFAULT_PROJECTOR_BASIS))
-            blocks[key] = np.asarray(D if which == "coupling" else q, dtype=float)
-    return blocks
-
-
-def paw_coupling_blocks(projectors, symbols, datasets) -> dict:
-    """``{(atom, l, m): D_l}`` for ``nonlocal_coupling`` (in the
-    projectors' basis)."""
-    return _blocks(projectors, symbols, datasets, "coupling")
-
-
-def paw_overlap_blocks(projectors, symbols, datasets) -> dict:
-    """``{(atom, l, m): q_l}`` for ``nonlocal_overlap`` (in the
-    projectors' basis)."""
-    return _blocks(projectors, symbols, datasets, "overlap")
 
 
 # --------------------------------------------------------------------------- #

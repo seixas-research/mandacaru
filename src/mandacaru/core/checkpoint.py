@@ -121,15 +121,10 @@ def fingerprint(hamiltonian, atol: float = 1e-10) -> str | None:
     """
     if hamiltonian is None:
         return None
-    import hashlib
-
-    terms = hamiltonian.simplify(atol).terms
-    digits = _native.decimal_digits(float(atol))
-    payload = ";".join(
-        f"{label}:{complex(coeff).real:.{digits}f}:{complex(coeff).imag:.{digits}f}"
-        for label, coeff in sorted(terms.items()))
-    payload = f"{getattr(hamiltonian, 'num_qubits', 0)}|{payload}"
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:32]
+    return _native.pauli_fingerprint(
+        int(getattr(hamiltonian, "num_qubits", 0)),
+        [(label, complex(c).real, complex(c).imag) for label, c in hamiltonian.terms.items()],
+        float(atol))
 
 
 @dataclass

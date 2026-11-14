@@ -64,7 +64,37 @@ def test_native_search_preserves_state_energy_checkpoint_and_records(tmp_path, m
 def test_architecture_search_rejects_invalid_controls():
     for options in ({"min_length": 1}, {"screen_insertions": 1},
                     {"temperature": {"initial": .1}}, {"seed": -1},
-                    {"replace_start": "alias"}, {"move_weights": {"swap": 1.0}}):
+                    {"replace_start": "alias"}, {"move_weights": {"swap": 1.0}},
+                    {"replicas": 0}, {"replicas": 1.5}, {"replicas": 2, "replica_spacing": 0.5},
+                    {"replicas": 2, "replica_spacing": float("inf")},
+                    {"replica_spacing": 3.0},
+                    {"replicas": 2, "temperature": 0.0}):
         with pytest.raises((TypeError, ValueError)):
             with calculator(**options) as calc:
                 calc.run()
+
+
+def test_replica_exchange_reports_every_replica_and_its_swaps(tmp_path):
+    with calculator(replicas=3, replica_spacing=2.0, txt=tmp_path / "run.txt") as calc:
+        result = calc.run()
+        raw = result._raw
+        assert result.energy_hartree == pytest.approx(-.5, abs=1e-9)
+        # Each step relaxes one proposal per replica and attempts one adjacent swap.
+        assert len(raw["chain_steps"]) == 3 * 40
+        assert {row["replica"] for row in raw["chain_steps"]} == {0, 1, 2}
+        taken, tried = result.replica_swaps
+        assert tried == len(raw["swaps"]) == 40 and 0 <= taken <= tried
+        cold = [row["temperature"] for row in raw["chain_steps"] if row["replica"] == 0]
+        hot = [row["temperature"] for row in raw["chain_steps"] if row["replica"] == 2]
+        assert hot == pytest.approx([4 * t for t in cold])
+    text = (tmp_path / "run.txt").read_text()
+    assert "replicas" in text and f"{taken}/{tried}" in text
+
+
+def test_one_replica_is_the_single_chain():
+    with calculator() as single, calculator(replicas=1, replica_spacing=2.0) as named:
+        first, second = single.run(), named.run()
+        assert first._raw["chain_steps"] == second._raw["chain_steps"]
+        assert second.replica_swaps is None
+        assert "replica" not in second._raw["chain_steps"][0]
+

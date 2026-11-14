@@ -885,6 +885,39 @@ impl PyMeanField {
             source: Arc::new(inner),
         })
     }
+    /// The exactly degenerate orbital groups `model` splits where no deterministic frame fixes
+    /// them (`MeanField::split_groups`).
+    fn split_groups<'py>(
+        &self,
+        py: Python<'py>,
+        model: &PyModel,
+    ) -> PyResult<Vec<Bound<'py, PyDict>>> {
+        let groups = py
+            .detach(|| self.inner.split_groups(&self.integrals, model.inner()))
+            .map_err(error)?;
+        groups
+            .into_iter()
+            .map(|group| {
+                let out = PyDict::new(py);
+                out.set_item("label", group.label)?;
+                out.set_item("value", group.value)?;
+                out.set_item("frozen", group.frozen.clone())?;
+                out.set_item("active", group.active.clone())?;
+                out.set_item("deleted", group.deleted.clone())?;
+                out.set_item("description", group.to_string())?;
+                Ok(out)
+            })
+            .collect()
+    }
+    /// Raise `NotImplementedError` naming the group when `model` splits one
+    /// (`MeanField::require_unsplit`); `what` names the refused result.
+    fn require_unsplit(&self, py: Python<'_>, model: &PyModel, what: &str) -> PyResult<()> {
+        py.detach(|| {
+            self.inner
+                .require_unsplit(&self.integrals, model.inner(), what)
+        })
+        .map_err(error)
+    }
     #[getter]
     fn model(&self, py: Python<'_>) -> PyResult<PyModel> {
         let model = py

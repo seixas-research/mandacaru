@@ -40,8 +40,9 @@ def _flat(rdm, errors=True):
     return flat(rdm["one"]), flat(rdm["two"]), flat(rdm["one_error"]), flat(rdm["two_error"])
 
 
-def _refuse_over_budget(driver, rotations, evaluations, circuits, rdm_circuits, bases):
-    instances = circuits + rdm_circuits * bases
+def _refuse_over_budget(driver, rotations, evaluations, circuits, bases):
+    rdm_circuits, instances, total_shots = _native.device_force_cost(
+        rotations, circuits, bases, int(driver._shots or 0))
     what = (f"{instances:,} circuits: {evaluations:,} energy evaluations ({circuits:,} circuits) "
             f"for the parameter Hessian of {rotations} Pauli rotations, and {rdm_circuits} RDM "
             f"circuits of {bases} bases each")
@@ -56,7 +57,7 @@ def _refuse_over_budget(driver, rotations, evaluations, circuits, rdm_circuits, 
     if budget is not None and driver._shots:
         usage = provider.run_usage()
         _after, exceeded = _native.budget_check(
-            (usage["jobs"], usage["shots"]), (2, instances * int(driver._shots)), 1,
+            (usage["jobs"], usage["shots"]), (2, total_shots), 1,
             job_limit=budget.get("jobs"), shot_limit=budget.get("total_shots"))
         if exceeded:
             over = "; ".join(f"{key} {total:,} > {limit:,}" for key, total, limit in exceeded)
@@ -78,8 +79,7 @@ def device_force(result, driver, internal):
     rotations, evaluations, circuits = problem.device_hessian_plan(
         indices, parameters, sampled=bool(driver._shots))
     plan = rdm_plan(driver)
-    rdm_circuits = 1 + 2 * rotations
-    instances = _refuse_over_budget(driver, rotations, evaluations, circuits, rdm_circuits, plan.bases)
+    instances = _refuse_over_budget(driver, rotations, evaluations, circuits, plan.bases)
     executor = CircuitExecutor(driver)
     measured = problem.device_hessian(indices, parameters, executor)
     if executor.stopped is not None:

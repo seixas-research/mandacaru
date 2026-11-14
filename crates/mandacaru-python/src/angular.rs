@@ -2,6 +2,7 @@
 use crate::arrays::{array, layout, Array};
 use numpy::{Complex64, PyReadonlyArray1};
 use pyo3::prelude::*;
+use mandacaru_core::derived;
 use mandacaru_core::math::harmonics::{harmonic, harmonic_gradient, polar, NODE_OFFSET};
 
 #[pyfunction]
@@ -260,7 +261,14 @@ pub fn angular_factor<'py>(
     }
 }
 
+/// The magnetic quantum numbers `-l, ..., l` (`derived::magnetic_numbers`).
+#[pyfunction]
+fn magnetic_numbers(l: usize) -> Vec<i32> {
+    derived::magnetic_numbers(l)
+}
+
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(magnetic_numbers, m)?)?;
     m.add_function(wrap_pyfunction!(spherical_coords, m)?)?;
     m.add_function(wrap_pyfunction!(real_harmonic_transform, m)?)?;
     m.add_function(wrap_pyfunction!(spherical_harmonic_evaluate, m)?)?;

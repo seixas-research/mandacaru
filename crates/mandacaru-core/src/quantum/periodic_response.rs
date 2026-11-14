@@ -39,6 +39,10 @@ pub struct QuantumForces {
     pub scheme: &'static str,
 }
 
+/// The central-difference step (Bohr) of a crystal force: each atom moves by plus and minus this
+/// along each axis, and the force is the difference of the two energies over twice the step.
+pub const FORCE_STEP: f64 = 1e-3;
+
 /// Computes periodic quantum forces using the central finite difference algorithm.
 ///
 /// `energies_plus[atom][axis]` is E(R_{atom, axis} + h),

@@ -159,6 +159,13 @@ class PauliSum:
         return PauliSum._from_valid_terms(
             _in(_native.pauli_term_sum(_out(self.terms) + _out(other.terms))), num_qubits=width)
 
+    def shifted(self, constant: float) -> "PauliSum":
+        """This operator plus ``constant`` times the identity (the term added last)."""
+        width = self.num_qubits
+        terms = _out(self.terms) + [("I" * width, float(constant), 0.0)]
+        return PauliSum._from_valid_terms(
+            _in(_native.pauli_term_sum(terms)), num_qubits=width or None)
+
     def __mul__(self, scalar: complex) -> "PauliSum":
         value = complex(scalar)
         if not cmath.isfinite(value):

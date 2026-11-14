@@ -125,11 +125,11 @@ fn the_pair_moments_are_the_solvers_multipole_moments() {
 struct Toy {
     shift: f64,
     energy: f64,
-    seen: std::cell::RefCell<Vec<Matrix>>,
+    seen: std::sync::Mutex<Vec<Matrix>>,
 }
 impl OneCenter for Toy {
     fn collinear(&self, _ctx: &Context, projected: &[Matrix]) -> Result<OneCenterTerms> {
-        self.seen.borrow_mut().extend(projected.iter().cloned());
+        self.seen.lock().unwrap().extend(projected.iter().cloned());
         Ok(OneCenterTerms {
             energy: self.energy * projected.len() as f64,
             operators: projected
@@ -139,7 +139,7 @@ impl OneCenter for Toy {
         })
     }
     fn spinor(&self, _ctx: &Context, projected: &Matrix) -> Result<OneCenterTerms> {
-        self.seen.borrow_mut().push(projected.clone());
+        self.seen.lock().unwrap().push(projected.clone());
         Ok(OneCenterTerms {
             energy: self.energy,
             operators: vec![
@@ -180,7 +180,7 @@ fn a_one_center_model_plugs_in_through_its_projected_density() {
                     &point.projections * point.projections.adjoint() * Complex64::new(0.3, 0.);
                 worst = worst.max((added - want).iter().map(|v| v.norm()).fold(0., f64::max));
             }
-            let seen = toy.seen.borrow()[spin].clone();
+            let seen = toy.seen.lock().unwrap()[spin].clone();
             worst = worst.max(
                 (seen - expected)
                     .iter()

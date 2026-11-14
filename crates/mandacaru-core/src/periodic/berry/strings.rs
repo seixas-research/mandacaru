@@ -52,7 +52,7 @@ pub fn berry_phase(
 /// The strings along `direction` of a mesh of frames.
 pub fn strings(sampler: &Sampler, lattice: &Lattice, direction: usize) -> Result<Strings> {
     let [t0, t1] = transverse_axes(direction)?;
-    let size = lattice.size;
+    let size = lattice.mesh.size;
     let length = Vector3::from(sampler.reciprocal_vector(direction)).norm();
     let count = size[t0] * size[t1];
     let channels = lattice.frames.len();
@@ -73,7 +73,7 @@ pub fn strings(sampler: &Sampler, lattice: &Lattice, direction: usize) -> Result
             let mut at = [0; 3];
             at[t0] = i;
             at[t1] = j;
-            out.starts.push(lattice.fractional(at));
+            out.starts.push(lattice.mesh.fractional(at));
             for s in 0..channels {
                 if lattice.bands(s) == 0 {
                     out.phases[s].push(0.);
@@ -85,7 +85,7 @@ pub fn strings(sampler: &Sampler, lattice: &Lattice, direction: usize) -> Result
                     .map(|n| {
                         let mut point = at;
                         point[direction] = n;
-                        sampler.link(lattice, s, lattice.index(point), direction)
+                        sampler.link(lattice, s, lattice.mesh.index(point), direction)
                     })
                     .collect::<Result<Vec<_>>>()?;
                 let (phase, smallest) = links::string_phase(&links, LINK_TOLERANCE)?;

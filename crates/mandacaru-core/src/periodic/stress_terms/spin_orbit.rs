@@ -14,28 +14,16 @@
 //! projections on the UNION list ([`Strain::spin_orbit_strain`], the same `projection_strain` as the
 //! scalar term) in place of the center derivative `P_X G - G Q_X`. The term is linear in the
 //! coupling strength: every entry of `B` scales with it.
-use super::{Strain, Tensor};
+use super::Strain;
 use crate::{periodic::gradient::Matrix, Result};
 
-/// Adds this k-point's share of SO-1 to `out`; `density` is the spinor `D_k` (`2M x 2M`) and
-/// `weight` its k-point weight.
-pub fn add_k<S: Strain>(
-    s: &S,
-    out: &mut Tensor<f64>,
-    weight: f64,
-    k: usize,
-    density: &Matrix,
-) -> Result<()> {
+/// What the spin-orbit term adds at k-point `k` with `density` (the spinor `D_k`, `2m x 2m`)
+/// and its k-point `weight`, one number per strain direction of the provider.
+pub fn share_k<S: Strain>(s: &S, weight: f64, k: usize, density: &Matrix) -> Result<Vec<f64>> {
     let (so, c, dc) = (
         s.spin_orbit()?,
         s.spin_orbit_projection(k)?,
-        s.spin_orbit_strain(k)?,
+        s.spin_orbit_strain(k, s.directions().as_slice())?,
     );
-    let share = so.strain_k(weight, &c, &dc, density)?;
-    for a in 0..3 {
-        for b in 0..3 {
-            out[a][b] += share[a][b];
-        }
-    }
-    Ok(())
+    so.strain_k(weight, &c, &dc, density)
 }

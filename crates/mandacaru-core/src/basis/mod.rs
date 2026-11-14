@@ -3,6 +3,7 @@
 pub mod confinement;
 pub mod diffuse;
 pub mod filter;
+pub mod ladders;
 pub mod nao_ae;
 pub mod pao;
 pub mod radial;

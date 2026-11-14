@@ -321,6 +321,20 @@ pub fn search_with_atom(
     search_reviewed(ctx, recipe, options, atom, source, &Faithful)
 }
 
+/// [`search_with_atom`] with the all-electron logarithmic derivatives the search computes left in
+/// `logs`, so that a check of the file it produces (same atom, same radii and energies) reads them
+/// instead of computing them again.
+pub fn search_with_atom_logged(
+    ctx: &Context,
+    recipe: &Recipe,
+    options: &Options,
+    atom: &Atom,
+    source: &dyn XcSource,
+    logs: &mut AeLogs,
+) -> Result<Searched, Error> {
+    search_reviewed_logged(ctx, recipe, options, atom, source, &Faithful, logs)
+}
+
 #[doc(hidden)]
 /// [`search_with_atom`] with a [`Review`]: the one loop, with one piece of it replaced.
 pub fn search_reviewed(
@@ -330,6 +344,28 @@ pub fn search_reviewed(
     atom: &Atom,
     source: &dyn XcSource,
     review: &dyn Review,
+) -> Result<Searched, Error> {
+    search_reviewed_logged(
+        ctx,
+        recipe,
+        options,
+        atom,
+        source,
+        review,
+        &mut AeLogs::new(),
+    )
+}
+
+#[doc(hidden)]
+/// [`search_reviewed`] on a given cache of all-electron logarithmic derivatives (valid for `atom`).
+pub fn search_reviewed_logged(
+    ctx: &Context,
+    recipe: &Recipe,
+    options: &Options,
+    atom: &Atom,
+    source: &dyn XcSource,
+    review: &dyn Review,
+    cache: &mut AeLogs,
 ) -> Result<Searched, Error> {
     // An infeasible first construction (a j-branch whose overlap operator is not positive
     // definite: pbe-fr Hf, Hg and Ra) is a failed attempt like any other, and the remedies are
@@ -359,7 +395,6 @@ pub fn search_reviewed(
         None => channel_radii(ctx, recipe, atom).map_err(Error::Failed)?,
     };
     let attempts = review.remedies(plan(recipe, &radii));
-    let mut cache = AeLogs::new();
     let mut tried = Vec::new();
     let mut keeper = Keeper::<Candidate>::new();
     // Every construction that failed, with its recipe: an attempt whose recipe equals an earlier
@@ -372,7 +407,7 @@ pub fn search_reviewed(
 
     let problem = match first {
         None => Why::NotBuilt(first_failure.expect("a failed first construction has its error")),
-        Some(first) => match judged(&first, &mut cache) {
+        Some(first) => match judged(&first, &mut *cache) {
             Ok(diagnosis) => match Why::of(&diagnosis) {
                 None => {
                     return Ok(Searched {
@@ -452,7 +487,7 @@ pub fn search_reviewed(
         let why = match outcome {
             Err(error) if is_attempt_failure(&error) => Why::NotBuilt(error.to_string()),
             Err(error) => return Err(Error::Failed(error)),
-            Ok(made) => match judged(&made, &mut cache) {
+            Ok(made) => match judged(&made, &mut *cache) {
                 Err(diagnose::Error::Unevaluated(text)) => Why::Unevaluated(text),
                 Err(diagnose::Error::Failed(error)) if is_attempt_failure(&error) => {
                     Why::Unevaluated(error.to_string())

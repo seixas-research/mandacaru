@@ -37,9 +37,10 @@ Read :doc:`installation` first, then :doc:`start/first_calculation`. The
 :doc:`methods table <reference/methods>` says which method does what, and
 :doc:`reference/not_yet_available` lists what the program does not do yet.
 
-The migration of the numerical engine from Python to Rust is still in progress;
-the :doc:`status page <development/native_cutover>` tells native calculations from
-features that remain to be ported. An unsupported option raises an error: the
+The migration of the numerical engine from Python to Rust is complete for the
+numerics; the :doc:`status page <development/native_cutover>` tells native
+calculations from features that remain to be ported or raise, and lists the
+work still open. An unsupported option raises an error: the
 program never substitutes another calculation, and there is no execution selector.
 
 Scientific conventions

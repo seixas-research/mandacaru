@@ -174,11 +174,11 @@ __marimo__/
 
 # Claude
 .claude/
-latex/
 /CLAUDE.md
 /HISTORY.md
 VERSION_DESCRIPTION.md
 dev_plan/
+reports/
 
 # CODEX
 codex/

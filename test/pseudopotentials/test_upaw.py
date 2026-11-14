@@ -28,6 +28,8 @@ from mandacaru.pseudopotentials.io import library_file, save_pseudopotential
 from mandacaru.pseudopotentials.paw import (UPAW_FAMILY, generate_paw,
                                             generate_upaw, get_upaw)
 
+from .multipole_view import multipole_moments
+
 CELL = 10.0
 CENTER = CELL / 2 + 0.011
 
@@ -230,7 +232,7 @@ class TestWhyItIsNotTheDefault:
             for l2 in oxygen.channels:
                 for L in range(abs(l1 - l2), l1 + l2 + 1, 2):
                     by_l[L] = max(by_l.get(L, 0.0), float(np.abs(
-                        oxygen.multipole_moments(l1, l2, L, "dual")).max()))
+                        multipole_moments(oxygen, l1, l2, L, "dual")).max()))
         assert by_l[0] < 1e-4
         rest = max(by_l.get(L, 0.0) for L in (1, 2))
         assert rest > 1e-4 and by_l[0] < rest / 100.0

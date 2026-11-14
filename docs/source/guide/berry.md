@@ -20,6 +20,8 @@ Born-von Karman supercell with no Bloch bands and raises `NotImplementedError`
 | `calc.get_polarization(kpts=None)` | `Polarization`: the Berry-phase polarization in C/m², its quanta and its raw coordinates |
 | `calc.get_anomalous_hall(kpts=None)` | `AnomalousHall`: the Hall conductivity of an insulator or a metal with the plane numbers behind it, the per-layer values and, for a metal, its convergence estimate |
 | `calc.get_anomalous_hall_conductivity(kpts=None)` | the `sigma` of that view, a `(3, 3)` array in S/cm |
+| `calc.get_wannier_charge_center_flow(plane, direction, kpts=None, offset=0.0, bands=None)` | `WannierChargeCenterFlow`: the hybrid Wannier centers of the strings along $\mathbf G_{\text{direction}}$ across the plane, the largest-gap line, the Z2 index of a time-reversal-invariant plane or the Chern number as the winding of a whole period ([the Z2 invariant](#berry-z2)) |
+| `calc.get_z2_invariant(kpts=None, plane=None, offset=0.0, direction=None, method="flow")` | `Z2Invariant`: the indices $(\nu_0;\nu_1\nu_2\nu_3)$ of a time-reversal-invariant insulator, or the index of one plane; `method="flow"` counts the center crossings, `method="parity"` takes the Fu-Kane product of the inversion eigenvalues |
 
 They are methods returning views, not ASE properties: each takes a mesh, a plane or a band
 group, and a polarization means nothing without its quantum. `get_property("polarization")`
@@ -68,9 +70,8 @@ Berry mesh is separate and is passed with `kpts=`.
 
 On this cell the polarization along $\mathbf a_1$ comes out at $-0.50$ C/m² (the other two
 components are below $10^{-3}$ C/m²), which is $-0.43$ quanta; its unfolded coordinate is
-$1.57$, two quanta higher, and the quantum along $\mathbf a_1$ is $1.17$ C/m². Along a string
-the unfolded coordinate converges as $1/N^2$: at $N = 2, 4, 6, 8$ points it is $1.572256$,
-$1.569524$, $1.569185$, $1.569096$ (the transverse mesh stays $2\times 2$). The string
+$1.57$, two quanta higher, and the quantum along $\mathbf a_1$ is $1.17$ C/m². The unfolded
+coordinate depends on the string's length $N$ (the transverse mesh stays $2\times 2$). The string
 phase spread is $0.03$ rad, far below the warning threshold. The Chern number of the plane
 is 0, its largest plaquette flux $0.02$ rad, and the Hall conductivity is zero. The grid is
 coarse and the basis single-zeta: the numbers show the shape of the output, not a converged
@@ -118,10 +119,10 @@ Bloch states, $M_{mn}(\mathbf k, \mathbf b) = \langle u_{m\mathbf k}|u_{n,\mathb
 the PAW one-center terms (the same overlaps the Wannier localization uses). A link that
 crosses the zone boundary reuses the state of the wrapped point with the true $\mathbf b$, so
 every string closes. Each link is made unitary (the polar factor of its singular value
-decomposition) before it is used. The one-center term is first order in $\mathbf b$; the
-dropped second-order term is Hermitian and enters $\arg\det$ only at third order in
-$\mathbf b$, so the Berry phase of a string converges as $1/N^2$ in its length $N$, not
-exactly at any mesh.
+decomposition) before it is used. The one-center term is the exact plane wave
+$e^{-i\mathbf b\cdot\mathbf r}$ inside the spheres, not its first-order expansion in
+$\mathbf b$, so no term of the overlap is dropped at any order in $\mathbf b$. The Berry
+phase of a string is still a discretization of a line integral and depends on its length $N$.
 
 **Berry phase.** For the bands $B$ along a closed string of $N$ points,
 
@@ -188,6 +189,75 @@ the quantized conductivity $\sigma_{xy} = C\,e^2/h$ per plane (Thouless and coll
 sign is that of Xiao, Chang and Niu). The factor $\operatorname{sign}(\det\mathbf G)$ cancels
 the handedness carried by each $C_c$, so the conductivity does not depend on how the cell is
 labeled, right- or left-handed. A time-reversal-symmetric insulator gives zero.
+
+(berry-z2)=
+## The Z2 invariant
+
+A time-reversal-invariant insulator with spin-orbit coupling carries a $\mathbb Z_2$ index. In
+three dimensions it is $(\nu_0;\nu_1\nu_2\nu_3)$, with $\nu_0 = 1$ a strong topological insulator
+(Fu and Kane). `get_z2_invariant` reports it two ways.
+
+**The flow of the Wannier centers** (`method="flow"`, the default; Soluyanov and Vanderbilt,
+Yu et al.). On a time-reversal-invariant plane $k_c = 0$ or $1/2$ the strings along $\mathbf G_a$
+at $k_b\in[0,1/2]$ give the hybrid Wannier centers $x_n(k_b)$ (the Wilson-loop eigenphases above).
+At $k_b = 0$ and $1/2$ they are Kramers pairs. The index of the plane is the parity of the number
+of times the centers cross a reference line, which sits in the middle of the largest gap between
+consecutive centers of each sample, so that no center is near it. When the largest gap changes from
+one sample to the next the line moves with it, and the centers it passes over count as crossings,
+which keeps the count that of one continuous line; the occupied manifold of a time-reversal-invariant
+crystal holds an even number of centers, so the parity does not depend on the line or the arc it
+is moved along. $\nu_j$ is the index of the plane $k_j = 1/2$, and $\nu_0$ that of $k_j = 0$ plus
+$\nu_j$, mod 2, which must agree for the three $j$; `planes` holds all six.
+
+A fixed transverse mesh can step over a double crossing near a small gap and miscount without a
+sign, so the samples are chosen as the flow runs: an interval is bisected where any center moves
+by more than a quarter of the largest gap (up to six halvings, then it raises, naming the plane),
+and, up to two halvings, where the largest gap changes. `kpts` gives the string length along
+$\mathbf G_{c+1}$ and the number of first transverse intervals per period (half of them, rounded
+up, over the half period); the strings are the cost, `strings` of the flow counts them.
+
+**The parity product** (`method="parity"`; Fu and Kane). For an inversion-symmetric crystal the
+product of the inversion eigenvalues of the occupied Kramers pairs at the eight
+time-reversal-invariant points $\Gamma_i$ gives $\delta_i = \pm1$, with
+$(-1)^{\nu_0} = \prod_i \delta_i$ and $(-1)^{\nu_j}$ the product over the four points of the plane
+$k_j = 1/2$. In the PAW-LCAO basis the inversion about a center $O$ maps a function of angular
+momentum $l$ on an atom to $(-1)^l$ times the same function on its image, with the Bloch phase
+$e^{i\mathbf k\cdot\mathbf T}$ of the lattice vector $\mathbf T$ that closes the image (a sign at
+a time-reversal-invariant point), and does not touch the spin. The center is an atom's site when
+there is one. The eigenvalues are those of $\mathbf C^\dagger \mathbf S\,\mathbf P\,\mathbf C$ on the
+occupied bands (`S` the PAW overlap); a deviation from $\pm1$ above $10^{-6}$ means the crystal is
+not inversion symmetric about $O$ and raises. The view lists the parities of the occupied and the
+lowest empty levels of every point, which is where a band inversion shows: it flips the parity
+of one pair across the gap at one point.
+
+**Without spin-orbit coupling** the occupied manifold holds every Wannier center twice (once per
+spin), every crossing is counted twice and every index is zero; the flow reports that zero from the
+doubled set, and the parity of a spin-degenerate band is its own Kramers pair. A collinear
+spin-polarized crystal (two channels, no time reversal in either) raises `NotImplementedError`, as
+does a magnetic spinor one. A plane that is not time-reversal invariant (any other `offset`) is
+flown over the whole period and its `winding`, minus the displacement of the centers over the
+period, is its Chern number, oriented as `get_chern_number`.
+
+A narrow smearing is needed: the occupied manifold is accepted only when every occupation is
+empty or full within $10^{-4}$, and the default width of 0.1 eV leaves the top valence band of a gap
+of a few tenths of an eV at $1 - 10^{-4}$ or less, so a bulk crystal such as Bi2Se3 runs with
+`smearing={"method": "fermi-dirac", "width": 2e-4}` (eV). The two end lines of a Z2 flow must hold
+Kramers pairs to $10^{-4}$ of a cell: strings of 6 points leave deviations up to about $10^{-6}$ on bulk Bi2Se3
+and strings of 10 points $10^{-11}$, so a longer string tightens them; a very weak time-reversal-breaking term
+would pass the check.
+
+**What is tested, and how far to trust a crystal's index.** The flow is gated on lattice models with known
+phase diagrams (Kane-Mele with Rashba coupling, Bernevig-Hughes-Zhang, Qi-Wu-Zhang, direct sums with many flat
+Kramers pairs), the parity on its own consistency (eigenvalues $\pm1$ to $10^{-14}$), and the two against each other
+plane by plane on bulk Bi2Se3 (DZP, a $3^3$ mesh, 0.18 Å, `smearing` width $2\times10^{-4}$ eV). On the
+experimental lattice (Nakajima 1963 type, $a = 4.138$ Å, $c = 28.64$ Å) `pbe-fr` gives $(1;000)$, with
+$\delta(\Gamma) = -1$ and a negative signed gap at $\Gamma$ (even minus odd frontier level: positive for a normal
+order, negative when inverted), and `pbe-sr` gives $(0;000)$ with a $\Gamma$ gap of 0.42 eV. The index of a real
+crystal is only as good as its band inversion, which is marginal on the PBE-expanded cell: the Bi 6p spin-orbit
+splitting of the `pbe-fr` datasets is 13 % short of the all-electron one in the engine, and that cell stays trivial
+until it is fixed. The basis matters as much (SZ gives $(1;000)$ on it only because its scalar gap is 0.35 eV too
+small), the direct gap at $\Gamma$ rises with the SCF mesh, and a grid of 0.30 Å is not a calculation of this
+crystal at all (0.22, 0.18 and 0.15 Å agree), so check the index at two bases and two meshes before relying on it.
 
 (berry-metals)=
 ## The anomalous Hall conductivity of a metal
@@ -352,6 +422,8 @@ areas in Å², the polarization in C/m² and the conductivity in S/cm; a calcula
 | `BerryPhase` | `phases` `(spins, n1, n2)` of the strings over the transverse mesh (`transverse_axes`, from the fractional origins `starts`); `phase` and `phase_spread`: the string average per channel and the largest distance of a string from it; `wannier_charge_centers` and `connection`: one `(n1, n2, n_bands)` array per channel (fractional, and Å); `bands`; `minimum_singular_value` |
 | `BerryCurvature` | `curvature` (Å²) and `flux` (rad), `(spins, n_a, n_b)`, at the fractional plaquette `centers`; `orientation` (the unit vector of $\mathbf G_a\times\mathbf G_b$); `chern_numbers` per channel and `chern_number`; `axes`, `size`, `offset`, `bands`; `max_flux` |
 | `AnomalousHall` | `sigma` `(3, 3)` (S/cm) and `sigma_coarse` (the every-other-point sub-mesh value of a metal, or `None`); `metallic`; `numbers`: the three plane numbers $\nu_c$, electrons per band included; `layers`: the plane number of every layer, indexed `[c][channel][layer]`; `chern_numbers`: the integers per plane family and channel (empty for a metal); `strings`: the mesh; `max_flux` (rad); `cap`, `merged` and `plaquettes` (bands linked per point, the plaquettes where a crossing or a node merged two groups, and all plaquettes of the mesh; 0 for an insulator); `fermi` (eV, the level re-solved on the Berry mesh for a metal, the SCF level for an insulator) and `scf_electron_error` (the electrons the SCF level would misplace on this mesh; 0 for an insulator) |
+| `WannierChargeCenterFlow` | `k_perp` `(samples,)` and `wannier_charge_centers` `(samples, n)` (fractional, ascending); `half` (the flow stops at $k_\perp = 1/2$); `z2` and `crossings`, `gap_midpoints` and `gaps` per sample (a half flow), `winding` (a whole-period flow, its Chern number); `spin_degenerate`; `strings` (strings computed); `normal`, `direction`, `transverse`, `offset`, `length`, `bands`, `minimum_singular_value` |
+| `Z2Invariant` | `indices` $(\nu_0,\nu_1,\nu_2,\nu_3)$ (one entry for a plane), `strong`, `weak`, `planes` (`{(j, half): index}`); `flows` (the `WannierChargeCenterFlow` of each plane, `method="flow"`); `parity` (per TRIM: `index`, `occupied`, `minus`, `delta`, `energies` in eV and `parities` of the occupied and the lowest empty levels; `method="parity"`) and `inversion_center`; `spin_degenerate`; `strings` |
 | `Polarization` | `vector` (C/m², branch nearest zero); `fractional` (in quanta, each in $(-1/2, 1/2]$); `raw`; `quanta` (rows $g\,e\,\mathbf a_j/\Omega$, C/m²); `electronic` and `ionic` (Cartesian, unreduced); `phases` `(spins, 3)`; `phase_spread`; `strings`; `quantum` ($g$); `degeneracy` ($f$) |
 
 **The branch.** A polarization is defined modulo its quanta, so only a change along a path is
@@ -417,6 +489,13 @@ crystal does not run ([DFT](dft.md), [DFT+U](dft_u.md)).
 | a mesh below the minimum, or a bad direction, plane, offset or band group | `ValueError` |
 | a link overlap with a singular value below $10^{-6}$, a plaquette flux above $3\pi/4$, or a band group that is not isolated | `ValueError`: refine the mesh |
 | Chern numbers that differ between the layers of a plane family | `ValueError`: the gap closes or the mesh is too coarse |
+| a collinear spin-polarized crystal: `get_z2_invariant`, `get_wannier_charge_center_flow`; a magnetic spinor crystal: `get_z2_invariant` | `NotImplementedError`: no time reversal |
+| `get_z2_invariant` or a Z2 flow of a metal | `ValueError`: undefined; narrow the smearing for an insulator |
+| a Z2 plane other than $k_c = 0$ or $1/2$, an unknown `method`, a `direction` equal to `plane`, a `direction` or `offset` without a `plane` | `ValueError` |
+| a Z2 flow of a crystal that is not time-reversal invariant, or whose end lines hold no Kramers pairs | `ValueError`: not time-reversal invariant |
+| a Z2 flow whose centers still move by more than a quarter of the largest gap after six halvings | `ValueError` naming the plane: the gap closes there, or raise the string length |
+| `nu_0` that differs between the three plane pairs | `ValueError`: refine the strings |
+| `method="parity"` of a crystal with no inversion center, or whose inversion eigenvalues deviate from $\pm1$ by more than $10^{-6}$ | `ValueError` |
 
 An occupied manifold, which the insulator paths need, is accepted when every SCF occupation is empty or full within $10^{-4}$,
 there is a direct gap above $10^{-6}$ Ha at every Berry k-point, and the highest occupied
@@ -426,7 +505,7 @@ because of its occupations is a metal for that request, and takes the weighted f
 
 ## What is native and what is not
 
-The six methods above are native and tested on lattice models with known answers
+The methods above are native and tested on lattice models with known answers
 (a Su-Schrieffer-Heeger chain, a Rice-Mele cycle, a Qi-Wu-Zhang model, and for a metal's Hall
 conductivity a doped Qi-Wu-Zhang model against its continuum integral), on gauge and
 rigid-translation invariance of the crystal's links, on time-reversal and inversion
@@ -440,14 +519,13 @@ affordable: a quantitative value waits on denser meshes or a Wannier-interpolati
 
 The Berry phase, the polarization and the occupied-manifold curvature of a metal are undefined
 and raise `ValueError`, as above. The orbital magnetization and the Fermi-surface form of the
-Hall conductivity are not provided. The Born effective charges and the piezoelectric tensor
-(B3) and the $\mathbb Z_2$ invariant of a time-reversal-symmetric insulator (B4) are planned and
-not available: see [not yet available](#not-yet-available).
+Hall conductivity are not provided. The Born effective charges and the piezoelectric tensor (B3) are planned and not available: see
+[not yet available](#not-yet-available).
 
 ## Scientific references
 
 The bibliography registers these under the analyses `"berry-phase"`, `"berry-curvature"`,
-`"anomalous-hall"` and `"polarization"`.
+`"anomalous-hall"`, `"polarization"` and `"z2"`.
 
 - Berry, *Proceedings of the Royal Society A* **392**, 45 (1984) (`Berry1984`),
   [doi:10.1098/rspa.1984.0023](https://doi.org/10.1098/rspa.1984.0023).
@@ -463,3 +541,20 @@ The bibliography registers these under the analyses `"berry-phase"`, `"berry-cur
   [doi:10.1103/RevModPhys.82.1959](https://doi.org/10.1103/RevModPhys.82.1959).
 - Yu, Qi, Bernevig, Fang and Dai, *Physical Review B* **84**, 075119 (2011) (`Yu2011`),
   [doi:10.1103/PhysRevB.84.075119](https://doi.org/10.1103/PhysRevB.84.075119).
+- Fu and Kane, *Physical Review B* **76**, 045302 (2007) (`Fu2007`),
+  [doi:10.1103/PhysRevB.76.045302](https://doi.org/10.1103/PhysRevB.76.045302).
+- Soluyanov and Vanderbilt, *Physical Review B* **83**, 235401 (2011) (`Soluyanov2011a`),
+  [doi:10.1103/PhysRevB.83.235401](https://doi.org/10.1103/PhysRevB.83.235401), and
+  **83**, 035108 (2011) (`Soluyanov2011b`),
+  [doi:10.1103/PhysRevB.83.035108](https://doi.org/10.1103/PhysRevB.83.035108).
+- Kane and Mele, *Physical Review Letters* **95**, 146802 (2005) (`Kane2005`),
+  [doi:10.1103/PhysRevLett.95.146802](https://doi.org/10.1103/PhysRevLett.95.146802), and
+  Bernevig, Hughes and Zhang, *Science* **314**, 1757 (2006) (`Bernevig2006`),
+  [doi:10.1126/science.1133734](https://doi.org/10.1126/science.1133734): the lattice models of
+  the Rust gates.
+- Nakajima, *Journal of Physics and Chemistry of Solids* **24**, 479 (1963) (`Nakajima1963`),
+  [doi:10.1016/0022-3697(63)90207-5](https://doi.org/10.1016/0022-3697(63)90207-5): the Bi2Se3 structure of the
+  companion cell.
+- Zhang, Liu, Qi, Dai, Fang and Zhang, *Nature Physics* **5**, 438 (2009) (`Zhang2009`),
+  [doi:10.1038/nphys1270](https://doi.org/10.1038/nphys1270): bulk Bi2Se3, the $\mathbb Z_2$ = 1
+  test crystal.

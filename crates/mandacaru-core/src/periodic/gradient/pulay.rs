@@ -65,6 +65,18 @@ pub fn projector_operator<D: Derivatives>(
     operator
 }
 
+/// `Re sum_{ij} left[i, j] right[j, i]` (`Re tr[left right]`), without forming the product.
+fn trace_re(left: &Matrix, right: &Matrix) -> f64 {
+    let (n, m) = left.shape();
+    let mut sum = C64::new(0., 0.);
+    for j in 0..m {
+        for i in 0..n {
+            sum += left[(i, j)] * right[(j, i)];
+        }
+    }
+    sum.re
+}
+
 /// `2 Re sum_nu G[mu,nu] M[nu,mu]` for every row `mu`, scattered to the owner of `mu`.
 fn scatter_rows(
     out: &mut [[f64; 3]],
@@ -80,18 +92,64 @@ fn scatter_rows(
     }
 }
 
+/// The derivative data of one k-point: what [`contract`] contracts, produced on a k-point lane.
+struct KData {
+    c: Matrix,
+    gc: [Matrix; 3],
+    /// Per spin channel: the cross matrices of the terms, in [`Term::of`] order, and the
+    /// moving spheres.
+    spins: Vec<(Vec<(Term, [Matrix; 3])>, Vec<[Matrix; 3]>)>,
+    spin_orbit: Option<(Matrix, [Matrix; 3])>,
+}
+
 pub fn contract<D: Derivatives>(d: &D, frozen: &Frozen<D::Fields>) -> Result<Pulay> {
     let l = d.layout();
     let mut out = Pulay::new(l.atoms);
     let terms = Term::of(&l.request.functional)?;
-    for k in 0..l.weights.len() {
+    // What one point holds: C, G_C (m x p), per spin the term crosses and the spheres (m x m).
+    let per_lane = super::matrix_bytes(4, l.m, l.p)?
+        .checked_add(super::matrix_bytes(
+            l.spins * 3 * (terms.len() + l.atoms),
+            l.m,
+            l.m,
+        )?)
+        .ok_or(crate::Error::Overflow)?;
+    let produce = |k: usize| -> Result<KData> {
         let c = d.projection(k)?;
         let gc = d.projection_gradient(k)?;
+        let mut spins = Vec::with_capacity(l.spins);
         for s in 0..l.spins {
             let crosses = terms
                 .iter()
                 .map(|&t| d.cross(s, k, t, &frozen.fields).map(|g| (t, g)))
                 .collect::<Result<Vec<_>>>()?;
+            let spheres = d.sphere_cross(s, k, &frozen.fields)?;
+            spins.push((crosses, spheres));
+        }
+        let spin_orbit = if l.request.spinor {
+            Some((
+                d.spin_orbit_projection(k)?,
+                d.spin_orbit_projection_gradient(k)?,
+            ))
+        } else {
+            None
+        };
+        Ok(KData {
+            c,
+            gc,
+            spins,
+            spin_orbit,
+        })
+    };
+    // The contraction of each point in k order, as the serial loop ran it.
+    let consume = |k: usize, data: KData| -> Result<()> {
+        let KData {
+            c,
+            gc,
+            spins,
+            spin_orbit,
+        } = data;
+        for (s, (crosses, spheres)) in spins.into_iter().enumerate() {
             let bands = &frozen.state.bands[s][k];
             let (density, weighted) = (bands.density(), bands.weighted(l.reference));
             let w = l.degeneracy * l.weights[k];
@@ -106,13 +164,13 @@ pub fn contract<D: Derivatives>(d: &D, frozen: &Frozen<D::Fields>) -> Result<Pul
                 }
             }
             // P4's moving spheres: each sphere atom pays for the functions' rigid translation.
-            let spheres = d.sphere_cross(s, k, &frozen.fields)?;
             if !spheres.is_empty() && spheres.len() != l.atoms {
                 return Err(invalid("crystal gradient: one sphere derivative per atom"));
             }
             for (atom, g) in spheres.iter().enumerate() {
                 for (axis, ga) in g.iter().enumerate() {
-                    let t = 2.0 * w * (ga * &density).trace().re;
+                    // `Re tr[G D]` as the elementwise sum `Re sum_ij G[i, j] D[j, i]`.
+                    let t = 2.0 * w * trace_re(ga, &density);
                     out.short_range[atom][axis] -= t;
                 }
             }
@@ -130,7 +188,7 @@ pub fn contract<D: Derivatives>(d: &D, frozen: &Frozen<D::Fields>) -> Result<Pul
                 }
             }
         }
-        if l.request.spinor {
+        if let Some((c_so, g_so)) = spin_orbit {
             if l.spins != 1 || l.degeneracy != 1.0 {
                 return Err(invalid(
                     "crystal gradient: a spinor layout has one spin channel of degeneracy 1",
@@ -139,10 +197,6 @@ pub fn contract<D: Derivatives>(d: &D, frozen: &Frozen<D::Fields>) -> Result<Pul
             // The spin-orbit matrix moves with the atoms only through its own projections: no
             // `dS`, no hat, no `W`. `D` is the spinor density in the provider's frame.
             let so = d.spin_orbit()?;
-            let (c_so, g_so) = (
-                d.spin_orbit_projection(k)?,
-                d.spin_orbit_projection_gradient(k)?,
-            );
             for bands in frozen.state.bands.iter().map(|s| &s[k]) {
                 so.add_k(
                     &mut out.spin_orbit,
@@ -153,6 +207,8 @@ pub fn contract<D: Derivatives>(d: &D, frozen: &Frozen<D::Fields>) -> Result<Pul
                 )?;
             }
         }
-    }
+        Ok(())
+    };
+    super::kpoint_windows(d.context(), l.weights.len(), per_lane, produce, consume)?;
     Ok(out)
 }

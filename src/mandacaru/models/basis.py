@@ -4,23 +4,10 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from .. import _native
+
 _L_LETTERS = "spdfghik"
 _L_OF = {c: i for i, c in enumerate(_L_LETTERS)}
-
-#: Polarization exponent factors ``alpha_l = f_l * zeta_val^2``, by ``l``.
-HEAVY_POLARIZATION_FACTOR = {2: 0.4, 3: 0.6, 4: 0.8, 5: 1.0, 6: 1.2}
-HYDROGEN_POLARIZATION_FACTOR = {1: 0.9, 2: 1.2, 3: 1.5, 4: 1.8, 5: 2.1}
-#: Geometric ratio between successive polarization exponents of one ``l``.
-POLARIZATION_RATIO = 3.0
-#: A diffuse function sits at (most diffuse exponent of that l) / this.
-DIFFUSE_RATIO = 3.5
-#: A core-correlating function sits at (tightest valence exponent) * this.
-TIGHT_RATIO = 3.0
-#: Longest contraction the Slater-orbital fit is asked for.  The published
-#: cc-pV5Z core runs to 14 primitives, but past ten the primitive overlap
-#: matrix is numerically singular and the fit gains nothing (1 - <S|P|S> is
-#: already 4e-9 at ten); the function count does not depend on it.
-MAX_CONTRACTION = 10
 
 
 # --------------------------------------------------------------------------- #
@@ -223,19 +210,18 @@ def _parse_dunning(match) -> GaussianRecipe:
     name = (
         f"{'aug-' if aug else ''}cc-p{'C' if core_corr else ''}V{zeta_letter.upper()}Z"
     )
-    # Heavy atoms: (X-1) d, (X-2) f, ...; hydrogen: (X-1) p, (X-2) d, ...
-    pol_heavy = tuple((2 + k, X - 1 - k) for k in range(X - 1))
-    pol_h = tuple((1 + k, X - 1 - k) for k in range(X - 1))
-    tight = tuple((l, X - 1) for l in (0, 1)) if core_corr else ()
+    # The ladder (valence contractions, polarization and core-correlating shells) is the
+    # engine's rule; this only names the family.
+    ladder = _native.dunning_ladder(X, core_corr)
     return GaussianRecipe(
         name=name,
         family="dunning",
-        core=(min(4 + 2 * X, MAX_CONTRACTION),),
-        valence=(4,) + (1,) * (X - 1),
-        polarization=pol_heavy,
-        polarization_h=pol_h,
+        core=(ladder["core"],),
+        valence=tuple(ladder["valence"]),
+        polarization=tuple(map(tuple, ladder["polarization"])),
+        polarization_h=tuple(map(tuple, ladder["polarization_h"])),
         diffuse_present=aug,
-        tight=tight,
+        tight=tuple(map(tuple, ladder["tight"])),
         description=(
             f"Dunning correlation-consistent, {X}-zeta valence"
             + (", augmented with one diffuse function per l" if aug else "")
@@ -328,7 +314,7 @@ def parse_basis_name(name: str) -> GaussianRecipe:
             )
         if prefix == NATIVE_NAMESPACE:
             # Explicit spelling of what a bare name gives; "-recipe" optional.
-            key = rest[: -len("-recipe")] if rest.lower().endswith("-recipe") else rest
+            key = re.sub(r"-recipe$", "", rest, flags=re.IGNORECASE)
         else:
             raise ValueError(
                 f"unknown basis-set namespace {prefix!r} in {name!r}; use "

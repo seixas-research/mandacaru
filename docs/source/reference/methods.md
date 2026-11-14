@@ -19,7 +19,7 @@ do not carry.
 | `adapt-vqe` | ADAPT-VQE: the ansatz grows from an operator pool | yes | yes | yes | The default method. Pools are `fermionic`, `qubit`, `qeb`, `ceo` (the default), `ceo-ovp` and `spin-orbit`. |
 | `subspace-vqe` | Shared-unitary VQE for the lowest `num_states` states | yes | no | no | Levels are bare expectations, not Ritz values of the final subspace. |
 | `subspace-adapt-vqe` | ADAPT-VQE over the same shared subspace | yes | no | no | The pool gradient is the weighted sum over all references. |
-| `vasqa` | VASQA (Variational Adaptive Stochastic Quantum Algorithm): Markov-chain search over ansatz architectures | yes | yes | yes | The search controls are `max_steps` (default 200), `max_length`, `seed`, `temperature` and `move_weights`. Local state vector and fresh chains only: circuit execution and `resume=` raise `NotImplementedError`. |
+| `vasqa` | VASQA (Variational Adaptive Stochastic Quantum Algorithm): Markov-chain search over ansatz architectures | yes | yes | yes | The search controls are `max_steps` (default 200), `max_length`, `seed`, `temperature` and `move_weights`; `replicas` (with `replica_spacing`) is opt-in ([the VASQA tutorial](../tutorial/vasqa.md)). Local state vector and fresh chains only: circuit execution and `resume=` raise `NotImplementedError`. |
 | `valsqa` | VALSQA (Variational Adaptive Learnable Stochastic Quantum Algorithm): the same chain with learned proposals (a pairwise ranker or a graph model) | yes | yes | yes | Uses a trained `proposal_model` when one is supplied and ready; otherwise it falls back to gradient proposals and says so (`result.proposal_reason`). |
 
 ## What the flags do not say
@@ -58,7 +58,8 @@ lattice-summed electrostatics and image-summed HAO or Gaussian orbitals, and rep
 energy per primitive cell; it needs `crystal_orbitals="real-space"` (the default
 `"k-space"` raises `NotImplementedError` until the per-k register exists). Its
 `get_forces()` is a central finite difference of the energy per cell (`vasqa` and `valsqa`
-need `seed=`), and its `get_stress()` raises `NotImplementedError` (see
+need `seed=`), and is refused when the active space splits an exactly degenerate orbital group;
+its `get_stress()` raises `NotImplementedError` (see
 [the crystal guide](../guide/bloch.md)). `subspace-vqe`, `subspace-adapt-vqe`, `rhf`,
 `uhf` and `ghf` raise on a crystal. `dft` forces and stress on a crystal are supported
 through `atoms.get_forces()` and `atoms.get_stress()`; the Berry phase, Berry curvature, Chern
@@ -71,10 +72,21 @@ basis, with energy and analytic forces ([molecules](#dft-u-molecules)); a
 molecule with another method raises `ValueError`, and a screened hybrid or a spin-orbit dataset
 raises `NotImplementedError` (the full list is in [DFT+U](../guide/dft_u.md)).
 
-**Excited states.** `get_excitations()` is a post-SCF request on a converged `rhf` state
-or on a `dft` state with `xc="lda"`, `"pbe"` or `"hse06"` (closed-shell molecules); every
-other method and functional raises, and `energy_levels()` stays the quantum route
+**Excited states.** `get_excitations()` is a post-SCF request on a converged `rhf` or
+`uhf` state or on a `dft` state with `xc="lda"`, `"pbe"`, `"r2scan"` or `"hse06"`, with or
+without `hubbard_u=` where the ground state accepts it (molecules, closed
+or open shell; an open shell gives the spin-conserving excitations of both spins with
+`<S^2>` of each root, and takes `spin=None`); every
+other method raises, the rVV10 pairings (`pbe+rvv10`, `r2scan+rvv10`) raise because the
+nonlocal kernel is not implemented, and `energy_levels()` stays the quantum route
 ([Excited states of molecules](../guide/excited_states.md)).
+
+**Real time.** `get_real_time()` is a post-SCF request on a converged molecule with `rhf`,
+`uhf` or a `dft` state with `xc="lda"`, `"pbe"` or `"hse06"` (with `hubbard_u=` where the
+ground state accepts it): it kicks the orbitals and propagates them, and the returned view
+holds the dipole trace and its spectra. `r2scan`, the rVV10 pairings, spin-orbit datasets,
+fractional occupations, `precision="float32"` and crystals raise, and every quantum method
+raises `ValueError` ([Real-time TD-DFT of molecules](../guide/real_time.md)).
 
 **Quantum options on classical methods.** `rhf`, `uhf`, `ghf` and `dft` refuse
 `shots`, `execute_circuits`, `backend_provider`, `device`, `backend_options` and
@@ -92,7 +104,7 @@ on another method, so nothing is silently ignored:
 | `spin`, `unrestricted` | `dft` and `uhf` |
 | `pool` | the quantum methods |
 | `taper` | `vqe`, `adapt-vqe`, `subspace-vqe` and `subspace-adapt-vqe` |
-| `seed`, `min_length`, `max_length`, `move_weights`, `temperature`, `length_penalty`, `warm_start`, `replace_start`, `proposal_temperature`, `proposal` | `vasqa` and `valsqa` |
+| `seed`, `min_length`, `max_length`, `move_weights`, `temperature`, `length_penalty`, `warm_start`, `replace_start`, `proposal_temperature`, `proposal`, `replicas`, `replica_spacing` | `vasqa` and `valsqa` |
 
 A few more conditions are checked against the method:
 
@@ -103,7 +115,7 @@ A few more conditions are checked against the method:
   `pool=` always wins; the log's `pool:` line reports the one used.
 - `energy_levels()` raises `ValueError` unless the calculator is `vqe`.
 - Architecture-search controls (`max_steps`, `record`, `screen_insertions`,
-  `proposal_model`) are accepted only by `vasqa` and `valsqa`; `proposal_model`
+  `proposal_model`, `replicas`, `replica_spacing`) are accepted only by `vasqa` and `valsqa`; `proposal_model`
   only by `valsqa`.
 - The `subspace-*` methods refuse circuit execution and `checkpoint=`/`resume=`
   (`NotImplementedError`).

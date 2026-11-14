@@ -70,6 +70,7 @@ impl MeanField {
         specification: &str,
         representation: Representation,
     ) -> Result<transform::Model> {
+        integrals.require_hartree_fock_core()?;
         self.require_determinant("an active-space selection")?;
         self.require_frame()?;
         let spec: Value =

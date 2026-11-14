@@ -77,8 +77,8 @@ pub fn berry_curvature(
 /// The plane normal to `normal` through layer `layer` (its index along the normal) of a mesh.
 pub fn plane(sampler: &Sampler, lattice: &Lattice, normal: usize, layer: usize) -> Result<Plane> {
     let [a, b] = plane_axes(normal)?;
-    let size = [lattice.size[a], lattice.size[b]];
-    if size.iter().any(|n| *n < 2) || layer >= lattice.size[normal] {
+    let size = [lattice.mesh.size[a], lattice.mesh.size[b]];
+    if size.iter().any(|n| *n < 2) || layer >= lattice.mesh.size[normal] {
         return Err(invalid(
             "a Berry plane needs two in-plane points per direction and a layer",
         ));
@@ -95,12 +95,12 @@ pub fn plane(sampler: &Sampler, lattice: &Lattice, normal: usize, layer: usize) 
         point[a] = i % size[0];
         point[b] = j % size[1];
         point[normal] = layer;
-        lattice.index(point)
+        lattice.mesh.index(point)
     };
     let mut centers = Vec::with_capacity(size[0] * size[1]);
     for i in 0..size[0] {
         for j in 0..size[1] {
-            let mut center = lattice.fractional({
+            let mut center = lattice.mesh.fractional({
                 let mut point = [0; 3];
                 point[a] = i;
                 point[b] = j;
@@ -117,7 +117,8 @@ pub fn plane(sampler: &Sampler, lattice: &Lattice, normal: usize, layer: usize) 
         normal,
         axes: [a, b],
         size,
-        offset: lattice.fractional([0; 3])[normal] + layer as f64 / lattice.size[normal] as f64,
+        offset: lattice.mesh.fractional([0; 3])[normal]
+            + layer as f64 / lattice.mesh.size[normal] as f64,
         orientation: orientation.into(),
         flux: vec![vec![]; channels],
         curvature: vec![vec![]; channels],

@@ -2,7 +2,7 @@
 //! deterministic random generator and the link of two state matrices.
 #![allow(dead_code)]
 use mandacaru_core::quantum::C64;
-use nalgebra::{DMatrix, SymmetricEigen};
+use nalgebra::DMatrix;
 use std::f64::consts::PI;
 
 pub type Matrix = DMatrix<C64>;
@@ -27,14 +27,12 @@ impl Rng {
     }
 }
 
-/// The `n` lowest eigenvectors (columns) of a Hermitian matrix.
+/// The `n` lowest eigenvectors (columns) of a Hermitian matrix, from the engine's solver (nalgebra's
+/// `SymmetricEigen` returns wrong eigenvectors for some exactly degenerate complex spectra: residual 0.29
+/// on the Kane-Mele line `k_y = 0`).
 pub fn lowest(h: Matrix, n: usize) -> Matrix {
-    let eig = SymmetricEigen::new(h);
-    let mut order: Vec<usize> = (0..eig.eigenvalues.len()).collect();
-    order.sort_by(|a, b| eig.eigenvalues[*a].total_cmp(&eig.eigenvalues[*b]));
-    Matrix::from_fn(eig.eigenvectors.nrows(), n, |i, j| {
-        eig.eigenvectors[(i, order[j])]
-    })
+    let (_, vectors) = mandacaru_core::math::linalg::eigen(h).unwrap();
+    vectors.columns(0, n).into_owned()
 }
 
 pub fn sigma(d: [f64; 3]) -> Matrix {

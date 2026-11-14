@@ -73,6 +73,7 @@ pub fn calculate(
             "local MP2 needs closed-shell Hartree-Fock orbitals",
         ));
     }
+    integrals.require_hartree_fock_core()?;
     if [
         options.pno_cutoff,
         options.doi_cutoff,

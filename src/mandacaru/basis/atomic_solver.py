@@ -53,13 +53,6 @@ def lda_correlation(rho):
     return terms[2].reshape(shape), terms[3].reshape(shape)
 
 
-def lda_xc(rho):
-    """Total LDA exchange-correlation ``(e_xc, v_xc)`` (Hartree)."""
-    terms = _context().lda_terms(np.ascontiguousarray(rho, dtype=float).ravel())
-    shape = np.shape(rho)
-    return (terms[0] + terms[2]).reshape(shape), (terms[1] + terms[3]).reshape(shape)
-
-
 def solve_radial(r, potential, l: int, n_nodes: int):
     r"""Bound state of ``-1/2 u'' + [l(l+1)/2r^2 + V] u = eps u`` on a uniform grid.
 
@@ -140,19 +133,6 @@ class AtomicResult:
     def xc(self) -> str:
         """Which exchange-correlation functional produced it."""
         return str(self.details.get("xc", "lda"))
-
-    def spin_orbit_splitting(self, n: int, l: int) -> float:
-        r""":math:`\varepsilon_{l+1/2} - \varepsilon_{l-1/2}` (Hartree).
-
-        Zero for an s shell, and zero for any atom not solved with
-        ``relativity="dirac"`` -- in which case it is zero because the
-        equation has no spin-orbit term, not because the atom has no
-        splitting.
-        """
-        if int(l) == 0 or not self.eigenvalues_j:
-            return 0.0
-        return float(self.eigenvalues_j[(n, l, -(l + 1))]
-                     - self.eigenvalues_j[(n, l, l)])
 
     @property
     def n_electrons(self) -> int:

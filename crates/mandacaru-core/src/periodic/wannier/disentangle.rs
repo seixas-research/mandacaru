@@ -1,11 +1,8 @@
-//! Frozen-window subspace selection by minimization of the invariant spread.
-//! Optional band representations constrain the projectors to a space group.
+//! Frozen-window subspace selection by minimization of the invariant spread (Souza, Marzari,
+//! Vanderbilt).
 use super::{invalid, Matrix, Mesh};
 use crate::{
-    math::{
-        linalg::eigen,
-        storage::{MatrixSource, StoredMatrix},
-    },
+    math::{linalg::eigen, storage::MatrixSource},
     product,
     quantum::C64,
     Buffer, Context, Reservation, Result,
@@ -15,11 +12,6 @@ pub struct Windows {
     pub inside: Buffer<u8>,
     pub frozen: Buffer<u8>,
     pub functions: usize,
-}
-pub struct Symmetry {
-    pub operations: usize,
-    pub mapping: Buffer<usize>,
-    pub rotations: Vec<StoredMatrix>,
 }
 pub struct Options {
     pub max_iterations: usize,
@@ -41,72 +33,6 @@ pub struct Subspace {
     pub converged: bool,
     _memory: Reservation,
 }
-fn symmetric(
-    ctx: &Context,
-    mesh: &Mesh,
-    values: &[Matrix],
-    group: Option<&Symmetry>,
-) -> Result<Vec<Matrix>> {
-    let Some(group) = group else {
-        return Ok(values.to_vec());
-    };
-    let mut out = vec![Matrix::zeros(mesh.bands, mesh.bands); mesh.points];
-    for operation in 0..group.operations {
-        for (k, value) in values.iter().enumerate() {
-            let at = operation * mesh.points + k;
-            let d = group.rotations[at].matrix(ctx)?;
-            out[group.mapping.as_slice()[at]] +=
-                &*d * value * d.adjoint() * C64::new(1. / group.operations as f64, 0.);
-        }
-    }
-    Ok(out)
-}
-fn validate_symmetry(
-    ctx: &Context,
-    mesh: &Mesh,
-    group: &Symmetry,
-    windows: &Windows,
-) -> Result<()> {
-    if group.operations == 0
-        || group.mapping.as_slice().len() != product(&[group.operations, mesh.points])?
-        || group.rotations.len() != group.mapping.as_slice().len()
-    {
-        return Err(invalid("invalid Wannier symmetry dimensions"));
-    }
-    let mut seen = ctx.allocate::<u8>(mesh.points)?;
-    for operation in 0..group.operations {
-        seen.as_mut_slice().fill(0);
-        for k in 0..mesh.points {
-            let at = operation * mesh.points + k;
-            let dest = group.mapping.as_slice()[at];
-            if dest >= mesh.points || seen.as_slice()[dest] != 0 {
-                return Err(invalid("Wannier symmetry must permute the k-point mesh"));
-            }
-            seen.as_mut_slice()[dest] = 1;
-            let d = group.rotations[at].matrix(ctx)?;
-            if d.shape() != (mesh.bands, mesh.bands)
-                || d.iter().any(|v| !v.re.is_finite() || !v.im.is_finite())
-                || (d.adjoint() * &*d - Matrix::identity(mesh.bands, mesh.bands)).norm() > 1e-4
-            {
-                return Err(invalid("Wannier band representation is not unitary"));
-            }
-            for i in 0..mesh.bands {
-                for j in 0..mesh.bands {
-                    if d[(i, j)].norm() > 1e-8
-                        && [windows.inside.as_slice(), windows.frozen.as_slice()]
-                            .iter()
-                            .any(|mask| mask[dest * mesh.bands + i] != mask[k * mesh.bands + j])
-                    {
-                        return Err(invalid(
-                            "Wannier symmetry mixes states across an outer or frozen window",
-                        ));
-                    }
-                }
-            }
-        }
-    }
-    Ok(())
-}
 fn leading(matrix: &Matrix, functions: usize) -> Result<Matrix> {
     if functions == 0 {
         return Ok(Matrix::zeros(matrix.nrows(), 0));
@@ -121,7 +47,6 @@ pub fn select(
     mesh: &Mesh,
     trials: &[Matrix],
     windows: &Windows,
-    group: Option<&Symmetry>,
     options: &Options,
 ) -> Result<Subspace> {
     mesh.validate(ctx)?;
@@ -167,9 +92,6 @@ pub fn select(
             .checked_add(product(&[mesh.bands, mesh.bands, 16, 12])?)
             .ok_or(crate::Error::Overflow)?,
     )?;
-    if let Some(group) = group {
-        validate_symmetry(ctx, mesh, group, windows)?;
-    }
     ctx.run(|| {
         let mut free = vec![];
         let mut fixed = vec![];
@@ -203,7 +125,6 @@ pub fn select(
             fixed.push(f);
         }
         let update = |matrices: &[Matrix], gauge: &mut [Matrix]| -> Result<()> {
-            let matrices = symmetric(ctx, mesh, matrices, group)?;
             for k in 0..mesh.points {
                 let rest = functions - fixed[k].len();
                 if rest == 0 {

@@ -12,23 +12,26 @@
 //! frozen state depends on. The engine turns `G` into the force of atom `X` by the ownership
 //! identity `dM_X = P_X G + G^+ P_X`.
 //!
-//! Memory: one k-point at a time. [`KSamples`] holds the values and the three derivatives of
-//! every function on the mesh (`4 M N` complex numbers, three times the values beyond the
-//! values), charged to the `Context`; the caller drops it before the next k-point.
+//! Memory: one k-point at a time. The grid terms are streamed ([`cross_streamed`]: blocks of mesh
+//! points sized from the free budget, [`kinetic_setup`]: the kinetic ket, the one array of the
+//! size of the mesh and the basis); [`KSamples`] (the values and the three derivatives of every
+//! function on the whole mesh, `4 M N` complex numbers) remains for the meta-GGA's kinetic-density
+//! operator and the oracles of the tests.
 use super::{
-    basis_gradient::{short_range_cross, ShortRange},
+    basis_gradient::{short_range_cross, subset, ShortRange},
     images::Region,
     shells::{DenseRows, Sampling, Shells},
     spheres::{projection_slopes, projections, Projector},
 };
 use crate::{
-    math::{fft::Fft3, reciprocal, spline::Cubic, SpatialGrid},
+    math::{fft::Fft3, gemm::complex_product, reciprocal, spline::Cubic, SpatialGrid},
     paw::fields::place_by,
     periodic::invalid,
     product, Buffer, Context, Reservation, Result,
 };
 use nalgebra::{DMatrix, DMatrixView, Matrix3, Vector3};
 use num_complex::Complex64;
+use std::ops::Range;
 
 pub type Matrix = DMatrix<Complex64>;
 
@@ -174,11 +177,247 @@ fn columns(rows: &[Complex64], points: usize, count: usize) -> DMatrixView<'_, C
 
 /// `-sum_x conj(bra[mu, x]) w_x ket[nu, x]` for the three derivative bras; `weighted` is the ket
 /// already multiplied by the weights.
-fn minus_cross(samples: &KSamples, weighted: &Matrix) -> [Matrix; 3] {
-    std::array::from_fn(|axis| {
+fn minus_cross(samples: &KSamples, weighted: &Matrix) -> Result<[Matrix; 3]> {
+    let mut out = [
+        Matrix::zeros(0, 0),
+        Matrix::zeros(0, 0),
+        Matrix::zeros(0, 0),
+    ];
+    for (axis, to) in out.iter_mut().enumerate() {
         let bra = columns(samples.slope(axis), samples.points, samples.functions);
-        -(bra.adjoint() * weighted)
-    })
+        *to = -complex_product(bra, true, weighted.as_view())?;
+    }
+    Ok(out)
+}
+
+/// Points per block of a streamed pass over the mesh: `copies` arrays of `functions x block`
+/// complex values must fit in a quarter of the free budget (at most 256 MiB), never fewer than
+/// 512 points nor more than the mesh. A smaller budget gives smaller blocks, never an error.
+pub fn block_len(ctx: &Context, functions: usize, points: usize, copies: usize) -> usize {
+    let free = ctx.memory_limit().saturating_sub(ctx.memory_used());
+    let target = (free / 4).min(256 << 20);
+    (target / (copies.max(1) * functions.max(1) * 16))
+        .max(512)
+        .min(points.max(1))
+}
+
+/// The Bloch sums `(function, point)` of the points `range` of the mesh, with (`slopes`) their
+/// three Cartesian derivatives.
+pub fn block_samples(
+    ctx: &Context,
+    shells: &Shells,
+    lattice: &Matrix3<f64>,
+    mesh: &Mesh,
+    k: [f64; 3],
+    range: &Range<usize>,
+    slopes: bool,
+) -> Result<(Buffer<Complex64>, Vec<Buffer<Complex64>>)> {
+    let (m, nb) = (shells.functions(), range.len());
+    let all = mesh.points();
+    let points = [
+        &all[0][range.clone()],
+        &all[1][range.clone()],
+        &all[2][range.clone()],
+    ];
+    let sampling = Sampling {
+        lattice,
+        region: mesh.region,
+        kpoints: &[k],
+    };
+    let mut values = ctx.allocate::<Complex64>(product(&[m, nb])?)?;
+    shells.values(
+        ctx,
+        &sampling,
+        points,
+        &mut DenseRows::new(values.as_mut_slice(), m, nb),
+    )?;
+    let mut derivatives = Vec::new();
+    if slopes {
+        for axis in 0..3 {
+            let mut rows = ctx.allocate::<Complex64>(product(&[m, nb])?)?;
+            shells.derivatives(
+                ctx,
+                &sampling,
+                points,
+                axis,
+                &mut DenseRows::new(rows.as_mut_slice(), m, nb),
+            )?;
+            derivatives.push(rows);
+        }
+    }
+    Ok((values, derivatives))
+}
+
+/// The ket a streamed cross term contracts the derivative bras with.
+pub enum Ket<'a> {
+    /// `dV w(x) chi_nu(x)`: the overlap (`None`) or a local potential.
+    Weighted(Option<&'a [f64]>),
+    /// Columns `(point, function)` already formed on the whole mesh (the kinetic ket).
+    Columns(&'a Matrix),
+}
+
+/// `G^a = -sum_x conj(d_a chi_mu(x)) ket_nu(x)` for every ket of `kets`, three `m x m` matrices
+/// each, from blocks of mesh points: the values and slopes of one block at a time are formed once
+/// for all the kets, so the memory is `O(functions x block)` and not `O(functions x mesh)`.
+pub fn cross_streamed(
+    ctx: &Context,
+    shells: &Shells,
+    lattice: &Matrix3<f64>,
+    mesh: &Mesh,
+    k: [f64; 3],
+    kets: &[Ket<'_>],
+) -> Result<Vec<[Matrix; 3]>> {
+    let block = block_len(ctx, shells.functions(), mesh.len(), 6 + kets.len());
+    cross_streamed_blocks(ctx, shells, lattice, mesh, k, kets, block)
+}
+
+/// [`cross_streamed`] with blocks of `block` points (the tests' way to force many blocks).
+#[doc(hidden)]
+pub fn cross_streamed_blocks(
+    ctx: &Context,
+    shells: &Shells,
+    lattice: &Matrix3<f64>,
+    mesh: &Mesh,
+    k: [f64; 3],
+    kets: &[Ket<'_>],
+    block: usize,
+) -> Result<Vec<[Matrix; 3]>> {
+    let (m, n) = (shells.functions(), mesh.len());
+    let block = block.clamp(1, n.max(1));
+    for ket in kets {
+        match ket {
+            Ket::Weighted(Some(v)) if v.len() != n => {
+                return Err(invalid("the local potential needs one value per mesh node"))
+            }
+            Ket::Columns(c) if c.shape() != (n, m) => {
+                return Err(invalid("a ket needs one column per function on the mesh"))
+            }
+            _ => {}
+        }
+    }
+    let mut out: Vec<[Matrix; 3]> = kets
+        .iter()
+        .map(|_| std::array::from_fn(|_| Matrix::zeros(m, m)))
+        .collect();
+    let mut start = 0;
+    while start < n {
+        let range = start..(start + block).min(n);
+        let nb = range.len();
+        let (values, slopes) = block_samples(ctx, shells, lattice, mesh, k, &range, true)?;
+        let _held = ctx.reserve(product(&[m, nb, 16, 2])?)?;
+        for (ket, to) in kets.iter().zip(out.iter_mut()) {
+            let weighted;
+            let view = match ket {
+                Ket::Weighted(potential) => {
+                    weighted = Matrix::from_fn(nb, m, |x, nu| {
+                        values.as_slice()[nu * nb + x]
+                            * (mesh.dv * potential.map_or(1., |v| v[range.start + x]))
+                    });
+                    weighted.as_view()
+                }
+                Ket::Columns(c) => c.view((range.start, 0), (nb, m)),
+            };
+            for (axis, slope) in slopes.iter().enumerate() {
+                to[axis] -= complex_product(columns(slope.as_slice(), nb, m), true, view)?;
+            }
+        }
+        start = range.end;
+    }
+    Ok(out)
+}
+
+/// What the kinetic term needs of the basis on the reciprocal mesh at `k`.
+pub struct KineticSetup {
+    /// `K_nu(x) = dV e^{ik.x} sum_G e^{iG.x} w(G) u_nu(G)`, `(point, function)`: the kinetic ket in
+    /// real space, so that `<d chi_mu | T | chi_nu> = sum_x conj(d chi_mu(x)) K_nu(x)`.
+    pub ket: Matrix,
+    /// `T[mu, nu] = sum_G conj(u_mu) w u_nu` and, per Voigt pair, `S[mu, nu] = sum_G conj(u_mu)
+    /// Q_ab(G) u_nu / Omega` (`Q` the alias mean of `Q_a Q_b`): the symbol terms of the stress.
+    pub moments: Option<(Matrix, Vec<Matrix>)>,
+}
+
+/// The kinetic ket of every function at `k`, one shell at a time (`u = dV FFT[chi e^{-ik.x}]` is
+/// held for the whole basis only as the `n x m` array the ket then replaces in place: one
+/// `n x m` array in all). With `moments`, `T` and the six `S` are accumulated from `u` before it
+/// is transformed.
+pub fn kinetic_setup(
+    ctx: &Context,
+    grid: &SpatialGrid,
+    mesh: &Mesh,
+    shells: &Shells,
+    lattice: &Matrix3<f64>,
+    k: [f64; 3],
+    moments: bool,
+) -> Result<KineticSetup> {
+    let (m, n) = (shells.functions(), mesh.len());
+    let mut fft = Fft3::new(ctx, grid.index.shape())?;
+    let weight = kinetic_weights(ctx, grid, mesh, k)?;
+    let _held = ctx.reserve(product(&[n, m, 16])?)?;
+    let mut u = Matrix::zeros(n, m);
+    let sampling = Sampling {
+        lattice,
+        region: mesh.region,
+        kpoints: &[k],
+    };
+    for shell in shells.shells() {
+        let part = subset(shells, &shell.rows)?;
+        let nm = shell.rows.len();
+        let mut rows = ctx.allocate::<Complex64>(product(&[nm, n])?)?;
+        part.values(
+            ctx,
+            &sampling,
+            mesh.points(),
+            &mut DenseRows::new(rows.as_mut_slice(), nm, n),
+        )?;
+        let (periodic, _held_part) = periodic_parts(ctx, &mut fft, mesh, k, rows.as_slice(), nm)?;
+        for (i, &row) in shell.rows.iter().enumerate() {
+            u.column_mut(row).copy_from(&periodic.column(i));
+        }
+    }
+    let moments = if moments {
+        let outer = reciprocal::bloch_outer(ctx, grid, k)?;
+        let chunk = block_len(ctx, m, n, 6);
+        let mut t = Matrix::zeros(m, m);
+        let mut symbols = vec![Matrix::zeros(m, m); 6];
+        let mut start = 0;
+        while start < n {
+            let stop = (start + chunk).min(n);
+            let bra = u.view((start, 0), (stop - start, m));
+            let scaled = |factor: &dyn Fn(usize) -> f64| {
+                Matrix::from_fn(stop - start, m, |x, j| {
+                    u[(start + x, j)] * factor(start + x)
+                })
+            };
+            t += complex_product(bra, true, scaled(&|g| weight[g]).as_view())?;
+            for (pair, symbol) in symbols.iter_mut().enumerate() {
+                let row = &outer.as_slice()[pair * n..(pair + 1) * n];
+                *symbol += complex_product(bra, true, scaled(&|g| row[g] / mesh.volume).as_view())?;
+            }
+            start = stop;
+        }
+        Some((t, symbols))
+    } else {
+        None
+    };
+    // The ket in place: `w u`, the backward transform (the library's is divided by `N`: undone
+    // here), the phase and `dV`.
+    let [x, y, z] = mesh.points();
+    let phase: Vec<Complex64> = (0..n)
+        .map(|j| {
+            let angle = k[0] * x[j] + k[1] * y[j] + k[2] * z[j];
+            Complex64::new(angle.cos(), angle.sin()) * (mesh.dv * n as f64)
+        })
+        .collect();
+    for column in u.as_mut_slice().chunks_mut(n) {
+        for (v, s) in column.iter_mut().zip(&weight) {
+            *v *= *s;
+        }
+        fft.transform(column, true)?;
+        for (v, p) in column.iter_mut().zip(&phase) {
+            *v *= *p;
+        }
+    }
+    Ok(KineticSetup { ket: u, moments })
 }
 
 /// The grid overlap, `G^a = -dV sum_x conj(d_a chi_mu) chi_nu`, or with `potential` the local
@@ -198,7 +437,7 @@ pub fn grid_cross(
     let weighted = Matrix::from_fn(n, m, |x, nu| {
         ket[nu * n + x] * (mesh.dv * potential.map_or(1., |v| v[x]))
     });
-    Ok(minus_cross(samples, &weighted))
+    minus_cross(samples, &weighted)
 }
 
 /// The periodic part `dV * FFT(e^{-ik.r} f)` of every row of `rows` (`count` functions on the
@@ -214,7 +453,9 @@ pub(crate) fn periodic_parts(
 ) -> Result<(Matrix, Reservation)> {
     let n = mesh.len();
     if rows.len() != product(&[n, count])? {
-        return Err(invalid("orbital samples do not match the grid and function count"));
+        return Err(invalid(
+            "orbital samples do not match the grid and function count",
+        ));
     }
     let held = ctx.reserve(product(&[n, count, 16])?)?;
     let [x, y, z] = mesh.points();
@@ -305,34 +546,51 @@ pub fn kinetic_self(
 
 /// Same-basis kinetic matrix without materializing the mesh coordinate arrays.
 pub fn kinetic_grid(
-    ctx: &Context, grid: &SpatialGrid, k: [f64; 3],
-    samples: &[Complex64], functions: usize,
+    ctx: &Context,
+    grid: &SpatialGrid,
+    k: [f64; 3],
+    samples: &[Complex64],
+    functions: usize,
 ) -> Result<Matrix> {
     kinetic_grid_typed(ctx, grid, k, samples, functions, |x| x)
 }
 
 /// Float32 sample variant of [`kinetic_grid`].
 pub fn kinetic_grid_f32(
-    ctx: &Context, grid: &SpatialGrid, k: [f64; 3],
-    samples: &[num_complex::Complex32], functions: usize,
+    ctx: &Context,
+    grid: &SpatialGrid,
+    k: [f64; 3],
+    samples: &[num_complex::Complex32],
+    functions: usize,
 ) -> Result<Matrix> {
-    kinetic_grid_typed(ctx, grid, k, samples, functions,
-        |x| Complex64::new(x.re as f64, x.im as f64))
+    kinetic_grid_typed(ctx, grid, k, samples, functions, |x| {
+        Complex64::new(x.re as f64, x.im as f64)
+    })
 }
 
 fn kinetic_grid_typed<T: Copy>(
-    ctx: &Context, grid: &SpatialGrid, k: [f64; 3], samples: &[T],
-    functions: usize, convert: impl Fn(T) -> Complex64,
+    ctx: &Context,
+    grid: &SpatialGrid,
+    k: [f64; 3],
+    samples: &[T],
+    functions: usize,
+    convert: impl Fn(T) -> Complex64,
 ) -> Result<Matrix> {
     let n = grid.index.points();
     if samples.len() != product(&[n, functions])? {
-        return Err(invalid("orbital samples do not match the grid and function count"));
+        return Err(invalid(
+            "orbital samples do not match the grid and function count",
+        ));
     }
     let dv = grid.step.determinant().abs();
     let symbols = reciprocal::bloch(ctx, grid, k)?;
     let _weights_held = ctx.reserve(product(&[n, 8])?)?;
-    let weights: Vec<f64> = symbols.squares.as_slice().iter()
-        .map(|s| (0.5 * s / (dv * n as f64)).sqrt() * dv).collect();
+    let weights: Vec<f64> = symbols
+        .squares
+        .as_slice()
+        .iter()
+        .map(|s| (0.5 * s / (dv * n as f64)).sqrt() * dv)
+        .collect();
     drop(symbols);
     let mut phase = ctx.allocate::<Complex64>(n)?;
     for (j, value) in phase.as_mut_slice().iter_mut().enumerate() {
@@ -381,7 +639,7 @@ pub fn kinetic_cross(
     ];
     for (axis, to) in out.iter_mut().enumerate() {
         let (bra, _held_bra) = periodic_parts(ctx, &mut fft, mesh, k, samples.slope(axis), m)?;
-        *to = -(bra.adjoint() * &ket);
+        *to = -complex_product(bra.as_view(), true, ket.as_view())?;
     }
     Ok(out)
 }
@@ -400,7 +658,9 @@ pub fn tau_cross(
     use crate::periodic::fields::bloch_gradients;
     let (m, n, k) = (samples.functions, samples.points, samples.k);
     if potential.len() != n || n != grid.index.points() {
-        return Err(invalid("crystal gradient: the kinetic potential must match the grid"));
+        return Err(invalid(
+            "crystal gradient: the kinetic potential must match the grid",
+        ));
     }
     let half_dv = 0.5 * grid.index.dv();
     // [axis][function][point], the ket weighted by dv v_tau / 2 in place.
@@ -421,7 +681,7 @@ pub fn tau_cross(
             let span = axis * m * n..(axis + 1) * m * n;
             let b = columns(&bra.as_slice()[span.clone()], n, m);
             let w = columns(&ket.as_slice()[span], n, m);
-            *to -= b.adjoint() * w;
+            *to -= complex_product(b, true, w)?;
         }
     }
     Ok(out)

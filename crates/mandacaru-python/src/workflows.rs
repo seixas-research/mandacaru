@@ -106,7 +106,76 @@ pub fn real_pauli_terms(n_qubits: usize, terms: Vec<(String, f64, f64)>) -> PyRe
     term_lists::real_pauli_terms(n_qubits, &terms).map_err(error)
 }
 
+/// The sizes of a QPE simulation of `system + evaluation` qubits against `available` bytes
+/// (`dynamics::qpe_memory`): `statevector`, `working`, `unitary`, `dense`, `total`, `qubits`
+/// (`system + evaluation`), `fraction` (`total / available`, `None` for no available memory) and
+/// `gibibytes` (the available memory).
+#[pyfunction]
+#[pyo3(signature = (system, evaluation, available, dense = None, precision = "float64"))]
+fn qpe_memory_report<'py>(
+    py: Python<'py>,
+    system: usize,
+    evaluation: usize,
+    available: u128,
+    dense: Option<bool>,
+    precision: &str,
+) -> PyResult<Bound<'py, PyDict>> {
+    let bytes: u128 = match precision {
+        "float64" => 16,
+        "float32" => 8,
+        other => {
+            return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                "precision must be 'float32' or 'float64', not {other:?}"
+            )))
+        }
+    };
+    let memory = dynamics::qpe_memory(system, evaluation, dense, bytes).map_err(error)?;
+    let out = PyDict::new(py);
+    out.set_item("statevector", memory.statevector)?;
+    out.set_item("working", memory.working)?;
+    out.set_item("unitary", memory.unitary)?;
+    out.set_item("dense", memory.dense)?;
+    out.set_item("total", memory.total())?;
+    out.set_item("qubits", system + evaluation)?;
+    out.set_item(
+        "fraction",
+        (available > 0).then(|| memory.total() as f64 / available as f64),
+    )?;
+    out.set_item("gibibytes", derived::gibibytes(available))?;
+    Ok(out)
+}
+
+/// `(shift, time)` of the QPE unitary of the window `[lo, hi]` (`dynamics::qpe_unitary`).
+#[pyfunction]
+fn qpe_unitary(lo: f64, hi: f64) -> PyResult<(f64, f64)> {
+    dynamics::qpe_unitary(lo, hi).map_err(error)
+}
+
+/// `(width, system wires)` of a QPE circuit (`dynamics::qpe_layout`).
+#[pyfunction]
+fn qpe_layout(evaluation: usize, system: usize) -> PyResult<(usize, Vec<usize>)> {
+    dynamics::qpe_layout(evaluation, system).map_err(error)
+}
+
+/// The qubits of a state vector of `amplitudes` entries (`dynamics::state_qubits`).
+#[pyfunction]
+fn state_qubits(amplitudes: usize) -> PyResult<usize> {
+    dynamics::state_qubits(amplitudes).map_err(error)
+}
+
+/// The global phase of a Pauli string with real sign `sign` (`dynamics::sign_phase`).
+#[pyfunction]
+fn sign_phase(sign: f64) -> f64 {
+    dynamics::sign_phase(sign)
+}
+
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(qpe_memory_report, m)?)?;
+    m.add_function(wrap_pyfunction!(qpe_unitary, m)?)?;
+    m.add_function(wrap_pyfunction!(qpe_layout, m)?)?;
+    m.add_function(wrap_pyfunction!(state_qubits, m)?)?;
+    m.add_function(wrap_pyfunction!(sign_phase, m)?)?;
+
     m.add_function(wrap_pyfunction!(spectrum_magnitudes, m)?)?;
     m.add_function(wrap_pyfunction!(echo_peaks, m)?)?;
     m.add_function(wrap_pyfunction!(qpe_readout, m)?)?;

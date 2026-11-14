@@ -4,6 +4,10 @@ pub const BLOCK: usize = 256;
 /// Point blocks per fixed group of [`bloch_project`]: 16 blocks, 4096 points. A smaller projection
 /// is one group, summed exactly as one thread always summed it.
 pub const PROJECT_GROUP_BLOCKS: usize = 16;
+/// The work of [`bloch_project`] (points x images x output rows) below which it runs on the
+/// calling thread: about 60 microseconds of products, a few thread starts' worth. The split
+/// changes no bit; it only sets the speed.
+pub const PROJECT_INLINE_WORK: usize = 1 << 16;
 
 #[inline(always)]
 pub fn radial_value(r: f64, breaks: &[f64], coeffs: &[f64], nb: usize, rc: f64, l: i32) -> f64 {
@@ -792,94 +796,124 @@ pub unsafe fn bloch_project(
     }
 
     let n_blocks = (npts_usize + BLOCK - 1) / BLOCK;
-    let n_threads = crate::runtime::thread_count();
     let n_groups = (n_blocks + PROJECT_GROUP_BLOCKS - 1) / PROJECT_GROUP_BLOCKS;
+    let rows = nm_usize * p_usize;
 
-    // The point blocks form fixed groups of `PROJECT_GROUP_BLOCKS`, whatever the thread count.
-    // Each group sums from zero into its own partial, and the partials are added to `out` in group
-    // order, `n_threads` groups at a time: the result is the same on any number of threads and on
-    // every run (added in order of arrival, or grouped per thread, the last bits would change).
-    for wave in (0..n_groups).step_by(n_threads) {
-        let partials = std::thread::scope(|s| {
-            let mut workers = Vec::with_capacity(n_threads);
-            for group in wave..std::cmp::min(wave + n_threads, n_groups) {
-                let b_start = group * PROJECT_GROUP_BLOCKS;
-                let b_end = std::cmp::min(b_start + PROJECT_GROUP_BLOCKS, n_blocks);
+    // The point blocks form fixed groups of `PROJECT_GROUP_BLOCKS`, whatever the thread count:
+    // each group sums from zero into a partial and the partials are added to `out` in group order.
+    // The work is split by image, not by group: worker `w` owns the images `r` with
+    // `r % workers == w`, runs every group in order for its images alone and adds their rows to
+    // `out` itself. Every entry of `out` then receives the same additions, in the same order, as
+    // the serial sum of the groups, so the result depends neither on the number of workers nor
+    // on the run; and a call of one group (a sphere chunk of 2048 points) still spreads over the
+    // workers. The rows of an image no block of a group reached hold zeros in its partial and are
+    // not added (`out` is never a negative zero, so adding `+0` leaves it as it is).
+    let work = npts_usize
+        .saturating_mul(n_images_usize)
+        .saturating_mul(rows);
+    let workers = if work < PROJECT_INLINE_WORK {
+        1
+    } else {
+        crate::runtime::thread_count().min(n_images_usize).max(1)
+    };
+    let out_addr = out_slice.as_mut_ptr() as usize;
+    let task = move |w: usize| {
+        let out_raw = out_addr as *mut Complex64;
+        let mut hits = vec![0usize; n_images_usize.max(1)];
+        let mut inside = [0usize; BLOCK];
+        let mut buffer = vec![Complex64::default(); nm_usize * BLOCK];
+        let mut partial = vec![Complex64::default(); total_size.max(1)];
+        let mut touched = vec![false; n_images_usize];
+        for group in 0..n_groups {
+            let b_start = group * PROJECT_GROUP_BLOCKS;
+            let b_end = std::cmp::min(b_start + PROJECT_GROUP_BLOCKS, n_blocks);
+            for b in b_start..b_end {
+                let j0 = b * BLOCK;
+                let n = std::cmp::min(j0 + BLOCK, npts_usize) - j0;
+                let n_hits = block_hits(
+                    x_slice,
+                    y_slice,
+                    z_slice,
+                    j0,
+                    n,
+                    center_slice,
+                    trans_slice,
+                    n_images_usize,
+                    support2,
+                    &mut hits,
+                );
+                for h in 0..n_hits {
+                    let r_idx = hits[h];
+                    if r_idx % workers != w {
+                        continue;
+                    }
+                    touched[r_idx] = true;
+                    let shift = &trans_slice[3 * r_idx..3 * r_idx + 3];
+                    let n_inside = image_values(
+                        x_slice,
+                        y_slice,
+                        z_slice,
+                        j0,
+                        n,
+                        center_slice,
+                        shift,
+                        support2,
+                        derivative,
+                        -1,
+                        l,
+                        ms_slice,
+                        breaks_slice,
+                        coeffs_slice,
+                        rc,
+                        &mut buffer,
+                        &mut inside,
+                    );
 
-                workers.push(crate::runtime::spawn(s, move || {
-                    let mut hits = vec![0usize; n_images_usize.max(1)];
-                    let mut inside = [0usize; BLOCK];
-                    let mut buffer = vec![Complex64::default(); nm_usize * BLOCK];
-                    let mut local_out = vec![Complex64::default(); total_size.max(1)];
-
-                    for b in b_start..b_end {
-                        let j0 = b * BLOCK;
-                        let n = std::cmp::min(j0 + BLOCK, npts_usize) - j0;
-                        let n_hits = block_hits(
-                            x_slice,
-                            y_slice,
-                            z_slice,
-                            j0,
-                            n,
-                            center_slice,
-                            trans_slice,
-                            n_images_usize,
-                            support2,
-                            &mut hits,
-                        );
-                        for h in 0..n_hits {
-                            let r_idx = hits[h];
-                            let shift = &trans_slice[3 * r_idx..3 * r_idx + 3];
-                            let n_inside = image_values(
-                                x_slice,
-                                y_slice,
-                                z_slice,
-                                j0,
-                                n,
-                                center_slice,
-                                shift,
-                                support2,
-                                derivative,
-                                -1,
-                                l,
-                                ms_slice,
-                                breaks_slice,
-                                coeffs_slice,
-                                rc,
-                                &mut buffer,
-                                &mut inside,
-                            );
-
-                            let target_base = (r_idx * nm_usize) * p_usize;
-                            for i in 0..nm_usize {
-                                for col_idx in 0..p_usize {
-                                    let col_offset = col_idx * npts_usize + j0;
-                                    let mut sum = Complex64::new(0.0, 0.0);
-                                    for t_idx in 0..n_inside {
-                                        let jj = inside[t_idx];
-                                        let phi_conj = buffer[i * BLOCK + jj].conj();
-                                        let col_val = cols_slice[col_offset + jj];
-                                        sum = sum.add(phi_conj.mul(col_val));
-                                    }
-                                    let idx = target_base + i * p_usize + col_idx;
-                                    local_out[idx] = local_out[idx].add(sum);
-                                }
+                    let target_base = r_idx * rows;
+                    for i in 0..nm_usize {
+                        for col_idx in 0..p_usize {
+                            let col_offset = col_idx * npts_usize + j0;
+                            let mut sum = Complex64::new(0.0, 0.0);
+                            for t_idx in 0..n_inside {
+                                let jj = inside[t_idx];
+                                let phi_conj = buffer[i * BLOCK + jj].conj();
+                                let col_val = cols_slice[col_offset + jj];
+                                sum = sum.add(phi_conj.mul(col_val));
                             }
+                            let idx = target_base + i * p_usize + col_idx;
+                            partial[idx] = partial[idx].add(sum);
                         }
                     }
-
-                    local_out
-                }));
+                }
             }
-            workers
-                .into_iter()
-                .map(|worker| worker.join().expect("a bloch_project worker panicked"))
-                .collect::<Vec<_>>()
-        });
-        for partial in &partials {
-            for (to, from) in out_slice.iter_mut().zip(partial) {
-                *to = to.add(*from);
+            // This group's rows of this worker's images, added in group order and cleared.
+            for r_idx in (w..n_images_usize).step_by(workers) {
+                if !touched[r_idx] {
+                    continue;
+                }
+                touched[r_idx] = false;
+                for idx in r_idx * rows..(r_idx + 1) * rows {
+                    // SAFETY: the rows of image `r_idx` belong to this worker alone (`r_idx %
+                    // workers == w`), inside the `total_size` entries of `out`.
+                    unsafe {
+                        let target = out_raw.add(idx);
+                        *target = (*target).add(partial[idx]);
+                    }
+                    partial[idx] = Complex64::default();
+                }
             }
         }
+    };
+    if workers == 1 {
+        task(0);
+    } else {
+        std::thread::scope(|s| {
+            let handles: Vec<_> = (0..workers)
+                .map(|w| crate::runtime::spawn(s, move || task(w)))
+                .collect();
+            for handle in handles {
+                handle.join().expect("a bloch_project worker panicked");
+            }
+        });
     }
 }

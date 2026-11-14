@@ -233,8 +233,8 @@ class NestedOTOC:
         def insert(operator: SuzukiTrotter) -> None:
             label, sign = operator._terms[0]
             circuit.append(PauliGate(label), range(circuit.num_qubits))
-            if sign == -1:
-                circuit.global_phase += np.pi
+            circuit.global_phase = _native.total(
+                [circuit.global_phase, _native.sign_phase(sign)])
 
         for index in range(k):
             if index:

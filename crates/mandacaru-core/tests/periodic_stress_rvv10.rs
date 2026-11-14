@@ -98,7 +98,7 @@ fn input(case: &Case, files: Vec<(String, String)>, eps: Matrix3<f64>) -> SetupI
 
 /// The analytic `g_ab` against the reconverged oracle for each entry of `entries`.
 fn check(case: &Case, entries: &[(usize, usize)]) {
-    use mandacaru_core::paw::digest::sha256_file;
+    use mandacaru_core::paw::digest::dataset_content_sha256;
     let started = std::time::Instant::now();
     let ctx = context();
     let mut species: Vec<&str> = vec![case.symbols[0]];
@@ -113,7 +113,7 @@ fn check(case: &Case, entries: &[(usize, usize)]) {
             let path = root.join(format!("{symbol}.parquet"));
             (
                 path.to_string_lossy().into_owned(),
-                sha256_file(&path).unwrap(),
+                dataset_content_sha256(&ctx, &path).unwrap(),
             )
         })
         .collect();
@@ -145,7 +145,7 @@ fn check(case: &Case, entries: &[(usize, usize)]) {
         "{}: the reference SCF did not converge",
         case.label
     );
-    let stress = response::stress(&crystal, &result).unwrap();
+    let stress = response::stress_all_entries(&crystal, &result).unwrap();
     let b = &stress.breakdown;
     assert!(
         !b.xc_nonlocal.iter().flatten().all(|x| *x == 0.),

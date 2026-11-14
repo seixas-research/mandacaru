@@ -269,9 +269,35 @@ fn a_generated_dataset_survives_the_record_round_trip() {
         stride: 4,
         codec: mandacaru_core::parquet::Codec::Zstd,
     };
+    // The record carries the core it summed (format version 3): the same subshells, whose
+    // `sum occupation u^2 / (4 pi r^2)` is the core density to roundoff.
+    let states = generated
+        .dataset
+        .core_states
+        .as_ref()
+        .expect("a generated record has its core");
+    assert!(!states.is_empty(), "Na has a core");
+    let r = generated.dataset.r.as_slice();
+    let core = generated.dataset.core_density.as_slice();
+    let peak = core.iter().fold(0f64, |m, x| m.max(x.abs()));
+    for (i, (&ri, &want)) in r.iter().zip(core).enumerate() {
+        let sum: f64 = states
+            .iter()
+            .map(|s| {
+                s.occupation * s.orbital.as_slice()[i].powi(2)
+                    / (4. * std::f64::consts::PI * ri * ri)
+            })
+            .sum();
+        assert!((sum - want).abs() <= 1e-13 * peak, "core density at r[{i}]");
+    }
     generated.dataset.write(&ctx, &path, &spec).unwrap();
     let back = PawDataset::read(&ctx, &path).unwrap();
     std::fs::remove_dir_all(&dir).unwrap();
+    assert_eq!(
+        back.format_version(),
+        mandacaru_core::paw::record::FORMAT_VERSION
+    );
+    assert_eq!(back.core_states.as_ref().map(Vec::len), Some(states.len()));
     assert_eq!(back.symbol, "Na");
     assert_eq!(back.family, generated.dataset.family);
     assert_eq!(back.points() * 4, generated.dataset.points());

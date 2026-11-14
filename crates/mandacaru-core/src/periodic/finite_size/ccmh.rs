@@ -161,6 +161,8 @@ pub struct Ccmh {
     pub correction: f64,
     /// Omitted potential energy per electron: $\Delta V = \frac{2\pi \times \text{limit}}{\Omega}$.
     pub correction_per_electron: f64,
+    /// What the RPA limit would give per electron: $\frac{2\pi \times \text{rpa\_limit}}{\Omega} = \frac{\pi}{\Omega\omega_p}$.
+    pub rpa_correction: f64,
     /// Extrapolated limit $\lim_{k\to 0} S(k)/k^2$, Bohr$^2$.
     pub limit: f64,
     /// Fractional variation of $S(k)/k^2$ across the fitted shells.
@@ -264,12 +266,14 @@ pub fn ccmh_extrapolate(
     let rpa_limit = 1.0 / (2.0 * omega_p);
 
     let correction_per_electron = 2.0 * PI * limit / volume;
+    let rpa_correction = 2.0 * PI * rpa_limit / volume;
     let correction = n_electrons * correction_per_electron;
     let reliable = spread <= QUADRATIC_REGIME_SPREAD;
 
     Ok(Ccmh {
         correction,
         correction_per_electron,
+        rpa_correction,
         limit,
         quadratic_spread: spread,
         reliable,

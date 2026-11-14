@@ -172,11 +172,6 @@ pub fn energy_unit_factor(unit: &str) -> PyResult<f64> {
 pub fn total(values: Vec<f64>) -> f64 {
     derived::total(&values)
 }
-/// The fractional points of a Gamma-centered mesh, `k` fastest (`derived::mesh_fractions`).
-#[pyfunction]
-pub fn mesh_fractions(shape: [usize; 3]) -> PyResult<Vec<[f64; 3]>> {
-    derived::mesh_fractions(shape).map_err(error)
-}
 /// The Euclidean norm of `vector` (`derived::norm`).
 #[pyfunction]
 pub fn vector_norm(vector: Vec<f64>) -> f64 {

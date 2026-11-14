@@ -59,7 +59,7 @@ fn the_unedited_snapshot_has_forces_and_stress() {
 fn a_dataset_file_that_is_not_the_one_the_snapshot_was_built_from_is_refused() {
     let c = ForceCase::load("lih");
     let mut edited = c.snapshot.clone();
-    edited["sites"]["datasets"][0]["sha256"] = "0".repeat(64).into();
+    edited["sites"]["datasets"][0]["content_sha256"] = "0".repeat(64).into();
     let error = refused(&edited, &c.manifest);
     assert!(matches!(error, Error::Invalid(_)), "{error:?}");
     let message = error.to_string();
@@ -75,7 +75,7 @@ fn a_dataset_that_was_not_read_from_a_file_is_refused() {
     let c = ForceCase::load("lih");
     let mut edited = c.snapshot.clone();
     edited["sites"]["datasets"][0]["file"] = "".into();
-    edited["sites"]["datasets"][0]["sha256"] = "".into();
+    edited["sites"]["datasets"][0]["content_sha256"] = "".into();
     let error = refused(&edited, &c.manifest);
     assert!(matches!(error, Error::Unsupported(_)), "{error:?}");
     let message = error.to_string();
@@ -160,4 +160,25 @@ fn a_spin_orbit_crystal_on_a_reduced_mesh_is_refused() {
             "{message}"
         );
     }
+}
+
+#[test]
+fn a_snapshot_that_pins_its_datasets_by_file_bytes_is_refused_with_the_remedy() {
+    // A crystal saved before datasets were pinned by their content carries `sha256` (the file's
+    // bytes) where a snapshot now has `content_sha256`. Its energy needs no dataset file and
+    // stands; what reads the files again (forces, stress, hybrid spheres) refuses it, saying how
+    // to get a crystal that works.
+    let c = ForceCase::load("lih");
+    let mut edited = c.snapshot.clone();
+    for entry in edited["sites"]["datasets"].as_array_mut().unwrap() {
+        let digest = entry
+            .as_object_mut()
+            .unwrap()
+            .remove("content_sha256")
+            .unwrap();
+        entry["sha256"] = digest;
+    }
+    let message = refused(&edited, &c.manifest).to_string();
+    assert!(message.contains("save it again"), "{message}");
+    assert!(message.contains("content_sha256"), "{message}");
 }

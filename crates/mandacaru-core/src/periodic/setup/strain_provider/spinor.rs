@@ -6,21 +6,15 @@
 //! it for the strain. Every spin-diagonal tangent is `I2 x dM` (the strain acts on space only,
 //! `T (x) I2`), the local term is `sum_a sigma_a x dV^a` over the one (time-reversal) or four
 //! Pauli channels of the potential, the spin-orbit projections stay in the scalar frame.
-use super::{Matrices, StrainFields, StrainSetup};
+use super::{ProjectionTable, StrainSetup};
 use crate::periodic::{
     gradient::{
         spin_orbit::operator,
-        spinor::{doubled, doubled_layout, pauli_sum},
-        Layout, SpinOrbit, Term,
+        spinor::{doubled, doubled_layout},
+        Layout, SpinOrbit,
     },
     invalid,
-    setup::{
-        provider::Operators,
-        pulay::Matrix,
-        spheres::Projector,
-        spin_orbit::labels,
-    },
-    stress_terms::Tensor,
+    setup::{provider::Operators, pulay::Matrix, spheres::Projector, spin_orbit::labels},
 };
 use crate::{Error, Result};
 use std::collections::BTreeMap;
@@ -55,53 +49,15 @@ impl<'a> StrainSetup<'a> {
         }
     }
 
-    pub(super) fn frame_tensor(&self, t: Matrices) -> Matrices {
-        if self.layout.request.spinor {
-            t.map(|row| row.map(|m| doubled(&m)))
-        } else {
-            t
-        }
+    pub(super) fn spin_orbit_table(&self) -> Result<&ProjectionTable> {
+        self.projections.spin_orbit(
+            self.ctx,
+            self.inputs.shells,
+            self.lattice(),
+            self.spin_orbit_data()?.projectors,
+        )
     }
 
-    /// The local-potential tangent of a spinor: `sum_a sigma_a x dV^a`, one matrix tangent per
-    /// Pauli channel of `fields.local` (one for a time-reversal crystal, four otherwise).
-    pub(super) fn spinor_local(&self, k: usize, fields: &StrainFields) -> Result<Tensor<Matrix>> {
-        let mut parts: Vec<Matrices> = Vec::with_capacity(fields.local.len());
-        for channel in 0..fields.local.len() {
-            parts.push(self.scalar_strain(channel, k, Term::Local, fields)?);
-        }
-        let mut out: Matrices =
-            std::array::from_fn(|_| std::array::from_fn(|_| Matrix::zeros(0, 0)));
-        for (a, row) in out.iter_mut().enumerate() {
-            for (b, to) in row.iter_mut().enumerate() {
-                let channels: Vec<Matrix> = parts.iter().map(|t| t[a][b].clone()).collect();
-                *to = pauli_sum(&channels)?;
-            }
-        }
-        Ok(out)
-    }
-
-    /// The meta-GGA tangent of a spinor: `sum_a sigma_a x dT_tau^a`, one tangent per Pauli
-    /// channel of `v_tau` (one for a time-reversal crystal, four otherwise), as [`Self::spinor_local`].
-    pub(super) fn spinor_kinetic(&self, k: usize, fields: &StrainFields) -> Result<Tensor<Matrix>> {
-        let channels = fields.kinetic.as_ref().map_or(0, |(blocks, _)| blocks.len());
-        if channels == 0 {
-            return Err(invalid("crystal stress: the meta-GGA term needs the fields' v_tau"));
-        }
-        let mut parts: Vec<Matrices> = Vec::with_capacity(channels);
-        for channel in 0..channels {
-            parts.push(self.scalar_strain(channel, k, Term::KineticDensity, fields)?);
-        }
-        let mut out: Matrices =
-            std::array::from_fn(|_| std::array::from_fn(|_| Matrix::zeros(0, 0)));
-        for (a, row) in out.iter_mut().enumerate() {
-            for (b, to) in row.iter_mut().enumerate() {
-                let channels: Vec<Matrix> = parts.iter().map(|t| t[a][b].clone()).collect();
-                *to = pauli_sum(&channels)?;
-            }
-        }
-        Ok(out)
-    }
     /// Gives a spinor geometry its spin-orbit union projectors (every atom's, with
     /// `Projector::atom` the owner) and the radial couplings `D^SO` per `(atom, l)`. Empty
     /// couplings are a crystal whose spin-orbit matrix is zero (`B = 0`); the projections are still
@@ -116,7 +72,8 @@ impl<'a> StrainSetup<'a> {
                 "crystal stress: spin-orbit projectors belong to a spinor request",
             ));
         }
-        let found = crate::models::spin_orbit::channels(self.ctx, &labels(projectors), couplings, false)?;
+        let found =
+            crate::models::spin_orbit::channels(self.ctx, &labels(projectors), couplings, false)?;
         let b = operator(self.ctx, projectors.len(), &found)?;
         let owner = self.layout.row_owner[..self.functions].to_vec();
         let operator = SpinOrbit::new(

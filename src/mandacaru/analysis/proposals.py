@@ -19,6 +19,11 @@ def data_directory(directory=None):
     return Path(value).expanduser()
 
 
+def _listing(folder, pattern):
+    """The files of ``folder`` matching ``pattern``, in name order."""
+    return sorted(folder.glob(pattern))
+
+
 @dataclass(frozen=True)
 class ProposalModel:
     """An immutable native model payload; all scoring and training run in Rust."""
@@ -91,10 +96,10 @@ def fit(directory=None, path=None, *, group_by="molecule", fractions=(.25,.5,1.)
         raise ValueError("kinds names 'ranker' and/or 'graph', each at most once")
     store = data_directory(directory)
     problems = {}
-    for source in sorted((store / "problems").glob("*.json")):
+    for source in _listing(store / "problems", "*.json"):
         problems[source.stem] = json.loads(source.read_text())
     records = []
-    for source in sorted((store / "chains").glob("*.jsonl")):
+    for source in _listing(store / "chains", "*.jsonl"):
         for line in source.read_text().splitlines():
             if line.strip():
                 records.append(json.loads(line))

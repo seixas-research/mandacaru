@@ -12,11 +12,13 @@ pub mod images;
 pub mod ions;
 pub mod matrices;
 pub mod parse;
+pub mod projection_table;
 pub mod provider;
 pub mod pulay;
 pub mod remainder;
 pub mod shapes;
 pub mod shells;
+pub mod sphere_table;
 pub mod spheres;
 pub mod spin_orbit;
 pub mod spinor_tau;
@@ -94,6 +96,9 @@ pub struct PeriodicSetup {
     pub description: Option<crate::periodic::description::Description>,
     pub hubbard: Option<crate::periodic::hubbard::Spec>,
     pub charge: Option<f64>,
+    /// The request this setup was created from (before its k mesh was reduced), for
+    /// [`PeriodicSetup::with_geometry`]; `None` when there is none to rebuild from.
+    pub recipe: Option<SetupInput>,
 }
 
 impl PeriodicSetup {
@@ -114,6 +119,25 @@ impl PeriodicSetup {
         } else {
             blocks::raw_operators(&self.projectors, &datasets, &self.channels)
         }
+    }
+
+    /// The one-center remainders of the plane wave `e^{-ib.(r-R_a)}` for `|b| = length` (1/Bohr),
+    /// one `P x P` matrix per compensation channel, in the projector basis of the crystal
+    /// ([`blocks::plane_wave_remainders`]).
+    pub fn plane_wave_remainders(
+        &self,
+        ctx: &Context,
+        length: f64,
+    ) -> Result<Vec<pulay::Matrix>> {
+        let datasets = self.atom_datasets()?;
+        blocks::plane_wave_remainders(
+            ctx,
+            &self.projectors,
+            &datasets,
+            &self.channels,
+            self.dual,
+            length,
+        )
     }
 
     /// Build the full [`Crystal`] structure ready for the Kohn-Sham SCF solver.
@@ -323,7 +347,7 @@ impl PeriodicSetup {
                     "centers": self.centers,
                     "projector_basis": description.projector_basis,
                     "datasets": description.datasets.iter()
-                        .map(|(file, sha256)| serde_json::json!({"file": file, "sha256": sha256}))
+                        .map(|(file, digest)| serde_json::json!({"file": file, "content_sha256": digest}))
                         .collect::<Vec<_>>(),
                 });
                 Some(crate::periodic::hybrid_setup::Hybrid::parse(
@@ -531,6 +555,59 @@ impl PeriodicSetup {
             description,
             hubbard: self.hubbard.clone(),
             charge: self.charge,
+            recipe: self.recipe.clone().map(|mut recipe| {
+                recipe.lattice = *new_lattice;
+                recipe
+            }),
         })
+    }
+
+    /// The same recipe on another geometry: the cell `lattice` (columns, Bohr) and the atoms'
+    /// `fractional` coordinates, with this setup's discretization held (the grid shape, the filter
+    /// cutoff and the ion width of its [`Pins`]). The symmetry group and the k reduction are those
+    /// of the new geometry: a displaced atom or a strained cell keeps only the operations it has.
+    pub fn with_geometry(
+        &self,
+        ctx: &Context,
+        lattice: &Matrix3<f64>,
+        fractional: &[[f64; 3]],
+    ) -> Result<Self> {
+        let mut input = self.recipe.clone().ok_or_else(|| {
+            crate::Error::Unsupported(
+                "this setup holds no request to rebuild another geometry from".into(),
+            )
+        })?;
+        if fractional.len() != input.atoms.len() {
+            return Err(invalid("one fractional position per atom of the setup"));
+        }
+        input.lattice = *lattice;
+        for (atom, position) in input.atoms.iter_mut().zip(fractional) {
+            atom.fractional = *position;
+        }
+        input.grid_shape = self.pins.grid_shape;
+        input.filter_cutoff = Some(self.pins.filter_cutoff);
+        input.sigma = Some(self.pins.sigma);
+        create_setup(ctx, input, self.datasets.clone())
+    }
+
+    /// [`PeriodicSetup::with_geometry`] on this cell: the atoms moved to `fractional`.
+    pub fn with_positions(&self, ctx: &Context, fractional: &[[f64; 3]]) -> Result<Self> {
+        self.with_geometry(ctx, &self.lattice, fractional)
+    }
+
+    /// The fractional coordinates of the atoms in this cell.
+    pub fn fractional(&self) -> Result<Vec<[f64; 3]>> {
+        let inverse = self
+            .lattice
+            .try_inverse()
+            .ok_or_else(|| invalid("singular lattice"))?;
+        Ok(self
+            .centers
+            .iter()
+            .map(|c| {
+                let s = inverse * nalgebra::Vector3::from(*c);
+                [s[0], s[1], s[2]]
+            })
+            .collect())
     }
 }

@@ -37,6 +37,41 @@ pub struct Moments {
     pub resolution: f64,
 }
 
+/// An exactly degenerate orbital group (labels within [`DEGENERACY_TOLERANCE`]) that a model
+/// splits between frozen, active and deleted orbitals ([`MeanField::split_groups`]). The indices
+/// are columns of the frame the selection read.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SplitGroup {
+    /// What labels the group: `"orbital energy"` (Hartree), `"natural occupation"` or
+    /// `"MP2 natural occupation"`.
+    pub label: &'static str,
+    /// The label of the group's first orbital.
+    pub value: f64,
+    pub frozen: Vec<usize>,
+    pub active: Vec<usize>,
+    pub deleted: Vec<usize>,
+}
+impl std::fmt::Display for SplitGroup {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let unit = if self.label == "orbital energy" {
+            " Ha"
+        } else {
+            ""
+        };
+        write!(f, "{} {:.8}{unit}:", self.label, self.value)?;
+        for (role, orbitals) in [
+            ("frozen", &self.frozen),
+            ("active", &self.active),
+            ("deleted", &self.deleted),
+        ] {
+            if !orbitals.is_empty() {
+                write!(f, " {role} {orbitals:?}")?;
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Which of two orbitals' functionals counts as nonzero, relative to the norm of the functional.
 const SIGN_THRESHOLD: f64 = 1e-6;
 
@@ -415,6 +450,26 @@ impl MeanField {
         if !self.frame_covered(integrals) {
             return Ok(());
         }
+        let (labels, domains) = self.frame_labels()?;
+        // A cluster no operator resolves is not an error of the SCF, whose energy does not
+        // depend on the frame: it is recorded, and a model or active space refuses it. Any
+        // other failure is the SCF's.
+        match fix_cluster_gauge(
+            &mut self.model_orbitals,
+            &labels,
+            &domains,
+            &mut lab_moments(integrals),
+        ) {
+            Ok(_) => {}
+            Err(crate::Error::Unsupported(reason)) => self.frame_error = Some(reason),
+            Err(error) => return Err(error),
+        }
+        Ok(())
+    }
+    /// The labels of the model orbitals and their occupation domains, as [`Self::fix_frame`]
+    /// clusters them: the orbital energies of a restricted frame (doubly occupied, empty), the
+    /// natural occupations of an unrestricted one (doubly occupied, singly occupied, empty).
+    fn frame_labels(&self) -> Result<(Vec<f64>, Vec<Vec<usize>>)> {
         let m = self.model_orbitals.ncols();
         let (labels, domains): (Vec<f64>, Vec<Vec<usize>>) = if self.method == "rhf" {
             let n = self.particles[0].min(m);
@@ -437,20 +492,124 @@ impl MeanField {
         if labels.len() != m {
             return Err(invalid("the model orbitals and their labels disagree"));
         }
-        // A cluster no operator resolves is not an error of the SCF, whose energy does not
-        // depend on the frame: it is recorded, and a model or active space refuses it. Any
-        // other failure is the SCF's.
-        match fix_cluster_gauge(
-            &mut self.model_orbitals,
-            &labels,
-            &domains,
-            &mut lab_moments(integrals),
-        ) {
-            Ok(_) => {}
-            Err(crate::Error::Unsupported(reason)) => self.frame_error = Some(reason),
-            Err(error) => return Err(error),
+        Ok((labels, domains))
+    }
+    /// The exactly degenerate orbital groups that `model`'s partition of the selection frame
+    /// into frozen, active and deleted orbitals splits, where no deterministic frame fixes the
+    /// orbitals inside a group (a periodic grid, a non-aufbau or complex reference:
+    /// [`Self::frame_covered`]). Inside such a group the orbitals are whatever the eigensolver
+    /// returned, so a model that keeps some of them and not the others, and every energy and
+    /// force built on it, depends on that choice. A covered frame returns none: its cut is
+    /// deterministic ([`Self::fix_frame`]).
+    ///
+    /// The groups are those of the frame the selection read: the occupied orbitals (frozen or
+    /// active) in the reference's own labels; the virtual orbitals in the natural occupations of
+    /// an MP2 selection, or in the reference's labels for an energy selection.
+    pub fn split_groups(
+        &self,
+        integrals: &MolecularIntegrals,
+        model: &super::transform::Model,
+    ) -> Result<Vec<SplitGroup>> {
+        if self.frame_covered(integrals) || !matches!(self.method.as_str(), "rhf" | "uhf") {
+            return Ok(Vec::new());
         }
-        Ok(())
+        let m = self.model_orbitals.ncols();
+        if model
+            .orbital_indices
+            .iter()
+            .chain(&model.frozen_indices)
+            .any(|&i| i >= m)
+        {
+            return Err(invalid(
+                "the model's orbitals reach past the reference frame",
+            ));
+        }
+        let (labels, domains) = self.frame_labels()?;
+        let occupied = self.particles[0].max(self.particles[1]).min(m);
+        let kind = if self.method == "rhf" {
+            "orbital energy"
+        } else {
+            "natural occupation"
+        };
+        let mut groups: Vec<(&'static str, f64, Vec<usize>)> = Vec::new();
+        match &model.orbital_rotation {
+            Some(rotation) => {
+                if rotation.occupations.len() != m {
+                    return Err(invalid(
+                        "the natural-orbital rotation and the frame disagree",
+                    ));
+                }
+                let occupied_domains: Vec<Vec<usize>> = domains
+                    .iter()
+                    .map(|d| d.iter().copied().filter(|&i| i < occupied).collect())
+                    .collect();
+                for group in clusters(&labels, &occupied_domains)? {
+                    groups.push((kind, labels[group[0]], group));
+                }
+                let virtuals: Vec<usize> = (occupied..m).collect();
+                for group in clusters(&rotation.occupations, &[virtuals])? {
+                    groups.push((
+                        "MP2 natural occupation",
+                        rotation.occupations[group[0]],
+                        group,
+                    ));
+                }
+            }
+            None => {
+                for group in clusters(&labels, &domains)? {
+                    groups.push((kind, labels[group[0]], group));
+                }
+            }
+        }
+        Ok(groups
+            .into_iter()
+            .filter_map(|(label, value, group)| {
+                let (mut frozen, mut active, mut deleted) = (Vec::new(), Vec::new(), Vec::new());
+                for i in group {
+                    if model.frozen_indices.contains(&i) {
+                        frozen.push(i);
+                    } else if model.orbital_indices.contains(&i) {
+                        active.push(i);
+                    } else {
+                        deleted.push(i);
+                    }
+                }
+                let roles = [&frozen, &active, &deleted]
+                    .iter()
+                    .filter(|r| !r.is_empty())
+                    .count();
+                (roles > 1).then_some(SplitGroup {
+                    label,
+                    value,
+                    frozen,
+                    active,
+                    deleted,
+                })
+            })
+            .collect())
+    }
+    /// Refuse `what` (a force) when `model` splits an exactly degenerate orbital group
+    /// ([`Self::split_groups`]): the result would depend on the eigensolver's choice of orbitals
+    /// inside the group (on a crystal, the finite-difference force of such a model does not even
+    /// sum to zero).
+    pub fn require_unsplit(
+        &self,
+        integrals: &MolecularIntegrals,
+        model: &super::transform::Model,
+        what: &str,
+    ) -> Result<()> {
+        let groups = self.split_groups(integrals, model)?;
+        match groups.first() {
+            None => Ok(()),
+            Some(group) => Err(crate::Error::Unsupported(format!(
+                "{what} is refused: the active space splits {} exactly degenerate orbital \
+                 group{} ({group}); no deterministic frame fixes the orbitals inside a group \
+                 here, so the result would depend on the eigensolver's choice among them; \
+                 choose an active space that keeps each group whole",
+                groups.len(),
+                if groups.len() == 1 { "" } else { "s" },
+            ))),
+        }
     }
     /// An error when the degenerate clusters of the model orbitals have no deterministic frame
     /// (a truncated ansatz built on them would depend on the eigensolver's roundoff).

@@ -255,12 +255,14 @@ def test_relative_package_imports_are_not_dynamic():
     assert nonzero(source) == {}
 
 
-def test_unit_conversion_and_strings_are_not_arithmetic():
-    units = frozenset({"HARTREE_TO_EV", "to_bohr"})
-    assert nonzero("e = energy * HARTREE_TO_EV", units=units) == {}
-    assert nonzero("e = to_bohr(r) * 2.0", units=units) == {}
-    assert nonzero("e *= HARTREE_TO_EV", units=units) == {}
-    assert nonzero("e = energy * scale", units=units) == {"arith": 1, "arithmax": 1}
+def test_a_unit_constant_is_arithmetic_and_a_string_is_not():
+    # the exemption of the unit names is gone: a conversion is `_native.to_user_units`
+    assert nonzero("e = energy * HARTREE_TO_EV") == {"arith": 1, "arithmax": 1}
+    assert nonzero("e = to_bohr(r) * 2.0") == {"arith": 1, "arithmax": 1}
+    assert nonzero("e *= HARTREE_TO_EV") == {"arith": 1, "arithmax": 1}
+    assert nonzero("e = energy * scale") == {"arith": 1, "arithmax": 1}
+    assert nonzero("e = to_bohr(r)") == {}
+    assert nonzero("path = base / 'x'; line = 'a' * 3") == {}
 
 
 def test_arithmax_is_the_largest_function_not_the_total():
@@ -294,6 +296,138 @@ def test_a_function_keeps_its_own_counters():
 
 
 # ---------------------------------------------------------------------------
+# The numeric tests (gate version 2): what counts and what never does
+# ---------------------------------------------------------------------------
+#: Each is a site named by the MG-PY audit (or its shape); the gate must flag it before the port.
+NUMERIC_TEST_CASES = {
+    "a difference": ("response = a - b", {"addsub": 1}),
+    "a sum, augmented": ("total += x", {"addsub": 1}),
+    "a midpoint": ("mu = 0.5 * (a + b)", {"arith": 1, "addsub": 1}),
+    "a negation": ("t = -time * constant", {"neg": 1, "arith": 1}),
+    "a unit-free offset": ("count = 2 * n - 2", {"arith": 1, "addsub": 1}),
+    "an ordering comparison": ("flag = bound > limit", {"cmp": 1}),
+    "a chained comparison counts once": ("flag = 0.0 < v < 1.0", {"cmp": 1}),
+    "an equality with a number": ("flag = step != 0", {"cmp": 1}),
+    "the norm-loss verdict": (
+        "if 1.0 - kept > WARN:\n    pass", {"addsub": 1, "cmp": 1}),
+    "the larger of two radii": ("r = r_c if r_c > r_l else r_l", {"cmp": 1, "tern": 1}),
+    "a ternary with arithmetic in a branch": ("v = a + b if ok else c", {"addsub": 1, "tern": 1}),
+    "a loop that sums": (
+        "for v in x:\n    total += v", {"addsub": 1, "nloops": 1}),
+    "a comprehension that subtracts": ("y = [v - m for v in x]", {"addsub": 1, "nloops": 1}),
+    "an ASE geometry call": ("s = atoms.get_scaled_positions()", {"ase": 1}),
+    "an ASE neighbor list": ("first, d = neighbor_list('iD', atoms, 6.0)", {"ase": 1}),
+    "the reciprocal cell": ("b = atoms.cell.reciprocal()", {"ase": 1}),
+    "the band path": ("p = atoms.cell.bandpath(path=path)", {"ase": 1}),
+    "an ASE supercell": ("big = atoms.repeat(size)", {"ase": 1}),
+}
+
+
+@pytest.mark.parametrize("source, expected", NUMERIC_TEST_CASES.values(), ids=NUMERIC_TEST_CASES.keys())
+def test_the_numeric_tests_are_counted(source, expected):
+    got = nonzero(source)
+    for key, value in expected.items():
+        assert got.get(key) == value, (source, key, got)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "flag = x is None",
+        "flag = x is not None",
+        "flag = key in table",
+        "flag = key not in table",
+        "flag = name == 'vqe'",
+        "flag = name != 'vqe'",
+        "flag = a == b",
+        "flag = a == True",
+        "flag = method == None",
+        "flag = sys.version_info >= (3, 14)",
+        "flag = name < 'm'",
+        "text = 'a' + name",
+        "text = name + '.py'",
+        "text = f'{a}' + b",
+        "items = a + [b]",
+        "items = [a] + b",
+        "items = list(a) + list(b)",
+        "items = tuple(a) + (1,)",
+        "text = ', '.join(a) + b",
+        "text = str(a) + str(b)",
+        "x = -1",
+        "x = -1.0",
+        "v = a if a is None else b",
+        "v = 'on' if flag else 'off'",
+        "v = a if ok else b",
+        "labels = [n for n in names if n in table]",
+        "labels = [n.upper() for n in names]",
+        "for n in names:\n    seen.add(n)",
+        "import numpy as np\nflag = np.pi",
+        "p = np.repeat",
+        "import itertools\nx = itertools.repeat(a, 2)",
+        "reciprocal = get(a)",
+    ],
+)
+def test_identity_membership_strings_and_collections_never_count(source):
+    assert nonzero(source) == {}
+
+
+def test_the_arithmetic_of_an_sdk_adapter_is_counted_like_any_other():
+    """No adapter is exempt: the numbers an SDK call consumes come from the engine, so the
+    angles, phases, times and widths of the former adapters all score."""
+    source = """
+        from qiskit import QuantumCircuit
+        from qiskit.circuit.library import PauliEvolutionGate
+
+        def build(n, t, time, constant, weight, steps, angle, params, k, lo, hi):
+            circuit = QuantumCircuit(t + n)
+            circuit.global_phase = -time * constant
+            circuit.global_phase += 3.14
+            circuit.append(PauliEvolutionGate(op, time=time * weight / steps), range(n))
+            circuit.rz(angle * params[k], n - 1 - k)
+            return PauliEvolutionGate(op, time=-2.0 * 3.14 / (hi - lo))
+    """
+    got = nonzero(source)
+    assert got["addsub"] >= 5 and got["neg"] == 1 and got["arith"] >= 6
+    assert got["imp"] == 2                 # the SDK imports are outside the allowlist
+
+
+def test_every_counter_of_a_tier_q_module_is_budgeted(tmp_path):
+    files = {"workflows/adapter.py": "def f(t, n):\n    return t + n\n"}
+    found = failures(tmp_path, files)
+    assert any("workflows/adapter.py: addsub 1 > budget 0" in line for line in found)
+    assert any("workflows/adapter.py: sloc 2 > budget 0" in line for line in found)
+    assert failures(tmp_path, files, modules={"workflows/adapter.py": {"addsub": 1, "sloc": 2}}) == []
+
+
+def test_only_the_bandpath_container_may_be_imported_from_ases_kpoint_module():
+    assert GATE["measure_source"]("from ase.dft.kpoints import BandPath")["counts"]["imp"] == 0
+    got = GATE["measure_source"]("from ase.dft.kpoints import BandPath, bandpath, paths2kpts")
+    assert got["counts"]["imp"] == 2
+    assert [t for t, _ in got["imports"]] == ["ase.dft.kpoints.bandpath", "ase.dft.kpoints.paths2kpts"]
+
+
+def test_repeating_a_list_display_is_not_arithmetic_but_scaling_a_number_is():
+    assert nonzero("zeros = [0.0] * n; pair = (a,) * 2; grid = [[0.0] * m for _ in range(n)]") == {}
+    assert nonzero("w = weights * 2") == {"arith": 1, "arithmax": 1}
+
+
+def test_a_counted_comparison_inside_a_ternary_counts_once_each():
+    assert nonzero("v = a if a > b else b") == {"cmp": 1, "tern": 1}
+
+
+def test_the_numeric_tests_are_waivable_only_by_a_closed_category_exception():
+    assert set(GATE["NUMERIC_TESTS"]) <= set(GATE["WAIVABLE"])
+    assert set(GATE["NUMERIC_TESTS"]) <= set(GATE["CLOSED_WAIVABLE"])
+    assert "ase" not in GATE["WAIVABLE"] or "ase" not in GATE["CLOSED_WAIVABLE"]
+
+
+def test_every_counter_is_enforced_in_every_tier():
+    keys = GATE["TIER_KEYS"]
+    assert set(keys["zero"]) == set(keys["a"]) == set(keys["q"])
+    assert {"sloc", "bi", "imp", "arith", "addsub", "cmp", "tern", "neg", "nloops", "ase"} <= set(keys["q"])
+
+
+# ---------------------------------------------------------------------------
 # The import allowlist
 # ---------------------------------------------------------------------------
 @pytest.mark.parametrize(
@@ -308,6 +442,9 @@ def test_a_function_keeps_its_own_counters():
         ("from ase.neighborlist import neighbor_list", "ase.neighborlist"),
         ("from ase import geometry", "ase.geometry"),
         ("import ase.spacegroup", "ase.spacegroup"),
+        ("import ase.dft.kpoints", "ase.dft.kpoints"),
+        ("from ase.dft.kpoints import paths2kpts", "ase.dft.kpoints.paths2kpts"),
+        ("from ase.dft.kpoints import kpoint_convert", "ase.dft.kpoints.kpoint_convert"),
     ],
 )
 def test_the_zero_tier_import_allowlist(source, target):
@@ -351,7 +488,7 @@ def test_a_matching_budget_passes(tmp_path):
         {"basis/a.py": NUMPY_TWICE, "calculation.py": "import numpy as np\nnp.sum(1)\n"},
         modules={
             "basis/a.py": {"np": 2, "sloc": 3, "wave": "W4", "dies": "2027-07-16"},
-            "calculation.py": {"np": 1},
+            "calculation.py": {"np": 1, "sloc": 2},
         },
         zero_sloc=3,
     )
@@ -407,10 +544,10 @@ def test_tiers_a_and_q_are_ratchet_only(tmp_path):
     found = failures(tmp_path, files)
     assert any("core/m.py: np 2 > budget 0" in line for line in found)
     assert any("utils/u.py: np 1 > budget 0" in line for line in found)
-    assert failures(tmp_path, files, modules={"core/m.py": {"np": 2}, "utils/u.py": {"np": 1}}) == []
-    stale = failures(tmp_path, files, modules={"core/m.py": {"np": 3}, "utils/u.py": {"np": 1}})
+    assert failures(tmp_path, files, modules={"core/m.py": {"np": 2, "sloc": 3}, "utils/u.py": {"np": 1, "sloc": 2}}) == []
+    stale = failures(tmp_path, files, modules={"core/m.py": {"np": 3, "sloc": 3}, "utils/u.py": {"np": 1, "sloc": 2}})
     assert any("stale" in line for line in stale)
-    dated = failures(tmp_path, files, modules={"core/m.py": {"np": 2, "dies": "2027-01-01"}, "utils/u.py": {"np": 1}})
+    dated = failures(tmp_path, files, modules={"core/m.py": {"np": 2, "sloc": 3, "dies": "2027-01-01"}, "utils/u.py": {"np": 1, "sloc": 2}})
     assert any("ratchet-only" in line for line in dated)
 
 
@@ -664,6 +801,7 @@ def test_the_ratchet_lowers_and_never_raises(tmp_path):
                      "category": "validation", "reason": "x"}],
         zero_sloc=99,
     )
+    before["gate"] = {"version": GATE["GATE_VERSION"]}
     after, notes = GATE["ratchet"](measured, before)
     assert after["module"]["basis/a.py"]["np"] == 2 and after["module"]["basis/a.py"]["sloc"] == 3
     assert after["module"]["basis/b.py"]["sloc"] == 1
@@ -673,6 +811,48 @@ def test_the_ratchet_lowers_and_never_raises(tmp_path):
     assert after["exception"] == [] and after["tier_total"]["zero_sloc"] == 4
     assert any("cannot be raised" in line for line in notes)
     assert GATE["monotone"](before, after) == []
+
+
+def test_a_budget_of_an_older_gate_version_adopts_the_new_counters_once(tmp_path):
+    """The first ratchet under a new gate starts each counter the old gate did not count at its
+    measurement (a module without a row included); an old counter is still only lowered, and the
+    result carries the new version, so the next ratchet adopts nothing."""
+    files = {"workflows/a.py": "import numpy as np\nx = np.sum([1])\ny = x + 1\n",
+             "basis/b.py": "z = 1 if 2 > 1 else 0\n"}
+    measured = GATE["measure_package"](package(tmp_path, files))
+    old = budget(modules={"workflows/a.py": {"np": 1}}, zero_sloc=9)      # no gate version: 1
+    adopted, notes = GATE["ratchet"](measured, old)
+    assert adopted["module"]["workflows/a.py"] == {"np": 1, "addsub": 1, "sloc": 3}
+    assert adopted["gate"]["version"] == GATE["GATE_VERSION"]
+    # a zero-tier module of no row was always budgeted at zero sloc: the owner adds its row
+    assert adopted["module"]["basis/b.py"] == {"cmp": 1, "tern": 1}
+    assert any("addsub introduced at 1" in line for line in notes)
+    assert any("basis/b.py: sloc 1 > budget 0" in line
+               for line in GATE["check_budget"](measured, adopted))
+    again, notes = GATE["ratchet"](measured, adopted)
+    assert again["module"] == adopted["module"] and not any("introduced" in n for n in notes)
+    # the old counter is not raised by the adoption
+    lowered, _ = GATE["ratchet"](measured, budget(modules={"workflows/a.py": {"np": 0}}))
+    assert "np" not in lowered["module"]["workflows/a.py"]
+
+
+def test_the_monotone_check_compares_only_what_the_committed_gate_counted():
+    old = budget(modules={"core/m.py": {"np": 2}})                       # an older gate: no version
+    new = budget(modules={"core/m.py": {"np": 2, "addsub": 9, "sloc": 40},
+                          "core/n.py": {"addsub": 3, "sloc": 8}})
+    new["gate"] = {"version": GATE["GATE_VERSION"]}
+    assert GATE["monotone"](old, new) == []
+    worse = copy.deepcopy(new)
+    worse["module"]["core/m.py"]["np"] = 3
+    worse["module"]["core/n.py"]["np"] = 1                               # a new row at zero on np
+    found = GATE["monotone"](old, worse)
+    assert any("np rose from 2 to 3" in line for line in found)
+    assert any("core/n.py: np rose from 0 to 1" in line for line in found)
+    # under a committed budget of the same version nothing is exempt any more
+    committed_now = copy.deepcopy(new)
+    stricter = copy.deepcopy(new)
+    stricter["module"]["core/m.py"]["addsub"] = 10
+    assert any("addsub rose from 9 to 10" in line for line in GATE["monotone"](committed_now, stricter))
 
 
 def test_the_budget_file_round_trips_and_the_ratchet_result_passes(tmp_path):

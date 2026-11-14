@@ -26,6 +26,7 @@ use mandacaru_core::{
             shapes::COMPENSATION_CUTOFF,
             strain_provider::{StrainFields, StrainSetup, XcFields},
         },
+        stress_terms::Directions,
     },
     quantum::C64,
     Context,
@@ -359,6 +360,8 @@ impl World {
         let mut layout = self.layout();
         edit(&mut layout);
         let mut setup = StrainSetup::new(self.ctx(), inputs, layout, data.operators()).unwrap();
+        // The oracle gates every entry `g_ab` unsymmetrized: the nine unit directions.
+        setup.set_directions(Directions::all_entries(None));
         if let Some(vectors) = dense {
             setup = setup.with_dense_vectors(vectors);
         }

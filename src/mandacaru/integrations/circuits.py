@@ -200,11 +200,10 @@ def measure_rdms_of(driver, circuits):
     measured = driver.provider.expectation_batch(
         problem.num_qubits, problem.reference_qubits, requests)
     results = []
-    per_circuit = len(readers) // max(len(circuits), 1)
-    for c in range(len(circuits)):
+    for start, end in _native.equal_chunks(len(readers), len(circuits)):
         values, errors = [0.0] * plan.measured, [0.0] * plan.measured
         reported = True
-        chunk = slice(c * per_circuit, (c + 1) * per_circuit)
+        chunk = slice(start, end)
         for observables, (read, spread) in zip(readers[chunk], measured[chunk]):
             reported = reported and spread is not None
             for label, index in observables:

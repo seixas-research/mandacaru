@@ -32,6 +32,7 @@ pub(crate) trait Scalar:
     fn sqrt(self) -> Self;
     fn asinh(self) -> Self;
     fn erfc(self) -> Self;
+    fn tanh(self) -> Self;
     /// `exp(x^2) erfc(x)`.
     fn erfcx(self) -> Self;
 }
@@ -68,6 +69,9 @@ impl Scalar for f64 {
     }
     fn erfc(self) -> Self {
         libm::erfc(self)
+    }
+    fn tanh(self) -> Self {
+        f64::tanh(self)
     }
     fn erfcx(self) -> Self {
         (self * self).exp() * libm::erfc(self)
@@ -106,6 +110,9 @@ impl Scalar for Jet<f64> {
     }
     fn erfc(self) -> Self {
         Jet::erfc(self)
+    }
+    fn tanh(self) -> Self {
+        Jet::tanh(self)
     }
     fn erfcx(self) -> Self {
         let value = f64::erfcx(self.v);
@@ -165,13 +172,12 @@ impl<S: Scalar> Jet<S> {
             S::constant(-2. / PI.sqrt()) * (-self.v * self.v).exp(),
         )
     }
-}
-impl Jet<f64> {
     fn tanh(self) -> Self {
         let v = self.v.tanh();
-        self.unary(v, 1. - v * v)
+        self.unary(v, S::constant(1.) - v * v)
     }
 }
+
 impl<S: Scalar> Add for Jet<S> {
     type Output = Self;
     fn add(self, b: Self) -> Self {
@@ -425,26 +431,8 @@ pub fn point_partials(name: &str, values: [f64; 7], relativistic: bool) -> Resul
             {
                 return Err(invalid("point XC requires finite physical densities, diagonal contractions and kinetic densities"));
             }
-            let [up, dn, suu, sud, sdd, tu, td] =
-                std::array::from_fn(|i| Jet::variable(values[i], i));
-            let total = up + dn;
-            if total.v <= 1e-12 {
-                return Ok((0., [0.; 7]));
-            }
-            let mut f = Jet::c(0.);
-            for (rho, sigma, tau) in [(2. * up, 4. * suu, 2. * tu), (2. * dn, 4. * sdd, 2. * td)] {
-                if rho.v > 2e-12 {
-                    f = f + 0.5 * r2_exchange(rho, sigma, tau);
-                }
-            }
-            let sigma = suu + 2. * sud + sdd;
-            if sigma.v < 0. {
-                return Err(invalid(
-                    "total density-gradient contraction must be nonnegative",
-                ));
-            }
-            let z = (1. - 1e-12) * (up - dn) / total;
-            f = f + r2_correlation(total, z, sigma, tu + td);
+            let variables = std::array::from_fn(|i| Jet::variable(values[i], i));
+            let f = meta(variables)?;
             if !f.v.is_finite() || f.d.iter().any(|v| !v.is_finite()) {
                 return Err(invalid("nonfinite meta-GGA evaluation"));
             }
@@ -455,6 +443,82 @@ pub fn point_partials(name: &str, values: [f64; 7], relativistic: bool) -> Resul
         )),
     }
 }
+/// The relative rounding allowed in a total density-gradient contraction, in units of `suu + sdd`:
+/// 16 f64 epsilons (about 3.6e-15), against a measured 0.3 epsilon (the H2 midpoint of a spin-flip
+/// trial density).
+const CONTRACTION_ROUNDING: f64 = 16. * f64::EPSILON;
+
+/// The r2SCAN energy per volume of `(up, down, uu, ud, dd, tau_up, tau_down)` in any [`Scalar`]
+/// (zero at a total density at or below 1e-12).
+fn meta<S: Scalar>(variables: [Jet<S>; 7]) -> Result<Jet<S>> {
+    let [up, dn, suu, sud, sdd, tu, td] = variables;
+    let total = up + dn;
+    if total.re() <= 1e-12 {
+        return Ok(Jet::c(0.));
+    }
+    let mut f = Jet::c(0.);
+    for (rho, sigma, tau) in [(2. * up, 4. * suu, 2. * tu), (2. * dn, 4. * sdd, 2. * td)] {
+        if rho.re() > 2e-12 {
+            f = f + 0.5 * r2_exchange(rho, sigma, tau);
+        }
+    }
+    let mut sigma = suu + 2. * sud + sdd;
+    if sigma.re() < 0. {
+        // `|grad rho_up + grad rho_down|^2` assembled from its three contractions cancels to
+        // rounding where the two spin gradients are opposite (a bond midpoint under a
+        // spin-flip trial density; a node of the total density in a polarized ground state).
+        // The sum of three products each good to a few ulps leaves at most
+        // `CONTRACTION_ROUNDING * (suu + sdd)` (`2 |sud| <= suu + sdd`), so a negative within
+        // that bound is zero; the value is shifted, the derivatives are kept. Beyond it the
+        // inputs are not a gradient field and the call raises. A nonnegative contraction does
+        // not reach this branch, so its result is unchanged.
+        if sigma.re() < -CONTRACTION_ROUNDING * (suu.re() + sdd.re()) {
+            return Err(invalid(
+                "total density-gradient contraction must be nonnegative",
+            ));
+        }
+        sigma = sigma - sigma.re();
+    }
+    let z = (1. - 1e-12) * (up - dn) / total;
+    Ok(f + r2_correlation(total, z, sigma, tu + td))
+}
+
+/// The r2SCAN energy per volume at `(up, down, uu, ud, dd, tau_up, tau_down)`, its seven partials
+/// and their 7 x 7 symmetric matrix of second partials (the meta-GGA point kernel), forward over
+/// forward through the same expression as [`point_partials`]. On a branch boundary (the floor of
+/// the iso-orbital indicator below zero, the interpolation's tail above 2.5, a density at a floor)
+/// it is the one-sided derivative of the branch the value takes; zero at a total density at or
+/// below 1e-12, as the potential.
+pub fn point_hessian_meta(values: [f64; 7]) -> Result<(f64, [f64; 7], [[f64; 7]; 7])> {
+    if values.iter().any(|v| !v.is_finite()) || [0, 1, 2, 4, 5, 6].iter().any(|&i| values[i] < 0.) {
+        return Err(invalid(
+            "point XC requires finite physical densities, diagonal contractions and kinetic densities",
+        ));
+    }
+    let variables = std::array::from_fn(|i| Jet::variable(Jet::<f64>::variable(values[i], i), i));
+    let f = meta(variables)?;
+    let first: [f64; 7] = std::array::from_fn(|i| f.d[i].v);
+    let mut second = [[0.; 7]; 7];
+    for (i, row) in second.iter_mut().enumerate() {
+        for (j, value) in row.iter_mut().enumerate() {
+            *value = 0.5 * (f.d[i].d[j] + f.d[j].d[i]);
+        }
+    }
+    if !f.v.v.is_finite()
+        || first.iter().any(|v| !v.is_finite())
+        || second.iter().flatten().any(|v| !v.is_finite())
+    {
+        return Err(invalid("nonfinite meta-GGA kernel evaluation"));
+    }
+    Ok((f.v.v, first, second))
+}
+
+/// The hole model's reduced-gradient parameters. Above `t = s^2 = 1` the reduced gradient is bent
+/// by a softplus cap; the bend meets `t` with a slope jump of about 5e-4, so the functional is not
+/// smooth there. The kernel at such a point is the one-sided derivative of its branch, and a finite
+/// difference of the HSE06 potential needs steps that keep tail points on one side (steps of 1e-5
+/// relative; 1e-3 can miss by tens of percent at a crossing point). Kept by the owner (TDDFT_PLAN
+/// Q17, 2026-11-12): smoothing it would move every frozen HSE06 number.
 fn hole_parameters<S: Scalar>(rho: Jet<S>, sigma: Jet<S>) -> (Jet<S>, Jet<S>, Jet<S>, Jet<S>) {
     let kf = (3. * PI * PI * rho).pow(1. / 3.);
     let mut t = sigma / (4. * kf * kf * rho * rho);
@@ -844,21 +908,21 @@ const R2_CC: [f64; 8] = [
 fn slope(c: &[f64; 8]) -> f64 {
     c.iter().enumerate().map(|(i, c)| i as f64 * c).sum()
 }
-fn alpha_floor(a: Jet) -> Jet {
-    if a.v < 0. {
+fn alpha_floor<S: Scalar>(a: Jet<S>) -> Jet<S> {
+    if a.re() < 0. {
         0.5 * (a / 0.5).tanh()
     } else {
         a
     }
 }
-fn interpolation(a: Jet, c: &[f64; 8], tail: f64, scale: f64) -> Jet {
-    if a.v > 2.5 {
+fn interpolation<S: Scalar>(a: Jet<S>, c: &[f64; 8], tail: f64, scale: f64) -> Jet<S> {
+    if a.re() > 2.5 {
         -scale * (tail / (1. - a)).exp()
     } else {
         c.iter().rev().fold(Jet::c(0.), |value, &c| value * a + c)
     }
 }
-fn r2_exchange(rho: Jet, sigma: Jet, tau: Jet) -> Jet {
+fn r2_exchange<S: Scalar>(rho: Jet<S>, sigma: Jet<S>, tau: Jet<S>) -> Jet<S> {
     let kf2 = (3. * PI * PI * rho).pow(2. / 3.);
     let p = sigma / (4. * kf2 * rho * rho);
     let tw = sigma / (8. * rho);
@@ -868,25 +932,25 @@ fn r2_exchange(rho: Jet, sigma: Jet, tau: Jet) -> Jet {
     let x = ((20. / 27. + 5. * 0.001 / 3.) * restored * damping + 10. / 81.) * p;
     let h1 = 1. + 0.065 - 0.065 / (1. + x / 0.065);
     let fx = interpolation(alpha, &R2_CX, 0.8, 1.24);
-    let safe = if p.v < 1e-30 { Jet::c(1e-30) } else { p };
+    let safe = if p.re() < 1e-30 { Jet::c(1e-30) } else { p };
     let gx = 1. - (-4.9479 / safe.pow(0.25)).exp();
     -0.75 * (3. / PI).cbrt() * rho.pow(4. / 3.) * (h1 + fx * (1.174 - h1)) * gx
 }
-fn pw_slope(rs: Jet, params: [f64; 6]) -> Jet {
+fn pw_slope<S: Scalar>(rs: Jet<S>, params: [f64; 6]) -> Jet<S> {
     let [a, a1, b1, b2, b3, b4] = params;
     let q = 2. * a * (b1 * rs.pow(0.5) + b2 * rs + b3 * rs.pow(1.5) + b4 * rs * rs);
     let dq = a * (b1 / rs.pow(0.5) + 2. * b2 + 3. * b3 * rs.pow(0.5) + 4. * b4 * rs);
     -2. * a * a1 * (1. / q).ln1p() + 2. * a * (1. + a1 * rs) * dq / (q * q + q)
 }
-fn polarized_pw(rs: Jet, z: Jet, derivative: bool) -> Jet {
+fn polarized_pw<S: Scalar>(rs: Jet<S>, z: Jet<S>, derivative: bool) -> Jet<S> {
     let fz = ((1. + z).pow(4. / 3.) + (1. - z).pow(4. / 3.) - 2.) / (2f64.powf(4. / 3.) - 2.);
-    let evaluate = if derivative { pw_slope } else { pw };
+    let evaluate: fn(Jet<S>, [f64; 6]) -> Jet<S> = if derivative { pw_slope::<S> } else { pw::<S> };
     let para = evaluate(rs, [0.031091, 0.21370, 7.5957, 3.5876, 1.6382, 0.49294]);
     let ferro = evaluate(rs, [0.015545, 0.20548, 14.1189, 6.1977, 3.3662, 0.62517]);
     let stiffness = -evaluate(rs, [0.016887, 0.11125, 10.357, 3.6231, 0.88026, 0.49671]);
     para + stiffness * fz * (1. - z.pow(4.)) / 1.709921 + (ferro - para) * fz * z.pow(4.)
 }
-fn r2_correlation(rho: Jet, z: Jet, sigma: Jet, tau: Jet) -> Jet {
+fn r2_correlation<S: Scalar>(rho: Jet<S>, z: Jet<S>, sigma: Jet<S>, tau: Jet<S>) -> Jet<S> {
     let gamma = (1. - 2f64.ln()) / (PI * PI);
     let kf2 = (3. * PI * PI * rho).pow(2. / 3.);
     let p = sigma / (4. * kf2 * rho * rho);

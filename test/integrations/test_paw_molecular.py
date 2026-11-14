@@ -49,3 +49,34 @@ def test_a_multi_atom_molecule_gives_the_same_bits_on_every_thread_count():
         assert energy == runs[0][0]
         for name in ("overlap", "kinetic", "potential", "one_body"):
             assert np.array_equal(snapshot[name], runs[0][1][name]), name
+
+
+@pytest.mark.parametrize("active_space", [None, {"orbitals": 2}, {"orbitals": 2, "method": "mp2"}])
+def test_a_kohn_sham_reference_over_a_heavy_core_has_no_hamiltonian_without_core_valence_exchange(
+        active_space):
+    """Kohn-Sham DFT of NaH runs (its energy never reads a core-valence exchange), but the
+    second-quantized Hamiltonian over its frozen core does: the dense model, an active space and
+    the MP2 natural orbitals that select one are refused like Hartree-Fock (owner Q20)."""
+    atoms = Atoms("NaH", positions=[[0, 0, 0], [0, 0, 1.89]], cell=[7, 7, 7])
+    atoms.center()
+    atoms.calc = Mandacaru(method="dft", xc="lda", basis={"name": "PAW-LCAO", "size": "SZ"},
+                           grid_spacing=0.3, active_space=active_space)
+    assert np.isfinite(atoms.get_potential_energy())
+    with pytest.raises(ValueError, match="frozen-core exchange"):
+        atoms.calc.result.hamiltonian
+
+
+def test_a_hybrid_on_a_heavy_core_is_refused_by_name():
+    """HSE06 takes a fraction of exact exchange, which includes the valence's exchange with the
+    frozen core: on NaH (a sodium core beyond a closed 1s shell) it raises, naming the
+    functional, while the semilocal functional of the same molecule runs."""
+    def nah(xc):
+        atoms = Atoms("NaH", positions=[[0, 0, 0], [0, 0, 1.89]], cell=[7, 7, 7])
+        atoms.center()
+        atoms.calc = Mandacaru(method="dft", xc=xc, basis={"name": "PAW-LCAO", "size": "SZ"},
+                               grid_spacing=0.3)
+        return atoms
+
+    assert np.isfinite(nah("pbe").get_potential_energy())
+    with pytest.raises(ValueError, match="hse06 takes 0.25 of exact exchange.*frozen-core exchange"):
+        nah("hse06").get_potential_energy()

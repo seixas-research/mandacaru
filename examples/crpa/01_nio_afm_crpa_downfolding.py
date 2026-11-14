@@ -72,6 +72,26 @@ def compute_wannier(calc: Mandacaru, guess=None, outer_span: float = 5.0):
     return wannier
 
 
+def eg_functions(wannier):
+    """The two functions of largest e_g weight on each Ni atom, from both spin channels."""
+    labels = wannier.up.labels
+    weights = wannier.up.trial_weights + wannier.down.trial_weights
+    sites = sorted({label.split(":")[0] for label in labels if label.startswith("Ni")})
+    modes = []
+    for site in sites:
+        eg = [m for m, label in enumerate(labels) if label in (f"{site}:dz2", f"{site}:dx2-y2")]
+        weight = weights[:, eg].sum(axis=1)
+        modes.extend(int(n) for n in np.argsort(weight)[-2:])
+    return sorted(modes)
+
+
+def pair_average_u(model, pairs):
+    """The up-down interaction (1/n^2) sum_ab <ab|ab> over each pair of fragment functions (eV):
+    the e_g U of an atom, independent of how its two e_g functions are rotated."""
+    g = model.two_body[0, 1].real * HARTREE_TO_EV
+    return [float(np.mean([g[a, b, a, b] for a in pair for b in pair])) for pair in pairs]
+
+
 def downfold_and_screen(
     wannier,
     active_functions=None,
@@ -96,11 +116,18 @@ def downfold_and_screen(
         coulomb="isolated",
     )
 
-    # Print summary of screened parameters
+    # Print summary of screened parameters. The two e_g functions of an atom are an arbitrary
+    # rotation of each other (the localization does not fix it), so a single <00|00> depends on
+    # that gauge; the average (1/4) sum_ab <ab|ab> over the atom's pair does not.
+    pairs = [(0, 1), (2, 3)]
+    bare = pair_average_u(bare_model, pairs)
+    crpa = pair_average_u(crpa_model, pairs)
+    print("  e_g U, averaged over each Ni's pair (gauge invariant), Ni0 / Ni1:")
+    print(f"    Bare:  {bare[0]:6.3f} / {bare[1]:6.3f} eV")
+    print(f"    cRPA:  {crpa[0]:6.3f} / {crpa[1]:6.3f} eV  (Screening ratio: {crpa[0] / bare[0]:.3f})")
     u_bare = bare_model.two_body[0, 1, 0, 0, 0, 0].real * HARTREE_TO_EV
     u_crpa = crpa_model.two_body[0, 1, 0, 0, 0, 0].real * HARTREE_TO_EV
-    print(f"  Bare Hubbard U_0:  {u_bare:6.2f} eV")
-    print(f"  cRPA Screened U:   {u_crpa:6.2f} eV  (Screening ratio: {u_crpa / u_bare:.3f})")
+    print(f"  One function's <00|00> (depends on the e_g gauge): bare {u_bare:.3f}, cRPA {u_crpa:.3f} eV")
     if crpa_model.dielectric_head is not None:
         print(f"  Dielectric head eps^-1(q->0): {crpa_model.dielectric_head:.4f}")
 
@@ -137,8 +164,10 @@ def main():
     wannier = compute_wannier(calc, guess={"Ni": "d"}, outer_span=5.0)
 
     # 4. Downfolding & cRPA screening
-    # For a low-energy 4-orbital model: select eg orbitals on both Ni sites (indices 2, 4 on Ni0 and 7, 9 on Ni1)
-    eg_modes = [2, 4, 7, 9]
+    # For a low-energy 4-orbital model: the e_g functions of both Ni sites, chosen by their weight
+    # on the e_g trial orbitals (a localized function need not keep its trial's index)
+    eg_modes = eg_functions(wannier)
+    print(f"e_g functions: {eg_modes}")
     _bare, crpa_model = downfold_and_screen(
         wannier,
         active_functions=eg_modes,

@@ -3631,7 +3631,7 @@ impl PyContext {
         if input.dataset_files.is_none() && !dataset_paths.is_empty() {
             let mut files = Vec::with_capacity(dataset_paths.len());
             for p in &dataset_paths {
-                let digest = mandacaru_core::paw::digest::sha256_file(std::path::Path::new(p)).map_err(error)?;
+                let digest = mandacaru_core::paw::digest::dataset_content_sha256(&self.inner, std::path::Path::new(p)).map_err(error)?;
                 files.push((p.clone(), digest));
             }
             // The supplied paths are indexed by species. Store them in atom

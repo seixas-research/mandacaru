@@ -215,35 +215,36 @@ impl SpinOrbit {
     }
 
     /// The strain derivative of this k-point's share of `E_SO`, `w 2 Re sum_{mu p} dC_ab[mu, p]
-    /// Z[p, mu]` for the nine entries `[a][b]` (AS-8): the same `Z` as [`add_k`](Self::add_k),
-    /// contracted with the strain tangent of the projections `dc[a][b]` (`m x p`, every function
+    /// Z[p, mu]` for each strain direction (AS-8): the same `Z` as [`add_k`](Self::add_k),
+    /// contracted with the strain tangent of the projections `dc[direction]` (`m x p`, every function
     /// and projector moves: nothing is owner-masked). `B` is constant, so there is no `dB`, no hat
     /// and no `W`.
     pub fn strain_k(
         &self,
         weight: f64,
         c: &Matrix,
-        dc: &[[Matrix; 3]; 3],
+        dc: &[Matrix],
         density: &Matrix,
-    ) -> Result<[[f64; 3]; 3]> {
+    ) -> Result<Vec<f64>> {
         let (m, p) = self.check(c, density)?;
-        if dc.iter().flatten().any(|g| g.shape() != (m, p)) {
+        if dc.iter().any(|g| g.shape() != (m, p)) {
             return Err(invalid(
-                "spin-orbit stress: dC must be m x p for each of the nine strain entries",
+                "spin-orbit stress: dC must be m x p for each strain direction",
             ));
         }
         let hermitian = (density + density.adjoint()) * C64::new(0.5, 0.);
         let z = self.z(c, &hermitian);
-        Ok(std::array::from_fn(|a| {
-            std::array::from_fn(|b| {
+        Ok(dc
+            .iter()
+            .map(|dc| {
                 let mut sum = 0.;
                 for mu in 0..m {
                     for q in 0..p {
-                        sum += (dc[a][b][(mu, q)] * z[(q, mu)]).re;
+                        sum += (dc[(mu, q)] * z[(q, mu)]).re;
                     }
                 }
                 2. * weight * sum
             })
-        }))
+            .collect())
     }
 }

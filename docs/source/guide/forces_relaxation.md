@@ -34,6 +34,7 @@ relax: a converged optimizer is not evidence that the model has a minimum.
 | `ghf`, `subspace-vqe`, `subspace-adapt-vqe` | not available |
 | `vqe`, `adapt-vqe` with `shots > 0` or `execute_circuits=True` | [analytic, on the density matrices measured on the device](#forces-variational), with a propagated statistical error |
 | `vasqa`, `valsqa` on a circuit device; a tapered register on a device | not available |
+| the quantum methods on a crystal (the Bloch supercell, [crystals](bloch.md)) | central finite differences of the energy per cell; refused when the active space splits an exactly degenerate orbital group ([below](#forces-split-group)) |
 | `dft` on periodic structures (crystals) | analytic Rust gradient for LDA, PBE, r2SCAN, rVV10 and HSE06, unpolarized, spin-polarized and with spin-orbit coupling; stress tensor via `get_stress()` for the same functionals; a DFT+U crystal with a hybrid or a spin-orbit dataset raises `NotImplementedError` |
 
 Forces require the default `kinetic="spectral"`. Asking for forces where they are not available raises ASE's
@@ -132,6 +133,20 @@ below. The orbitals the Hamiltonian is built in sit in a deterministic frame
 inside every exactly degenerate cluster ([Degenerate
 orbitals](#degenerate-orbitals)), so the production energy is a function of the
 geometry that the force differentiates.
+
+(forces-split-group)=
+**An active space that splits a degenerate group is refused where no frame fixes
+it.** On a crystal's supercell, and on a molecular reference the frame does not
+cover (a non-aufbau or complex one), the orbitals inside an exactly degenerate group
+are the eigensolver's choice. A force of a model that freezes or keeps some members
+of a group and deletes the others raises `NotImplementedError`, naming the group
+and the remedy (an active space that keeps each group whole): the zero in-group
+response of the analytic force is not justified, and the finite differences of a
+crystal are not a derivative. A crystal's check runs before any displaced
+calculation. On every molecule the deterministic frame covers, the cut stays the
+deterministic one and nothing is refused. An energy run warns in the
+`[ACTIVE SPACE]` block of the run log ([Degenerate
+orbitals](#degenerate-orbitals)).
 
 **Known limitation (unrestricted references).** The analytic force of a truncated
 `uhf` ansatz whose active space cuts the exact zero-occupation cluster of

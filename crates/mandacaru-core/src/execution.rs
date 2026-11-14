@@ -606,3 +606,84 @@ impl RunLedger {
         Ok(())
     }
 }
+
+/// What a device force costs in circuit instances and shots: the RDM circuits `1 + 2 rotations`
+/// (the state and one pair of shifted states per Pauli rotation), the instances `circuits +
+/// rdm_circuits bases` (the energy evaluations of the parameter Hessian and the RDM circuits of
+/// every basis) and the shots of all of them, `instances shots`. Returns
+/// `(rdm_circuits, instances, total_shots)`.
+pub fn device_force_cost(rotations: u64, circuits: u64, bases: u64, shots: u64) -> Result<(u64, u64, u64)> {
+    let rdm = rotations.checked_mul(2).and_then(|v| v.checked_add(1)).ok_or(Error::Overflow)?;
+    let instances = rdm.checked_mul(bases).and_then(|v| v.checked_add(circuits)).ok_or(Error::Overflow)?;
+    let total = instances.checked_mul(shots).ok_or(Error::Overflow)?;
+    Ok((rdm, instances, total))
+}
+
+/// The jobs of a submission: consecutive requests (`loads[i]` bases each) packed in order into jobs
+/// of at most `limit` bases, a request that would overflow the job opening the next one; a
+/// request over the limit alone fills a job by itself. No limit (`None` or zero) packs them all in
+/// one. Returns `(request indices, bases)` per job; no requests give no job.
+pub fn pack_jobs(loads: &[u64], limit: Option<u64>) -> Vec<(Vec<usize>, u64)> {
+    let limit = limit.unwrap_or(0);
+    let mut jobs: Vec<(Vec<usize>, u64)> = Vec::new();
+    let (mut current, mut load) = (Vec::new(), 0u64);
+    for (index, &bases) in loads.iter().enumerate() {
+        if !current.is_empty() && limit > 0 && load + bases > limit {
+            jobs.push((std::mem::take(&mut current), load));
+            load = 0;
+        }
+        current.push(index);
+        load += bases;
+    }
+    if !current.is_empty() {
+        jobs.push((current, load));
+    }
+    jobs
+}
+
+/// `(entangling, single, total)` gate counts of `gates`, each `(name, qubits, count)`. A gate
+/// whose lower-case name is in `skipped` (a barrier, a measurement) is neither entangling nor
+/// single; `total` counts every gate. With `entanglers`, the entangling gates are those named
+/// there and the single-qubit ones the other unskipped gates; without, an entangling gate is any
+/// unskipped gate acting on two qubits (whatever it is called), so a fractional-gate entangler
+/// is counted as one.
+pub fn gate_tally(gates: &[(String, usize, u64)], skipped: &[String], entanglers: Option<&[String]>) -> (u64, u64, u64) {
+    let named = |list: &[String], name: &str| list.iter().any(|item| item.eq_ignore_ascii_case(name));
+    let (mut entangling, mut single, mut total) = (0u64, 0u64, 0u64);
+    for (name, qubits, count) in gates {
+        total += count;
+        if named(skipped, name) {
+            continue;
+        }
+        let entangles = match entanglers {
+            Some(list) => named(list, name),
+            None => *qubits == 2,
+        };
+        if entangles {
+            entangling += count;
+        } else {
+            single += count;
+        }
+    }
+    (entangling, single, total)
+}
+
+/// The wire qubit `k` sits on in an SDK that numbers its wires from the other end,
+/// `n_qubits - 1 - k`: Qiskit is little-endian, so the engine's qubit `k` lives on wire
+/// `n - 1 - k` and the simulated amplitude ordering matches the engine's without a permutation.
+pub fn reversed_wire(n_qubits: usize, k: usize) -> Result<usize> {
+    if k >= n_qubits {
+        return Err(invalid("a qubit index must be below the register width"));
+    }
+    Ok(n_qubits - 1 - k)
+}
+
+/// The `[start, end)` bounds of each of `parts` consecutive chunks of `total / parts` items (whole
+/// items: the remainder past the last chunk belongs to none); no parts give no chunk.
+pub fn equal_chunks(total: usize, parts: usize) -> Vec<(usize, usize)> {
+    if parts == 0 {
+        return Vec::new();
+    }
+    let each = total / parts;
+    (0..parts).map(|c| (c * each, (c + 1) * each)).collect()
+}

@@ -944,6 +944,18 @@ impl BlochSpectral {
         }
         (removal, addition)
     }
+
+    /// The chemical potential of the state: the midpoint of the two [`edges`](Self::edges).
+    pub fn chemical_potential(&self, threshold: f64) -> f64 {
+        let (removal, addition) = self.edges(threshold);
+        0.5 * (removal + addition)
+    }
+
+    /// The fundamental gap of the state: the lowest addition pole minus the highest removal pole.
+    pub fn gap(&self, threshold: f64) -> f64 {
+        let (removal, addition) = self.edges(threshold);
+        addition - removal
+    }
 }
 
 impl BlochSpectral {

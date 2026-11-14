@@ -14,6 +14,8 @@ pub const PLANCK_JOULE_SECOND: f64 = 6.62607015e-34;
 pub const BOHR_TO_METER: f64 = BOHR_TO_ANGSTROM * 1e-10;
 /// The speed of light in vacuum, meters per second (exact in the SI).
 pub const SPEED_OF_LIGHT_METER_PER_SECOND: f64 = 299_792_458.;
+/// The atomic unit of time, `hbar / E_h`, in femtoseconds (CODATA 2018).
+pub const ATOMIC_TIME_FS: f64 = 0.024_188_843_265_857;
 
 /// The vacuum wavelength in nanometers of a photon of `energy` Hartree, `h c / E`.
 pub fn wavelength_nm(energy: f64) -> Result<f64> {
@@ -72,6 +74,12 @@ pub enum Quantity {
     Polarization,
     /// e^2/(hbar Bohr) to S/cm (a conductivity).
     Conductivity,
+    /// The atomic unit of time to femtoseconds.
+    Time,
+    /// Bohr^3 to Angstrom^3 (a polarizability).
+    Volume,
+    /// 1/Bohr to 1/Angstrom (a wavenumber: a kick strength, a momentum with `hbar = 1`).
+    Wavenumber,
 }
 
 impl Quantity {
@@ -86,10 +94,14 @@ impl Quantity {
             "inverse_energy" => Self::InverseEnergy,
             "polarization" => Self::Polarization,
             "conductivity" => Self::Conductivity,
+            "time" => Self::Time,
+            "volume" => Self::Volume,
+            "wavenumber" => Self::Wavenumber,
             _ => {
                 return Err(Error::Invalid(
                     "quantity must be 'energy', 'length', 'force', 'gradient_to_force', 'stress', \
-                     'area', 'inverse_energy', 'polarization' or 'conductivity'"
+                     'area', 'inverse_energy', 'polarization', 'conductivity', 'time', 'volume' \
+                     or 'wavenumber'"
                         .into(),
                 ))
             }
@@ -116,8 +128,17 @@ impl Quantity {
                     / PLANCK_JOULE_SECOND
                     / (BOHR_TO_METER * 100.)
             }
+            Self::Time => ATOMIC_TIME_FS,
+            Self::Volume => BOHR_TO_ANGSTROM.powi(3),
+            Self::Wavenumber => 1. / BOHR_TO_ANGSTROM,
         }
     }
+}
+
+/// A value the user gave in `quantity`'s user units, in atomic units (the inverse of
+/// [`to_user`] for one cell; `atomic`: already atomic).
+pub fn from_user(value: f64, quantity: Quantity, atomic: bool) -> f64 {
+    value / quantity.factor(atomic)
 }
 
 /// `values` (atomic units) in the units a user sees (`atomic`: kept in atomic units), each

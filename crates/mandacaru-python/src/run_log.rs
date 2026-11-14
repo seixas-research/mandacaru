@@ -7,7 +7,7 @@ use super::error;
 use super::molecular::PyIntegrals;
 use super::persistence::PySnapshot;
 use super::quantum::PyProblem;
-use mandacaru_core::quantum::pools;
+use mandacaru_core::{derived, quantum::{pools, Encoding}};
 use pyo3::{prelude::*, types::PyDict};
 
 /// Number of Pauli terms of the problem's qubit Hamiltonian.
@@ -118,7 +118,64 @@ fn paw_diffuse_box<'py>(
     Ok(Some(out))
 }
 
+/// `a - b` (`derived::difference`).
+#[pyfunction]
+fn difference(a: f64, b: f64) -> f64 {
+    derived::difference(a, b)
+}
+
+/// `100 fraction` (`derived::percent`).
+#[pyfunction]
+fn percent(fraction: f64) -> f64 {
+    derived::percent(fraction)
+}
+
+/// Whether `value <= limit` (`derived::at_most`).
+#[pyfunction]
+fn at_most(value: f64, limit: f64) -> bool {
+    derived::at_most(value, limit)
+}
+
+/// The sum of `values` rounded to `digits` decimals as Python's `round` does
+/// (`derived::round_total`).
+#[pyfunction]
+fn round_total(values: Vec<f64>, digits: usize) -> f64 {
+    derived::round_total(&values, digits)
+}
+
+/// `(moment, multiplicity, polarized)` of `alpha` and `beta` electrons (`derived::spin_summary`).
+#[pyfunction]
+fn spin_summary(alpha: u64, beta: u64) -> (f64, u64, bool) {
+    derived::spin_summary(alpha, beta)
+}
+
+/// The spin-orbitals of `n_spatial` spatial orbitals, `2 n_spatial`.
+#[pyfunction]
+fn spin_orbital_count(n_spatial: usize) -> PyResult<usize> {
+    n_spatial.checked_mul(2).ok_or_else(|| error(mandacaru_core::Error::Overflow))
+}
+
+/// The qubits `modes` spin-orbitals need under `mapping` (`Encoding::register_qubits`).
+#[pyfunction]
+fn register_qubits(mapping: &str, modes: usize) -> PyResult<usize> {
+    Encoding::register_qubits(mapping, modes).map_err(error)
+}
+
+/// A byte count as `"512 B"`, `"1.50 GiB"` (`derived::human_bytes`).
+#[pyfunction]
+fn human_bytes(bytes: u128) -> String {
+    derived::human_bytes(bytes)
+}
+
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(difference, m)?)?;
+    m.add_function(wrap_pyfunction!(percent, m)?)?;
+    m.add_function(wrap_pyfunction!(at_most, m)?)?;
+    m.add_function(wrap_pyfunction!(round_total, m)?)?;
+    m.add_function(wrap_pyfunction!(spin_summary, m)?)?;
+    m.add_function(wrap_pyfunction!(spin_orbital_count, m)?)?;
+    m.add_function(wrap_pyfunction!(register_qubits, m)?)?;
+    m.add_function(wrap_pyfunction!(human_bytes, m)?)?;
     m.add_function(wrap_pyfunction!(paw_diffuse_box, m)?)?;
     m.add_function(wrap_pyfunction!(problem_term_count, m)?)?;
     m.add_function(wrap_pyfunction!(integrals_report, m)?)?;

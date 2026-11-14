@@ -1,6 +1,7 @@
-//! Linear-response excitations of a molecule: TDDFT (adiabatic LDA, PBE and HSE06) and, on a
-//! Hartree-Fock reference, TDHF and CIS; closed shells spin-adapted (singlets and triplets),
-//! unrestricted (open-shell) references in the spin-conserving spin-orbital form.
+//! Linear-response excitations of a molecule: TDDFT (adiabatic LDA, PBE, r2SCAN and HSE06, each
+//! with or without +U) and, on a Hartree-Fock reference, TDHF and CIS; closed shells
+//! spin-adapted (singlets and triplets), unrestricted (open-shell) references in the
+//! spin-conserving spin-orbital form.
 //!
 //! The Tamm-Dancoff approximation solves `A X = omega X` ([`math::davidson::lowest`]); the full
 //! (Casida) form solves `(A - B)(A + B)(X + Y) = omega^2 (X + Y)`
@@ -14,6 +15,8 @@
 //!
 //! [`math::davidson::lowest`]: crate::math::davidson::lowest
 //! [`math::davidson::lowest_paired`]: crate::math::davidson::lowest_paired
+mod hubbard;
+mod meta;
 mod properties;
 mod response;
 mod unrestricted;
@@ -394,8 +397,9 @@ fn solve<O: Operator>(response: &O, request: &Request, roots: usize) -> Result<S
 fn remedy(spin: Spin) -> &'static str {
     match spin {
         Spin::Unrestricted => {
-            "this unrestricted state is not the lowest of its symmetry: converge another \
-             (for example from other initial magnetic moments)"
+            "this unrestricted state is not the lowest of its symmetry: break its spin \
+             symmetry (start the unrestricted SCF from spin-polarized initial magnetic moments) \
+             to reach the lower state"
         }
         _ => "use a spin-unrestricted reference",
     }
@@ -441,6 +445,9 @@ pub fn excitations(
         return Err(invalid(
             "the excitation tolerance must be positive and finite and max_iterations at least 1",
         ));
+    }
+    if reference.functional.is_none() {
+        integrals.require_hartree_fock_core()?;
     }
     integrals.context.run(|| {
         if reference.method == "uhf" {

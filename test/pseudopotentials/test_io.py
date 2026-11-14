@@ -128,6 +128,25 @@ class TestRoundTrip:
         assert os.path.getsize(parquet) < os.path.getsize(as_json)
 
 
+class TestCoreStates:
+    """A dataset read from a format-3 file (with the stored core states) is a view without
+    them, so saving it from Python would drop them: the write refuses, naming the native
+    writers."""
+
+    def test_saving_a_view_of_a_cored_file_is_refused(self, tmp_path):
+        from mandacaru import _native
+        from mandacaru.pseudopotentials.native_context import context
+
+        upgraded = tmp_path / "Li.parquet"
+        _native.paw_upgrade_core_states(context(), library_file("Li", paw_library_path()),
+                                        str(upgraded))
+        pp = load_pseudopotential(upgraded)
+        assert pp.core_states
+        with pytest.raises(ValueError, match="core states.*paw_upgrade_core_states"):
+            save_pseudopotential(pp, tmp_path / "copy.parquet")
+        assert not (tmp_path / "copy.parquet").exists()
+
+
 class TestFormatDetection:
     """Loading must not require being told the format."""
 

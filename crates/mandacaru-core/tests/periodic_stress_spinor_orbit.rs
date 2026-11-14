@@ -24,7 +24,7 @@ mod strain_samples_support;
 use mandacaru_core::periodic::{
     gradient::{Matrix, State},
     setup::strain_provider::StrainSetup,
-    stress_terms::spin_orbit::add_k,
+    stress_terms::{directions::Directions, spin_orbit::share_k, Strain},
 };
 use num_complex::Complex64;
 use periodic_gradient_crystals_support::inputs;
@@ -64,7 +64,7 @@ impl Case {
             c.values.iter_mut().for_each(|v| *v *= scale);
         }
         let cores = data.cores();
-        let setup = StrainSetup::new(
+        let mut setup = StrainSetup::new(
             &data.crystal.context,
             inputs(data, &cores),
             data.layout(),
@@ -73,11 +73,14 @@ impl Case {
         .unwrap()
         .with_spin_orbit(&self.sp.projectors, &couplings)
         .unwrap();
-        let mut out = [[0.; 3]; 3];
+        // The oracle differences every entry: the nine unit directions.
+        setup.set_directions(Directions::all_entries(None));
+        let mut shares = vec![0.; 9];
         for ((&k, &w), d) in self.ks.iter().zip(&self.weights).zip(densities) {
-            add_k(&setup, &mut out, w, k, d).unwrap();
+            let share = share_k(&setup, w, k, d).unwrap();
+            shares.iter_mut().zip(&share).for_each(|(s, x)| *s += x);
         }
-        out
+        setup.directions().assemble(&shares)
     }
 
     fn oracle(&self, scale: f64) -> Grid {

@@ -249,14 +249,20 @@ pub fn diagnose_record_with_unprojected(
     cache: &mut AeLogs,
 ) -> Outcome<(Diagnosis, BTreeMap<usize, f64>)> {
     let atom = reference::reference_atom(ctx, dataset)?;
-    let diagnosis = diagnose_record(ctx, dataset, Some(&atom), cache)?;
+    diagnose_record_with_unprojected_on(ctx, dataset, &atom, cache)
+}
+
+/// [`diagnose_record_with_unprojected`] on an atom already solved (the generator's own, when it
+/// checks the file it has just written: the atom is solved once per element, not once per check).
+pub fn diagnose_record_with_unprojected_on(
+    ctx: &Context,
+    dataset: &crate::paw::record::PawDataset,
+    atom: &crate::models::atom::Atom,
+    cache: &mut AeLogs,
+) -> Outcome<(Diagnosis, BTreeMap<usize, f64>)> {
+    let diagnosis = diagnose_record(ctx, dataset, Some(atom), cache)?;
     let smooth = Smooth::scalar(ctx, dataset)?;
-    let ae = AllElectron::new(
-        &atom,
-        smooth.atomic_number,
-        &smooth.frozen,
-        &smooth.semicore,
-    );
+    let ae = AllElectron::new(atom, smooth.atomic_number, &smooth.frozen, &smooth.semicore);
     let missing = quality::unprojected_missing_states(&smooth, &ae)?;
     Ok((diagnosis, missing))
 }

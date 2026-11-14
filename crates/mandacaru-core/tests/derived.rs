@@ -27,7 +27,7 @@ fn results_convert_to_user_units_with_their_sign_cells_and_additions() {
     assert_eq!(units::to_user(&[2.], Quantity::Area, false, 1).unwrap()[0], 2. * (BOHR_TO_ANGSTROM * BOHR_TO_ANGSTROM));
     assert_eq!(units::to_user(&[2.], Quantity::InverseEnergy, false, 1).unwrap()[0], 2. * (1. / HARTREE_TO_EV));
     assert_eq!(units::to_user(&[2.], Quantity::InverseEnergy, true, 1).unwrap()[0], 2.);
-    assert!(Quantity::parse("volume").is_err());
+    assert!(Quantity::parse("temperature").is_err());
 }
 
 #[test]
@@ -86,11 +86,6 @@ fn cell_parameters_lengths_relative_energies_and_electron_counts() {
     assert_eq!(derived::total(&[1., 2., 3.]), 6.);
     // Python's `sum([1e16, 1.0, -1e16])` is 1.0 (compensated, Python 3.12+); added in order it is 0.0.
     assert_eq!(derived::total(&[1e16, 1., -1e16]), 1.);
-    let mesh = derived::mesh_fractions([2, 1, 3]).unwrap();
-    assert_eq!(mesh.len(), 6);
-    assert_eq!(mesh[1], [0., 0., 1. / 3.]);
-    assert_eq!(mesh[5], [0.5, 0., 2. / 3.]);
-    assert!(derived::mesh_fractions([2, 0, 3]).is_err());
     assert_eq!(derived::norm(&[3., 4.]), 5.);
     assert_eq!(derived::distance(&[1., 1., 1.], &[1., 4., 5.]).unwrap(), 5.);
     // Two k-points of weight 1/2, two bands; restricted splits its total in halves.
@@ -188,4 +183,28 @@ fn quotients_divide_element_by_element_and_the_total_rounds_half_to_even() {
     assert_eq!(derived::rounded_total(&[0.5, 1.0]), 2);
     assert_eq!(derived::rounded_total(&[0.5, 2.0]), 2);
     assert_eq!(derived::rounded_total(&[1.0, 1.0, 1e-9]), 2);
+}
+
+#[test]
+fn the_small_values_the_views_print_are_computed_once() {
+    assert_eq!(derived::difference(3.5, 1.25), 2.25);
+    assert_eq!(derived::percent(0.375), 37.5);
+    assert!(derived::at_most(1.0, 1.0) && !derived::at_most(1.0 + 1e-15, 1.0));
+    assert_eq!(derived::spin_summary(3, 1), (2.0, 3, true));
+    assert_eq!(derived::spin_summary(1, 3), (-2.0, 3, true));
+    assert_eq!(derived::spin_summary(2, 2), (0.0, 1, false));
+    assert_eq!(derived::human_bytes(512), "512 B");
+    assert_eq!(derived::human_bytes(1536), "1.50 KiB");
+    assert_eq!(derived::human_bytes(3 * (1 << 30) / 2), "1.50 GiB");
+    assert_eq!(derived::gibibytes(1 << 31), 2.0);
+}
+
+#[test]
+fn a_rounded_total_rounds_as_python_does_on_the_exact_binary_value() {
+    // 2.675 is below the decimal tie in binary: Python's round gives 2.67, not 2.68.
+    assert_eq!(derived::round_total(&[2.675], 2), 2.67);
+    assert_eq!(derived::round_total(&[0.1, 0.2, 0.3], 4), 0.6);
+    assert_eq!(derived::round_total(&[1.23456], 4), 1.2346);
+    assert_eq!(derived::round_total(&[-0.00001], 4).to_bits(), (-0.0f64).to_bits());
+    assert_eq!(derived::round_total(&[], 4), 0.0);
 }

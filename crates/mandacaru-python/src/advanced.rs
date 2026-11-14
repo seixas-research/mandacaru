@@ -53,6 +53,12 @@ impl PyPropagator {
         self.inner.schedule()
     }
 
+    /// `(global phase, [(label, angle)])` of an exported circuit of `steps` slices of `time`:
+    /// the angles of one slice (`Propagator::circuit_plan`).
+    fn circuit_plan(&self, time: f64, steps: usize) -> PyResult<(f64, Vec<(String, f64)>)> {
+        self.inner.circuit_plan(time, steps).map_err(error)
+    }
+
     #[getter]
     fn precision(&self) -> &'static str {
         self.precision.name()
@@ -317,16 +323,3 @@ pub fn fourier_spectrum<'py>(
     Ok((numpy::PyArray1::from_vec(py, energies), numpy::PyArray1::from_vec(py, amplitudes)))
 }
 
-/// `(statevector, working, unitary, dense)` bytes of a QPE simulation (`dynamics::qpe_memory`).
-#[pyfunction]
-#[pyo3(signature = (system, evaluation, dense = None, precision = "float64"))]
-pub fn qpe_memory(system: usize, evaluation: usize, dense: Option<bool>, precision: &str)
-    -> PyResult<(u128, u128, u128, bool)>
-{
-    let bytes = match parse_precision(precision)? {
-        Precision::Float64 => 16,
-        Precision::Float32 => 8,
-    };
-    let m = mandacaru_core::quantum::dynamics::qpe_memory(system, evaluation, dense, bytes).map_err(error)?;
-    Ok((m.statevector, m.working, m.unitary, m.dense))
-}

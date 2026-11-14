@@ -138,6 +138,74 @@ Without a length penalty the chain drifts toward `max_length`: with independent
 angles an insertion can never raise the optimal energy. `length_penalty` is the
 energy one operator must buy to be kept (in eV, Hartree with `atomic_units=True`).
 
+## Several replicas
+
+Replica exchange is opt-in. It changes where the chain looks, not what it
+targets, and is accepted by `vasqa` and `valsqa` and by no other method.
+
+`replicas=K` runs `K` chains side by side (parallel tempering, also called
+replica exchange). Replica $r$ runs at `replica_spacing`$^r$ times the
+`temperature` schedule (default spacing 2, a ratio of at least 1 that needs
+`replicas > 1`), so replica 0 is the chain that `replicas=1` runs with the same
+`seed`. After every step one adjacent pair $(r, r+1)$, drawn uniformly,
+exchanges its states with probability
+
+```{math}
+\min\left\{1,\; e^{(1/T_r - 1/T_{r+1})\,[F(C_r) - F(C_{r+1})]}\right\},
+```
+
+with the replicas' temperatures at that step. It leaves the product of the
+replicas' targets invariant. `replicas > 1` needs a nonzero `temperature` and no
+`screen_insertions` (`ValueError`). A hot replica
+crosses between ansatz families that a cold one cannot leave, and an exchange
+hands a lower-cost family down to the cold end. Each replica relaxes one
+proposal per step, so a step costs `K` times as much as a single chain's. The
+result is the lowest-cost state any replica evaluated; `final_energy` is replica
+0's, and `result.replica_swaps` is the pair `(accepted, attempted)` of
+exchanges (the run log's `replica_swaps`; `None` with one replica). `result.steps`
+holds one record per replica and step, each with its `replica` index when
+`replicas > 1`. With `warm_start=False` and a fixed
+scalar `temperature`, every replica samples its own
+$\pi_r(C)\propto e^{-\widehat F(C)/T_r}$ exactly; with the default annealed,
+warm-started chain the exchange is part of the optimizer, not of a sampler.
+
+## Never above ADAPT-VQE
+
+A chain from the empty sequence can end above ADAPT-VQE's ansatz of the same
+length when it settles in a worse family of sequences. To have a result that is
+never above ADAPT-VQE, run both on the same problem and keep the lower: an
+`adapt-vqe` run with `max_iterations=max_length` (and its `convergence` loose
+enough to reach that length) and the `vasqa` chain. This costs one ADAPT-VQE run
+more than the chain. Starting the chain from ADAPT-VQE's sequence instead gives
+the same floor but can keep the chain inside ADAPT-VQE's family, where it may
+not find a lower one.
+
+## Several independent chains
+
+When the budget allows several chains, run `K` independent chains at
+`proposal_temperature=0.2`, each with its own `seed`, and keep the lowest energy.
+A single chain keeps the default 0.1, which has the tighter spread of the two.
+The softer proposal reaches families of sequences that the default rarely
+enters, at the price of a heavier upper tail, so it pays off only when the
+lowest of several chains is kept. In a pre-registered comparison on seven
+16-qubit molecules (12 operators, eight runs of four chains each per molecule),
+the best of four chains at 0.2 was lower than the best of four at 0.1 on five
+molecules and tied on the other two (median difference 17 meV). The cost is
+`K` chains; `replicas=K` costs the same and did no better than this recipe.
+
+```python
+from mandacaru import Mandacaru
+
+best = None
+for seed in (1, 2, 3, 4):
+    calc = Mandacaru(method="vasqa", proposal_temperature=0.2, seed=seed,
+                     max_length=12, pool="fermionic")
+    atoms.calc = calc
+    energy = atoms.get_potential_energy()
+    if best is None or energy < best[0]:
+        best = (energy, calc.result.operators)
+```
+
 ## Optimization, not sampling
 
 With `warm_start=True` (the default), a proposal is relaxed from the angles the

@@ -6,9 +6,10 @@
 use super::{error, paw_record, PyContext};
 use mandacaru_core::paw::{
     generate::{
-        recipe::{Cutoffs, Nlcc},
+        build::{build, Error as BuildError, Format},
+        recipe::{Cutoffs, Nlcc, Recipe},
         request::{resolve, Overrides},
-        search::{search, Error as SearchError, Mode, Options},
+        search::{search, Error as SearchError, Mode, Options, Searched},
         tables_elements::Subshell,
     },
     record::Family,
@@ -129,6 +130,25 @@ fn paw_generate<'py>(
     options: &Bound<'py, PyDict>,
 ) -> PyResult<Bound<'py, PyDict>> {
     let ctx = &context.inner;
+    let (recipe, search_options) = request(symbol, options)?;
+    let found = py.detach(|| search(ctx, &recipe, &search_options));
+    let out = PyDict::new(py);
+    match found {
+        Ok(searched) => {
+            let (payload, tables) = paw_record::export(py, ctx, &searched.generated.dataset)?;
+            out.set_item("payload", payload)?;
+            out.set_item("tables", tables)?;
+            search_items(&out, &searched)?;
+        }
+        Err(SearchError::Failed(failure)) => return Err(error(failure)),
+        Err(refusal) => refusal_items(&out, &refusal)?,
+    }
+    Ok(out)
+}
+
+/// The recipe and search options of a generation request (`family`, `xc`, `relativity`,
+/// `ghosts` and the overrides by name).
+fn request(symbol: &str, options: &Bound<'_, PyDict>) -> PyResult<(Recipe, Options)> {
     let family = Family::parse(&text(options, "family")?).map_err(error)?;
     let mode = match text(options, "ghosts")?.as_str() {
         "repair" => Mode::Repair,
@@ -149,50 +169,166 @@ fn paw_generate<'py>(
         overrides(options)?,
     )
     .map_err(error)?;
-    let found = py.detach(|| search(ctx, &recipe, &Options { mode, pinned }));
+    Ok((recipe, Options { mode, pinned }))
+}
+
+/// What the search noted: `index`, `label`, `tried`, `flagged`, `built`, `notes`, `missing`.
+fn search_items(out: &Bound<'_, PyDict>, searched: &Searched) -> PyResult<()> {
+    out.set_item("index", searched.index)?;
+    out.set_item("label", &searched.label)?;
+    out.set_item(
+        "tried",
+        searched
+            .tried
+            .iter()
+            .map(|t| t.to_string())
+            .collect::<Vec<_>>(),
+    )?;
+    out.set_item("flagged", searched.flagged)?;
+    out.set_item("built", searched.built)?;
+    out.set_item("notes", &searched.generated.notes)?;
+    out.set_item(
+        "missing",
+        searched
+            .diagnosis
+            .as_ref()
+            .map(|d| d.missing.clone())
+            .unwrap_or_default(),
+    )?;
+    Ok(())
+}
+
+/// A refusal or exhaustion of the search, as data: `kind` and the text under `refusal`.
+fn refusal_items(out: &Bound<'_, PyDict>, refusal: &SearchError) -> PyResult<()> {
+    let kind = if matches!(refusal, SearchError::Refused { .. }) {
+        "refused"
+    } else {
+        "exhausted"
+    };
+    out.set_item("kind", kind)?;
+    out.set_item("refusal", refusal.to_string())
+}
+
+/// Generate one dataset, write it to `path` (`format` `"parquet"` or `"json"`, at `stride`), read
+/// it back, refuse it if its levels moved, check it (`check`: the scattering phases too) and move
+/// it into place: `paw::generate::build`, the record never leaving Rust. The result holds the
+/// file read back (`payload`, `tables`), `path`, what the search noted (as [`paw_generate`]),
+/// `channels` (`l`, `r_cut`, `reference_energy`, `lowest`, `ghost`, `phase` or `None`),
+/// `unprojected_ghosts` (`{l: depth}`) and `diagnosis`, every check of the file read back as
+/// [`paw_diagnose`] returns it, on the reference atom the search used. A refusal of the search or a file that moved its levels is
+/// returned as data (`kind`: `"refused"`, `"exhausted"` or `"reload"`, and its text under
+/// `refusal`); any other failure raises.
+#[pyfunction]
+#[pyo3(signature = (context, symbol, options, path, *, format = "parquet", stride = 1, check = false))]
+#[allow(clippy::too_many_arguments)]
+fn paw_build<'py>(
+    context: PyRef<'_, PyContext>,
+    py: Python<'py>,
+    symbol: &str,
+    options: &Bound<'py, PyDict>,
+    path: &str,
+    format: &str,
+    stride: usize,
+    check: bool,
+) -> PyResult<Bound<'py, PyDict>> {
+    let ctx = &context.inner;
+    let format = match format {
+        "parquet" => Format::Parquet,
+        "json" => Format::Json,
+        other => {
+            return Err(PyValueError::new_err(format!(
+                "format must be 'parquet' or 'json', not {other:?}"
+            )))
+        }
+    };
+    let (recipe, search_options) = request(symbol, options)?;
+    let path = std::path::Path::new(path);
+    let built = py.detach(|| build(ctx, &recipe, &search_options, path, format, stride, check));
     let out = PyDict::new(py);
-    match found {
-        Ok(searched) => {
-            let (payload, tables) = paw_record::export(py, ctx, &searched.generated.dataset)?;
+    match built {
+        Ok(built) => {
+            let (payload, tables) = paw_record::export(py, ctx, &built.loaded)?;
             out.set_item("payload", payload)?;
             out.set_item("tables", tables)?;
-            out.set_item("index", searched.index)?;
-            out.set_item("label", &searched.label)?;
+            out.set_item("path", built.path.to_string_lossy().into_owned())?;
+            search_items(&out, &built.searched)?;
+            let channels = pyo3::types::PyList::empty(py);
+            for c in &built.channels {
+                let row = PyDict::new(py);
+                row.set_item("l", c.l)?;
+                row.set_item("r_cut", c.r_cut)?;
+                row.set_item("reference_energy", c.reference_energy)?;
+                row.set_item("lowest", c.lowest)?;
+                row.set_item("ghost", c.ghost)?;
+                row.set_item("phase", c.phase.map(|p| p.to_vec()))?;
+                channels.append(row)?;
+            }
+            out.set_item("channels", channels)?;
             out.set_item(
-                "tried",
-                searched
-                    .tried
+                "unprojected_ghosts",
+                built
+                    .unprojected_ghosts
                     .iter()
-                    .map(|t| t.to_string())
-                    .collect::<Vec<_>>(),
+                    .copied()
+                    .collect::<BTreeMap<_, _>>(),
             )?;
-            out.set_item("flagged", searched.flagged)?;
-            out.set_item("built", searched.built)?;
-            out.set_item("notes", &searched.generated.notes)?;
-            out.set_item(
-                "missing",
-                searched
-                    .diagnosis
-                    .as_ref()
-                    .map(|d| d.missing.clone())
-                    .unwrap_or_default(),
-            )?;
+            let diagnosis = crate::paw_diagnose::diagnosis_dict(py, &built.diagnosis)?;
+            diagnosis.set_item("unprojected_missing", built.unprojected_missing.clone())?;
+            out.set_item("diagnosis", diagnosis)?;
         }
-        Err(SearchError::Failed(failure)) => return Err(error(failure)),
-        Err(refusal) => {
-            let kind = if matches!(refusal, SearchError::Refused { .. }) {
-                "refused"
-            } else {
-                "exhausted"
-            };
-            out.set_item("kind", kind)?;
-            out.set_item("refusal", refusal.to_string())?;
+        Err(BuildError::Search(SearchError::Failed(failure)))
+        | Err(BuildError::Failed(failure)) => return Err(error(failure)),
+        Err(BuildError::Search(refusal)) => refusal_items(&out, &refusal)?,
+        Err(moved @ BuildError::Reload(_)) => {
+            out.set_item("kind", "reload")?;
+            out.set_item("refusal", moved.to_string())?;
         }
     }
     Ok(out)
 }
 
+/// Upgrade the format-2 dataset file `input` to format 3 at `output` with its core states solved
+/// again and checked (`paw::generate::core_states::upgrade_file`; never over a file): `symbol`,
+/// `scheme` (the radial scheme identified by the stored core density, `record::CORE_SCHEMES`, or
+/// `None` when both schemes reproduce it and agree), `tie` (`None`, or the two schemes' largest
+/// orbital and energy differences on such a tie),
+/// `stride`, `states` (`[n, l, occupation]`), `density_deviation`, `charge_deviation`,
+/// `core_charge`, `radius`, `charge_outside`. A file that fails a check raises and nothing is
+/// written.
+#[pyfunction]
+fn paw_upgrade_core_states<'py>(
+    context: PyRef<'_, PyContext>,
+    py: Python<'py>,
+    input: &str,
+    output: &str,
+) -> PyResult<Bound<'py, PyDict>> {
+    let ctx = &context.inner;
+    let found = py
+        .detach(|| {
+            mandacaru_core::paw::generate::core_states::upgrade_file(
+                ctx,
+                std::path::Path::new(input),
+                std::path::Path::new(output),
+            )
+        })
+        .map_err(error)?;
+    let out = PyDict::new(py);
+    out.set_item("symbol", &found.symbol)?;
+    out.set_item("stride", found.stride)?;
+    out.set_item("states", found.states.clone())?;
+    out.set_item("scheme", found.scheme)?;
+    out.set_item("tie", found.tie)?;
+    out.set_item("density_deviation", found.density_deviation)?;
+    out.set_item("charge_deviation", found.charge_deviation)?;
+    out.set_item("core_charge", found.core_charge)?;
+    out.set_item("radius", found.radius)?;
+    out.set_item("charge_outside", found.charge_outside)?;
+    Ok(out)
+}
+
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(paw_generate, m)?)?;
+    m.add_function(wrap_pyfunction!(paw_build, m)?)?;
+    m.add_function(wrap_pyfunction!(paw_upgrade_core_states, m)?)?;
     Ok(())
 }

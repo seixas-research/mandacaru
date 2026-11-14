@@ -8,7 +8,8 @@ from __future__ import annotations
 
 import operator
 
-from ..analysis.berry import AnomalousHall, BerryCurvature, BerryPhase, Polarization
+from ..analysis.berry import (AnomalousHall, BerryCurvature, BerryPhase, Polarization,
+                              WannierChargeCenterFlow, Z2Invariant)
 
 
 def _integer(value):
@@ -131,3 +132,60 @@ def anomalous_hall(calculation, kpts=None, stacklevel=3):
     raw = _crystal(calculation).anomalous_hall(list(size))
     # The warnings point at the user's call.
     return AnomalousHall.from_native(raw, calculation._atomic_units, stacklevel=stacklevel)
+
+
+def wannier_charge_center_flow(calculation, plane, direction, kpts=None, offset=0.0, bands=None):
+    normal = _axis(plane, "plane")
+    along = _axis(direction, "direction")
+    if along == normal:
+        raise ValueError(
+            f"the strings of a flow run in the plane normal to G_{normal}: direction must differ "
+            f"from plane; got {direction!r}"
+        )
+    size, band_range, offset = _size(calculation, kpts), _bands(bands), _offset(offset)
+    raw = _crystal(calculation).wannier_flow(normal, along, list(size), offset=offset,
+                                             bands=band_range)
+    return WannierChargeCenterFlow.from_native(raw)
+
+
+_Z2_METHODS = ("flow", "parity")
+
+
+def z2_invariant(calculation, kpts=None, plane=None, offset=0.0, direction=None, method="flow"):
+    if method not in _Z2_METHODS:
+        raise ValueError(f"a Z2 method is one of {_Z2_METHODS}; got {method!r}")
+    size = _size(calculation, kpts)
+    if plane is None:
+        if direction is not None or offset != 0.0:
+            raise ValueError(
+                "the Z2 indices of the whole crystal take no direction or offset: name a plane for "
+                "the index of one plane"
+            )
+        raw = _crystal(calculation).z2_invariant(list(size), method=method)
+        return Z2Invariant.from_native(raw, calculation._atomic_units)
+    normal = _axis(plane, "plane")
+    offset = _offset(offset)
+    if offset not in (0.0, 0.5):
+        raise ValueError(
+            f"a Z2 index belongs to a time-reversal-invariant plane, offset 0 or 1/2; got {offset!r}"
+        )
+    half = int(offset == 0.5)
+    if method == "parity":
+        if direction is not None:
+            raise ValueError("the parity of a plane has no string direction")
+        whole = z2_invariant(calculation, kpts=kpts, method="parity")
+        index = whole.planes[(normal, half)]
+        return Z2Invariant(method="parity", indices=(index,), strong=None, weak=None,
+                           planes={(normal, half): index}, parity=whole.parity,
+                           inversion_center=whole.inversion_center,
+                           spin_degenerate=whole.spin_degenerate, strings=whole.strings)
+    along = (normal + 1) % 3 if direction is None else _axis(direction, "direction")
+    flow = wannier_charge_center_flow(calculation, normal, along, kpts=kpts, offset=offset)
+    if flow.z2 is None:
+        raise NotImplementedError(
+            "the Z2 index needs a time-reversal-invariant crystal; a collinear spin-polarized or "
+            "magnetic spinor crystal has none"
+        )
+    return Z2Invariant(method="flow", indices=(flow.z2,), strong=None, weak=None,
+                       planes={(normal, half): flow.z2}, flows=(flow,),
+                       spin_degenerate=flow.spin_degenerate, strings=size)

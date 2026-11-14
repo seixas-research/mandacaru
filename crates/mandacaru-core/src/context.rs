@@ -1,39 +1,12 @@
 use crate::{math::archive::ScratchDir, product, Error, Result, WorkerStats};
-use std::cell::RefCell;
 use std::mem::size_of;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-thread_local! {
-    /// The contexts this thread runs for, innermost last, each with the width it runs at: the
-    /// processor count on the thread that entered [`Context::run`], a task's share on a pool
-    /// thread running one of its tasks ([`Context::map_tasks`]).
-    static ACTIVE_CONTEXTS: RefCell<Vec<(usize, usize)>> = const { RefCell::new(Vec::new()) };
-}
-struct ActiveContext(usize);
-impl ActiveContext {
-    fn enter(id: usize, width: usize) -> Self {
-        ACTIVE_CONTEXTS.with(|active| active.borrow_mut().push((id, width)));
-        Self(id)
-    }
-}
-impl Drop for ActiveContext {
-    fn drop(&mut self) {
-        ACTIVE_CONTEXTS.with(|active| {
-            let entry = active.borrow_mut().pop();
-            debug_assert_eq!(entry.map(|(id, _)| id), Some(self.0));
-        });
-    }
-}
-fn active_width(id: usize) -> Option<usize> {
-    ACTIVE_CONTEXTS.with(|active| {
-        active
-            .borrow()
-            .iter()
-            .rev()
-            .find(|(entry, _)| *entry == id)
-            .map(|(_, width)| *width)
-    })
-}
+// Which contexts a thread runs for, with the width it runs at and whether it is a lane of a
+// parallel region, are the runtime's scopes (`mandacaru_kernels::runtime::enter_scope`): a
+// kernel's own scoped workers inherit them, so they see their parent's share, not the
+// processor count, and re-enter the context instead of waiting for it.
+use mandacaru_kernels::runtime::{enter_scope, scope_of};
 
 /// How a calculation's processors are arranged: `kpts` groups of k-point (and spin channel)
 /// tasks, each split into `bands` groups of states, each running its kernels on `threads`
@@ -247,7 +220,18 @@ impl Context {
     /// action and shared by every clone of this context; `None` for a one-processor context, or
     /// when the operating system refuses the threads. A kernel then runs on the calling thread,
     /// with the same numbers: every threaded kernel computes each row or block in a fixed order.
+    ///
+    /// Inside a lane of a parallel region (and in the workers its kernels start) there is no
+    /// pool: a row or block region opened there runs on the lane's own thread, since the pool's
+    /// threads carry no share of it. The lanes of a nested level are started by
+    /// [`Context::run_lanes`] itself, which gives each its share.
     pub(crate) fn pool(&self) -> Option<&rayon::ThreadPool> {
+        if scope_of(self.id()).is_some_and(|scope| scope.lane) {
+            return None;
+        }
+        self.shared_pool()
+    }
+    fn shared_pool(&self) -> Option<&rayon::ThreadPool> {
         if self.layout.workers() == 1 {
             return None;
         }
@@ -270,7 +254,7 @@ impl Context {
     /// [`Context::run_lanes`]. Every kernel sizes its workers by it, so a task never takes more
     /// than its share.
     pub fn width(&self) -> usize {
-        active_width(self.id()).unwrap_or(self.layout.workers())
+        scope_of(self.id()).map_or(self.layout.workers(), |scope| scope.width)
     }
     fn id(&self) -> usize {
         Arc::as_ptr(&self.execution) as usize
@@ -322,19 +306,19 @@ impl Context {
     /// (a nested call, or a task of a parallel region) it keeps that thread's width.
     pub(crate) fn run<T>(&self, f: impl FnOnce() -> T) -> T {
         let id = self.id();
-        if let Some(width) = active_width(id) {
+        if let Some(width) = scope_of(id).map(|scope| scope.width) {
             return mandacaru_kernels::runtime::with_policy(width, self.workers.clone(), f);
         }
         let _execution = self.execution.lock().unwrap_or_else(|e| e.into_inner());
         let width = self.layout.workers();
-        let _active = ActiveContext::enter(id, width);
+        let _active = enter_scope(id, width, false);
         mandacaru_kernels::runtime::with_policy(width, self.workers.clone(), f)
     }
     /// The lanes a region of `level` over `count` independent pieces runs on: the level's size in
     /// the layout (for [`Level::Threads`], the calling thread's width), at most `count`, and one
     /// when the context has no pool.
     pub fn lanes(&self, level: Level, count: usize) -> usize {
-        if self.pool().is_none() {
+        if self.shared_pool().is_none() {
             return 1;
         }
         self.configured_lanes(level).min(count).max(1)
@@ -378,7 +362,7 @@ impl Context {
         // runs for it) while the lanes run.
         self.run(|| {
             let lanes = states.len();
-            let pool = self.pool().filter(|_| lanes > 1);
+            let pool = self.shared_pool().filter(|_| lanes > 1);
             let Some(pool) = pool else {
                 for (lane, state) in states.iter_mut().enumerate() {
                     f(lane, state)?;
@@ -394,7 +378,7 @@ impl Context {
                     .par_iter_mut()
                     .enumerate()
                     .map(|(lane, state)| {
-                        let _active = ActiveContext::enter(id, width);
+                        let _active = enter_scope(id, width, true);
                         mandacaru_kernels::runtime::as_worker(width, stats.clone(), || {
                             f(lane, state)
                         })

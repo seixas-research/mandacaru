@@ -102,6 +102,19 @@ pub struct Report {
     pub max_change: f64,
 }
 
+/// Warn when the filter throws away more than this fraction of a function's norm: at that point
+/// the cutoff is not smoothing the basis, it is replacing it.
+pub const WEIGHT_WARN: f64 = 0.05;
+
+impl Report {
+    /// The percentage of the norm the filter removed, when that is more than [`WEIGHT_WARN`] of
+    /// it; `None` for a filter that kept enough of the function to be a smoothing.
+    pub fn norm_loss_percent(&self) -> Option<f64> {
+        let lost = 1.0 - self.norm_kept;
+        (lost > WEIGHT_WARN).then_some(100.0 * lost)
+    }
+}
+
 fn check_table(r: &[f64], values: &[f64]) -> Result<()> {
     if r.len() != values.len() {
         return Err(invalid("the radial mesh and the values differ in length"));

@@ -57,6 +57,8 @@ _METHOD_SCOPED_OPTIONS = {
             "replace_start",
             "proposal_temperature",
             "proposal",
+            "replicas",
+            "replica_spacing",
         ),
         _SEARCH_METHODS,
     ),
@@ -113,9 +115,8 @@ def _refuse_unavailable_levels(layout, method, xc):
 
     ``kpts`` and ``bands`` distribute the k-point tasks and the occupied states of a crystal's
     Kohn-Sham equations: a method other than ``"dft"`` has neither (a molecule is refused at
-    ``run()``, when the structure is known). ``bands`` groups the occupied states of the exact
-    exchange, so it needs a hybrid functional; that level is not implemented yet, and a layout it
-    would leave idle is refused rather than run as a different layout.
+    ``run()``, when the structure is known). ``bands`` groups the occupied states of a crystal's
+    exact exchange, so it needs a hybrid functional.
     """
     for level in ("kpts", "bands"):
         if layout[level] > 1 and method != "dft":
@@ -123,16 +124,11 @@ def _refuse_unavailable_levels(layout, method, xc):
                 f"parallelization {level}={layout[level]} applies to method='dft' on a "
                 f"crystal; method={method!r} takes parallelization={{'threads': N}}"
             )
-    if layout["bands"] > 1:
-        if xc != "hse06":
-            raise ValueError(
-                f"parallelization bands={layout['bands']} groups the occupied states of the "
-                f"exact exchange, which only a hybrid functional (xc='hse06') has; "
-                f"xc={'lda' if xc is None else xc!r} has none"
-            )
-        raise NotImplementedError(
-            f"parallelization bands={layout['bands']}: the occupied-state groups of the exact "
-            "exchange are not implemented yet; use kpts and threads"
+    if layout["bands"] > 1 and xc != "hse06":
+        raise ValueError(
+            f"parallelization bands={layout['bands']} groups the occupied states of the "
+            f"exact exchange, which only a hybrid functional (xc='hse06') has; "
+            f"xc={'lda' if xc is None else xc!r} has none"
         )
 
 
@@ -290,7 +286,8 @@ class Mandacaru(ASEProperties, Calculator):
     ``min_length``, ``max_length``, ``move_weights``, ``temperature``,
     ``length_penalty``, ``warm_start``, ``replace_start``,
     ``screen_insertions``, ``proposal_temperature``, ``proposal``,
-    ``proposal_model``, ``record``, ``seed``); handover between geometries
+    ``proposal_model``, ``record``, ``seed``, ``replicas``,
+    ``replica_spacing``); handover between geometries
     (``transfer``, ``transfer_threshold``, ``transfer_steps``,
     ``update_between_geometries``); circuits and hardware
     (``execute_circuits``, ``backend_provider``, ``device``, ``shots``,
@@ -465,10 +462,11 @@ class Mandacaru(ASEProperties, Calculator):
         tasks (irreducible k-points times spin channels) raises ``ValueError``
         at ``run()``, naming the largest that fits, and tasks that do not fit
         in ``memory_limit_bytes`` raise ``MemoryError`` naming the largest
-        ``kpts`` that does. ``bands`` above 1 needs a hybrid (``xc="hse06"``,
-        else ``ValueError``) and is not implemented yet
-        (``NotImplementedError``). Not allowed together with ``native_model``
-        (``ValueError``).
+        ``kpts`` that does. ``bands`` groups the occupied states of a crystal's
+        exact exchange, so above 1 it needs a hybrid (``xc="hse06"``, else
+        ``ValueError``); band groups that do not fit in ``memory_limit_bytes``
+        raise ``MemoryError`` naming the largest ``bands`` that does. Not
+        allowed together with ``native_model`` (``ValueError``).
     resources : dict, optional
         Per-calculator allocation, with keys ``memory_limit_bytes`` (default
         34359738368, that is 32 GiB), ``disk_offload_bytes`` (the size from which a periodic
@@ -922,6 +920,24 @@ class Mandacaru(ASEProperties, Calculator):
         Seed of the search chain, a nonnegative 64-bit integer (``ValueError``
         otherwise); ``None`` draws a fresh seed. Ignored outside the search
         methods.
+    replicas : int, default 1
+        Number of search chains run side by side at different temperatures
+        (parallel tempering, replica exchange). Replica ``r`` runs at
+        ``replica_spacing**r`` times the ``temperature`` schedule, so replica 0
+        is the single chain of the same ``seed``; after every step one adjacent
+        pair, drawn uniformly, exchanges its states with the replica-exchange
+        acceptance probability. Each replica relaxes one proposal per step, so
+        a step costs ``replicas`` times as much. The result is the lowest-cost
+        state any replica evaluated; ``final_energy`` is replica 0's. With
+        ``warm_start=False`` and a fixed ``temperature`` every replica keeps its
+        own target distribution; otherwise the exchange is a heuristic of the
+        optimizer. A positive integer (``ValueError``); more than one replica
+        needs a nonzero temperature and no ``screen_insertions``
+        (``ValueError``). Setting it for any other method raises ``ValueError``.
+    replica_spacing : float, default 2.0
+        Ratio of the temperatures of adjacent replicas, at least 1
+        (``ValueError``). A value other than the default needs ``replicas > 1``
+        (``ValueError``). Setting it for any other method raises ``ValueError``.
     kinetic : {"spectral", "fd"}, default "spectral"
         How the kinetic energy is discretized on the grid: the spectral
         (FFT) Laplacian or finite differences. Anything else raises
@@ -1170,6 +1186,8 @@ class Mandacaru(ASEProperties, Calculator):
         proposal_model=None,
         record=None,
         seed=None,
+        replicas=1,
+        replica_spacing=2.0,
         kinetic="spectral",
         two_body=None,
         paw_dataset=None,
@@ -1550,7 +1568,8 @@ class Mandacaru(ASEProperties, Calculator):
                       length_penalty=length_penalty, warm_start=warm_start,
                       replace_start=replace_start, screen_insertions=screen_insertions,
                       proposal_temperature=proposal_temperature, proposal=proposal,
-                      record=record, seed=seed, proposal_model=proposal_model)
+                      record=record, seed=seed, proposal_model=proposal_model,
+                      replicas=replicas, replica_spacing=replica_spacing)
         elif max_steps is not None or record is not None or screen_insertions or proposal_model is not None:
             raise ValueError("architecture-search controls require vasqa or valsqa")
         self.trace = trace
@@ -1800,13 +1819,12 @@ class Mandacaru(ASEProperties, Calculator):
             if m is None and self._supplied_model is not None:
                 m = self._supplied_model.n_spatial_orbitals
             if m is not None:
-                return 2 * m - (2 if self._mapping == "parity_reduced" else 0)
+                return _native.register_qubits(self._mapping, _native.spin_orbital_count(m))
             raise RuntimeError("run a calculation before requesting the register size")
         if self._active_spec is not None:
             return self.result.qubit_hamiltonian().num_qubits
-        return 2 * self.integrals.n_orbitals - (
-            2 if self._mapping == "parity_reduced" else 0
-        )
+        return _native.register_qubits(
+            self._mapping, _native.spin_orbital_count(self.integrals.n_orbitals))
 
     @property
     def num_particles(self):
@@ -2144,7 +2162,7 @@ class Mandacaru(ASEProperties, Calculator):
 
                 if isinstance(source, Fermion):
                     operator = self.context.fermion_operator(
-                        2 * self._hamiltonian_orbitals,
+                        _native.spin_orbital_count(self._hamiltonian_orbitals),
                         self._hamiltonian_particles,
                         [
                             (list(term), float(value.real), float(value.imag))
@@ -2494,12 +2512,18 @@ class Mandacaru(ASEProperties, Calculator):
         from .integrations.bloch import check_geometry
 
         size = check_geometry(self, geometry)
-        from .structure import geometry_value
-        from .integrations.ase import atoms_from_geometry
+        from .structure import Geometry
+        from .units import to_angstrom
 
-        # The ASE supercell carries the initial moments and the cell to the views below; the
-        # Hamiltonian itself is built from the primitive geometry in Rust.
-        supercell_geom = geometry_value(atoms_from_geometry(geometry).repeat(size))
+        # The supercell geometry (the cell and the initial moments, repeated by the engine)
+        # goes to the views below; the Hamiltonian itself is built from the primitive geometry.
+        native = geometry.native()
+        numbers, positions, cell, moments = _native.repeat_cell(
+            [int(z) for z in native.numbers], to_angstrom(native.positions_bohr),
+            to_angstrom(native.cell_bohr), [float(m) for m in geometry.magnetic_moments],
+            list(size))
+        supercell_geom = Geometry(
+            tuple(numbers), positions, cell, tuple(native.pbc), magnetic_moments=moments)
 
         with self._stage("integration: periodic supercell integrals"):
             self.integrals = _native.supercell_integrals(
@@ -2624,12 +2648,13 @@ class Mandacaru(ASEProperties, Calculator):
             elif (value is not None and any(value.pbc)) and not self.capabilities.quantum:
                 result = self._periodic(value)
             elif value is not None:
-                if self.context.kpts > 1:
-                    raise ValueError(
-                        f"parallelization kpts={self.context.kpts} distributes the k-points "
-                        "of a crystal; this structure has no periodic axis: use "
-                        "parallelization={'threads': N}"
-                    )
+                for level, count in (("kpts", self.context.kpts), ("bands", self.context.bands)):
+                    if count > 1:
+                        raise ValueError(
+                            f"parallelization {level}={count} distributes the k-points and "
+                            "the exchange states of a crystal; this structure has no periodic "
+                            "axis: use parallelization={'threads': N}"
+                        )
                 hubbard.require_crystal(self._hubbard_u, value.pbc, method=self._method)
                 _refuse_exchange_divergence_without_hybrid(
                     self._periodic_options["exxdiv_treatment"], self._xc, periodic=False
@@ -2673,7 +2698,7 @@ class Mandacaru(ASEProperties, Calculator):
                     self.results["magmom"] = result._raw["magnetic_moment"]
                 else:
                     alpha, beta = self.native_reference.num_particles
-                    self.results["magmom"] = float(alpha - beta)
+                    self.results["magmom"] = _native.spin_summary(alpha, beta)[0]
             if self.trace or self.txt is not None:
                 from .integrations.reporting import write_calculation
 

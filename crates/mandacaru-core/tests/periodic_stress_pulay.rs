@@ -19,7 +19,7 @@ mod strain_support;
 
 use mandacaru_core::periodic::{
     gradient::{Frozen, Matrix, Term},
-    stress_terms::{pulay, Strain},
+    stress_terms::{pulay, SpinMatrices, Strain},
 };
 use num_complex::Complex64;
 use periodic_stress_support::{
@@ -161,21 +161,17 @@ fn the_matrix_terms_al2() {
 fn symbol(case: &'static str) {
     let w = World::new(case, &[0], "lda").at(&[GAMMA]);
     let got = w.with_setup(None, |setup, frozen| {
-        let dm = setup
-            .matrix_strain(0, 0, Term::Kinetic, &frozen.fields)
+        let density = w.bands[0].density();
+        let matrices = [SpinMatrices {
+            weighted: density.clone(),
+            density,
+        }];
+        let directions: Vec<_> = setup.directions().as_slice().to_vec();
+        let values = setup
+            .matrix_strain(0, &frozen.fields, &matrices, &[Term::Kinetic], &directions)
             .unwrap();
-        let d = w.bands[0].density();
         let weight = 2.0 * w.weights[0];
-        map(&[[0.; 3]; 3], |a, b, _| {
-            let m = &dm[a][b];
-            let mut t = Complex64::new(0., 0.);
-            for i in 0..d.nrows() {
-                for j in 0..d.ncols() {
-                    t += d[(i, j)] * m[(j, i)];
-                }
-            }
-            weight * t.re
-        })
+        map(&[[0.; 3]; 3], |a, b, _| weight * values[0][0][a * 3 + b])
     });
     let mut fd = [[0.; 3]; 3];
     for a in 0..3 {

@@ -1,0 +1,154 @@
+//! The Fock matrix of a molecular reference as a function of complex densities, for the
+//! propagator of `math::propagator`.
+//!
+//! It is the builder the SCF and the linear response use, so the propagated matrix is the first
+//! derivative of the same energy whose second derivative T1 assembles: Kohn-Sham through
+//! `dft::fock_and_energy` (the grid terms read `Re D`, exact in the real basis; the PAW one-center
+//! terms are linearized at the reference atom and live in the constant core matrix, so nothing in
+//! the spheres is recomputed), Hartree-Fock as `h + J[D] - K[D]` with the SCF's pair factors and
+//! the whole complex `D` in the exchange. The Poisson solver, the screening of a hybrid and the
+//! grid scratch are built once.
+//!
+//! A uniform vector potential `A` along `e` (the velocity gauge) adds `A e.P + (A^2 / 2) 1` to
+//! every channel, `P = -i <a|grad|b>` the Hermitian momentum matrix (the T2 operator with its
+//! one-center part), and the matching terms to the energy.
+use crate::math::fft::Poisson;
+use crate::math::propagator::{Evaluation, FockMap};
+use crate::molecular::{dft, integrals::Eri, MolecularIntegrals};
+use crate::{quantum::C64, Buffer, Result};
+use nalgebra::DMatrix;
+use std::sync::Arc;
+
+type Matrix = DMatrix<C64>;
+
+enum Theory {
+    KohnSham {
+        name: String,
+        core: Matrix,
+        poisson: Poisson,
+        screening: Option<dft::Screening>,
+        scratch: (Buffer<C64>, Buffer<C64>),
+    },
+    HartreeFock {
+        core: Matrix,
+        eri: Arc<Eri>,
+    },
+}
+
+/// The Fock map of a reference (`functional` `None` is Hartree-Fock), with an optional constant
+/// vector potential `strength` along the momentum matrix `momentum` (already `e . P`).
+pub(super) struct MolecularMap<'a> {
+    integrals: &'a MolecularIntegrals,
+    theory: Theory,
+    field: Option<(Matrix, f64)>,
+    /// Evaluations so far (the record of the run).
+    pub(super) evaluations: usize,
+}
+
+impl<'a> MolecularMap<'a> {
+    pub(super) fn new(integrals: &'a MolecularIntegrals, functional: Option<&str>) -> Result<Self> {
+        let m = integrals.m();
+        let theory = match functional {
+            Some(name) => {
+                let n = integrals.grid.index.points();
+                let ctx = &integrals.context;
+                Theory::KohnSham {
+                    name: name.to_string(),
+                    core: integrals.kohn_sham_core(),
+                    poisson: Poisson::isolated(ctx, &integrals.grid)?,
+                    screening: integrals.screening(name)?,
+                    scratch: (ctx.allocate::<C64>(n)?, ctx.allocate::<C64>(n)?),
+                }
+            }
+            None => {
+                // Real-time TDHF is a Hartree-Fock entry point: the shared guard owns the
+                // frozen-core exchange refusal.
+                integrals.require_hartree_fock_core()?;
+                Theory::HartreeFock {
+                    core: DMatrix::from_fn(m, m, |a, b| {
+                        C64::new(integrals.one.as_slice()[a * m + b], 0.)
+                    }),
+                    eri: integrals.eri()?,
+                }
+            }
+        };
+        Ok(Self {
+            integrals,
+            theory,
+            field: None,
+            evaluations: 0,
+        })
+    }
+
+    /// Switches on the constant vector potential `strength` along `momentum` (`e . P`).
+    pub(super) fn set_field(&mut self, momentum: Matrix, strength: f64) {
+        self.field = Some((momentum, strength));
+    }
+
+    /// The matrices and the energy without the field, at `densities` (one per-spin matrix of a
+    /// restricted state, or both spin matrices).
+    pub(super) fn bare(&mut self, densities: &[Matrix]) -> Result<(Vec<Matrix>, f64)> {
+        self.evaluations += 1;
+        let integrals = self.integrals;
+        let m = integrals.m();
+        match &mut self.theory {
+            Theory::KohnSham {
+                name,
+                core,
+                poisson,
+                screening,
+                scratch,
+            } => dft::fock_and_energy(
+                integrals,
+                core,
+                densities,
+                name,
+                poisson,
+                None,
+                screening.as_ref(),
+                (scratch.0.as_mut_slice(), scratch.1.as_mut_slice()),
+            ),
+            Theory::HartreeFock { core, eri } => {
+                let parts: Vec<_> = densities
+                    .iter()
+                    .map(|d| crate::molecular::scf::jk(eri, m, d))
+                    .collect();
+                let focks: Vec<Matrix> = if densities.len() == 1 {
+                    let (j, k) = &parts[0];
+                    vec![&*core + j * C64::new(2., 0.) - k]
+                } else {
+                    let total = &parts[0].0 + &parts[1].0;
+                    parts.iter().map(|(_, k)| &*core + &total - k).collect()
+                };
+                // E = (g / 2) sum_s tr[D_s (h + F_s)], g = 2 for one restricted channel.
+                let g = if densities.len() == 1 { 2. } else { 1. };
+                let energy = 0.5
+                    * g
+                    * densities
+                        .iter()
+                        .zip(&focks)
+                        .map(|(d, f)| (d * (&*core + f)).trace().re)
+                        .sum::<f64>();
+                Ok((focks, energy))
+            }
+        }
+    }
+}
+
+impl FockMap for MolecularMap<'_> {
+    fn evaluate(&mut self, _time: f64, densities: &[Matrix]) -> Result<Evaluation> {
+        let (mut matrices, mut energy) = self.bare(densities)?;
+        if let Some((momentum, strength)) = &self.field {
+            let g = if densities.len() == 1 { 2. } else { 1. };
+            let m = momentum.nrows();
+            let shift = Matrix::identity(m, m) * C64::new(0.5 * strength * strength, 0.);
+            for (f, d) in matrices.iter_mut().zip(densities) {
+                *f += momentum * C64::new(*strength, 0.) + &shift;
+                energy += g
+                    * (strength * (d * momentum).trace().re
+                        + 0.5 * strength * strength * d.trace().re);
+            }
+        }
+        Ok(Evaluation { matrices, energy })
+    }
+}

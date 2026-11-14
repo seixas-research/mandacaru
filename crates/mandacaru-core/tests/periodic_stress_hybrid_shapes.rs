@@ -175,7 +175,7 @@ fn the_unit_charge_pair_is_the_overlap_and_so_are_their_strain_derivatives() {
         let (m, n, p) = (c.m, c.grid.index.points(), c.p);
         let samples = c.points[0].psi.read(&c.context).unwrap();
         let projections = &c.points[0].projections;
-        let dc = tangents.projection_strain(0).unwrap();
+        let dc = pairs(tangents.projection_strain(0, &units()).unwrap());
         let blocks: Vec<DMatrix<C64>> = (0..c.channels)
             .map(|a| DMatrix::from_fn(p, p, |i, j| c.blocks.as_slice()[(a * p + i) * p + j]))
             .collect();
@@ -186,7 +186,7 @@ fn the_unit_charge_pair_is_the_overlap_and_so_are_their_strain_derivatives() {
             .map(|a| {
                 (0..3)
                     .map(|b| {
-                        let tangent = tangents.samples(0, a, b).unwrap();
+                        let tangent = tangents.samples_along(0, &unit(a, b)).unwrap();
                         let dg = DMatrix::from_fn(m, m, |i, j| {
                             (0..n)
                                 .map(|r| {

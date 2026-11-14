@@ -283,8 +283,91 @@ _ALGORITHMS = [
   pages   = {075119},
   year    = {2011},
   doi     = {10.1103/PhysRevB.84.075119}
-}""", "the Wilson-loop Wannier charge centers (get_berry_phase)",
-         verified=False, topics=("berry phase", "wilson loop")),
+}""", "the Wilson-loop Wannier charge centers (get_berry_phase) and their Z2 counting "
+         "(get_z2_invariant)",
+         verified=True, topics=("berry phase", "wilson loop", "z2")),
+    _ref("Soluyanov2011a", """
+@article{Soluyanov2011a,
+  author  = {Soluyanov, Alexey A. and Vanderbilt, David},
+  title   = {Computing topological invariants without inversion symmetry},
+  journal = {Phys. Rev. B},
+  volume  = {83},
+  pages   = {235401},
+  year    = {2011},
+  doi     = {10.1103/PhysRevB.83.235401}
+}""", "the Z2 index as the parity of the crossings of the Wannier-center flow "
+         "(get_wannier_charge_center_flow, get_z2_invariant)",
+         verified=True, topics=("berry phase", "wilson loop", "z2")),
+    _ref("Soluyanov2011b", """
+@article{Soluyanov2011b,
+  author  = {Soluyanov, Alexey A. and Vanderbilt, David},
+  title   = {Wannier representation of {$\\mathbb{Z}_2$} topological insulators},
+  journal = {Phys. Rev. B},
+  volume  = {83},
+  pages   = {035108},
+  year    = {2011},
+  doi     = {10.1103/PhysRevB.83.035108}
+}""", "why the Z2 index comes from the hybrid Wannier centers and not from maximally "
+         "localized functions (get_z2_invariant)",
+         verified=True, topics=("wannier", "z2")),
+    _ref("Fu2007", """
+@article{Fu2007,
+  author  = {Fu, Liang and Kane, C. L.},
+  title   = {Topological insulators with inversion symmetry},
+  journal = {Phys. Rev. B},
+  volume  = {76},
+  pages   = {045302},
+  year    = {2007},
+  doi     = {10.1103/PhysRevB.76.045302}
+}""", "the parity criterion for the Z2 index (get_z2_invariant(method='parity'))",
+         verified=True, topics=("z2", "parity")),
+    _ref("Kane2005", """
+@article{Kane2005,
+  author  = {Kane, C. L. and Mele, E. J.},
+  title   = {{$Z_2$} Topological Order and the Quantum Spin {H}all Effect},
+  journal = {Phys. Rev. Lett.},
+  volume  = {95},
+  pages   = {146802},
+  year    = {2005},
+  doi     = {10.1103/PhysRevLett.95.146802}
+}""", "the Z2 invariant and the lattice model the Z2 gates are built on",
+         verified=True, topics=("z2",)),
+    _ref("Bernevig2006", """
+@article{Bernevig2006,
+  author  = {Bernevig, B. Andrei and Hughes, Taylor L. and Zhang, Shou-Cheng},
+  title   = {Quantum Spin {H}all Effect and Topological Phase Transition in {HgTe}
+             Quantum Wells},
+  journal = {Science},
+  volume  = {314},
+  pages   = {1757--1761},
+  year    = {2006},
+  doi     = {10.1126/science.1133734}
+}""", "the four-band model the Z2 gates are built on",
+         verified=True, topics=("z2",)),
+    _ref("Zhang2009", """
+@article{Zhang2009,
+  author  = {Zhang, Haijun and Liu, Chao-Xing and Qi, Xiao-Liang and Dai, Xi and
+             Fang, Zhong and Zhang, Shou-Cheng},
+  title   = {Topological insulators in {Bi$_2$Se$_3$}, {Bi$_2$Te$_3$} and
+             {Sb$_2$Te$_3$} with a single {D}irac cone on the surface},
+  journal = {Nat. Phys.},
+  volume  = {5},
+  pages   = {438--442},
+  year    = {2009},
+  doi     = {10.1038/nphys1270}
+}""", "bulk Bi2Se3 as the Z2 = 1 test crystal of the spin-orbit datasets",
+         verified=True, topics=("z2",)),
+    _ref("Nakajima1963", """
+@article{Nakajima1963,
+  author  = {Nakajima, S.},
+  title   = {The crystal structure of {Bi$_2$Te$_{3-x}$Se$_x$}},
+  journal = {J. Phys. Chem. Solids},
+  volume  = {24},
+  pages   = {479--485},
+  year    = {1963},
+  doi     = {10.1016/0022-3697(63)90207-5}
+}""", "the experimental R-3m structure of bulk Bi2Se3 (the companion cell of the Z2 test)",
+         verified=True, topics=("z2",)),
     _ref("Fukui2005", """
 @article{Fukui2005,
   author  = {Fukui, Takahiro and Hatsugai, Yasuhiro and Suzuki, Hiroshi},
@@ -394,18 +477,6 @@ _ALGORITHMS = [
   doi     = {10.1103/PhysRevB.65.035109}
 }""", "the disentanglement of entangled bands (wannier with windows)",
          verified=True, topics=("wannier",)),
-    _ref("Sakuma2013", """
-@article{Sakuma2013,
-  author  = {Sakuma, Rei},
-  title   = {Symmetry-adapted {W}annier functions in the maximal
-             localization procedure},
-  journal = {Phys. Rev. B},
-  volume  = {87},
-  pages   = {235109},
-  year    = {2013},
-  doi     = {10.1103/PhysRevB.87.235109}
-}""", "the symmetry-adapted disentanglement (wannier with windows, "
-         "symmetrize=True)", verified=True, topics=("wannier",)),
     _ref("Aryasetiawan2004", """
 @article{Aryasetiawan2004,
   author  = {Aryasetiawan, F. and Imada, M. and Georges, A. and Kotliar, G.
@@ -741,6 +812,18 @@ _ALGORITHMS = [
   doi     = {10.1126/science.220.4598.671}
 }""", "the annealed architecture temperature of VASQA", verified=True,
          topics=("vasqa",)),
+    _ref("Hukushima1996", """
+@article{Hukushima1996,
+  author  = {Hukushima, Koji and Nemoto, Koji},
+  title   = {Exchange {M}onte {C}arlo method and application to spin glass
+             simulations},
+  journal = {J. Phys. Soc. Jpn.},
+  volume  = {65},
+  pages   = {1604},
+  year    = {1996},
+  doi     = {10.1143/JPSJ.65.1604}
+}""", "the replica exchange of the VASQA architecture chain (replicas > 1)",
+         verified=False, topics=("vasqa",)),
     _ref("Gilmer2017", """
 @inproceedings{Gilmer2017,
   author    = {Gilmer, Justin and Schoenholz, Samuel S. and Riley, Patrick F.
@@ -1354,6 +1437,30 @@ _ALGORITHMS = [
   year      = {1995}
 }""", "the Casida equations of linear-response TDDFT (get_excitations, "
          "approximation='casida'; molecular::excitations)", verified=False,
+         topics=("excited states",)),
+    _ref("CastroMarquesRubio2004", """
+@article{CastroMarquesRubio2004,
+  author  = {Castro, Alberto and Marques, Miguel A. L. and Rubio, Angel},
+  title   = {Propagators for the time-dependent {Kohn-Sham} equations},
+  journal = {J. Chem. Phys.},
+  volume  = {121},
+  pages   = {3425--3433},
+  year    = {2004},
+  doi     = {10.1063/1.1774980}
+}""", "the enforced time-reversal symmetry (ETRS) propagator and its approximation AETRS "
+         "(get_real_time, propagator='etrs'; math::propagator)", verified=False,
+         topics=("excited states",)),
+    _ref("YabanaBertsch1996", """
+@article{YabanaBertsch1996,
+  author  = {Yabana, K. and Bertsch, G. F.},
+  title   = {Time-dependent local-density approximation in real time},
+  journal = {Phys. Rev. B},
+  volume  = {54},
+  pages   = {4484--4487},
+  year    = {1996},
+  doi     = {10.1103/PhysRevB.54.4484}
+}""", "real-time TDDFT after a delta kick and the dipole strength function (get_real_time; "
+         "molecular::realtime, models::time_spectrum)", verified=False,
          topics=("excited states",)),
     _ref("HirataHeadGordon1999", """
 @article{HirataHeadGordon1999,

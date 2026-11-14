@@ -1,6 +1,11 @@
+mod berry_models_support;
+
 use mandacaru_core::{
     math::storage::StoredMatrix,
-    periodic::wannier::{self, Mesh, Options},
+    periodic::{
+        bloch_mesh::MeshIndex,
+        wannier::{self, Mesh, Options},
+    },
     quantum::C64,
     Context,
 };
@@ -72,7 +77,6 @@ fn frozen_window_disentanglement_recovers_an_isolated_atomic_subspace() {
             &mesh,
             &trials,
             &windows,
-            None,
             &wannier::disentangle::Options {
                 tolerance: 1e-13,
                 ..Default::default()
@@ -92,45 +96,6 @@ fn frozen_window_disentanglement_recovers_an_isolated_atomic_subspace() {
     }
     assert_eq!(ctx.memory_used(), 0);
 }
-#[test]
-fn symmetry_keeps_a_wannier_subspace_on_its_symmetric_stationary_solution() {
-    use wannier::disentangle::{select, Options, Symmetry};
-    let ctx = Context::new(Some(1), 32 << 20).unwrap();
-    {
-        let (mesh, trials, windows) = entangled_mesh(&ctx);
-        let swap = Matrix::from_fn(3, 3, |i, j| {
-            if (i, j) == (0, 0) || (i, j) == (1, 2) || (i, j) == (2, 1) {
-                C64::new(1., 0.)
-            } else {
-                C64::default()
-            }
-        });
-        let group = Symmetry {
-            operations: 2,
-            mapping: ctx.copy_slice(&[0, 0]).unwrap(),
-            rotations: vec![
-                StoredMatrix::new(&ctx, Matrix::identity(3, 3), false).unwrap(),
-                StoredMatrix::new(&ctx, swap.clone(), false).unwrap(),
-            ],
-        };
-        let selected = select(
-            &ctx,
-            &mesh,
-            &trials,
-            &windows,
-            Some(&group),
-            &Options::default(),
-        )
-        .unwrap();
-        assert!(selected.converged);
-        let projector = &selected.gauge[0] * selected.gauge[0].adjoint();
-        assert!((&swap * &projector * swap.adjoint() - projector).norm() < 1e-13);
-        let expected = (2. * PI * 0.17).sin().powi(2) / (4. * PI * PI);
-        assert!((selected.history.last().unwrap() - expected).abs() < 1e-13);
-    }
-    assert_eq!(ctx.memory_used(), 0);
-}
-
 fn generator(k: usize, scale: f64) -> Matrix {
     let z = C64::new(
         scale * (0.4 + k as f64).sin(),
@@ -293,6 +258,102 @@ fn localization_recovers_the_atomic_limit_and_preserves_unitarity() {
                 assert!((a[axis] - b[axis]).abs() < 1e-7);
             }
         }
+    }
+    assert_eq!(ctx.memory_used(), 0);
+}
+
+/// The subspace links of the lower Qi-Wu-Zhang band on an `n x n x 1` mesh, and the mesh.
+fn qwz_links(m: f64, n: usize) -> (MeshIndex, Vec<[Option<Matrix>; 3]>) {
+    use berry_models_support::{link, lowest, qwz, sigma};
+    let mesh = MeshIndex::new([n, n, 1], [0.; 3]).unwrap();
+    let states: Vec<Matrix> = (0..mesh.points())
+        .map(|k| {
+            let f = mesh.point(k);
+            lowest(sigma(qwz(m, 2. * PI * f[0], 2. * PI * f[1])), 1)
+        })
+        .collect();
+    let along = (0..mesh.points())
+        .map(|k| {
+            [0, 1, 2].map(|j| {
+                (mesh.size[j] > 1).then(|| link(&states[k], &states[mesh.advance(k, j, 1)]))
+            })
+        })
+        .collect();
+    (mesh, along)
+}
+
+#[test]
+fn a_chern_band_is_refused_by_name_and_a_trivial_band_passes() {
+    // No exponentially localized Wannier functions exist for a band with C != 0: the localization
+    // must raise instead of returning functions whose spread grows with the mesh.
+    for m in [-1., 1.] {
+        let (mesh, along) = qwz_links(m, 12);
+        let message = wannier::chern_guard(&mesh, &along).unwrap_err().to_string();
+        assert!(message.contains("Chern number"), "{message}");
+        assert!(message.contains("normal to G_2"), "{message}");
+    }
+    for m in [-3., 2.5] {
+        let (mesh, along) = qwz_links(m, 12);
+        wannier::chern_guard(&mesh, &along).unwrap();
+    }
+}
+
+#[test]
+fn a_saddle_is_escaped_and_an_unfinished_escape_is_not_converged() {
+    // Two atomic functions mixed at 45 degrees: a stationary point of the spread (the gradient
+    // vanishes by symmetry) that is not a minimum. The saddle check must leave it, and a budget
+    // too small for that escape must report converged = false, never the stationary point as a
+    // converged minimum.
+    let ctx = Context::new(Some(1), 32 << 20).unwrap();
+    {
+        let (mesh, ideal, centers) = atomic_mesh(&ctx);
+        let s = std::f64::consts::FRAC_1_SQRT_2;
+        let mix = Matrix::from_row_slice(
+            2,
+            2,
+            &[
+                C64::new(s, 0.),
+                C64::new(-s, 0.),
+                C64::new(s, 0.),
+                C64::new(s, 0.),
+            ],
+        );
+        let saddle: Vec<Matrix> = ideal.iter().map(|u| u * &mix).collect();
+        let at = wannier::spread(&ctx, &mesh, &saddle, Some(&centers)).unwrap();
+        let g = wannier::gradient(&ctx, &mesh, &saddle, at.centers.as_slice()).unwrap();
+        let norm = wannier::gradient_norm(&g.values);
+        assert!(at.total() > 1e-3, "the mixed pair is not above the minimum");
+        assert!(
+            norm < Options::default().gradient_tolerance,
+            "precondition: the mixed pair must be stationary (gradient norm {norm:e})"
+        );
+        let full = wannier::localize(&ctx, &mesh, &saddle, Some(&centers), &Options::default())
+            .unwrap();
+        assert!(full.converged);
+        assert!(
+            full.spread.total() < 1e-9,
+            "the saddle was not escaped: spread {}",
+            full.spread.total()
+        );
+        let short = wannier::localize(
+            &ctx,
+            &mesh,
+            &saddle,
+            Some(&centers),
+            &Options {
+                max_iterations: 2,
+                ..Options::default()
+            },
+        )
+        .unwrap();
+        assert!(
+            !short.converged,
+            "a stationary point whose saddle check ran out of budget was reported converged \
+             (spread {})",
+            short.spread.total()
+        );
+        let totals: Vec<f64> = short.history.iter().map(|h| h.iter().sum()).collect();
+        assert!(totals.windows(2).all(|w| w[1] <= w[0] + 1e-14), "{totals:?}");
     }
     assert_eq!(ctx.memory_used(), 0);
 }

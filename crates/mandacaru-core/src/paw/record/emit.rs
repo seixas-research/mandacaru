@@ -15,7 +15,7 @@ use std::fmt::Write;
 
 use super::digits::round_digits;
 use super::json::fail;
-use super::{Array, Channel, PawDataset, SpinOrbit, FORMAT_TAG, FORMAT_VERSION};
+use super::{Array, Channel, PawDataset, SpinOrbit, FORMAT_TAG};
 use crate::{Context, Error, Reservation, Result};
 
 struct Counter(usize);
@@ -46,19 +46,48 @@ pub(crate) fn payload_text_exact(
     text_of(ctx, ds, 1, false)
 }
 
+/// What the payload text holds.
+#[derive(Clone, Copy, PartialEq)]
+enum Form {
+    /// The file's payload: the version and, at version 3, the core states.
+    File,
+    /// The content a crystal snapshot depends on (`PawDataset::content_sha256`): no version and
+    /// no core states, so that a version-2 file and its version-3 upgrade, which differ only by
+    /// those, have the same content.
+    Content,
+}
+
+/// The content text of `ds` at stride 1, unrounded, as the record holds it: the payload without
+/// `version` and `core_states`.
+pub(crate) fn content_text(ctx: &Context, ds: &PawDataset) -> Result<(String, Reservation)> {
+    sized(ctx, ds, 1, false, Form::Content)
+}
+
 fn text_of(
     ctx: &Context,
     ds: &PawDataset,
     stride: usize,
     round: bool,
 ) -> Result<(String, Reservation)> {
+    sized(ctx, ds, stride, round, Form::File)
+}
+
+/// Two passes of the payload writer: a counting one sizes the text, the budget is reserved for
+/// exactly that, and the second fills it.
+fn sized(
+    ctx: &Context,
+    ds: &PawDataset,
+    stride: usize,
+    round: bool,
+    form: Form,
+) -> Result<(String, Reservation)> {
     let mut counter = Counter(0);
-    payload(&mut counter, ds, stride, round)?;
+    payload(&mut counter, ds, stride, round, form)?;
     let memory = ctx.reserve(counter.0)?;
     let mut text = String::new();
     text.try_reserve_exact(counter.0)
         .map_err(|_| Error::Allocation)?;
-    payload(&mut text, ds, stride, round)?;
+    payload(&mut text, ds, stride, round, form)?;
     debug_assert_eq!(text.len(), counter.0);
     Ok((text, memory))
 }
@@ -272,13 +301,18 @@ fn spin_orbit<W: Write>(
     w.write_char('}').map_err(bad)
 }
 
-fn payload<W: Write>(w: &mut W, ds: &PawDataset, stride: usize, round: bool) -> Result<()> {
-    write!(
-        w,
-        "{{\"format\":\"{FORMAT_TAG}\",\"version\":{FORMAT_VERSION},\"family\":\"{}\",",
-        ds.family.name()
-    )
-    .map_err(bad)?;
+fn payload<W: Write>(
+    w: &mut W,
+    ds: &PawDataset,
+    stride: usize,
+    round: bool,
+    form: Form,
+) -> Result<()> {
+    write!(w, "{{\"format\":\"{FORMAT_TAG}\",").map_err(bad)?;
+    if form == Form::File {
+        write!(w, "\"version\":{},", ds.format_version()).map_err(bad)?;
+    }
+    write!(w, "\"family\":\"{}\",", ds.family.name()).map_err(bad)?;
     key(w, "symbol")?;
     json_str(w, &ds.symbol)?;
     write!(w, ",\"atomic_number\":{},", ds.atomic_number).map_err(bad)?;
@@ -329,6 +363,25 @@ fn payload<W: Write>(w: &mut W, ds: &PawDataset, stride: usize, round: bool) -> 
             list(w, row, |w, v| write!(w, "{v}").map_err(bad))
         })?;
         w.write_char(',').map_err(bad)?;
+    }
+    if form == Form::File {
+        if let Some(states) = &ds.core_states {
+            key(w, "core_states")?;
+            list(w, states, |w, state| {
+                write!(w, "{{\"n\":{},\"l\":{},", state.n, state.l).map_err(bad)?;
+                field_f64(w, "occupation", state.occupation)?;
+                field_f64(w, "energy", state.energy)?;
+                key(w, "table")?;
+                json_str(w, &PawDataset::core_table(state.n, state.l))?;
+                w.write_char('}').map_err(bad)
+            })?;
+            w.write_char(',').map_err(bad)?;
+        }
+        if let Some(scheme) = &ds.core_scheme {
+            key(w, "core_scheme")?;
+            json_str(w, scheme)?;
+            w.write_char(',').map_err(bad)?;
+        }
     }
     defects(w, ds)?;
     key(w, "spin_orbit")?;

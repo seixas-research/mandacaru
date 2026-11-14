@@ -38,6 +38,7 @@ labels* and combines counts -- so any SDK backend (see
 
 from __future__ import annotations
 
+from .. import _native
 from ..core.mapping import PauliSum
 from ..resources import native_context
 
@@ -63,52 +64,10 @@ def two_qubit_gate_count(circuit) -> int:
     transpilation to an IBM basis, and a count that is honest about its unit is
     better than a name list that can miss an entangler entirely.
     """
-    total = 0
-    for instruction in getattr(circuit, "data", ()):
-        operation = getattr(instruction, "operation", None)
-        name = str(getattr(operation, "name", "")).lower()
-        if name in NON_GATE_INSTRUCTIONS:
-            continue
-        if len(getattr(instruction, "qubits", ())) == 2:
-            total += 1
-    return total
-
-
-def is_qubit_wise_commuting(a: str, b: str) -> bool:
-    """True when Pauli strings ``a`` and ``b`` can be measured in one basis.
-
-    The condition is per qubit: wherever both strings act non-trivially they must
-    carry the *same* Pauli letter (identity always agrees).
-    """
-    return all(x == "I" or y == "I" or x == y for x, y in zip(a, b))
-
-
-def merge_basis(labels) -> str:
-    """The single measurement basis covering a set of QWC Pauli strings.
-
-    Qubit ``k`` takes the non-identity letter any member requires there, or
-    ``"I"`` (measured in the ``Z`` basis, contributing nothing) if none does.
-
-    Raises
-    ------
-    ValueError
-        If the strings are not qubit-wise commuting.
-    """
-    labels = list(labels)
-    if not labels:
-        return ""
-    basis = list(labels[0])
-    for label in labels[1:]:
-        for k, letter in enumerate(label):
-            if letter == "I":
-                continue
-            if basis[k] in ("I", letter):
-                basis[k] = letter
-            else:
-                raise ValueError(
-                    f"Pauli strings {''.join(basis)!r} and {label!r} are not "
-                    f"qubit-wise commuting on qubit {k}")
-    return "".join(basis)
+    gates = [(str(getattr(getattr(instruction, "operation", None), "name", "")),
+              len(getattr(instruction, "qubits", ())), 1)
+             for instruction in getattr(circuit, "data", ())]
+    return _native.gate_tally(gates, list(NON_GATE_INSTRUCTIONS))[0]
 
 
 def qubit_wise_commuting_groups(hamiltonian: PauliSum, drop_identity: bool=True, *, resources=None, context=None):

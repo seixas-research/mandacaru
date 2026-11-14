@@ -185,13 +185,13 @@ fn test_kpoint_matrices_properties() {
 #[test]
 #[ignore = "slow: 18 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test setup_matrices -- --ignored skew_lih_native_setup_response_matches_active_setup"]
 fn skew_lih_native_setup_response_matches_active_setup() {
-    use mandacaru_core::{paw::digest::sha256_file, periodic::{response, solver::Options}};
+    use mandacaru_core::{paw::digest::dataset_content_sha256, periodic::{response, solver::Options}};
     let ctx = context();
     let root = std::path::PathBuf::from(std::env::var_os("MANDACARU_PAW_PATH").unwrap())
         .join("lda-sr");
     let files: Vec<_> = ["Li", "H"].iter().map(|symbol| {
         let path = root.join(format!("{symbol}.parquet"));
-        (path.to_string_lossy().into_owned(), sha256_file(&path).unwrap())
+        (path.to_string_lossy().into_owned(), dataset_content_sha256(&ctx, &path).unwrap())
     }).collect();
     let input = SetupInput {
         mesh: None,

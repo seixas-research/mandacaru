@@ -168,6 +168,7 @@ pub(super) fn response_with_shared(
         screened,
         true,
         None,
+        false,
     )?;
     let fields = evaluation
         .fields
@@ -373,6 +374,7 @@ fn evaluate(
         screened,
         false,
         None,
+        false,
     )
 }
 fn evaluate_scratch(
@@ -395,7 +397,37 @@ fn evaluate_scratch(
         screened,
         false,
         scratch,
+        false,
     )
+}
+/// The Fock matrices and the energy of orthonormal-frame densities that may be complex, with the
+/// Poisson solver, the orbital gradients, the screening and the two grid scratch vectors owned
+/// by the caller and reused across evaluations (real-time propagation). The grid terms read
+/// `Re D`, which is exact in the real basis; the exact exchange reads the whole `D`.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn fock_and_energy(
+    integrals: &MolecularIntegrals,
+    h: &Matrix,
+    d: &[Matrix],
+    name: &str,
+    poisson: &mut Poisson,
+    orbital_gradients: Option<&RealSamples>,
+    screened: Option<&Screening>,
+    scratch: (&mut [C64], &mut [C64]),
+) -> Result<(Vec<Matrix>, f64)> {
+    let evaluation = evaluate_with(
+        integrals,
+        h,
+        d,
+        name,
+        poisson,
+        orbital_gradients,
+        screened,
+        false,
+        Some(scratch),
+        true,
+    )?;
+    Ok((evaluation.f, evaluation.energy))
 }
 #[allow(clippy::too_many_arguments)]
 fn evaluate_with(
@@ -408,6 +440,8 @@ fn evaluate_with(
     screened: Option<&Screening>,
     retain: bool,
     scratch: Option<(&mut [C64], &mut [C64])>,
+    // +U on the complex occupations (real-time propagation); the SCF keeps the real path.
+    complex_hubbard: bool,
 ) -> Result<Evaluation> {
     let ctx = &integrals.context;
     let m = integrals.m();
@@ -609,20 +643,26 @@ fn evaluate_with(
         }
         _ => None,
     };
-    let hubbard_eval = if let Some(hubbard) = integrals
+    let hubbard = integrals
         .corrections
         .as_ref()
-        .and_then(|c| c.hubbard.as_ref())
-    {
-        Some(hubbard.evaluate(ctx, d)?)
-    } else {
-        None
+        .and_then(|c| c.hubbard.as_ref());
+    let hubbard_eval = match hubbard {
+        Some(hubbard) if !complex_hubbard => Some(hubbard.evaluate(ctx, d)?),
+        _ => None,
+    };
+    let hubbard_complex = match hubbard {
+        Some(hubbard) if complex_hubbard => Some(hubbard.evaluate_complex(ctx, d)?),
+        _ => None,
     };
     for s in 0..d.len() {
         let v = Matrix::from_fn(m, m, |a, b| C64::new(sums[s][(a, b)] * dv, 0.));
         let mut fock = h + v + &augmentation;
         if let Some((_, delta_focks, _)) = &hubbard_eval {
             fock += Matrix::from_fn(m, m, |a, b| C64::new(delta_focks[s][(a, b)], 0.));
+        }
+        if let Some((_, delta_focks)) = &hubbard_complex {
+            fock += &delta_focks[s];
         }
         if let Some(screening) = screened {
             let spins = if d.len() == 1 { 2. } else { 1. };
@@ -649,7 +689,10 @@ fn evaluate_with(
     }
     let eone =
         d.iter().map(|d| (d * h).trace().re).sum::<f64>() * if d.len() == 1 { 2. } else { 1. };
-    let hubbard_energy = hubbard_eval.as_ref().map(|(e, _, _)| *e);
+    let hubbard_energy = hubbard_eval
+        .as_ref()
+        .map(|(e, _, _)| *e)
+        .or(hubbard_complex.as_ref().map(|(e, _)| *e));
     let mut energy = eone + eh + terms.energy + exact_energy + paw.map_or(0., |p| p.constant);
     if let Some(e_u) = hubbard_energy {
         energy += e_u;
@@ -704,6 +747,16 @@ impl MolecularIntegrals {
         let Some((omega, fraction)) = crate::models::functional(name)?.screened_exchange else {
             return Ok(None);
         };
+        // A hybrid's exact exchange includes the valence's exchange with the frozen core, which
+        // a PAW species beyond an empty core or a closed 1s shell does not have (owner decision
+        // 2026-11-12: refused until the core-valence exchange of stored core states lands).
+        if self.corrections.as_ref().is_some_and(|c| !c.core_supported) {
+            return Err(invalid(format!(
+                "{name} takes {fraction} of exact exchange, and native PAW frozen-core exchange \
+                 currently requires an empty core or a single closed 1s shell: a hybrid functional \
+                 of this molecule is not available; a semilocal functional runs on every element"
+            )));
+        }
         let (ctx, m) = (&self.context, self.m());
         let mut solver = Poisson::screened(ctx, &self.grid, omega)?;
         let base = std::sync::Arc::new(with_rows!(self.orthonormal_samples.rows(), |samples| {

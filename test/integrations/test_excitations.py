@@ -70,8 +70,8 @@ def test_unsupported_states_raise_by_name():
         crystal.calc.get_excitations(1)
     with pytest.raises(ValueError, match="spin-conserving"):
         hydrogen(unrestricted=True).calc.get_excitations(1, spin="singlet")
-    with pytest.raises(NotImplementedError, match="meta-GGA"):
-        hydrogen(xc="r2scan").calc.get_excitations(1)
+    with pytest.raises(NotImplementedError, match="rVV10"):
+        hydrogen(xc="pbe+rvv10").calc.get_excitations(1)
 
 
 def test_each_request_writes_one_excited_states_block(tmp_path):
@@ -109,3 +109,27 @@ def test_an_open_shell_gives_spin_conserving_roots_with_their_spin_contamination
     assert found.transitions(0)[0].spin in ("alpha", "beta")
     weights, occupied, empty = found.natural_transition_orbitals(0, channel=1)
     assert occupied.shape == empty.shape
+
+
+def test_the_meta_gga_runs_through_the_same_request():
+    found = hydrogen(xc="r2scan").calc.get_excitations(2, approximation="casida")
+    assert found.energies[0] > 0 and found.functional == "r2scan"
+
+
+def test_kohn_sham_excitations_run_on_an_element_whose_core_has_no_hartree_fock_exchange():
+    """Owner Q20 (2026-11-12): the frozen-core exchange guard sits at the Hartree-Fock entry
+    points (HF mean field, TDHF, CIS), not on the Coulomb integrals. Sodium's frozen core is not
+    a closed 1s of Z <= 10, so Hartree-Fock of NaH is refused, while Kohn-Sham TD-DFT of the same
+    molecule, which never reads a core-valence exchange, now runs."""
+    atoms = Atoms("NaH", positions=[[0, 0, 0], [0, 0, 1.89]], cell=[7, 7, 7])
+    atoms.center()
+    atoms.calc = Mandacaru(method="dft", xc="lda", basis={"name": "PAW-LCAO", "size": "DZP"},
+                           grid_spacing=0.3)
+    found = atoms.calc.get_excitations(2)
+    assert np.all(np.isfinite(found.energies)) and np.all(found.energies > 0)
+    hartree_fock = Atoms("NaH", positions=[[0, 0, 0], [0, 0, 1.89]], cell=[7, 7, 7])
+    hartree_fock.center()
+    hartree_fock.calc = Mandacaru(method="rhf", basis={"name": "PAW-LCAO", "size": "SZ"},
+                                  grid_spacing=0.3)
+    with pytest.raises(ValueError, match="frozen-core exchange"):
+        hartree_fock.get_potential_energy()

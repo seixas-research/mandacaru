@@ -5,7 +5,7 @@
 
 use crate::paw_assemble_support::{directory, Npz};
 use mandacaru_core::paw::{diagnose::view::Smooth, record::PawDataset};
-use mandacaru_core::{paw::digest::sha256_file, Context};
+use mandacaru_core::{paw::digest::sha256, Context};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 
@@ -93,7 +93,7 @@ impl LibraryCase {
     /// that changed since fails loudly instead of comparing other numbers.
     pub fn file(&self) -> PathBuf {
         let path = dataset_path(&self.set, &self.element);
-        let digest = sha256_file(&path).unwrap();
+        let digest = sha256(&std::fs::read(&path).unwrap());
         assert_eq!(
             digest,
             self.doc["file"]["sha256"].as_str().unwrap(),

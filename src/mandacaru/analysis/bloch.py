@@ -43,22 +43,16 @@ class SpectralFunction:
     dominant_weights: np.ndarray = field(repr=False)
     removal_edge: float = 0.0
     addition_edge: float = 0.0
+    #: Midpoint between the highest removal and the lowest addition pole (eV).
+    chemical_potential: float = 0.0
+    #: ``addition_edge - removal_edge`` (eV): the fundamental gap of the state.
+    gap: float = 0.0
     ground_energy: float = 0.0
     mesh: tuple = (1, 1, 1)
     #: The band path ``kpoints`` and ``values`` are along (``kpoints`` then are its points).
     kpath: object = None
     #: With a reduction to the irreducible zone: the symmetry audit of the state (a dict).
     audit: dict | None = field(default=None, repr=False)
-
-    @property
-    def chemical_potential(self):
-        """Midpoint between the highest removal and the lowest addition pole (eV)."""
-        return 0.5 * (self.removal_edge + self.addition_edge)
-
-    @property
-    def gap(self):
-        """``addition_edge - removal_edge`` (eV): the fundamental gap of the state."""
-        return self.addition_edge - self.removal_edge
 
     def bands(self, spin=0):
         """``(nk, n_orbitals)``: the strongest pole of each orbital channel (eV)."""

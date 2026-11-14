@@ -1,13 +1,19 @@
-//! Incremental full-mesh setup. Geometry adapters transfer one k-point at a
-//! time; all eigensolves, trial models and localization remain native.
+//! The Wannier calculation of a converged crystal: the request (mesh, trials, bands, windows),
+//! the mesh frames made from the crystal's own setup (`bloch_mesh`), the localization of every
+//! spin channel and its result. Everything numerical is native; the request carries only what
+//! the user chose, never geometry the setup already owns.
 use super::{
     invalid,
     model::{self, Channel, Windows},
-    sampling::{self, Augmentation, Frame, Trial},
+    sampling::{self, Trial},
     Options,
 };
 use crate::{
-    periodic::{setup::PeriodicSetup, Crystal, KPoint, PeriodicResult},
+    periodic::{
+        bloch_mesh::{check_isolated, MeshIndex, Sampler},
+        setup::PeriodicSetup,
+        Crystal, PeriodicResult,
+    },
     product,
     quantum::C64,
     Reservation, Result,
@@ -15,32 +21,21 @@ use crate::{
 use serde_json::Value;
 use std::sync::Arc;
 
-pub struct Setup {
-    pub crystal: Arc<Crystal>,
-    pub state: Arc<PeriodicResult>,
-    pub size: [usize; 3],
-    pub bands: Vec<usize>,
-    pub trials: Vec<Trial>,
-    pub augmentation: Augmentation,
-    pub windows: Option<Windows>,
-    /// The periodic setup the crystal was built from, which makes states at any k-point (the
-    /// long-wavelength limit of the screening); `None` for a crystal loaded from a snapshot.
-    pub provider: Option<Arc<PeriodicSetup>>,
-    frames: Vec<Vec<Frame>>,
-    _memory: Reservation,
-}
 pub struct Wannier {
     pub crystal: Arc<Crystal>,
     pub state: Arc<PeriodicResult>,
     pub size: [usize; 3],
     pub bands: Vec<usize>,
     pub trials: Vec<Trial>,
-    pub augmentation: Augmentation,
     pub channels: Vec<Channel>,
-    /// See [`Setup::provider`].
-    pub provider: Option<Arc<PeriodicSetup>>,
+    /// The periodic setup the crystal was built from, which makes states at any k-point (the
+    /// mesh frames, and the long-wavelength limit of the screening).
+    pub setup: Arc<PeriodicSetup>,
     _memory: Reservation,
 }
+
+/// The keys a Wannier request may carry; any other key raises (the geometry is the setup's).
+const REQUEST_KEYS: [&str; 5] = ["size", "trials", "n_functions", "windows", "bands"];
 fn real(value: &Value) -> Result<f64> {
     value
         .as_f64()
@@ -263,15 +258,42 @@ fn trials(value: &Value, cell: nalgebra::Matrix3<f64>) -> Result<Vec<Trial>> {
     Ok(out)
 }
 
-impl Setup {
-    pub fn from_json(
+impl Wannier {
+    /// Localize the Bloch states of a converged crystal as `source` (JSON: `size`, `trials`,
+    /// optional `n_functions`, `windows` in Hartree on the eigenvalue scale, `bands`) asks. The
+    /// frames of the full Gamma-anchored mesh are made from `setup`; the PAW one-center geometry
+    /// is the setup's. Without windows the bands must form a group isolated from every other band
+    /// at every mesh point. A spinor crystal without time reversal is refused when its subspace
+    /// carries a Chern number ([`super::chern_guard`]).
+    pub fn build(
         crystal: Arc<Crystal>,
         state: Arc<PeriodicResult>,
+        setup: Arc<PeriodicSetup>,
         source: &str,
+        options: &Options,
+    ) -> Result<Self> {
+        let ctx = crystal.context.clone();
+        ctx.run(|| Self::build_inner(crystal, state, setup, source, options))
+    }
+    fn build_inner(
+        crystal: Arc<Crystal>,
+        state: Arc<PeriodicResult>,
+        setup: Arc<PeriodicSetup>,
+        source: &str,
+        options: &Options,
     ) -> Result<Self> {
         let ctx = &crystal.context;
         let memory = ctx.reserve(product(&[source.len(), 32])?)?;
         let raw: Value = serde_json::from_str(source).map_err(|e| invalid(e.to_string()))?;
+        let object = raw
+            .as_object()
+            .ok_or_else(|| invalid("a Wannier request is a JSON object"))?;
+        if let Some(key) = object.keys().find(|k| !REQUEST_KEYS.contains(&k.as_str())) {
+            return Err(invalid(format!(
+                "unknown Wannier request key {key:?}; the keys are {REQUEST_KEYS:?} (the atom \
+                 centers and PAW channels are the crystal setup's)"
+            )));
+        }
         let values = raw["size"]
             .as_array()
             .filter(|v| v.len() == 3)
@@ -281,10 +303,7 @@ impl Setup {
             integer(&values[1])?,
             integer(&values[2])?,
         ];
-        if size.contains(&0) {
-            return Err(invalid("Wannier mesh dimensions must be positive"));
-        }
-        product(&size)?;
+        let mesh = MeshIndex::new(size, [0.; 3])?;
         let mut trials = trials(&raw["trials"], sampling::lattice(&crystal.grid))?;
         if crystal.spinor {
             trials = trials
@@ -344,115 +363,57 @@ impl Setup {
                 "Wannier bands must be unique valid indices spanning the trial space",
             ));
         }
-        let centers = raw["centers"]
-            .as_array()
-            .ok_or_else(|| invalid("Wannier setup needs the atom centers in Bohr"))?
-            .iter()
-            .map(vector)
-            .collect::<Result<Vec<_>>>()?;
-        let labels = raw["channel_labels"]
-            .as_array()
-            .ok_or_else(|| invalid("Wannier setup needs PAW channel labels"))?
-            .iter()
-            .map(|v| {
-                let row = v
-                    .as_array()
-                    .filter(|v| v.len() == 3)
-                    .ok_or_else(|| invalid("invalid PAW channel label"))?;
-                let get = |a: usize| {
-                    row[a]
-                        .as_i64()
-                        .and_then(|v| i32::try_from(v).ok())
-                        .ok_or_else(|| invalid("invalid PAW channel label"))
-                };
-                Ok([get(0)?, get(1)?, get(2)?])
-            })
-            .collect::<Result<Vec<_>>>()?;
-        let augmentation = Augmentation { centers, labels };
-        augmentation.validate(&crystal)?;
-        let frames = (0..crystal.spins).map(|_| vec![]).collect();
-        Ok(Self {
-            crystal,
-            state,
-            size,
-            bands,
-            trials,
-            augmentation,
-            windows,
-            provider: None,
-            frames,
-            _memory: memory,
-        })
-    }
-    /// The same setup with the periodic setup its crystal was built from attached.
-    pub fn with_provider(mut self, provider: Option<Arc<PeriodicSetup>>) -> Self {
-        self.provider = provider;
-        self
-    }
-    pub fn next_point(&self) -> Result<[f64; 3]> {
-        sampling::mesh_point(self.size, self.frames[0].len())
-    }
-    pub fn add_point(&mut self, point: KPoint) -> Result<()> {
-        let ctx = self.crystal.context.clone();
-        ctx.run(|| self.add_point_inner(point))
-    }
-    fn add_point_inner(&mut self, point: KPoint) -> Result<()> {
-        let expected = self.next_point()?;
-        if (0..3).any(|a| (point.fractional[a] - expected[a]).abs() > 1e-8) {
-            return Err(invalid(
-                "Wannier k-point transfer does not follow the full Gamma mesh",
-            ));
-        }
-        let frames = (0..self.crystal.spins)
-            .map(|s| Frame::from_point(&self.crystal, &self.state, &point, s, &self.bands))
-            .collect::<Result<Vec<_>>>()?;
-        for (channel, frame) in self.frames.iter_mut().zip(frames) {
-            channel.push(frame);
-        }
-        Ok(())
-    }
-    pub fn finish(self, options: &Options) -> Result<Wannier> {
-        let ctx = self.crystal.context.clone();
-        ctx.run(|| self.finish_inner(options))
-    }
-    fn finish_inner(self, options: &Options) -> Result<Wannier> {
-        if self
-            .frames
-            .iter()
-            .any(|v| v.len() != product(&self.size).unwrap_or(0))
-        {
-            return Err(invalid(
-                "Wannier localization needs every full-mesh k-point",
-            ));
-        }
-        let channels = self
-            .frames
+        let sampler = Sampler::new(&crystal, &state, &setup)?;
+        let mut sorted = bands.clone();
+        sorted.sort_unstable();
+        let isolated = windows.is_none();
+        let frames = sampler.frames(&mesh, &vec![bands.clone(); crystal.spins], |s, frame| {
+            if isolated {
+                // A windowless group must be a smooth subspace: one that touches an outside band
+                // localizes without an error into a gauge that is not smooth.
+                check_isolated(
+                    frame,
+                    s,
+                    &sorted,
+                    "so its Wannier functions are not defined without disentanglement: give \
+                     windows= (an outer and a frozen energy window)",
+                )?;
+            }
+            Ok(())
+        })?;
+        // Only a Hamiltonian without time-reversal symmetry (a spinor crystal with a moment) can
+        // give a subspace a Chern number; every collinear or time-reversal-invariant channel has
+        // C = 0 by symmetry.
+        let guard = crystal.spinor && !setup.time_reversal;
+        let channels = frames
             .into_iter()
             .map(|frames| {
                 model::localize_channel(
-                    &self.crystal,
-                    &self.state,
+                    &crystal,
+                    &state,
                     frames,
                     model::Localization {
-                        size: self.size,
-                        augmentation: &self.augmentation,
-                        trials: &self.trials,
-                        windows: self.windows.as_ref(),
+                        size,
+                        augmentation: sampler.augmentation(),
+                        trials: &trials,
+                        windows: windows.as_ref(),
+                        reciprocal: sampler.reciprocal,
+                        chern_guard: guard,
                     },
                     options,
                 )
             })
             .collect::<Result<Vec<_>>>()?;
+        drop(sampler);
         Ok(Wannier {
-            crystal: self.crystal,
-            state: self.state,
-            size: self.size,
-            bands: self.bands,
-            trials: self.trials,
-            augmentation: self.augmentation,
+            crystal,
+            state,
+            size,
+            bands,
+            trials,
             channels,
-            provider: self.provider,
-            _memory: self._memory,
+            setup,
+            _memory: memory,
         })
     }
 }

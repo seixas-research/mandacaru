@@ -163,6 +163,9 @@ pub fn gradient(
             "variational forces are not implemented on a Z2-tapered register: its state is read through the untapered density matrices",
         ));
     }
+    // An exactly degenerate orbital group the active space splits, where no deterministic frame
+    // fixes it, makes the force depend on the eigensolver's choice (`frame::split_groups`).
+    reference.require_unsplit(integrals, model, "an analytic variational force")?;
     if model.m * 2 != problem.encoding.modes || model.particles != problem.encoding.particles {
         return Err(invalid(
             "the variational state, its model and its reference disagree",
@@ -326,6 +329,7 @@ pub fn device_gradient(
                 .into(),
         ));
     }
+    reference.require_unsplit(integrals, model, "an analytic variational force")?;
     let m = model.m;
     let (m2, m4) = (m * m, m.pow(4));
     let sized = |d: &MeasuredDensities<'_>| {

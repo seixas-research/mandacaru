@@ -23,6 +23,8 @@ from mandacaru.pseudopotentials.multipoles import (_pair, partial_waves,
                                                     radial_moments)
 from mandacaru.pseudopotentials.native_context import context
 
+from .multipole_view import multipole_moments
+
 
 # Array views of the native kernels these tests pin (the Python wrappers are gone): the shape
 # function and its potential, the Gaunt coefficients, the angular rule, the radial Fourier-Bessel
@@ -62,7 +64,7 @@ def multipole_range(l1, l2):
 def radial_remainder(dataset, l1, l2, L, q, shape_transform):
     return _native.paw_radial_remainder(
         context(), int(L), *_pair(dataset, l1, l2), np.ascontiguousarray(q, dtype=float),
-        np.ascontiguousarray(dataset.multipole_moments(l1, l2, L, "dual"), dtype=float),
+        np.ascontiguousarray(multipole_moments(dataset, l1, l2, L, "dual"), dtype=float),
         np.ascontiguousarray(shape_transform, dtype=float))
 
 
@@ -119,8 +121,8 @@ class TestCrossMoments:
         silicon = get_paw("Si")
         b1 = np.asarray(silicon.channels[l1].vanderbilt)
         b2 = np.asarray(silicon.channels[l2].vanderbilt)
-        dual = silicon.multipole_moments(l1, l2, L, "dual")
-        raw = silicon.multipole_moments(l1, l2, L, "raw")
+        dual = multipole_moments(silicon, l1, l2, L, "dual")
+        raw = multipole_moments(silicon, l1, l2, L, "raw")
         np.testing.assert_allclose(b1 @ raw @ b2.T, dual, rtol=1e-11, atol=1e-11)
 
 
@@ -161,8 +163,8 @@ class TestTheRemainderBeyondTheMultipoles:
                    * r ** 2)[inside]
         direct = np.trapezoid(spherical_jn(2, q[0] * r[inside]) * density,
                               r[inside])
-        shape = self._shape(copper, 2, q)[0] * copper.multipole_moments(
-            2, 2, 2, "dual")[0, 0]
+        shape = self._shape(copper, 2, q)[0] * multipole_moments(
+            copper, 2, 2, 2, "dual")[0, 0]
         assert E[0, 0, 0] == pytest.approx(direct - shape, abs=1e-6)
 
     def test_it_vanishes_without_an_augmentation(self, copper, monkeypatch):

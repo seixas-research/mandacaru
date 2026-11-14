@@ -99,6 +99,10 @@ fn paw_basis_states<'py>(
 }
 
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    // The split norms of the multiple-zeta recipes: one definition, in Rust.
+    m.add("DEFAULT_SPLIT_NORM", basis_recipe::DEFAULT_SPLIT_NORM)?;
+    let [first, second, third] = basis_recipe::DEFAULT_TAIL_NORMS;
+    m.add("DEFAULT_TAIL_NORMS", (first, second, third))?;
     m.add_function(wrap_pyfunction!(paw_basis, m)?)?;
     m.add_function(wrap_pyfunction!(paw_basis_states, m)?)?;
     Ok(())

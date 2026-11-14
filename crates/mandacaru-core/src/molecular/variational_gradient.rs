@@ -247,6 +247,7 @@ pub fn relaxed_densities(
             "the analytic variational force does not support {what} yet"
         ))
     };
+    integrals.require_hartree_fock_core()?;
     if reference.method == "uhf" && reference.functional.is_none() {
         return unrestricted(integrals, reference, model, active_one, active_two);
     }

@@ -68,10 +68,10 @@ fn malformed_datasets_are_refused_with_the_reason() {
             "not on its 4125-point radial grid",
         ),
         (
-            "version 3",
+            "version 4",
             hydrogen.clone(),
-            Box::new(|_, _, p| p["version"] = json!(3)),
-            "newer than this build (2)",
+            Box::new(|_, _, p| p["version"] = json!(4)),
+            "newer than this build (3)",
         ),
         (
             "version missing",

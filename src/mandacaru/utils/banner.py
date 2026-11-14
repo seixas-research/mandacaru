@@ -18,13 +18,16 @@ the top of the log file, so a log kept from a long run carries its own
 provenance.
 
 Output goes to ``sys.stdout`` through :func:`_write` (not the built-in ``print``),
-and every dependency version is looked up defensively so a missing optional
-package never breaks the banner.
+and every dependency version is looked up defensively, from the installed
+metadata and without importing the package, so a missing optional package
+never breaks the banner.
 """
 
 from __future__ import annotations
 
 import getpass
+import importlib.metadata
+import importlib.util
 import os
 import platform
 import sys
@@ -63,14 +66,22 @@ def _write(line: str = "") -> None:
 
 
 def _dep(name: str) -> tuple[str, str]:
-    """``(version, directory)`` of an importable dependency, or ``("n/a", "")``."""
+    """``(version, directory)`` of an installed dependency, or ``("n/a", "")``.
+
+    The package is located and its distribution metadata read; it is not
+    imported, so printing the banner loads none of the heavy dependencies.
+    """
     try:
-        module = __import__(name)
-    except Exception:
+        spec = importlib.util.find_spec(name)
+    except (ImportError, ValueError):
         return "n/a", ""
-    version = getattr(module, "__version__", "n/a")
-    path = getattr(module, "__file__", "") or ""
-    return str(version), os.path.dirname(path)
+    if spec is None:
+        return "n/a", ""
+    try:
+        version = importlib.metadata.version(name)
+    except importlib.metadata.PackageNotFoundError:
+        version = "n/a"
+    return version, os.path.dirname(spec.origin or "")
 
 
 def _username() -> str:

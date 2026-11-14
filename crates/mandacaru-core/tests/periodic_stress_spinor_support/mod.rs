@@ -19,7 +19,9 @@ use mandacaru_core::{
     periodic::{
         gradient::State,
         stress_terms::{
-            crystal::{crystal_strain, crystal_stress, CrystalStrain, SpinOrbitInputs},
+            crystal::{
+                all_entries, crystal_strain, crystal_stress_along, CrystalStrain, Reuse, SpinOrbitInputs,
+            },
             Stress, Tensor,
         },
         Options,
@@ -50,7 +52,7 @@ pub fn so_inputs(sp: &Spinor) -> SpinOrbitInputs<'_> {
 /// The analytic stress of the converged `state` of `sp`.
 pub fn stress_at(sp: &Spinor, state: &State, options: &Options) -> Stress {
     let cores = sp.data.cores();
-    crystal_stress(
+    crystal_stress_along(
         &sp.data.crystal.context,
         inputs(&sp.data, &cores),
         sp.data.layout(),
@@ -59,6 +61,8 @@ pub fn stress_at(sp: &Spinor, state: &State, options: &Options) -> Stress {
         options,
         state,
         Some(so_inputs(sp)),
+        Some(all_entries(&sp.data.crystal)),
+        Reuse::default(),
     )
     .unwrap()
 }
@@ -69,7 +73,7 @@ pub fn stress_of_data(data: &Data, state: &State, options: &Options) -> Stress {
     let refs: Vec<&PawDataset> = data.datasets.iter().collect();
     let (projectors, couplings) = union_list(&data.crystal.context, &refs, &data.centers());
     let cores = data.cores();
-    crystal_stress(
+    crystal_stress_along(
         &data.crystal.context,
         inputs(data, &cores),
         data.layout(),
@@ -81,6 +85,8 @@ pub fn stress_of_data(data: &Data, state: &State, options: &Options) -> Stress {
             projectors: &projectors,
             couplings: &couplings,
         }),
+        Some(all_entries(&data.crystal)),
+        Reuse::default(),
     )
     .unwrap()
 }
@@ -93,7 +99,7 @@ pub fn strain_of<'a>(
     state: &State,
     options: &Options,
 ) -> CrystalStrain<'a> {
-    crystal_strain(
+    let mut c = crystal_strain(
         &sp.data.crystal.context,
         inputs(&sp.data, cores),
         sp.data.layout(),
@@ -103,7 +109,10 @@ pub fn strain_of<'a>(
         state,
         Some(so_inputs(sp)),
     )
-    .unwrap()
+    .unwrap();
+    // The controls gate every entry `g_ab`: the nine unit directions.
+    c.strain.set_directions(all_entries(&sp.data.crystal));
+    c
 }
 
 /// The peak entry of a tensor.

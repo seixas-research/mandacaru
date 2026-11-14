@@ -127,7 +127,9 @@ class TestRefusals:
     def test_a_version_from_the_future_raises(self, hydrogen, tmp_path):
         payload, tables = record.record_of(hydrogen)
         meta = json.loads(payload)
-        meta["version"] = record.FORMAT_VERSION + 1
+        # Far beyond any format the native reader knows (it owns the version: 3 carries the
+        # core states, which the Python view does not write).
+        meta["version"] = 99
         with pytest.raises(ValueError, match="newer than this build"):
             _native.paw_record_write(context(), str(tmp_path / "x.parquet"), json.dumps(meta), tables)
 
@@ -151,3 +153,4 @@ class TestLocalPotential:
         assert slopes[2] == pytest.approx(hydrogen.valence_charge / (2 * r[-1]) ** 2, rel=1e-12)
         flat = _native.paw_local_value(context(), r, v, 1.0, np.array([0.5 * r[0]]))
         assert flat[1][0] == 0.0 and flat[0][0] == pytest.approx(v[0], rel=1e-12)
+

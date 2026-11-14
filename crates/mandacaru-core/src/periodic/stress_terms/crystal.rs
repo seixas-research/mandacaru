@@ -22,14 +22,17 @@
 //! width, filter cutoff, alias operations and the dense list of the crystal's own cell): the
 //! dense sums run over the ball of the crystal's reference cell, which is the list its `U`,
 //! `U_ion` and `E_ion` were summed over.
-use super::{check_hybrid_request, check_request, hybrid, stress, stress_hybrid, Stress};
+use super::{
+    check_hybrid_request, check_request, hybrid, stress, stress_hybrid, Directions, Strain, Stress,
+};
 use crate::{
     math::fft::Fft3,
     periodic::{
         gradient::{freeze, Frozen, Layout, State},
         invalid,
         setup::{
-            provider::{Inputs, Operators, SetupDerivatives},
+            projection_table::SetupTables,
+            provider::{Fields, Inputs, Operators, SetupDerivatives},
             spheres::Projector,
             strain_provider::{StrainFields, StrainSetup, XcFields},
         },
@@ -38,7 +41,7 @@ use crate::{
     quantum::C64,
     Context, Error, Reservation, Result,
 };
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
 
 /// The spin-orbit union projectors (every atom's, `Projector::atom` the owner) and the radial
 /// couplings `D^SO` per `(atom, l)` of a spinor crystal's datasets.
@@ -119,7 +122,12 @@ fn output_data(c: &Crystal, state: &State) -> Result<OutputData> {
     } else {
         None
     };
-    let terms = solver::exchange_correlation(c, &mut fft, rho.as_slice(), tau.as_ref().map(|t| t.as_slice()))?;
+    let terms = solver::exchange_correlation(
+        c,
+        &mut fft,
+        rho.as_slice(),
+        tau.as_ref().map(|t| t.as_slice()),
+    )?;
     let mut total = vec![0.; n];
     for s in 0..c.spins {
         for (t, r) in total.iter_mut().zip(&rho.as_slice()[s * n..(s + 1) * n]) {
@@ -133,7 +141,10 @@ fn output_data(c: &Crystal, state: &State) -> Result<OutputData> {
         ));
     }
     // X-6: the rVV10 kernel's wave numbers, on the very fields the energy was evaluated on.
-    let nonlocal = match (&terms.nonlocal_source, crate::models::functional(&c.functional)?.nonlocal_b) {
+    let nonlocal = match (
+        &terms.nonlocal_source,
+        crate::models::functional(&c.functional)?.nonlocal_b,
+    ) {
         (Some(source), Some(b)) => Some(crate::models::nonlocal::strain(
             &c.context,
             &c.grid,
@@ -169,10 +180,15 @@ pub struct CrystalStrain<'a> {
     _held: Reservation,
 }
 
-/// Ties the geometry to the SCF crystal, freezes the output-density state of `state` and forms
-/// the strain data beyond the force fields. Raises when the setup is not the crystal's, and for
-/// everything [`check_request`] and [`refuse`] name. `spin_orbit` is required for a spinor crystal
-/// and refused for a scalar one.
+/// What a stress may read from an earlier force of the same converged crystal instead of
+/// forming it again: the frozen output-density state and the quadrature of the projections.
+#[derive(Default)]
+pub struct Reuse<'s> {
+    pub frozen: Option<&'s Frozen<Fields>>,
+    pub projections: Option<Arc<SetupTables>>,
+}
+
+/// [`crystal_strain_reusing`] with nothing reused.
 #[allow(clippy::too_many_arguments)]
 pub fn crystal_strain<'a>(
     ctx: &'a Context,
@@ -183,6 +199,35 @@ pub fn crystal_strain<'a>(
     options: &Options,
     state: &State,
     spin_orbit: Option<SpinOrbitInputs<'a>>,
+) -> Result<CrystalStrain<'a>> {
+    crystal_strain_reusing(
+        ctx,
+        inputs,
+        layout,
+        operators,
+        crystal,
+        options,
+        state,
+        spin_orbit,
+        Reuse::default(),
+    )
+}
+
+/// Ties the geometry to the SCF crystal, freezes the output-density state of `state` and forms
+/// the strain data beyond the force fields. Raises when the setup is not the crystal's, and for
+/// everything [`check_request`] and [`refuse`] name. `spin_orbit` is required for a spinor crystal
+/// and refused for a scalar one.
+#[allow(clippy::too_many_arguments)]
+pub fn crystal_strain_reusing<'a>(
+    ctx: &'a Context,
+    inputs: Inputs<'a>,
+    layout: Layout,
+    operators: Operators,
+    crystal: &'a Crystal,
+    options: &Options,
+    state: &State,
+    spin_orbit: Option<SpinOrbitInputs<'a>>,
+    reuse: Reuse<'_>,
 ) -> Result<CrystalStrain<'a>> {
     if hybrid::is_hybrid(&layout)? {
         check_hybrid_request(&layout)?;
@@ -205,13 +250,19 @@ pub fn crystal_strain<'a>(
             "spin-orbit projectors belong to a spinor crystal".into()
         }));
     }
-    let mut forces = SetupDerivatives::new(ctx, inputs, layout.clone(), copy(&operators))?;
-    if let Some(so) = spin_orbit {
-        forces = forces.with_spin_orbit(so.projectors, so.couplings)?;
-    }
-    let forces = forces.with_scf(crystal, options.clone())?;
-    let frozen = freeze(&forces, state, crystal.hubbard_hook())?;
-    drop(forces);
+    let formed;
+    let frozen: &Frozen<Fields> = match reuse.frozen {
+        Some(frozen) => frozen,
+        None => {
+            let mut forces = SetupDerivatives::new(ctx, inputs, layout.clone(), copy(&operators))?;
+            if let Some(so) = spin_orbit {
+                forces = forces.with_spin_orbit(so.projectors, so.couplings)?;
+            }
+            let forces = forces.with_scf(crystal, options.clone())?;
+            formed = freeze(&forces, state, crystal.hubbard_hook())?;
+            &formed
+        }
+    };
     let n = crystal.grid.index.points();
     // The copies the strain terms keep: the density, the xc gradients and flux (a GGA).
     let held = ctx.reserve(crate::product(&[n, 8 * 18])?)?;
@@ -231,17 +282,20 @@ pub fn crystal_strain<'a>(
         kinetic: frozen.fields.kinetic.clone(),
     };
     let frozen = Frozen {
-        state: frozen.state,
+        state: frozen.state.clone(),
         fields,
-        q: frozen.q,
-        hubbard: frozen.hubbard,
+        q: frozen.q.clone(),
+        hubbard: frozen.hubbard.clone(),
     };
     let mut strain = StrainSetup::new(ctx, inputs, layout, operators)?.with_point_group(
         crystal
             .description
             .as_ref()
             .and_then(|d| d.point_group.clone()),
-    );
+    )?;
+    if let Some(cache) = reuse.projections {
+        strain = strain.with_projections(cache);
+    }
     if let Some(so) = spin_orbit {
         strain = strain.with_spin_orbit(so.projectors, so.couplings)?;
     }
@@ -254,7 +308,8 @@ pub fn crystal_strain<'a>(
 
 /// The analytic stress of the converged `state` of `crystal`, whose geometry is described by
 /// `inputs`, `layout` and `operators` (the Rust setup of the same structure): [`stress`] of
-/// [`crystal_strain`].
+/// [`crystal_strain`], contracted along the strain directions invariant under the crystal's
+/// symmetry operations.
 #[allow(clippy::too_many_arguments)]
 pub fn crystal_stress<'a>(
     ctx: &'a Context,
@@ -266,10 +321,55 @@ pub fn crystal_stress<'a>(
     state: &State,
     spin_orbit: Option<SpinOrbitInputs<'a>>,
 ) -> Result<Stress> {
+    crystal_stress_along(
+        ctx,
+        inputs,
+        layout,
+        operators,
+        crystal,
+        options,
+        state,
+        spin_orbit,
+        None,
+        Reuse::default(),
+    )
+}
+
+/// The nine unit directions averaged over the crystal's own symmetry operations: what the old
+/// nine-tangent contraction reported, for the finite-difference tests.
+#[doc(hidden)]
+pub fn all_entries(crystal: &Crystal) -> Directions {
+    Directions::all_entries(
+        crystal
+            .description
+            .as_ref()
+            .and_then(|d| d.point_group.clone()),
+    )
+}
+
+/// [`crystal_stress`] along `directions` instead of the invariant ones: the nine entries of
+/// `g_ab` ([`Directions::all_entries`]) for the finite-difference tests. Not a production entry.
+#[doc(hidden)]
+#[allow(clippy::too_many_arguments)]
+pub fn crystal_stress_along<'a>(
+    ctx: &'a Context,
+    inputs: Inputs<'a>,
+    layout: Layout,
+    operators: Operators,
+    crystal: &'a Crystal,
+    options: &Options,
+    state: &State,
+    spin_orbit: Option<SpinOrbitInputs<'a>>,
+    directions: Option<Directions>,
+    reuse: Reuse<'_>,
+) -> Result<Stress> {
     let hybrid = hybrid::is_hybrid(&layout)?;
-    let c = crystal_strain(
-        ctx, inputs, layout, operators, crystal, options, state, spin_orbit,
+    let mut c = crystal_strain_reusing(
+        ctx, inputs, layout, operators, crystal, options, state, spin_orbit, reuse,
     )?;
+    if let Some(directions) = directions {
+        c.strain.set_directions(directions);
+    }
     if hybrid {
         let tangents = hybrid::Tangents::new(ctx, &inputs)?;
         let terms = hybrid::exchange_terms(
@@ -277,6 +377,7 @@ pub fn crystal_stress<'a>(
             &c.frozen.state.bands,
             options.exxdiv_treatment,
             &tangents,
+            c.strain.directions(),
         )?;
         return stress_hybrid(&c.strain, &c.frozen, terms);
     }

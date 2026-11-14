@@ -48,8 +48,9 @@ from .dataset import PseudoPotential
 
 #: Identifies a Mandacaru pseudopotential file.
 FORMAT_TAG = "mandacaru-pseudopotential"
-#: Current schema version.  Version 2 added the ``family`` field, which every
-#: readable file carries.
+#: Schema version the Python view writes.  Version 2 added the ``family``
+#: field, which every readable file carries; version 3 (core states) is
+#: written only by the native generator.
 FORMAT_VERSION = 2
 
 #: File formats understood by ``format=``.
@@ -219,8 +220,10 @@ def load_library_dataset(symbol: str, folder: str, family: str, cache: dict,
     The cache is keyed by the file and its identity (modification time and
     size), so a dataset replaced on disk -- a library rebuilt under a running
     session -- is read again rather than served from memory.  The dataset
-    returned carries ``source`` (the file's real path) and ``source_sha256``
-    (the SHA-256 of its bytes), which the run log's ``[BASIS]`` block records.
+    returned carries ``source`` (the file's real path) and ``content_sha256``
+    (the SHA-256 of its physics content, ``PawDataset::content_sha256``: the
+    digest a crystal snapshot pins it by), which the run log's ``[BASIS]``
+    block records.
     """
     path = library_file(symbol, folder)
     if os.path.exists(path):
@@ -244,11 +247,11 @@ def load_library_dataset(symbol: str, folder: str, family: str, cache: dict,
             f"no {label} {noun} for {symbol!r} at {path!r}. "
             f"Available: {', '.join(available)}. "
             f"Generate it with mandacaru-build --pp {family} --element {symbol} --install.")
-    # The bytes, identified: a path names a checkout that can change under
+    # The content, identified: a path names a checkout that can change under
     # it, so the run log records this digest beside the file's name.
-    import hashlib
-    with open(path, "rb") as handle:
-        digest = hashlib.sha256(handle.read()).hexdigest()
+    from .. import _native
+    from .native_context import context
+    digest = _native.paw_content_sha256(context(), path)
     pp = load_pseudopotential(path)
     if str(getattr(pp, "family", "")).lower() != family:
         raise ValueError(f"{path!r} belongs to family {pp.family!r}, not "
@@ -279,7 +282,7 @@ def load_library_dataset(symbol: str, folder: str, family: str, cache: dict,
     # Where the dataset came from: the run log's [BASIS] block names it, since
     # a library is a checkout an environment variable points at, anywhere.
     pp.source = os.path.realpath(path)
-    pp.source_sha256 = digest
+    pp.content_sha256 = digest
     cache[pp.source] = (stamp, pp)
     return pp
 

@@ -20,18 +20,19 @@
 //! The one-center energy `E_oc` is a function of the projected density alone (rigid spheres,
 //! frozen potentials): it enters through `Z` and `dC`.
 //!
-//! Convention and units: those of [`super`]; every entry is `dE/d eps_ab` in Hartree, nine
-//! unsymmetrized entries `[a][b]`.
+//! Convention and units: those of [`super`]; every entry is `dE/d eps_ab` in Hartree, the part
+//! of the nine entries `[a][b]` the strain [`Directions`] reproduce.
 //!
-//! Memory: the periodic parts of the nine tangents of every k-point are held at once (`9 nk m N`
-//! complex values charged to the `Context`; the allocation raises when it does not fit).
+//! Memory: the periodic parts of the tangents along every direction of every k-point are held at
+//! once (`n nk m N` complex values charged to the `Context`; the allocation raises when it does
+//! not fit).
 mod chain;
 mod pass;
 mod sources;
 
 pub use sources::{Production, Sources};
 
-use super::Tensor;
+use super::{Directions, Tensor};
 use crate::{
     math::storage::MatrixSource,
     periodic::{
@@ -44,8 +45,8 @@ use crate::{
             pulay::{Matrix, Mesh},
             shells::Shells,
             spheres::Projector,
+            projection_table::SetupTables,
             strain_samples::StrainSamples,
-            strain_spheres::projection_strain,
         },
         Crystal,
     },
@@ -114,6 +115,7 @@ pub struct Tangents<'a> {
     mesh: Mesh,
     projectors: &'a [Projector],
     kpoints: &'a [[f64; 3]],
+    projections: SetupTables,
 }
 
 impl<'a> Tangents<'a> {
@@ -125,6 +127,7 @@ impl<'a> Tangents<'a> {
             mesh: Mesh::new(ctx, inputs.grid)?,
             projectors: inputs.projectors,
             kpoints: inputs.kpoints,
+            projections: SetupTables::new(),
         })
     }
 
@@ -135,21 +138,17 @@ impl<'a> Tangents<'a> {
             .ok_or_else(|| invalid("exchange strain: k-point out of range"))
     }
 
-    /// `A_ab` (`m x N`, function-major) at k-point `k`.
-    pub fn samples(&self, k: usize, a: usize, b: usize) -> Result<Buffer<C64>> {
+    /// `sum_ab E_ab A_ab` (`m x N`, function-major) at k-point `k` for the direction `e`.
+    pub fn samples_along(&self, k: usize, e: &[[f64; 3]; 3]) -> Result<Buffer<C64>> {
         StrainSamples::new(self.shells, &self.lattice, &self.mesh, self.point(k)?)
-            .tangent(self.ctx, a, b)
+            .tangent_along(self.ctx, e)
     }
 
-    /// `dC_ab` (`m x p`) at k-point `k`.
-    pub fn projection_strain(&self, k: usize) -> Result<Tensor<Matrix>> {
-        projection_strain(
-            self.ctx,
-            self.shells,
-            &self.lattice,
-            self.point(k)?,
-            self.projectors,
-        )
+    /// `sum_ab E_ab dC_ab` (`m x p`) at k-point `k` for each direction.
+    pub fn projection_strain(&self, k: usize, directions: &[[[f64; 3]; 3]]) -> Result<Vec<Matrix>> {
+        self.projections
+            .scalar(self.ctx, self.shells, &self.lattice, self.projectors)?
+            .strain(self.point(k)?, directions)
     }
 
     /// Raises unless the setup these tangents come from is the crystal's: its k-points, basis and
@@ -182,12 +181,13 @@ impl<'a> Tangents<'a> {
 ///
 /// The pass energy is tied to the energy `explicit` differentiates; they must agree to 1e-9
 /// (relative to `max(|E|, 1)`), else the pass is not differentiating the exchange of the SCF.
-pub fn exchange_strain<M: MatrixSource>(
+pub fn exchange_strain<M: MatrixSource + Sync>(
     c: &Crystal,
     matrices: &[M],
     exxdiv: ExxDivTreatment,
     tangents: &Tangents,
     sources: &dyn Sources,
+    directions: &Directions,
 ) -> Result<Terms> {
     tangents.check(c)?;
     let screening = Screening::of(c)?;
@@ -201,6 +201,7 @@ pub fn exchange_strain<M: MatrixSource>(
         &augmentation,
         tangents,
         sources,
+        directions,
     )?;
     if (terms.energy - gradient.energy).abs() > 1e-9 * gradient.energy.abs().max(1.) {
         return Err(invalid(format!(
@@ -208,7 +209,7 @@ pub fn exchange_strain<M: MatrixSource>(
             terms.energy, gradient.energy
         )));
     }
-    chain::contract(c, tangents, &gradient, &mut terms)?;
+    chain::contract(c, tangents, &gradient, &mut terms, directions)?;
     Ok(terms)
 }
 
@@ -219,7 +220,8 @@ pub fn exchange_terms(
     bands: &[Vec<Bands>],
     exxdiv: ExxDivTreatment,
     tangents: &Tangents,
+    directions: &Directions,
 ) -> Result<Terms> {
     let densities = scf::densities(c, bands)?;
-    exchange_strain(c, &densities, exxdiv, tangents, &Production)
+    exchange_strain(c, &densities, exxdiv, tangents, &Production, directions)
 }

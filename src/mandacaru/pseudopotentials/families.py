@@ -301,7 +301,7 @@ def family_names() -> list[str]:
     canonical = [DEFAULT_FAMILY] + sorted(k for k in PSEUDO_FAMILIES
                                           if k != DEFAULT_FAMILY)
     aliases = sorted(k for k, v in _ALIASES.items() if k != v)
-    return canonical + aliases
+    return [*canonical, *aliases]
 
 
 def family_listing() -> str:

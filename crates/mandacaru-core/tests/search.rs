@@ -270,3 +270,48 @@ fn a_less_important_operator_is_more_likely_to_be_removed_or_replaced() {
     assert_eq!(kernel::removal(&[0., 0.], 0.5).unwrap(), vec![0.5, 0.5]);
     assert!(actions.items.iter().all(|(a, _)| a.kind != Move::Replace || a.operator != source[a.position]));
 }
+
+#[test]
+fn replica_options_are_validated() {
+    let base = Options::default();
+    assert!(Options {
+        replicas: 0,
+        ..base.clone()
+    }
+    .validate()
+    .is_err());
+    assert!(Options {
+        replicas: 2,
+        replica_spacing: 0.5,
+        ..base.clone()
+    }
+    .validate()
+    .is_err());
+    assert!(Options {
+        replicas: 2,
+        replica_spacing: f64::INFINITY,
+        ..base.clone()
+    }
+    .validate()
+    .is_err());
+    assert!(Options {
+        replicas: 2,
+        temperatures: [0.; 2],
+        ..base.clone()
+    }
+    .validate()
+    .is_err());
+    assert!(Options {
+        replicas: 2,
+        ..base.clone()
+    }
+    .validate()
+    .is_ok());
+    assert!(Options {
+        replicas: 1,
+        temperatures: [0.; 2],
+        ..base
+    }
+    .validate()
+    .is_ok());
+}

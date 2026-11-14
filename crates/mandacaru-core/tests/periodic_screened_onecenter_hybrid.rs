@@ -38,7 +38,7 @@ fn a_hybrid_crystal_without_its_spheres_is_refused_and_never_runs_unaugmented() 
     };
     assert!(refused(&|v| v["sites"] = serde_json::Value::Null).contains("sites"));
     assert!(
-        refused(&|v| v["sites"]["datasets"][0]["sha256"] = json!("0".repeat(64)))
+        refused(&|v| v["sites"]["datasets"][0]["content_sha256"] = json!("0".repeat(64)))
             .contains("SHA-256")
     );
     assert!(refused(&|v| v["sites"]["datasets"][1]["file"] = json!("")).contains("dataset file"));

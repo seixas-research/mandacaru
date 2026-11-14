@@ -25,7 +25,8 @@ from mandacaru import _native
 from mandacaru.pseudopotentials.native_context import context
 from .onecenter_view import (OneCenterExact, OneCenterHybrid, core_orbitals,
                              exact_one_center_terms, frozen_exchange_terms,
-                             one_center_coulomb, one_center_exchange_tensor)
+                             one_center_coulomb, one_center_exchange_tensor,
+                             paw_projectors)
 
 
 def orbital(l, m, real=True):
@@ -163,7 +164,6 @@ class TestAngularCoupling:
 @pytest.fixture(scope="module")
 def oxygen():
     from mandacaru.pseudopotentials import get_paw
-    from mandacaru.pseudopotentials.paw import paw_projectors
     try:
         dataset = get_paw("O")
     except FileNotFoundError:
@@ -230,7 +230,6 @@ class TestLongRangeKernel:
 def water_projectors():
     """The projectors of H2O's three atoms and their datasets, by atom."""
     from mandacaru.pseudopotentials import get_paw
-    from mandacaru.pseudopotentials.paw import paw_projectors
     try:
         datasets = {"O": get_paw("O"), "H": get_paw("H")}
     except FileNotFoundError:
@@ -602,7 +601,6 @@ class TestFrozenPythonOutputs:
 
     @staticmethod
     def own(dataset, symbol, basis, real=True, only=None):
-        from mandacaru.pseudopotentials.paw import paw_projectors
         projectors = paw_projectors([symbol], np.zeros((1, 3)),
                                     {symbol: dataset}, projector_basis=basis,
                                     real=real)
@@ -710,7 +708,6 @@ class TestFrozenPythonOutputs:
                 close(array, frozen[f"exact_{tag}_{basis}_{name}_{l}"])
 
     def test_the_hybrid_on_water(self, frozen, datasets):
-        from mandacaru.pseudopotentials.paw import paw_projectors
         symbols = ["O", "H", "H"]
         positions = np.array([[0.0, 0.0, 0.12], [0.0, 0.76, -0.48],
                               [0.0, -0.76, -0.48]])

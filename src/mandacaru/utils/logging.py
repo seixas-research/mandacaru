@@ -68,13 +68,12 @@ used by the tests).
 from __future__ import annotations
 
 import contextlib
-from contextvars import ContextVar
+import math
 from datetime import datetime
 import os
 from pathlib import Path
 import re
 import sys
-import time
 from typing import TYPE_CHECKING, Any, Iterable, Sequence
 
 import numpy as np
@@ -195,38 +194,6 @@ def _indent(lines: Iterable[str], level: int = 1) -> list[str]:
     """
     pad = INDENT * level
     return [pad + line if line else line for line in lines]
-
-
-_SCF_OBSERVER = ContextVar("mandacaru_scf_observer", default=None)
-
-
-@contextlib.contextmanager
-def observe_scf(callback):
-    """Observe iterations in this calculation without global mutable hooks."""
-    token = _SCF_OBSERVER.set(callback)
-    try:
-        yield
-    finally:
-        _SCF_OBSERVER.reset(token)
-
-
-def notify_scf_iteration(record):
-    """Publish a completed SCF record before the next iteration starts."""
-    callback = _SCF_OBSERVER.get()
-    if callback is not None:
-        callback(record)
-
-
-def scf_record(iteration: int, start: float, energy: float, previous: float,
-               residual: float, **extra) -> dict:
-    """One SCF record: Hartree energies, elapsed seconds and local clock time."""
-    record = {"iter": int(iteration), "time": time.perf_counter() - start,
-              "clock_time": datetime.now().strftime("%H:%M:%S"),
-              "energy": float(energy),
-              "dE": None if not np.isfinite(previous) else float(energy - previous),
-              "residual": float(residual), **extra}
-    notify_scf_iteration(record)
-    return record
 
 
 class Logger:
@@ -474,10 +441,11 @@ class Logger:
         """Write the ``[ACTIVE SPACE]`` block: how the register was reduced.
 
         Written only when orbitals were frozen or deleted.  ``fields`` name the
-        selector and what it was asked for; the ``orbitals`` table lists every
-        spatial orbital with its reference occupancy, where it went (frozen,
-        active or deleted) and, when the selector computed one, its occupation
-        number.  Laid out as ``[BASIS]`` is, and read back the same way.
+        selector, the number of frozen orbitals and, when the selection splits
+        an exactly degenerate orbital group no deterministic frame fixes, the
+        ``warning``; the ``orbitals`` table lists every source orbital's index
+        and where it went (frozen, active or deleted).  Laid out as ``[BASIS]``
+        is, and read back the same way.
         """
         self._write_fields_and_tables("ACTIVE SPACE", fields, tables)
 
@@ -962,7 +930,11 @@ class Logger:
             # The screening after the last row, the one that stopped the loop:
             # marked like the table, since no row carries it.
             threshold = self._thresholds.get("grad")
-            met = threshold is not None and final_max_gradient < threshold
+            # The same strict test as an ADAPT row's (the energy only fills the signature); a
+            # gradient that is not a finite number meets nothing.
+            met = math.isfinite(final_max_gradient) and _native.iteration_values(
+                0.0, None, float(final_max_gradient), gradient_threshold=threshold
+            )["gradient_met"] is True
             self._emit_body(f"final_max_gradient: {final_max_gradient:.6e}"
                             + (MARKED if met else ""))
         if num_evaluations is not None:
@@ -1361,7 +1333,7 @@ def append_optimization_summary(path: str, history, symbols=None,
             status = (f"{verdict} after {steps} geometry steps (max force "
                       f"{last['max_force']:.6f}{threshold} eV/Angstrom)")
         elif fmax is not None:
-            verdict = ("converged" if last["max_force"] <= float(fmax)
+            verdict = ("converged" if _native.at_most(last["max_force"], float(fmax))
                        else "NOT converged")
             status = (f"{verdict} after {steps} geometry steps (max force "
                       f"{last['max_force']:.6f} "
@@ -1701,6 +1673,43 @@ def append_excitations(path: str, view, *, tolerance: float) -> None:
     _write_lines(path, _excitation_block_lines(view, tolerance=tolerance))
 
 
+def _real_time_block_lines(view, *, seconds) -> list[str]:
+    """Lines of a ``[REAL TIME]`` block: the request, the propagator's record and the checks of
+    one ``get_real_time`` run. The block owns these facts; the ground-state energy, the orbital
+    energies and the functional's setup stay in the SCF blocks, and a spectrum's damping and
+    window belong to the view."""
+    unit, time_unit = view.energy_unit, view.time_unit
+    reference = "hartree-fock" if view.functional is None else f"kohn-sham {view.functional}"
+    keys = [f"propagator: {view.propagator}",
+            f"time_step_{time_unit}: {view.time_step:.6g}",
+            f"steps: {view.steps}",
+            f"duration_{time_unit}: {view.times[-1]:.6g}",
+            f"corrector_tolerance: {view.corrector_tolerance:.1e}",
+            f"effective_corrector_tolerance: {view.effective_corrector_tolerance:.3e}",
+            f"corrector_iterations_max: {view.corrector_iterations}",
+            f"fock_builds: {view.builds}",
+            f"kick: {view.kick}",
+            f"gauge: {view.gauge}",
+            "direction: " + " ".join(f"{v:.6f}" for v in view.direction),
+            f"strength_per_{view.length_unit}: {view.strength:.6g}",
+            f"reference: {reference}",
+            f"basis_width_{unit}: {view.width:.6f}",
+            f"step_width: {view.step_width:.4f}",
+            f"step_width_bound: {view.step_width_bound:g}",
+            f"aliased_weight: {view.aliased_weight:.3e}",
+            f"kick_energy_{unit}: {view.kick_energy:.6e}",
+            f"energy_drift: {view.energy_drift:.3e}",
+            f"max_energy_drift: {view.max_energy_drift}",
+            f"worst_norm_error: {view.worst_norm_error:.3e}",
+            f"wall_time_s: {seconds:.2f}"]
+    return ["", "[REAL TIME]"] + _indent(keys) + [_BANNER]
+
+
+def append_real_time(path: str, view, *, seconds: float) -> None:
+    """Append a ``[REAL TIME]`` block (one ``get_real_time`` request) to ``path``."""
+    _write_lines(path, _real_time_block_lines(view, seconds=seconds))
+
+
 def _cell_parameters(cell: np.ndarray):
     """Return ``(a, b, c, alpha, beta, gamma)`` for a (3, 3) cell tensor.
 
@@ -1734,6 +1743,7 @@ _SECTIONS = {"[BASIS]": "basis", "[ACTIVE SPACE]": "active_space",
              "[MARKOV CHAIN]": "markov_chain",
              "[FORCES]": "forces", "[PERFORMANCE]": "performance",
              "[EXCITED STATES]": "excited_states",
+             "[REAL TIME]": "real_time",
              "[VARIATIONAL QUANTUM SUMMARY]": "summary",
              "[GEOMETRY OPTIMIZATION SUMMARY]": "optimization",
              "[RELAXATION COMPLETE]": "completion"}
@@ -1832,7 +1842,7 @@ def parse_output(path: str) -> dict:
                     table = None
                     step["performance"] = {"stages_s": {}}
                 elif section in ("electrons", "measurement", "energy_measurement",
-                                 "gradient_measurement"):
+                                 "gradient_measurement", "real_time"):
                     step[section] = {}
                 elif section in ("basis", "active_space", "excited_states"):
                     table = None
@@ -1947,7 +1957,7 @@ def parse_output(path: str) -> dict:
                     step["system"].setdefault("geometry", []).append(
                         [fields[0]] + [number(v) for v in fields[1:4]])
             elif section in ("system", "setup", "electrons", "measurement",
-                             "energy_measurement", "gradient_measurement") \
+                             "energy_measurement", "gradient_measurement", "real_time") \
                     and ":" in stripped:
                 key, _, value = stripped.partition(":")
                 key, value = key.strip(), value.strip()

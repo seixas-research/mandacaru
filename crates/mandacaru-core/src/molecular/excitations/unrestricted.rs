@@ -16,8 +16,8 @@
 //! - Hartree-Fock: the Coulomb kernel of both spins and each spin's exchange, on the SCF's pair
 //!   factors transformed to each spin's canonical orbitals.
 //!
-//! [`Unrestricted::difference`] is `(A - B) y`: the gaps and the exchange part. A spin channel
-//! with no occupied or no empty orbital contributes no transitions.
+//! [`Unrestricted::difference`] is `(A - B) y`: the gaps and the exchange and +U parts. A spin
+//! channel with no occupied or no empty orbital contributes no transitions.
 use super::{
     invalid,
     response::{check_reference, local_elements, mo_samples, pair_density, Factors},
@@ -41,6 +41,8 @@ pub(super) struct SpinChannel {
     pub(super) energies: Vec<f64>,
     /// Canonical orbitals on the grid, `[orbital][point]` (Kohn-Sham with a grid kernel only).
     samples: Option<Buffer<f64>>,
+    /// Their gradients, `[axis][orbital][point]` (r2SCAN only).
+    gradients: Option<Buffer<f64>>,
     /// The PAW compensation pair factors' occupied-empty blocks (their weights are shared).
     pairs: Vec<DMatrix<f64>>,
     factors: Option<Factors>,
@@ -62,6 +64,9 @@ struct Lane {
     potentials: Buffer<f64>,
     total: Buffer<C64>,
     hartree: Buffer<C64>,
+    /// Meta-GGA work arrays: the changes of the gradient (`6 n`) and kinetic density (`2 n`) of
+    /// both spins, and the kernel's changes of `v_tau` (`2 n`) and the flux (`6 n`).
+    meta: Option<[Buffer<f64>; 4]>,
 }
 
 /// The spin-conserving response operator of an unrestricted reference.
@@ -75,6 +80,8 @@ pub struct Unrestricted<'a> {
     factor_coulomb: bool,
     exchange: f64,
     polarization: Option<crate::paw::molecular::SphereKernels>,
+    meta: Option<xc_kernel::MetaKernel>,
+    hubbard: Option<super::hubbard::HubbardKernel>,
 }
 
 impl<'a> Unrestricted<'a> {
@@ -112,7 +119,13 @@ impl<'a> Unrestricted<'a> {
                     integrals,
                     &densities,
                     name,
-                    None,
+                    // A meta-GGA's Fock matrix needs the orbital gradients, as in the SCF.
+                    if crate::models::functional(name)?.requires_tau {
+                        Some(dft::orbital_gradients(integrals)?)
+                    } else {
+                        None
+                    }
+                    .as_ref(),
                     screening.as_ref(),
                 )?;
                 (focks, Some(fields))
@@ -150,6 +163,7 @@ impl<'a> Unrestricted<'a> {
                 orbitals,
                 energies,
                 samples: None,
+                gradients: None,
                 pairs: vec![],
                 factors: None,
             });
@@ -179,6 +193,8 @@ impl<'a> Unrestricted<'a> {
             factor_coulomb: false,
             exchange: 0.,
             polarization: None,
+            meta: None,
+            hubbard: None,
         };
         if coupling == Coupling::Independent {
             return Ok(operator);
@@ -203,7 +219,15 @@ impl<'a> Unrestricted<'a> {
                             .collect();
                     }
                 }
-                if coupling == Coupling::Adiabatic {
+                let requires_tau = crate::models::functional(name)?.requires_tau;
+                if coupling == Coupling::Adiabatic && requires_tau {
+                    operator.meta = Some(super::meta::ground_kernel(
+                        integrals,
+                        &densities,
+                        fields.valence.as_slice(),
+                    )?);
+                }
+                if coupling == Coupling::Adiabatic && !requires_tau {
                     let semilocal = crate::models::functional(name)?.semilocal;
                     let n = integrals.grid.index.points();
                     let mut rho = ctx.copy_slice(fields.valence.as_slice())?;
@@ -223,6 +247,8 @@ impl<'a> Unrestricted<'a> {
                         semilocal,
                         relativistic,
                     )?);
+                }
+                if coupling == Coupling::Adiabatic {
                     if let Some(screening) = screening.take() {
                         let _memory = ctx.reserve(product(&[m, m, 8, 8])?)?;
                         for channel in &mut operator.channels {
@@ -240,9 +266,27 @@ impl<'a> Unrestricted<'a> {
                         }
                     }
                 }
+                let meta = operator.meta.is_some();
                 for channel in &mut operator.channels {
                     if channel.active() {
                         channel.samples = Some(mo_samples(integrals, &channel.orbitals)?);
+                        if meta {
+                            channel.gradients =
+                                Some(super::meta::gradient_samples(integrals, &channel.orbitals)?);
+                        }
+                    }
+                }
+                if coupling == Coupling::Adiabatic {
+                    if let Some(model) = integrals
+                        .corrections
+                        .as_ref()
+                        .and_then(|c| c.hubbard.as_ref())
+                    {
+                        let [a, b] = &operator.channels;
+                        operator.hubbard = Some(super::hubbard::HubbardKernel::new(
+                            model,
+                            &[(&a.orbitals, a.o), (&b.orbitals, b.o)],
+                        ));
                     }
                 }
             }
@@ -312,10 +356,22 @@ impl<'a> Unrestricted<'a> {
             potentials: ctx.allocate(2 * n)?,
             total: ctx.allocate(if self.poisson { n } else { 0 })?,
             hartree: ctx.allocate(if self.poisson { n } else { 0 })?,
+            meta: match self.meta {
+                Some(_) => Some([
+                    ctx.allocate(6 * n)?,
+                    ctx.allocate(2 * n)?,
+                    ctx.allocate(2 * n)?,
+                    ctx.allocate(6 * n)?,
+                ]),
+                None => None,
+            },
         })
     }
     /// The grid part of the kernel of one trial vector: Hartree and XC, both spins.
     fn grid_kernel(&self, y: &[DMatrix<f64>; 2], lane: &mut Lane) -> Result<[DMatrix<f64>; 2]> {
+        if self.meta.is_some() {
+            return self.meta_grid_kernel(y, lane);
+        }
         let grid = &self.integrals.grid;
         let n = grid.index.points();
         let densities = lane.densities.as_mut_slice();
@@ -369,6 +425,90 @@ impl<'a> Unrestricted<'a> {
                     dv,
                 )?,
                 None => DMatrix::zeros(channel.o, channel.v),
+            };
+        }
+        Ok(out)
+    }
+    /// The grid part of the kernel of one trial vector for r2SCAN: Hartree and the meta-GGA
+    /// kernel of both spins' density, gradient and kinetic-density changes (`super::meta`).
+    fn meta_grid_kernel(
+        &self,
+        y: &[DMatrix<f64>; 2],
+        lane: &mut Lane,
+    ) -> Result<[DMatrix<f64>; 2]> {
+        let grid = &self.integrals.grid;
+        let n = grid.index.points();
+        let kernel = self
+            .meta
+            .as_ref()
+            .ok_or_else(|| invalid("this response has no meta-GGA kernel"))?;
+        let [d_gradient, d_tau, tau_out, flux] = lane
+            .meta
+            .as_mut()
+            .ok_or_else(|| invalid("a meta-GGA lane has no work arrays"))?;
+        let densities = lane.densities.as_mut_slice();
+        densities.fill(0.);
+        d_gradient.as_mut_slice().fill(0.);
+        d_tau.as_mut_slice().fill(0.);
+        for (s, channel) in self.channels.iter().enumerate() {
+            if let (Some(samples), Some(gradients)) =
+                (channel.samples.as_ref(), channel.gradients.as_ref())
+            {
+                super::meta::changes(
+                    samples.as_slice(),
+                    gradients.as_slice(),
+                    n,
+                    channel.o + channel.v,
+                    channel.o,
+                    &y[s],
+                    &mut densities[s * n..(s + 1) * n],
+                    &mut d_gradient.as_mut_slice()[s * 3 * n..(s + 1) * 3 * n],
+                    &mut d_tau.as_mut_slice()[s * n..(s + 1) * n],
+                )?;
+            }
+        }
+        let potential = lane.potentials.as_mut_slice();
+        kernel.apply(
+            lane.densities.as_slice(),
+            d_gradient.as_slice(),
+            d_tau.as_slice(),
+            xc_kernel::MetaChange {
+                local: potential,
+                tau: tau_out.as_mut_slice(),
+                flux: flux.as_mut_slice(),
+            },
+        )?;
+        if let Some(poisson) = lane.poisson.as_mut() {
+            let (d, total) = (lane.densities.as_slice(), lane.total.as_mut_slice());
+            for k in 0..n {
+                total[k] = C64::new(d[k] + d[n + k], 0.);
+            }
+            poisson.solve_into(lane.total.as_slice(), lane.hartree.as_mut_slice())?;
+            for s in 0..2 {
+                for (p, h) in potential[s * n..(s + 1) * n]
+                    .iter_mut()
+                    .zip(lane.hartree.as_slice())
+                {
+                    *p += h.re;
+                }
+            }
+        }
+        let dv = grid.index.dv();
+        let mut out = [DMatrix::zeros(0, 0), DMatrix::zeros(0, 0)];
+        for (s, channel) in self.channels.iter().enumerate() {
+            out[s] = match (channel.samples.as_ref(), channel.gradients.as_ref()) {
+                (Some(samples), Some(gradients)) => super::meta::elements(
+                    samples.as_slice(),
+                    gradients.as_slice(),
+                    n,
+                    channel.o + channel.v,
+                    channel.o,
+                    &potential[s * n..(s + 1) * n],
+                    &tau_out.as_slice()[s * n..(s + 1) * n],
+                    &flux.as_slice()[s * 3 * n..(s + 1) * 3 * n],
+                    dv,
+                )?,
+                _ => DMatrix::zeros(channel.o, channel.v),
             };
         }
         Ok(out)
@@ -435,6 +575,12 @@ impl<'a> Unrestricted<'a> {
                     }
                 }
             }
+            if let Some(hubbard) = &self.hubbard {
+                let ctx = &self.integrals.context;
+                let parts = hubbard.apply(ctx, super::hubbard::Mode::Unrestricted, y, false)?;
+                k[0] += &parts[0];
+                k[1] += &parts[1];
+            }
             if let Some(kernels) = &self.polarization {
                 let change: Vec<DMatrix<f64>> = (0..2)
                     .map(|s| {
@@ -458,7 +604,8 @@ impl<'a> Unrestricted<'a> {
         }
         Ok(out)
     }
-    /// `<i_s| F1_s[dD_anti(y)] |a_s>` of every column: `(A - B) y - (e_a - e_i) y` (exchange only).
+    /// `<i_s| F1_s[dD_anti(y)] |a_s>` of every column: `(A - B) y - (e_a - e_i) y` (exchange and
+    /// +U).
     pub fn antisymmetric_kernel(&self, block: &DMatrix<f64>) -> Result<DMatrix<f64>> {
         if block.nrows() != self.dimension() {
             return Err(invalid(
@@ -466,7 +613,7 @@ impl<'a> Unrestricted<'a> {
             ));
         }
         let mut out = DMatrix::zeros(self.dimension(), block.ncols());
-        if self.exchange == 0. {
+        if self.exchange == 0. && self.hubbard.is_none() {
             return Ok(out);
         }
         for c in 0..block.ncols() {
@@ -475,10 +622,22 @@ impl<'a> Unrestricted<'a> {
                 DMatrix::zeros(y[0].nrows(), y[0].ncols()),
                 DMatrix::zeros(y[1].nrows(), y[1].ncols()),
             ];
-            for s in 0..2 {
-                if let Some(factors) = &self.channels[s].factors {
-                    k[s] = factors.exchange(&y[s], -1.) * -self.exchange;
+            if self.exchange != 0. {
+                for s in 0..2 {
+                    if let Some(factors) = &self.channels[s].factors {
+                        k[s] = factors.exchange(&y[s], -1.) * -self.exchange;
+                    }
                 }
+            }
+            if let Some(hubbard) = &self.hubbard {
+                let parts = hubbard.apply(
+                    &self.integrals.context,
+                    super::hubbard::Mode::Unrestricted,
+                    &y,
+                    true,
+                )?;
+                k[0] += &parts[0];
+                k[1] += &parts[1];
             }
             out.set_column(c, &nalgebra::DVector::from_vec(self.flat(&k)));
         }

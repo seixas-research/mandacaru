@@ -1,6 +1,7 @@
 """Render native scientific results using Mandacaru's structured text protocol."""
 
 from types import SimpleNamespace
+from .. import _native
 from ..utils.logging import Logger, STDOUT
 from . import run_log_fields
 from .basis_report import basis_report
@@ -53,6 +54,16 @@ def write_excitations(driver, view, *, tolerance):
     targets = ([str(driver.txt)] if driver.txt is not None else []) + ([STDOUT] if driver.trace else [])
     for target in targets:
         append_excitations(target, view, tolerance=tolerance)
+
+
+def write_real_time(driver, view, *, seconds):
+    """Append the ``[REAL TIME]`` block of one ``get_real_time`` request to the run log
+    (``driver.txt``, and standard output when tracing)."""
+    from ..utils.logging import append_real_time
+
+    targets = ([str(driver.txt)] if driver.txt is not None else []) + ([STDOUT] if driver.trace else [])
+    for target in targets:
+        append_real_time(target, view, seconds=seconds)
 
 
 def write_optimization_summary(driver, atoms=None, fmax=None, optimizer=None, force=False, status=None):
@@ -129,10 +140,21 @@ def _write_scf(log, driver, result):
 
 def _write_active_space(log, driver, result):
     model = result.hamiltonian
+    # The block owns the warning that the selection splits a degenerate orbital group where no
+    # deterministic frame fixes it (a crystal's supercell): the energy then depends on the
+    # eigensolver's choice inside the group, and a force is refused (`MeanField::split_groups`).
+    split = result._reference.split_groups(model)
     log.write_active_space(
         {
             "method": driver._active_spec.get("method", "energy"),
             "frozen_orbitals": len(model.frozen_indices),
+            "warning": (
+                f"the active space splits {len(split)} exactly degenerate orbital group"
+                f"{'' if len(split) == 1 else 's'} ("
+                + "; ".join(group["description"] for group in split)
+                + "); orbitals inside a group are the eigensolver's choice here, so this "
+                "energy depends on it and forces are refused; keep each group whole"
+            ) if split else None,
         },
         {
             "orbitals": [["index", "role"]]
@@ -156,7 +178,7 @@ def _expressivity(driver, result, count):
     from ..analysis.expressibility import active_space_dimension, calculate_kl_divergence
 
     # The sector lives on the spin-orbitals, however many qubits tapering took off.
-    modes = 2 * result.n_spatial_orbitals
+    modes = _native.spin_orbital_count(result.n_spatial_orbitals)
     fidelities = result._problem.sample_fidelities(
         result._raw["indices"][:count], pairs=EXPRESSIVITY_PAIRS, seed=0, product_form=True
     )

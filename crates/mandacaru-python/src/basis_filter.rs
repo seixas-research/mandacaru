@@ -7,7 +7,9 @@ use pyo3::{exceptions::PyValueError, prelude::*};
 
 /// `(filtered, report)`: the table with the content above `k_c` removed and
 /// `(residual_before, residual_after, support_radius, mask_radius, masked,
-/// norm_kept, max_change)`. A `None` option takes the engine's default.
+/// norm_kept, max_change, norm_loss_percent)`; the last is the percentage of the norm the filter
+/// removed when that is over `filter::WEIGHT_WARN`, else `None`. A `None` option takes the
+/// engine's default.
 #[pyfunction]
 #[pyo3(signature = (context, r, values, l, k_c, method=None, rolloff=None, oversample=None, renormalize=true, switch_margin=None))]
 #[allow(clippy::type_complexity)]
@@ -23,7 +25,7 @@ fn radial_filter<'py>(
     oversample: Option<usize>,
     renormalize: bool,
     switch_margin: Option<f64>,
-) -> PyResult<(Array<'py, f64>, (f64, f64, f64, f64, bool, f64, f64))> {
+) -> PyResult<(Array<'py, f64>, (f64, f64, f64, f64, bool, f64, f64, Option<f64>))> {
     let ctx = context.inner.clone();
     let defaults = Options::default();
     let options = Options {
@@ -49,6 +51,7 @@ fn radial_filter<'py>(
         report.masked,
         report.norm_kept,
         report.max_change,
+        report.norm_loss_percent(),
     );
     Ok((array(py, &[filtered.len()], filtered)?, report))
 }

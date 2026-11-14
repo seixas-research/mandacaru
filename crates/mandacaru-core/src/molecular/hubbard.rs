@@ -1,4 +1,5 @@
 //! DFT+U on-site correction for molecular PAW-LCAO Kohn-Sham states.
+use super::invalid;
 use crate::{
     models::hubbard::{self as model, Form, Hubbard, Spin},
     Context, Result,
@@ -7,6 +8,10 @@ use nalgebra::DMatrix;
 use num_complex::Complex64 as C64;
 
 type Matrix = DMatrix<C64>;
+
+/// Largest imaginary part of a +U potential of a real occupation matrix, relative to the
+/// largest entry (and 1): rounding of the basis change is 1e-15.
+const POTENTIAL_IMAGINARY: f64 = 1e-10;
 
 /// One correlated atomic shell of a molecule.
 #[derive(Clone)]
@@ -86,6 +91,59 @@ pub fn unitary_real_to_complex(l: usize) -> DMatrix<C64> {
 }
 
 impl MolecularHubbard {
+    /// The model's [`Hubbard`] of `shell`, in this container's form.
+    fn parameters(&self, shell: &MolecularHubbardShell) -> Result<Hubbard> {
+        Ok(Hubbard {
+            form: self.form,
+            ..Hubbard::new(shell.u, shell.j)?
+        })
+    }
+
+    /// The model evaluated at occupation matrices given in the **real** (Cartesian) harmonics
+    /// of the shell's projector, the one place that bridges the two bases. `E_U` and `V` come
+    /// back in the same real harmonics.
+    ///
+    /// The Liechtenstein tensor is written in the complex harmonics (`models::hubbard`), so its
+    /// `n` is `U n U^dagger` and its `V` returns as `U^dagger V U`, `U` being
+    /// [`unitary_real_to_complex`]; without the rotation the energy of a molecule depends on its
+    /// orientation (`J != 0`). The Dudarev form is invariant under a unitary change of basis and
+    /// is evaluated on the matrices as they are, so its numbers are untouched.
+    fn evaluate_real_harmonics(
+        &self,
+        ctx: &Context,
+        shell: &MolecularHubbardShell,
+        spin: Spin,
+        channels: &[DMatrix<C64>],
+    ) -> Result<(f64, Vec<DMatrix<C64>>)> {
+        let p = shell.size();
+        let rotation =
+            (self.form == Form::LiechtensteinFll).then(|| unitary_real_to_complex(shell.l));
+        let flat: Vec<Vec<C64>> = channels
+            .iter()
+            .map(|n| {
+                let n = match &rotation {
+                    Some(u) => u * n * u.adjoint(),
+                    None => n.clone(),
+                };
+                (0..p * p).map(|i| n[(i / p, i % p)]).collect()
+            })
+            .collect();
+        let refs: Vec<&[C64]> = flat.iter().map(|v| v.as_slice()).collect();
+        let eval = model::evaluate(ctx, &self.parameters(shell)?, shell.l, spin, &refs)?;
+        let potentials = eval
+            .potentials
+            .iter()
+            .map(|v| {
+                let v = DMatrix::from_fn(p, p, |a, b| v.as_slice()[a * p + b]);
+                match &rotation {
+                    Some(u) => u.adjoint() * v * u,
+                    None => v,
+                }
+            })
+            .collect();
+        Ok((eval.energy, potentials))
+    }
+
     /// The energy of one shell and its per-spin potential `V^s = dE / dn^s` (real, `(2l+1)^2`)
     /// at the real occupation matrices `n` of its spins (one for a restricted state, two for an
     /// unrestricted one): the single evaluation the Fock matrix and the nuclear gradient share.
@@ -95,34 +153,89 @@ impl MolecularHubbard {
         shell: &MolecularHubbardShell,
         n: &[DMatrix<f64>],
     ) -> Result<(f64, Vec<DMatrix<f64>>)> {
-        let p = shell.size();
         let spin = if n.len() == 1 {
             Spin::Restricted
         } else {
             Spin::Unrestricted
         };
-        let parameters = Hubbard {
-            form: self.form,
-            ..Hubbard::new(shell.u, shell.j)?
-        };
-        let channels: Vec<Vec<C64>> = n
+        let channels: Vec<DMatrix<C64>> = n.iter().map(|m| m.map(|x| C64::new(x, 0.))).collect();
+        let (energy, potentials) = self.evaluate_real_harmonics(ctx, shell, spin, &channels)?;
+        // A real symmetric `n` is invariant under complex conjugation of the real orbitals, and so
+        // is `E_U`: `V` is real. An imaginary part is a defect, never something to drop.
+        let scale = potentials.iter().fold(1f64, |t, v| t.max(v.camax()));
+        let potentials = potentials
             .iter()
-            .map(|nr| {
-                (0..p * p)
-                    .map(|idx| C64::new(nr[(idx / p, idx % p)], 0.0))
-                    .collect()
+            .map(|v| {
+                if v.iter().any(|z| z.im.abs() > POTENTIAL_IMAGINARY * scale) {
+                    return Err(invalid(
+                        "the +U potential of a real occupation matrix has an imaginary part",
+                    ));
+                }
+                Ok(v.map(|z| z.re))
             })
-            .collect();
-        let refs: Vec<&[C64]> = channels.iter().map(|v| v.as_slice()).collect();
-        let eval = model::evaluate(ctx, &parameters, shell.l, spin, &refs)?;
-        let potentials = eval
-            .potentials
-            .iter()
-            .map(|pot| DMatrix::from_fn(p, p, |a, b| pot.as_slice()[a * p + b].re))
-            .collect();
-        Ok((eval.energy, potentials))
+            .collect::<Result<Vec<_>>>()?;
+        Ok((energy, potentials))
     }
 
+    /// The change of one shell's per-spin potentials along the occupation changes `changes`
+    /// (complex Hermitian; one matrix for a restricted state, two for an unrestricted one):
+    /// `V(changes) - V(0)`. Exact, because the energy is quadratic in the occupations (Dudarev and
+    /// Liechtenstein) and the potential affine. A complex change is the antisymmetric response
+    /// channel: the same expression in a Hermitian occupation matrix.
+    pub(crate) fn shell_linear(
+        &self,
+        ctx: &Context,
+        shell: &MolecularHubbardShell,
+        changes: &[DMatrix<C64>],
+    ) -> Result<Vec<DMatrix<C64>>> {
+        let spin = if changes.len() == 1 {
+            Spin::Restricted
+        } else {
+            Spin::Unrestricted
+        };
+        let zeros: Vec<DMatrix<C64>> = changes
+            .iter()
+            .map(|c| DMatrix::zeros(c.nrows(), c.ncols()))
+            .collect();
+        let (_, moved) = self.evaluate_real_harmonics(ctx, shell, spin, changes)?;
+        let (_, origin) = self.evaluate_real_harmonics(ctx, shell, spin, &zeros)?;
+        Ok(moved.iter().zip(&origin).map(|(a, b)| a - b).collect())
+    }
+    /// The Hubbard energy `E_U` and the per-spin Fock additions `Delta F_s = Q V^s Q^T` at
+    /// orthonormal densities `d` that may be complex (real-time propagation). The occupations
+    /// `n^s = Q^T D_s Q` keep their imaginary (antisymmetric) part, which a current through the
+    /// shell carries, and the potentials `V^s = dE / dn^s` come back complex Hermitian, through
+    /// the same real-harmonics bridge as the SCF ([`Self::evaluate_real_harmonics`]). The energy
+    /// is real for Hermitian `n`; an imaginary part is a defect and raises.
+    pub fn evaluate_complex(&self, ctx: &Context, d: &[Matrix]) -> Result<(f64, Vec<Matrix>)> {
+        let spin = if d.len() == 1 {
+            Spin::Restricted
+        } else {
+            Spin::Unrestricted
+        };
+        let m = d[0].nrows();
+        let mut total = 0.;
+        let mut focks = vec![Matrix::zeros(m, m); d.len()];
+        for shell in &self.shells {
+            let q = shell.q.map(|v| C64::new(v, 0.));
+            let n: Vec<Matrix> = d.iter().map(|ds| q.transpose() * ds * &q).collect();
+            let (energy, potentials) = self.evaluate_real_harmonics(ctx, shell, spin, &n)?;
+            if !energy.is_finite() {
+                return Err(invalid("the +U energy of a complex occupation is not finite"));
+            }
+            total += energy;
+            let scale = potentials.iter().fold(1f64, |t, v| t.max(v.camax()));
+            for (fock, v) in focks.iter_mut().zip(&potentials) {
+                if (v - v.adjoint()).camax() > POTENTIAL_IMAGINARY * scale {
+                    return Err(invalid(
+                        "the +U potential of a Hermitian occupation matrix is not Hermitian",
+                    ));
+                }
+                *fock += &q * v * q.transpose();
+            }
+        }
+        Ok((total, focks))
+    }
     /// Evaluates the Hubbard energy `E_U`, per-spin Fock additions `Delta F_s = Q V^s Q^T`,
     /// and per-shell report data at the orthonormal Loewdin densities `d`.
     pub fn evaluate(

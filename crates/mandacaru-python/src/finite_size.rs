@@ -261,6 +261,7 @@ pub fn ccmh_extrapolate<'py>(
     dict.set_item("quadratic_spread", result.quadratic_spread)?;
     dict.set_item("reliable", result.reliable)?;
     dict.set_item("rpa_limit", result.rpa_limit)?;
+    dict.set_item("rpa_correction", result.rpa_correction)?;
     dict.set_item("plasma_frequency", result.plasma_frequency)?;
     dict.set_item("density", result.density)?;
     dict.set_item("n_electrons", result.n_electrons)?;

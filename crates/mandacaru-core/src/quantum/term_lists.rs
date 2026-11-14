@@ -55,6 +55,23 @@ pub fn drop_small<K: Clone>(terms: &[(K, C64)], atol: f64) -> Result<Vec<(K, C64
     Ok(terms.iter().filter(|(_, v)| v.norm() > atol).cloned().collect())
 }
 
+/// The canonical digest of a Pauli sum of `n_qubits`: the terms above `atol` in magnitude, sorted
+/// by label and written `label:re:im` joined by `;` with as many decimal places as `atol` resolves
+/// ([`crate::derived::decimal_digits`]), behind `n_qubits|`; the first 32 hex digits of the
+/// SHA-256 ([`crate::paw::digest::sha256`]) of that text. The checkpoint compares a Hamiltonian
+/// by it, so two sums that agree to `atol` have one digest.
+pub fn pauli_fingerprint(n_qubits: usize, terms: &[(String, C64)], atol: f64) -> Result<String> {
+    let digits = crate::derived::decimal_digits(atol)? as usize;
+    let mut kept = drop_small(terms, atol)?;
+    kept.sort_by(|a, b| a.0.cmp(&b.0));
+    let body: Vec<String> = kept
+        .iter()
+        .map(|(label, c)| format!("{label}:{:.digits$}:{:.digits$}", c.re, c.im))
+        .collect();
+    let text = format!("{n_qubits}|{}", body.join(";"));
+    Ok(crate::paw::digest::sha256(text.as_bytes())[..32].to_string())
+}
+
 /// Whether every coefficient above `drop` in magnitude has an imaginary part below `atol`: a
 /// sum of Hermitian strings with real weights.
 pub fn hermitian<K>(terms: &[(K, C64)], atol: f64, drop: f64) -> bool {

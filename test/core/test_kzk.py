@@ -46,11 +46,8 @@ SLSQP = Optimizer(method="SLSQP", maxiter=1000, tol=1e-12)
 
 
 class TestItMatchesThePaper:
-    def test_table_one_is_transcribed(self):
-        """Table I, in Rydberg atomic units."""
-        assert (kzk.A1, kzk.A2, kzk.A3) == (-2.2037, 0.4710, -0.0150)
-        assert (kzk.G1, kzk.G2, kzk.G3, kzk.G4) == (0.1182, 1.1656,
-                                                    -5.2884, -1.1233)
+    # Table I (a_1..a_3, g_1..g_4) lives in Rust only: `constants_are_the_frozen_table`
+    # in crates/mandacaru-core/tests/finite_size_kzk.rs pins it.
 
     def test_a0_is_the_slater_constant(self):
         """The paper: "the term with ``a_0 ~= -0.916 Ry``"."""
@@ -79,7 +76,7 @@ class TestItMatchesThePaper:
         rs = np.array([1.0, 2.0, 5.0])
         density = 3.0 / (4.0 * np.pi * rs ** 3)
         slater = -0.75 * (3.0 / np.pi) ** (1 / 3) * density ** (1 / 3)
-        assert (kzk.A0 / rs) * kzk.HARTREE_PER_RYDBERG == pytest.approx(
+        assert (kzk.A0 / rs) * 0.5 == pytest.approx(
             slater, rel=1e-12)
 
     def test_the_correlation_helper_is_rydberg(self):

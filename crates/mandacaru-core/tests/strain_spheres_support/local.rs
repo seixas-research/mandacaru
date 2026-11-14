@@ -11,6 +11,7 @@
 //!   `V_sr`.
 #![allow(dead_code)]
 
+use super::sphere_gradients;
 use super::{tangent_of, Form};
 use crate::{
     periodic_gradient_crystals_support::Data,
@@ -29,7 +30,6 @@ use mandacaru_core::{
         spheres::{
             chunk_size, Sphere, SHORT_RANGE_AZIMUTHAL, SHORT_RANGE_POLAR, SHORT_RANGE_RADIAL,
         },
-        strain_spheres::sphere_gradients,
     },
     Context,
 };

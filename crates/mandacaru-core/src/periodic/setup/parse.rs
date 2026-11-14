@@ -69,6 +69,9 @@ pub fn create_setup(
     mut input: SetupInput,
     datasets: Vec<Arc<PawDataset>>,
 ) -> Result<PeriodicSetup> {
+    // The request as given, before the mesh is reduced: what `PeriodicSetup::with_geometry`
+    // rebuilds a perturbed cell from.
+    let recipe = input.clone();
     if input.atoms.is_empty() {
         return Err(invalid("periodic setup needs at least one atom"));
     }
@@ -527,6 +530,7 @@ pub fn create_setup(
         description,
         hubbard,
         charge: input.charge,
+        recipe: Some(recipe),
     })
 }
 
@@ -692,7 +696,7 @@ pub fn parse_input_json(v: &Value) -> Result<SetupInput> {
         let mut files = Vec::new();
         for item in arr {
             let file = item["file"].as_str().unwrap_or("").to_string();
-            let sha = item["sha256"].as_str().unwrap_or("").to_string();
+            let sha = crate::paw::digest::pinned_content(item)?.to_string();
             files.push((file, sha));
         }
         Some(files)

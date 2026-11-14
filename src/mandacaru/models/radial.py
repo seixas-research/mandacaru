@@ -1,21 +1,18 @@
 """Radial basis recipe metadata, independent of numerical basis generators."""
 
+from .._native import DEFAULT_SPLIT_NORM, DEFAULT_TAIL_NORMS
+
 #: The split-valence schemes ``zeta_split`` names: which function every extra
 #: zeta is split from -- the first zeta, or the previous (last) one.
 ZETA_SPLITS = ("first_zeta", "last_zeta")
 DEFAULT_ZETA_SPLIT = "first_zeta"
 
-#: ``zeta_split="last_zeta"``: the fraction of the orbital's **squared** norm
-#: left outside the split radius, each higher zeta splitting the previous one
-#: with the fraction halved.
-DEFAULT_SPLIT_NORM = 0.15
-
-#: ``zeta_split="first_zeta"``: the **norm** -- not the squared norm -- of the
-#: tail left outside the split radius of the second, third and fourth zeta,
-#: every one of them split from the *first* zeta.  0.15 is a squared-norm
-#: fraction of 0.0225, so it is not comparable with
-#: :data:`DEFAULT_SPLIT_NORM` digit for digit.
-DEFAULT_TAIL_NORMS = (0.15, 0.31, 0.54)
+# ``zeta_split="last_zeta"``: ``DEFAULT_SPLIT_NORM`` is the fraction of the orbital's **squared**
+# norm left outside the split radius, each higher zeta splitting the previous one with the
+# fraction halved. ``zeta_split="first_zeta"``: ``DEFAULT_TAIL_NORMS`` are the **norms** -- not the
+# squared norms -- of the tail left outside the split radius of the second, third and fourth
+# zeta, each split from the *first* zeta. Both are the engine's (``paw::basis_recipe``); 0.15 is
+# a squared-norm fraction of 0.0225, so the two are not comparable digit for digit.
 
 
 def validate_zeta_split(spec):

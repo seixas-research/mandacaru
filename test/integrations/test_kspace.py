@@ -73,7 +73,7 @@ class TestTheStructureBeforeAnyRun:
         assert np.allclose(path.distances[:5], np.array([0, 0.5, 1, 1.5, 2]) * unit)
 
     def test_the_default_path_is_the_lattices_own(self):
-        assert square(size=(4, 4, 1)).calc.band_path().labels == ("G", "X", "M", "G")
+        assert square(size=(4, 4, 1)).calc.band_path().labels == ("M", "G", "X", "M")
 
     def test_a_mesh_without_a_vertex_lists_it_as_missing(self):
         atoms = Atoms("H", positions=[[0, 0, 0]], cell=[2.6, 2.6, 9.0], pbc=[True, True, False])

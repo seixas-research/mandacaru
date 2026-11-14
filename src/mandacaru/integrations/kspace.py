@@ -25,7 +25,10 @@ def structure(calculation):
     return (
         np.ascontiguousarray(atoms.cell.array, dtype=float),
         tuple(bool(p) for p in atoms.pbc),
-        np.ascontiguousarray(atoms.get_scaled_positions(wrap=False), dtype=float),
+        _native.fractional_coordinates(
+            np.ascontiguousarray(atoms.cell.array, dtype=float),
+            np.ascontiguousarray(atoms.positions, dtype=float),
+            [bool(p) for p in atoms.pbc], False),
         np.ascontiguousarray(atoms.numbers, dtype=np.int64),
     )
 

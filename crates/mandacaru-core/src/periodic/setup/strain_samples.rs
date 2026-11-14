@@ -133,6 +133,49 @@ pub fn weighted_derivatives(
     Ok(())
 }
 
+/// `sum_ab E_ab sum_T e^{i k.T} (d_a phi_mu)(y) y_b` of every function at `points`, for the
+/// strain direction `e`: the passes of [`weighted_derivatives`] over the nonzero entries of `e`,
+/// summed into `out` (`(function, point)` row-major, overwritten). A direction with every entry
+/// zero is the zero tangent.
+pub fn weighted_derivatives_along(
+    ctx: &Context,
+    shells: &Shells,
+    sampling: &Sampling<'_>,
+    points: [&[f64]; 3],
+    e: &[[f64; 3]; 3],
+    out: &mut [Complex64],
+) -> Result<()> {
+    let (m, n) = (shells.functions(), points[0].len());
+    if sampling.kpoints.len() != 1 || out.len() != m * n {
+        return Err(Error::Invalid(
+            "a strain tangent is formed for one k-point, into m x N values".into(),
+        ));
+    }
+    out.fill(Complex64::new(0., 0.));
+    let mut pass = ctx.allocate::<Complex64>(m * n)?;
+    for a in 0..3 {
+        for b in 0..3 {
+            if e[a][b] == 0. {
+                continue;
+            }
+            pass.as_mut_slice().fill(Complex64::new(0., 0.));
+            weighted_derivatives(
+                ctx,
+                shells,
+                sampling,
+                points,
+                a,
+                b,
+                &mut DenseRows::new(pass.as_mut_slice(), m, n),
+            )?;
+            for (to, from) in out.iter_mut().zip(pass.as_slice()) {
+                *to += from * e[a][b];
+            }
+        }
+    }
+    Ok(())
+}
+
 /// The strain tangents of every function at ONE k-point on the mesh. It holds no sample: each
 /// [`StrainSamples::tangent`] call forms one component and the caller drops it before the next.
 pub struct StrainSamples<'a> {
@@ -173,6 +216,25 @@ impl<'a> StrainSamples<'a> {
             a,
             b,
             &mut DenseRows::new(out.as_mut_slice(), m, n),
+        )?;
+        Ok(out)
+    }
+
+    /// `sum_ab E_ab A_ab` for the direction `e`, charged to the `Context` until it is dropped.
+    pub fn tangent_along(&self, ctx: &Context, e: &[[f64; 3]; 3]) -> Result<Buffer<Complex64>> {
+        let (m, n) = (self.shells.functions(), self.mesh.len());
+        let mut out = ctx.allocate::<Complex64>(product(&[m, n])?)?;
+        weighted_derivatives_along(
+            ctx,
+            self.shells,
+            &Sampling {
+                lattice: self.lattice,
+                region: self.mesh.region(),
+                kpoints: &[self.k],
+            },
+            self.mesh.points(),
+            e,
+            out.as_mut_slice(),
         )?;
         Ok(out)
     }

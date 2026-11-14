@@ -21,8 +21,8 @@ def _reference(calculation):
     """The native mean-field state of a converged molecule, running the calculation if needed."""
     if calculation.capabilities.quantum:
         raise ValueError(
-            "get_excitations is the linear response of a mean-field state: it needs method='dft' "
-            f"or 'rhf' on a closed shell, not the correlated quantum state of method={calculation.method!r} "
+            "get_excitations is the linear response of a mean-field state: it needs method='dft', "
+            f"'rhf' or 'uhf' (closed or open shell), not the correlated quantum state of method={calculation.method!r} "
             "(energy_levels and the subspace methods give the excited states of a quantum run)"
         )
     if calculation.result is None:

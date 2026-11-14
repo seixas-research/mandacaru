@@ -19,7 +19,7 @@
 
 use mandacaru_core::{
     math::storage::MatrixSource,
-    paw::{digest::sha256_file, local_split::grid_spacing, record::PawDataset},
+    paw::{local_split::grid_spacing, record::PawDataset},
     periodic::{
         gradient::{scf, Bands, Layout, State},
         screened_exchange::ExxDivTreatment,
@@ -200,8 +200,9 @@ impl Data {
             .map(|(atom, d)| {
                 let file = paw_root().join(setup["datasets"][atom]["file"].as_str().unwrap());
                 assert_eq!(
-                    sha256_file(&file).unwrap(),
-                    d["sha256"].as_str().unwrap(),
+                    mandacaru_core::paw::digest::dataset_content_sha256(&crystal.context, &file)
+                        .unwrap(),
+                    d["content_sha256"].as_str().unwrap(),
                     "{file:?} is not the dataset file the snapshot was built from"
                 );
                 PawDataset::read(&crystal.context, &file).unwrap()

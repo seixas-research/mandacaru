@@ -20,13 +20,37 @@ use mandacaru_core::{
         shells::{DenseRows, Sampling, Shells},
         spheres::{chunk_size, Projector, Sphere},
         strain_samples::weighted_derivatives,
-        strain_spheres::sphere_gradients,
     },
     Context,
 };
 use nalgebra::{DMatrixView, Matrix3};
 use num_complex::Complex64;
 use std::collections::BTreeMap;
+
+/// `G_a(x_p)`, the summed Cartesian derivative of every function of `shells` at the points of a
+/// chunk, `(function, point)`, for the one k-point of `sampling`.
+pub fn sphere_gradients(
+    ctx: &Context,
+    shells: &Shells,
+    sampling: &Sampling<'_>,
+    points: [&[f64]; 3],
+) -> mandacaru_core::Result<[mandacaru_core::Buffer<Complex64>; 3]> {
+    assert_eq!(sampling.kpoints.len(), 1, "one k-point at a time");
+    let (m, n) = (shells.functions(), points[0].len());
+    let mut out = Vec::with_capacity(3);
+    for axis in 0..3 {
+        let mut rows = ctx.allocate::<Complex64>(m * n)?;
+        shells.derivatives(
+            ctx,
+            sampling,
+            points,
+            axis,
+            &mut DenseRows::new(rows.as_mut_slice(), m, n),
+        )?;
+        out.push(rows);
+    }
+    Ok(out.try_into().ok().expect("three axes"))
+}
 
 /// How `d chi / d eps_ab` on a sphere is formed from `A` (the weighted sum) and `G` (the summed
 /// derivative), `s = x - R_A`.

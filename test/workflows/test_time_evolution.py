@@ -7,6 +7,7 @@ from scipy.linalg import expm
 from mandacaru.workflows.time_evolution import SuzukiTrotter
 from mandacaru.workflows.time_evolution import time_evolve
 from mandacaru.core import PauliSum, WavefunctionCheckpoint
+from mandacaru import _native
 
 
 @pytest.fixture
@@ -159,3 +160,14 @@ class TestPrecision:
             time_evolve(slightly_off, hamiltonian, 0.1)
         with pytest.raises(ValueError, match="normalized"):
             time_evolve([1.1, 0, 0, 0], hamiltonian, 0.1, precision="float32")
+
+
+def test_an_exported_circuit_plan_is_the_old_global_phase_and_angles():
+    context = _native.Context(threads=1)
+    terms = [("ZI", 0.5, 0.0), ("XX", -0.25, 0.0), ("II", 0.75, 0.0), ("YZ", 0.125, 0.0)]
+    propagator = context.propagator(2, terms, order=2)
+    constant, rotations = propagator.schedule()
+    for time, steps in [(0.6, 3), (-1.2, 1), (2.0, 7)]:
+        phase, angles = propagator.circuit_plan(time, steps)
+        assert phase == -time * constant
+        assert angles == [(label, time * weight / steps) for label, weight in rotations]

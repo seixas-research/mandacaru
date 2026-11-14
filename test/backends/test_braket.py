@@ -34,9 +34,9 @@ from mandacaru.backends.hardware import (available_devices, device_arn,
                                          is_aws_device, is_simulator,
                                          normalize_device, require_runnable,
                                          requires_shots)
-from mandacaru.backends.measurement import (is_qubit_wise_commuting, merge_basis,
-                                            pauli_expectation_from_counts,
+from mandacaru.backends.measurement import (pauli_expectation_from_counts,
                                             qubit_wise_commuting_groups,
+                                            qwc_partition,
                                             shot_noise_estimate)
 from mandacaru.backends.providers import build_provider, provider_available
 from mandacaru.core import PauliSum
@@ -60,13 +60,15 @@ class TestQubitWiseCommuting:
         ("II", "XY", True),
     ])
     def test_pairwise_rule(self, a, b, expected):
-        assert is_qubit_wise_commuting(a, b) is expected
+        # the engine's grouping (execution::qwc) is the rule: two strings share one basis
+        assert (len(qwc_partition([a, b])) == 1) is expected
 
-    def test_merge_basis(self):
-        assert merge_basis(["ZII", "IXI", "IIY"]) == "ZXY"
-        assert merge_basis(["ZZI", "ZII"]) == "ZZI"
-        with pytest.raises(ValueError, match="not qubit-wise commuting"):
-            merge_basis(["XI", "ZI"])
+    def test_the_basis_of_a_group_is_the_letter_each_member_needs(self):
+        ((basis, members),) = qwc_partition(["ZII", "IXI", "IIY"])
+        assert basis == "ZXY" and sorted(members) == [0, 1, 2]
+        ((basis, _),) = qwc_partition(["ZZI", "ZII"])
+        assert basis == "ZZI"
+        assert len(qwc_partition(["XI", "ZI"])) == 2      # not qubit-wise commuting: two bases
 
     def test_grouping_covers_every_term_exactly_once(self):
         pauli = PauliSum({"II": -1.0, "ZI": 0.3, "IZ": -0.2, "ZZ": 0.1,
@@ -77,7 +79,8 @@ class TestQubitWiseCommuting:
         assert sorted(seen) == sorted(l for l in pauli.terms if set(l) != {"I"})
         # Every group really is simultaneously measurable.
         for basis, payload in groups:
-            assert merge_basis([label for label, _ in payload]) == basis
+            for label, _c in payload:
+                assert all(m == "I" or m == b for m, b in zip(label, basis))
 
 
     def test_expectation_from_counts(self):

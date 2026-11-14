@@ -6,7 +6,7 @@
 //! `Z = H_C C^+ D - q C^+ W` (`p x m`, `H_C = D_ion + sum_a m_a B_a (+ O_s)`):
 //! `dE_C = 2 Re sum_{mu,p} dC_ab[mu,p] Z[p,mu]`. Nothing is owner-masked; the +U operator joins
 //! `D_ion` here and nowhere else, so `-W dS` carries it through the bands.
-use super::{spin_orbit, Strain, Tensor};
+use super::{spin_orbit, SpinMatrices, Strain, Tensor};
 use crate::{
     periodic::gradient::{Frozen, Matrix, Term},
     quantum::C64,
@@ -54,60 +54,117 @@ pub fn projector_operator<S: Strain>(
     operator
 }
 
+/// What one k-point contributes: every number is already weighted by `deg w_k` and signed, one per
+/// strain direction, produced on a k-point lane.
+struct KData {
+    /// Per spin channel, per term in [`Term::of`] order, per direction.
+    terms: Vec<Vec<Vec<f64>>>,
+    /// Per spin channel, per direction.
+    projection: Vec<Vec<f64>>,
+    /// The spin-orbit share of each spin channel's bands, per direction (a spinor; else empty).
+    spin_orbit: Vec<Vec<f64>>,
+}
+
 pub fn contract<S: Strain>(s: &S, frozen: &Frozen<S::Fields>) -> Result<Terms> {
     let l = s.layout();
-    let mut out = Terms {
-        overlap: [[0.; 3]; 3],
-        kinetic: [[0.; 3]; 3],
-        local: [[0.; 3]; 3],
-        short_range: [[0.; 3]; 3],
-        projection: [[0.; 3]; 3],
-        kinetic_density: [[0.; 3]; 3],
-        spin_orbit: [[0.; 3]; 3],
-    };
+    let directions = s.directions();
+    let n = directions.len();
     let terms = Term::of(&l.request.functional)?;
-    for k in 0..l.weights.len() {
+    let mut sums: Vec<Vec<f64>> = vec![vec![0.; n]; 7];
+    // What one point holds: C and the n tangents dC (m x p), and what the provider works with.
+    let per_lane = crate::periodic::gradient::matrix_bytes(2 + n, l.m, l.p)?
+        .checked_add(s.lane_bytes(terms.len())?)
+        .ok_or(crate::Error::Overflow)?;
+    let produce = |k: usize| -> Result<KData> {
+        let w = l.degeneracy * l.weights[k];
         let c = s.projection(k)?;
-        let dc = s.projection_strain(k)?;
-        for spin in 0..l.spins {
-            let bands = &frozen.state.bands[spin][k];
-            let (density, weighted) = (bands.density(), bands.weighted(l.reference));
-            let w = l.degeneracy * l.weights[k];
-            for &term in &terms {
-                let dm = s.matrix_strain(spin, k, term, &frozen.fields)?;
-                // P1 enters the energy through -W dS, every other term through D dH.
-                let (m, sign, to) = match term {
-                    Term::Overlap => (&weighted, -1., &mut out.overlap),
-                    Term::Kinetic => (&density, 1., &mut out.kinetic),
-                    Term::Local => (&density, 1., &mut out.local),
-                    Term::ShortRange => (&density, 1., &mut out.short_range),
-                    Term::KineticDensity => (&density, 1., &mut out.kinetic_density),
-                };
-                for a in 0..3 {
-                    for b in 0..3 {
-                        to[a][b] += sign * w * trace(m, &dm[a][b]);
-                    }
+        let dc = s.projection_strain(k, directions.as_slice())?;
+        let matrices: Vec<SpinMatrices> = (0..l.spins)
+            .map(|spin| {
+                let bands = &frozen.state.bands[spin][k];
+                SpinMatrices {
+                    density: bands.density(),
+                    weighted: bands.weighted(l.reference),
                 }
-            }
+            })
+            .collect();
+        let values =
+            s.matrix_strain(k, &frozen.fields, &matrices, &terms, directions.as_slice())?;
+        let mut weighted = Vec::with_capacity(l.spins);
+        let mut projection = Vec::with_capacity(l.spins);
+        for (spin, per_term) in values.into_iter().enumerate() {
+            weighted.push(
+                terms
+                    .iter()
+                    .zip(per_term)
+                    .map(|(&term, per_direction)| {
+                        // P1 enters the energy through -W dS, every other term through D dH.
+                        let sign = if term == Term::Overlap { -1. } else { 1. };
+                        per_direction.into_iter().map(|x| sign * w * x).collect()
+                    })
+                    .collect(),
+            );
             let hubbard = frozen.hubbard.as_ref().map(|o| &o[spin]);
             let operator = projector_operator(s, &frozen.fields, hubbard);
-            let cd = c.adjoint() * &density;
-            let z = &operator * &cd - s.augmentation() * c.adjoint() * &weighted;
-            for a in 0..3 {
-                for b in 0..3 {
-                    // `Re tr[dC Z]` with `dC` (m x p) and `Z` (p x m).
-                    out.projection[a][b] += 2. * w * trace(&dc[a][b], &z);
-                }
-            }
+            let cd = c.adjoint() * &matrices[spin].density;
+            let z = &operator * &cd - s.augmentation() * c.adjoint() * &matrices[spin].weighted;
+            // `Re tr[dC Z]` with `dC` (m x p) and `Z` (p x m).
+            projection.push(dc.iter().map(|dc| 2. * w * trace(dc, &z)).collect());
         }
-        if l.request.spinor {
-            // The spin-orbit matrix moves with the strain only through its own projections: no
-            // `dS`, no hat, no `W`. `D` is the spinor density in the doubled frame.
-            for bands in frozen.state.bands.iter().map(|spin| &spin[k]) {
-                let w = l.degeneracy * l.weights[k];
-                spin_orbit::add_k(s, &mut out.spin_orbit, w, k, &bands.density())?;
+        // The spin-orbit matrix moves with the strain only through its own projections: no
+        // `dS`, no hat, no `W`. `D` is the spinor density in the doubled frame.
+        let spin_orbit = if l.request.spinor {
+            matrices
+                .iter()
+                .map(|m| spin_orbit::share_k(s, w, k, &m.density))
+                .collect::<Result<Vec<_>>>()?
+        } else {
+            Vec::new()
+        };
+        Ok(KData {
+            terms: weighted,
+            projection,
+            spin_orbit,
+        })
+    };
+    // The contraction of each point in k order, as the serial loop ran it.
+    let consume = |_: usize, data: KData| -> Result<()> {
+        let add =
+            |to: &mut Vec<f64>, from: &[f64]| to.iter_mut().zip(from).for_each(|(t, f)| *t += f);
+        for (per_term, projection) in data.terms.iter().zip(&data.projection) {
+            for (&term, values) in terms.iter().zip(per_term) {
+                let slot = match term {
+                    Term::Overlap => 0,
+                    Term::Kinetic => 1,
+                    Term::Local => 2,
+                    Term::ShortRange => 3,
+                    Term::KineticDensity => 5,
+                };
+                add(&mut sums[slot], values);
             }
+            add(&mut sums[4], projection);
         }
-    }
-    Ok(out)
+        for share in &data.spin_orbit {
+            add(&mut sums[6], share);
+        }
+        Ok(())
+    };
+    crate::periodic::gradient::kpoint_windows(
+        s.context(),
+        l.weights.len(),
+        per_lane,
+        produce,
+        consume,
+    )?;
+    let [overlap, kinetic, local, short_range, projection, kinetic_density, spin_orbit] =
+        std::array::from_fn(|i| directions.assemble(&sums[i]));
+    Ok(Terms {
+        overlap,
+        kinetic,
+        local,
+        short_range,
+        projection,
+        kinetic_density,
+        spin_orbit,
+    })
 }

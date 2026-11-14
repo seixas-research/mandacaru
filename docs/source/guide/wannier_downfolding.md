@@ -2,30 +2,107 @@
 
 `calc.wannier(...)` localizes the Kohn-Sham states of a periodic calculation into Wannier
 functions. `wannier.downfold(...)` takes a **fragment** of those functions (the correlated
-subspace: a Ni `e_g` set, the two functions of a Si bond) and returns the many-body problem on it:
+subspace: a Ni `e_g` set, the two most strongly coupled neighbor functions of silicon) and returns the many-body problem on it:
 a one-body part, the Coulomb interaction between the functions, bare or screened by everything
 outside the fragment, and the double counting that keeps the Kohn-Sham density from being
 counted twice. The result goes straight to a quantum solver through `Mandacaru`.
 
 ```python
+import numpy as np
 from ase.build import bulk
 from mandacaru import Mandacaru
 from mandacaru.units import HARTREE_TO_EV
 
 atoms = bulk("Si", "diamond", a=5.43)
 atoms.calc = Mandacaru(method="dft", xc="lda", basis={"name": "PAW-LCAO", "size": "DZP"},
-                       grid_spacing=0.25, kpts={"size": (4, 4, 4), "gamma": True})
+                       grid_spacing=0.25, kpts={"size": (4, 4, 4), "gamma": True},
+                       smearing={"method": "fermi-dirac", "width": 0.01})
 atoms.get_potential_energy()
 fermi = atoms.calc.get_fermi_level()
 wannier = atoms.calc.wannier(8, guess="sp3", windows={"outer": (fermi - 20, fermi + 20),
                                                       "frozen": (fermi - 20, fermi + 1)})
-model = wannier.downfold([2, 5], screening="crpa")       # two sp3 hybrids of one bond
-print(model.two_body[0, 0, 0, 0].real * HARTREE_TO_EV)   # U in eV
+
+# The fragment: the pair of functions on different atoms with the largest hopping |t|. Each
+# function belongs to the atom of its largest trial weight, which does not depend on the gauge.
+atom = [wannier.labels[int(np.argmax(w))].split(":")[0] for w in wannier.trial_weights]
+h, vectors = wannier.hamiltonian_R, wannier.lattice_vectors     # <w_i,0|H|w_j,R>, eV
+t, i, j, R = max((abs(h[r, i, j]), i, j, tuple(int(x) for x in vectors[r]))
+                 for r in range(len(vectors)) for i in range(wannier.n_functions)
+                 for j in range(wannier.n_functions) if atom[i] != atom[j])
+
+model = wannier.downfold([(i, (0, 0, 0)), (j, R)], screening="crpa")
+print(model.two_body[0, 0, 0, 0].real * HARTREE_TO_EV)   # on-site U of one hybrid, eV
 
 result = Mandacaru(method="adapt-vqe", **model.as_quantum_problem()).run()
 ```
 
-Everything numerical runs in Rust. Python only converts the arguments and presents the arrays.
+The minimum of the spread for this window is not the set of bond-pointing `sp3` hybrids that the
+guess starts from: it is, on each atom, four hybrids that point into the interstitial, away from
+the neighbors (the bond-pointing set is a saddle of the spread, which the saddle check below
+leaves). No pair of functions sits on a bond, so the example does not pick one by position. Its
+two-site fragment is the neighbor pair with the largest `|t|`, and `U` is the on-site repulsion of
+one such atom-centered hybrid, not the repulsion of a bond orbital. `as_quantum_problem()` rotates
+the pair to its bonding and antibonding combinations.
+
+Everything numerical runs in Rust, from the mesh states and the PAW geometry of the overlaps to the
+localization. Python only converts the arguments and presents the arrays: the request it sends
+holds the choices of the user (mesh, trial functions, bands, windows), and the atom centers and
+projector channels are read from the crystal's own native setup.
+
+## Localization
+
+`calc.wannier(n_functions=None, *, guess="bonds", windows=None, bands=None, kpts=None,
+max_iterations=2000, tolerance=1e-10, step=0.5)` localizes the Bloch states of a converged `dft`
+crystal on the Gamma-anchored mesh `kpts` (default: the calculation's own). `windows` is the outer
+energy pair and an optional frozen pair in eV; without it the group is the lowest `n_functions`
+bands (or the `bands` indices), one band per trial function, and it must be isolated.
+
+- **Objective.** The functions minimize the total spread `Omega = Omega_I + Omega_OD + Omega_D`
+  (maximal localization; the periodic counterpart of the Foster-Boys criterion, Marzari and
+  Vanderbilt). With `windows`, the subspace is first chosen by minimizing the gauge-invariant
+  part `Omega_I` (Souza, Marzari and Vanderbilt), keeping the frozen window exactly, and the
+  localization then fixes the gauge inside it. The spread is the only objective; a
+  population-based criterion is not available.
+- **Overlaps.** The links between neighboring mesh points are the overlaps of the periodic parts,
+  with the PAW one-center term of the full plane wave inside the spheres: the exact operator, not
+  its first-order expansion in the displacement `b`.
+- **Neighbor shells.** The finite-difference weights `w_b` satisfy the completeness relation
+  `sum_b w_b b_a b_b = delta_ab` exactly, on any mesh, orthogonal or not. Shells of equal
+  displacement are taken in order of length; one that is parallel to an accepted shell, or that
+  adds no independent equation, is skipped, so no weight falls on a longer step of a direction a
+  shorter one already covers. If the exact weights are not all positive, further shells are added
+  and the weights found by nonnegative least squares. A mesh with no nonnegative solution raises
+  `ValueError` and asks for a mesh closer to isotropic along the cell.
+- **Minimizer.** A Polak-Ribiere conjugate gradient on the product of the unitary gauge groups,
+  with restarts. Its line search follows the exact derivative of the spread along the search
+  direction rather than the spread itself: it lengthens the first trial step (`step` scaled by the
+  mesh and the shell weights) until the derivative changes sign, narrows the bracket, and never
+  accepts a point that raises the spread. So it keeps descending where the spread's own decrease
+  is below its round-off. The descent stops when the gradient norm is below 1e-6 Bohr^2 and the
+  last step changed the spread by less than `tolerance` (Bohr^2).
+- **Saddle check.** A vanishing gradient does not tell a minimum from a saddle, and the spread
+  has both. A stopped point is turned by a small fixed rotation of the gauge (size 1e-2 at every
+  k-point) and minimized again; a lower spread replaces it. The check repeats on the new point,
+  up to three successive escapes. A direction of negative curvature weaker than about 6e-3
+  Bohr^2/rad^2 lowers the spread by less than `tolerance` over such a rotation and goes
+  undetected. `result.converged` is true only at a point a check confirmed (and when the
+  disentanglement converged). It is false when the iterations ran out, including during a
+  check.
+
+What raises:
+
+- **An unconverged SCF** raises `ValueError`: its states belong to an unconverged Hamiltonian.
+- **A windowless group that is not isolated** raises `ValueError` naming the band, the spin
+  channel and the k-point where it touches a band outside the group, and suggests `windows=`: a
+  subspace that touches another band is not smooth, and would localize without an error into a
+  gauge that is not.
+- **A magnetic spinor subspace with a nonzero Chern number** raises `ValueError` naming the
+  number and the k plane: such a subspace has no exponentially localized Wannier functions. Use
+  `get_chern_number` or the Wannier charge-center flow of the [Berry guide](berry.md) instead. The
+  check runs only for a spinor crystal without time-reversal symmetry, the only Hamiltonian that
+  can give a subspace a Chern number, on every layer of every k plane the mesh resolves.
+- **A crystal loaded from a snapshot** raises `NotImplementedError`: the states on a full mesh
+  need the native periodic setup, which a snapshot does not hold.
 
 ## What `downfold` returns
 

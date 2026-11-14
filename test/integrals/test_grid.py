@@ -111,3 +111,25 @@ class TestPlacementInvariance:
         corner = energy([[0, 0, -0.37], [0, 0, 0.37]])
         center = energy([[4, 4, 3.63], [4, 4, 4.37]])
         assert corner == pytest.approx(center, abs=1e-6)
+
+
+class TestPeriodicGridCenter:
+    """``center=None`` with a cell is the middle of the cell, summed in the unit of the cell."""
+
+    @pytest.mark.parametrize("cell", [
+        np.array([[3.0, 0.2, -0.1], [0.5, 2.7, 0.3], [0.4, -0.6, 4.1]]),
+        np.diag([2.5, 3.5, 4.5]),
+    ])
+    def test_the_default_center_is_half_the_sum_of_the_vectors(self, cell):
+        explicit = [0.5 * (cell[0][i] + cell[1][i] + cell[2][i]) for i in range(3)]
+        for kwargs in (dict(units="angstrom"), dict(units="bohr")):
+            a = Grid(center=None, box_size=0.0, grid_spacing=0.25, cell=cell, periodic=True, **kwargs)
+            b = Grid(center=explicit, box_size=0.0, grid_spacing=0.25, cell=cell, periodic=True, **kwargs)
+            assert a.shape == b.shape
+            assert list(a._native.origin_bohr) == list(b._native.origin_bohr)
+            np.testing.assert_array_equal(a.step, b.step)
+
+    def test_no_center_needs_a_cell(self):
+        with pytest.raises(ValueError, match="needs a cell"):
+            Grid(center=None, box_size=4.0, grid_spacing=0.5, units="bohr")
+

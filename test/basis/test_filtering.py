@@ -35,12 +35,12 @@ import numpy as np
 import pytest
 from ase import Atoms
 
-from mandacaru import Mandacaru
+from mandacaru import Mandacaru, _native
 from mandacaru.basis.filtering import (DEFAULT_FILTER_METHOD, FILTER_METHODS,
                                        FILTER_NYQUIST_FRACTION,
                                        cutoff_energy_ev, filter_label,
                                        filter_radial, filter_table,
-                                       residual_weight, resolve_filter_cutoff,
+                                       resolve_filter_cutoff,
                                        validate_filter_cutoff)
 from mandacaru.basis.multizeta import RadialTable, zeta_tables
 from mandacaru.pseudopotentials.families import PSEUDO_FAMILIES, FamilySpec
@@ -51,6 +51,13 @@ from mandacaru.units import ANGSTROM_TO_BOHR, EV_TO_HARTREE
 #: A uniform radial grid like the pseudopotential library's (0.02 Bohr out to
 #: 30 Bohr), so the transform is exercised on the grid it really runs on.
 R_GRID = np.linspace(0.005, 30.0, 1500)
+
+
+def residual_weight(r, values, l, k_c, oversample=None):
+    """Fraction of the norm above ``k_c``, from the native weight below it (a test measurement)."""
+    context = _native.Context(threads=1)
+    r, values = np.ascontiguousarray(r, dtype=float), np.ascontiguousarray(values, dtype=float)
+    return 1.0 - _native.radial_band_weight(context, r, values, l, k_c, oversample)
 
 
 def radial_norm(r, values):

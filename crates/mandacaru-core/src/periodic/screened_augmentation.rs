@@ -61,8 +61,9 @@ pub struct OneCenterTerms {
 /// compensation charges of [`Augmentation`]. A one-center model is a function of the projected
 /// density, `P_s = sum_k w_k C(k)^+ D_s(k) C(k)` (`p x p`, the matrix `density` of the solver
 /// contracts with `B_a`), and of nothing else: it sees all spin channels at once, since the
-/// spheres' semilocal exchange couples them.
-pub trait OneCenter {
+/// spheres' semilocal exchange couples them. It is `Sync`: the exchange of the target points
+/// and of their states runs on the lanes of the layout, which share it.
+pub trait OneCenter: Sync {
     /// `projected[s]`: one matrix per spin channel as the solver stores it (a restricted
     /// crystal has one, holding both spins).
     fn collinear(&self, ctx: &Context, projected: &[Matrix]) -> Result<OneCenterTerms>;

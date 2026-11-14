@@ -12,7 +12,7 @@ pub mod pinned;
 
 use mandacaru_core::{
     math::{reciprocal, SpatialGrid},
-    paw::{digest::sha256_file, record::PawDataset},
+    paw::record::PawDataset,
     periodic::setup::{
         fields::core_table,
         shapes::{Atom, Channel, Sites},
@@ -130,8 +130,8 @@ impl Cell {
             let center = reals(center);
             let file = paw.join(setup["datasets"][atom]["file"].as_str().unwrap());
             assert_eq!(
-                sha256_file(&file).unwrap(),
-                snapshot["sites"]["datasets"][atom]["sha256"]
+                mandacaru_core::paw::digest::dataset_content_sha256(ctx, &file).unwrap(),
+                snapshot["sites"]["datasets"][atom]["content_sha256"]
                     .as_str()
                     .unwrap(),
                 "{file:?} is not the dataset the snapshot was built from"

@@ -40,19 +40,17 @@ import numpy as np
 from . import _native
 from ._native import BOHR_TO_ANGSTROM, HARTREE_TO_EV
 
-#: The inverse factors, defined in Rust (assigned here so that converting by them reads as a
-#: unit conversion to the numerics gate, ``scripts/numerics_budget.py``).
+#: The inverse factors, defined in Rust. A conversion is ``to_bohr`` / ``to_hartree`` (or
+#: ``_native.to_user_units``), never a product with one of these constants: the numerics gate
+#: (``scripts/numerics_budget.py``) counts such a product as arithmetic.
 ANGSTROM_TO_BOHR = _native.ANGSTROM_TO_BOHR
 EV_TO_HARTREE = _native.EV_TO_HARTREE
 
 __all__ = [
-    "ANGSTROM_TO_BOHR", "AU_DIPOLE_TO_DEBYE", "BOHR_TO_ANGSTROM", "DEFAULT_GRID_SPACING",
+    "ANGSTROM_TO_BOHR", "BOHR_TO_ANGSTROM", "DEFAULT_GRID_SPACING",
     "EV_TO_HARTREE", "HARTREE_TO_EV", "convert_energy", "energy_unit_label", "from_hartree",
     "to_angstrom", "to_bohr", "to_hartree",
 ]
-#: One atomic unit of electric dipole moment (e Bohr) in debye: CODATA
-#: 8.4783536255e-30 C m over 1 D = 1e-21 / c C m = 3.33564095198e-30 C m.
-AU_DIPOLE_TO_DEBYE = 2.541746473
 
 #: Default real-space ``grid_spacing`` (Angstrom) of every entry point -- the
 #: drivers, the calculator, the Bloch driver, the command line and the grid.

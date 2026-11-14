@@ -557,10 +557,11 @@ class TestBasisBlock:
         (dataset,) = block["datasets"]
         assert dataset["symbol"] == "H" and dataset["Z_ion"] == 1
         assert dataset["source"] in ("H.parquet", "H.json")
-        # The digest of the bytes that were read, not of the name.
-        import hashlib
-        with open(get_paw("H").source, "rb") as handle:
-            assert dataset["sha256"] == hashlib.sha256(handle.read()).hexdigest()
+        # The digest of the content that was read, not of the name (the engine's own).
+        from mandacaru import _native
+        from mandacaru.pseudopotentials.native_context import context
+        assert dataset["content_sha256"] == _native.paw_content_sha256(
+            context(), get_paw("H").source)
         # One entry per channel of the dataset: since 2026-10-25 hydrogen has
         # an (empty, unconfined) 2p channel beside the 1s.  The basis itself
         # is still the 1s alone: the function count below does not move.
@@ -1700,3 +1701,7 @@ class TestIterationColumns:
         assert pool[0].label == label + "0"  # display never changes the full label
 
 
+def test_the_difference_the_ratio_and_the_threshold_are_plain_arithmetic_once():
+    assert _native.difference(0.3, 0.1) == 0.3 - 0.1
+    assert _native.percent(0.375) == 100 * 0.375
+    assert _native.at_most(1.0, 1.0) and not _native.at_most(1.0000001, 1.0)

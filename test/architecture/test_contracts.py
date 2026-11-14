@@ -400,14 +400,16 @@ class TestParallelization:
             Mandacaru(method=method, parallelization={level: 2})
         Mandacaru(method=method, parallelization={"threads": 2}).close()
 
-    def test_bands_need_a_hybrid_and_are_not_implemented_yet(self):
+    def test_bands_need_a_hybrid(self):
         with pytest.raises(ValueError, match="hybrid"):
             Mandacaru(method="dft", xc="pbe", parallelization={"bands": 2})
-        with pytest.raises(NotImplementedError, match="not implemented yet"):
-            Mandacaru(method="dft", xc="hse06", parallelization={"bands": 2})
+        calc = Mandacaru(method="dft", xc="hse06", parallelization={"bands": 2, "threads": 2})
+        assert calc.context.parallelization == {"kpts": 1, "bands": 2, "threads": 2}
+        calc.close()
 
-    def test_k_point_groups_on_a_molecule_are_refused(self):
-        with Mandacaru(method="dft", grid_spacing=0.5, parallelization={"kpts": 2}) as calc:
+    @pytest.mark.parametrize("layout, xc", [({"kpts": 2}, "lda"), ({"bands": 2}, "hse06")])
+    def test_k_point_and_band_groups_on_a_molecule_are_refused(self, layout, xc):
+        with Mandacaru(method="dft", xc=xc, grid_spacing=0.5, parallelization=layout) as calc:
             with pytest.raises(ValueError, match="no periodic axis"):
                 calc.run(molecule())
 

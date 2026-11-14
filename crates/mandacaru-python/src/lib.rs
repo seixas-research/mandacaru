@@ -37,6 +37,7 @@ mod paw_record;
 mod periodic;
 mod persistence;
 mod quantum;
+mod real_time;
 mod run_log;
 mod symmetry;
 mod sparse;
@@ -57,6 +58,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("BOHR_TO_ANGSTROM", mandacaru_core::units::BOHR_TO_ANGSTROM)?;
     m.add("HARTREE_TO_EV", mandacaru_core::units::HARTREE_TO_EV)?;
     m.add("ANGSTROM_TO_BOHR", mandacaru_core::units::ANGSTROM_TO_BOHR)?;
+    m.add("PERIODIC_FORCE_STEP", mandacaru_core::quantum::periodic_response::FORCE_STEP)?;
     m.add("EV_TO_HARTREE", mandacaru_core::units::EV_TO_HARTREE)?;
     // The defaults of the basis options, one definition, in Rust.
     m.add(
@@ -113,6 +115,8 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(excitations::molecular_excitations, m)?)?;
     m.add_function(wrap_pyfunction!(excitations::line_spectrum, m)?)?;
     m.add_class::<excitations::PyExcitations>()?;
+    m.add_function(wrap_pyfunction!(real_time::molecular_real_time, m)?)?;
+    m.add_function(wrap_pyfunction!(real_time::time_spectrum, m)?)?;
     m.add_function(wrap_pyfunction!(context::grid_blas_threads, m)?)?;
     m.add_function(wrap_pyfunction!(context::worker_threads, m)?)?;
     m.add_function(wrap_pyfunction!(derived::quotients, m)?)?;
@@ -136,7 +140,6 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(derived::length_to_bohr, m)?)?;
     m.add_function(wrap_pyfunction!(derived::energy_unit_factor, m)?)?;
     m.add_function(wrap_pyfunction!(derived::total, m)?)?;
-    m.add_function(wrap_pyfunction!(derived::mesh_fractions, m)?)?;
     m.add_function(wrap_pyfunction!(derived::vector_norm, m)?)?;
     m.add_function(wrap_pyfunction!(derived::distance, m)?)?;
     m.add_function(wrap_pyfunction!(derived::gaps, m)?)?;
@@ -163,6 +166,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(term_lists::pauli_term_sum, m)?)?;
     m.add_function(wrap_pyfunction!(term_lists::pauli_term_scale, m)?)?;
     m.add_function(wrap_pyfunction!(term_lists::pauli_term_drop, m)?)?;
+    m.add_function(wrap_pyfunction!(term_lists::pauli_fingerprint, m)?)?;
     m.add_function(wrap_pyfunction!(term_lists::pauli_term_hermitian, m)?)?;
     m.add_function(wrap_pyfunction!(term_lists::fermion_term_sum, m)?)?;
     m.add_function(wrap_pyfunction!(term_lists::fermion_term_scale, m)?)?;
@@ -214,6 +218,7 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     orbitals::register(m)?;
     optimizers::register(m)?;
     sparse::register(m)?;
+    measurement::register(m)?;
     xc_grid::register(m)?;
     m.add_class::<PyContext>()?;
     m.add_class::<persistence::PySnapshot>()?;
@@ -224,7 +229,6 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<quantum::PyOperator>()?;
     m.add_class::<advanced::PyPropagator>()?;
     m.add_function(wrap_pyfunction!(advanced::fourier_spectrum, m)?)?;
-    m.add_function(wrap_pyfunction!(advanced::qpe_memory, m)?)?;
     m.add_function(wrap_pyfunction!(advanced::givens_decomposition, m)?)?;
     m.add_function(wrap_pyfunction!(factorization::double_factorization, m)?)?;
     m.add_function(wrap_pyfunction!(factorization::spatial_double_factorization, m)?)?;
@@ -240,7 +244,6 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<periodic::PyCrystal>()?;
     m.add_class::<periodic::PyPeriodicSymmetry>()?;
     m.add_class::<periodic::PyPeriodicResult>()?;
-    m.add_class::<wannier::PyWannierSetup>()?;
     m.add_class::<wannier::PyWannierResult>()?;
     m.add_class::<downfold::PyDownfolded>()?;
     Ok(())

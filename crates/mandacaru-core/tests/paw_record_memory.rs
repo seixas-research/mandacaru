@@ -190,6 +190,57 @@ fn pb_pbe_fr_stays_inside_its_reservation_and_under_a_gigabyte() {
 }
 
 #[test]
+fn a_version_three_record_stays_inside_its_reservation() {
+    // The core states of format version 3 are columns and a short payload list: read under the
+    // same reservation as every other table. Written under one context and read under a fresh
+    // one, so the read's peak is the read's own and not the write's.
+    let _gate = gate();
+    let writer = Context::new(Some(2), 512 << 20).unwrap();
+    let dir = TempDir::new("memory-v3");
+    let path = dir.file("Na.parquet");
+    {
+        let mut ds = PawDataset::read(&writer, &dataset_path("lda-sr", "Na")).unwrap();
+        let orbital = writer.copy_slice(ds.core_density.as_slice()).unwrap();
+        ds.core_states = Some(vec![mandacaru_core::paw::record::CoreState {
+            n: 1,
+            l: 0,
+            occupation: 2.,
+            energy: -40.,
+            orbital,
+        }]);
+        ds.write(
+            &writer,
+            &path,
+            &mandacaru_core::paw::record::WriteSpec {
+                stride: 1,
+                codec: mandacaru_core::parquet::Codec::Zstd,
+            },
+        )
+        .unwrap();
+    }
+    assert_eq!(writer.memory_used(), 0);
+    drop(writer);
+    let ctx = Context::new(Some(2), 512 << 20).unwrap();
+    assert_eq!(ctx.memory_peak(), 0);
+    let before = live();
+    let (record, peak) = measured(|| PawDataset::read(&ctx, &path).unwrap());
+    let retained = live() - before;
+    assert!(record.core_states.is_some());
+    assert!(
+        peak <= ctx.memory_peak() + SLACK,
+        "live {peak} B exceeded the reservation {} B",
+        ctx.memory_peak()
+    );
+    assert!(
+        retained <= ctx.memory_used() + SLACK,
+        "retained {retained} B against {} B reserved",
+        ctx.memory_used()
+    );
+    drop(record);
+    assert_eq!(ctx.memory_used(), 0);
+}
+
+#[test]
 fn a_small_budget_raises_budget_and_everything_is_released() {
     let _gate = gate();
     let path = dataset_path("pbe-fr", "Pb");

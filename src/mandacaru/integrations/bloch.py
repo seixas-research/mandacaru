@@ -71,8 +71,8 @@ def check_geometry(calculation, geometry):
     return size
 
 
-#: Central-difference step of the crystal forces, Bohr.
-FORCE_STEP = 1e-3
+#: Central-difference step of the crystal forces, Bohr: the engine's.
+FORCE_STEP = _native.PERIODIC_FORCE_STEP
 
 
 def check_derivatives(calculation, properties):
@@ -126,11 +126,19 @@ def finite_difference_forces(calculation, geometry, result):
     The error is the grid convergence of the band-limited basis (H2 chain, bond derivative:
     -5.155, -5.033, -5.321, -5.153, -5.036, -5.056 eV/A at grid_spacing 0.25, 0.2, 0.15, 0.125,
     0.1, 0.075), not the step (-5.03257, -5.03272, -5.03333 eV/A at 1, 2, 4 mA).
+
+    An active space that splits an exactly degenerate orbital group is refused before any
+    displaced run: no deterministic frame covers a periodic grid, so every displaced
+    calculation keeps whichever members its eigensolver returned, and the differences are not a
+    derivative (LiH chain, 3 k-points, 4 orbitals cutting a +-k pair, 2026-11-12: net force
+    0.016 eV/A, components changing with the step, nonzero forces across a mirror plane).
     """
     import itertools
 
     from ..structure import geometry_value
     from .ase import atoms_from_geometry
+
+    result._reference.require_unsplit(result.hamiltonian, "the crystal force of a quantum method")
 
     atoms = atoms_from_geometry(geometry)
     step = _native.to_user_units(float(FORCE_STEP), "length")
@@ -261,7 +269,6 @@ def spectral_function(calculation, *, energies=None, eta=0.1, kpoints=None, kryl
         "spin": np.asarray(raw["spin"]),
         "addition": np.asarray(raw["addition"]),
     }
-    removal, addition = raw["removal_edge_ha"], raw["addition_edge_ha"]
     return SpectralFunction(
         kpoints=np.asarray(raw["kpoints"]),
         energies=_native.to_user_units(np.ascontiguousarray(raw["axis_ha"], dtype=float), "energy"),
@@ -272,8 +279,10 @@ def spectral_function(calculation, *, energies=None, eta=0.1, kpoints=None, kryl
         sum_rule=np.asarray(raw["sum_rule"]),
         dominant_energies=_native.to_user_units(np.ascontiguousarray(raw["dominant_energy"], dtype=float), "energy"),
         dominant_weights=np.asarray(raw["dominant_weight"]),
-        removal_edge=_native.to_user_units(float(removal), "energy"),
-        addition_edge=_native.to_user_units(float(addition), "energy"),
+        removal_edge=_native.to_user_units(float(raw["removal_edge_ha"]), "energy"),
+        addition_edge=_native.to_user_units(float(raw["addition_edge_ha"]), "energy"),
+        chemical_potential=_native.to_user_units(float(raw["chemical_potential_ha"]), "energy"),
+        gap=_native.to_user_units(float(raw["gap_ha"]), "energy"),
         ground_energy=_native.to_user_units(float(raw["ground_energy_ha"]), "energy"),
         mesh=tuple(cell["mesh"]),
         kpath=kpath,

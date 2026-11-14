@@ -202,3 +202,152 @@ impl Kernel {
         Ok(())
     }
 }
+
+/// The packed upper triangle of a symmetric 7 x 7 matrix.
+const PACKED_META: usize = 28;
+fn packed_meta(i: usize, j: usize) -> usize {
+    let (a, b) = if i <= j { (i, j) } else { (j, i) };
+    a * 7 - a * (a + 1) / 2 + b
+}
+
+/// The point kernels of r2SCAN at one ground state, in the form the molecular meta-GGA potential
+/// takes (`evaluate_fields_relativistic` with the orbitals' own density gradient): the density
+/// gradient and the kinetic densities are inputs built from the orbitals, and the potential of the
+/// gradient is the flux `df / d(grad n_s)`, contracted by the caller with the orbital products.
+/// [`MetaKernel::apply`] is the exact derivative of `(dE/dn, dE/dtau, flux)` along a change of the
+/// three inputs.
+pub struct MetaKernel {
+    points: usize,
+    /// `[point][28]`: second partials in `(n_up, n_dn, s_uu, s_ud, s_dd, tau_up, tau_dn)`.
+    second: Buffer<f64>,
+    /// `[point][3]`: `df/ds_uu`, `df/ds_ud`, `df/ds_dd`.
+    first: Buffer<f64>,
+    /// `[spin][axis][point]`: the ground-state density gradients the potential saw.
+    gradients: Buffer<f64>,
+}
+
+/// What [`MetaKernel::apply`] returns per spin: the changes of `dE/dn` (`local`), of `dE/dtau`
+/// (`tau`) and of the flux (`flux`, `[spin][axis][point]`).
+pub struct MetaChange<'a> {
+    pub local: &'a mut [f64],
+    pub tau: &'a mut [f64],
+    pub flux: &'a mut [f64],
+}
+
+impl MetaKernel {
+    /// The r2SCAN kernel at the spin densities `densities` (`[spin][point]`), kinetic densities
+    /// `kinetic` (`[spin][point]`) and density gradients `gradients` (`[spin][axis][point]`), each
+    /// exactly as the potential sees them (the smooth core included).
+    pub fn new(
+        ctx: &Context,
+        densities: &[f64],
+        kinetic: &[f64],
+        gradients: &[f64],
+    ) -> Result<Self> {
+        let n = densities.len() / 2;
+        if densities.len() != 2 * n
+            || kinetic.len() != 2 * n
+            || gradients.len() != product(&[6, n])?
+            || densities
+                .iter()
+                .chain(kinetic)
+                .chain(gradients)
+                .any(|v| !v.is_finite())
+        {
+            return Err(invalid(
+                "the meta-GGA kernel needs finite densities, kinetic densities and gradients",
+            ));
+        }
+        let mut second = ctx.allocate::<f64>(product(&[n, PACKED_META])?)?;
+        let mut first = ctx.allocate::<f64>(product(&[n, 3])?)?;
+        for k in 0..n {
+            // The potential gives a point below the weight threshold nothing at all.
+            if densities[k] + densities[n + k] <= 1e-10 {
+                continue;
+            }
+            let mut sigma = [0.; 3];
+            for a in 0..3 {
+                let u = gradients[a * n + k];
+                let d = gradients[(3 + a) * n + k];
+                sigma[0] += u * u;
+                sigma[1] += u * d;
+                sigma[2] += d * d;
+            }
+            let (_, partials, hessian) = xc::point_hessian_meta([
+                densities[k],
+                densities[n + k],
+                sigma[0],
+                sigma[1],
+                sigma[2],
+                kinetic[k],
+                kinetic[n + k],
+            ])?;
+            let row = &mut second.as_mut_slice()[k * PACKED_META..(k + 1) * PACKED_META];
+            for i in 0..7 {
+                for j in i..7 {
+                    row[packed_meta(i, j)] = hessian[i][j];
+                }
+            }
+            first.as_mut_slice()[k * 3..k * 3 + 3].copy_from_slice(&partials[2..5]);
+        }
+        Ok(Self {
+            points: n,
+            second,
+            first,
+            gradients: ctx.copy_slice(gradients)?,
+        })
+    }
+    pub fn points(&self) -> usize {
+        self.points
+    }
+    /// The first-order changes of the potential's three parts along the changes `density`
+    /// (`[spin][point]`), `gradient` (`[spin][axis][point]`) and `tau` (`[spin][point]`).
+    pub fn apply(
+        &self,
+        density: &[f64],
+        gradient: &[f64],
+        tau: &[f64],
+        out: MetaChange<'_>,
+    ) -> Result<()> {
+        let n = self.points;
+        if density.len() != 2 * n
+            || tau.len() != 2 * n
+            || gradient.len() != 6 * n
+            || out.local.len() != 2 * n
+            || out.tau.len() != 2 * n
+            || out.flux.len() != 6 * n
+        {
+            return Err(invalid(
+                "the meta-GGA kernel and its changes disagree in size",
+            ));
+        }
+        let g = self.gradients.as_slice();
+        for k in 0..n {
+            let h = &self.second.as_slice()[k * PACKED_META..(k + 1) * PACKED_META];
+            let mut dx = [density[k], density[n + k], 0., 0., 0., tau[k], tau[n + k]];
+            for a in 0..3 {
+                let (u, d) = (g[a * n + k], g[(3 + a) * n + k]);
+                let (du, dd) = (gradient[a * n + k], gradient[(3 + a) * n + k]);
+                dx[2] += 2. * u * du;
+                dx[3] += u * dd + d * du;
+                dx[4] += 2. * d * dd;
+            }
+            let response: [f64; 7] =
+                std::array::from_fn(|i| (0..7).map(|j| h[packed_meta(i, j)] * dx[j]).sum());
+            out.local[k] = response[0];
+            out.local[n + k] = response[1];
+            out.tau[k] = response[5];
+            out.tau[n + k] = response[6];
+            let f = &self.first.as_slice()[k * 3..k * 3 + 3];
+            for a in 0..3 {
+                let (u, d) = (g[a * n + k], g[(3 + a) * n + k]);
+                let (du, dd) = (gradient[a * n + k], gradient[(3 + a) * n + k]);
+                out.flux[a * n + k] =
+                    2. * response[2] * u + 2. * f[0] * du + response[3] * d + f[1] * dd;
+                out.flux[(3 + a) * n + k] =
+                    2. * response[4] * d + 2. * f[2] * dd + response[3] * u + f[1] * du;
+            }
+        }
+        Ok(())
+    }
+}

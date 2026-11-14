@@ -290,6 +290,9 @@ fn the_tables_hold_no_entry_the_freeze_does_not_have() {
     }
 }
 
+/// Elements whose core/valence partition differs from the shipped file on purpose (see the test below).
+const PARTITION_CHANGED: &[&str] = &["Fr"];
+
 /// The census of the shipped scalar-relativistic files stores, per file, the norm deficit and Bessel counts it
 /// was built with and which parameters deviate from what the tables would give a first
 /// construction. Where nothing deviates the recipe must say what the file says.
@@ -319,6 +322,12 @@ fn the_recipe_reproduces_the_parameters_of_the_shipped_files() {
                     recipe.n_bessel
                 );
                 compared += 1;
+            }
+            // Elements whose partition the regeneration of 2026-11-12 changed on purpose: the shipped
+            // file keeps only its 7s in the valence and no generator builds it clean (a p ghost no
+            // remedy removes); with 6s6p as semicore, like every other alkali, it does.
+            if PARTITION_CHANGED.contains(&symbol.as_str()) {
+                continue;
             }
             let frozen = entry.get("frozen").map(subshells).unwrap_or_default();
             assert_eq!(recipe.frozen_subshells, frozen, "{set} {symbol} frozen");

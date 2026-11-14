@@ -12,7 +12,8 @@ use crate::{
     Buffer, Result,
 };
 
-pub trait Sources {
+/// `Sync`: the target points of the pass run on the k-point lanes, which share it.
+pub trait Sources: Sync {
     /// `d v / d eps_ab` of the kernel the exchange evaluates for the pair wave vector
     /// `k_diff = q - k`, `(6, N)` in the order xx, yy, zz, yz, xz, xy.
     fn kernel(

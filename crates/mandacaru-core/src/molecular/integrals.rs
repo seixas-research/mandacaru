@@ -686,12 +686,28 @@ impl MolecularIntegrals {
         rebuilt.fixed_pivots = Some(pivots);
         Ok(rebuilt)
     }
+    /// Refuse a Hartree-Fock Hamiltonian when a PAW species' frozen core has no exchange
+    /// operator with the valence (owner Q20, 2026-11-12: the guard sits at the Hartree-Fock
+    /// entry points, not on the Coulomb integrals, which Kohn-Sham runs on every element use
+    /// without that term). The entry points are every route that builds the second-quantized
+    /// Hamiltonian over the frozen core, whatever the reference's method: an HF mean field and
+    /// its continuation, TDHF and CIS, real-time TDHF, the model and active-space Hamiltonians
+    /// (and the MP2 natural orbitals and correlating partners an active space selects with),
+    /// local MP2 and the analytic variational force.
+    pub fn require_hartree_fock_core(&self) -> Result<()> {
+        if self.corrections.as_ref().is_some_and(|c| !c.core_supported) {
+            return Err(invalid(
+                "native PAW frozen-core exchange currently requires an empty core or a single \
+                 closed 1s shell: Hartree-Fock of this molecule, its excitations and every \
+                 Hamiltonian over its frozen core (the model or an active space, MP2, a quantum \
+                 method) are not available; Kohn-Sham DFT runs on every element",
+            ));
+        }
+        Ok(())
+    }
     /// Build Coulomb factors only when a solver or Hamiltonian asks for them.
     /// Failed allocations do not poison the cache and can be retried.
     pub fn eri(&self) -> Result<Arc<Eri>> {
-        if self.corrections.as_ref().is_some_and(|c| !c.core_supported) {
-            return Err(invalid("native PAW frozen-core exchange currently requires an empty core or a single closed 1s shell (Kohn-Sham DFT only for heavy elements)"));
-        }
         let mut cache = self.eri.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(value) = cache.as_ref() {
             return Ok(value.clone());

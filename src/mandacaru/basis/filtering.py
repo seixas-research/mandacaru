@@ -43,7 +43,7 @@ transform is the spherical Bessel (Hankel) pair
 whose closure relation gives a Parseval identity,
 :math:`\int R^2 r^2 dr = \tfrac{2}{\pi}\int F^2 k^2 dk`, so "the weight of the
 function above :math:`k_c`" is a well-defined number and is what
-:func:`residual_weight` reports.  Filtering multiplies :math:`F_l` by a smooth
+:func:`filter_radial` reports as ``residual_before``.  Filtering multiplies :math:`F_l` by a smooth
 window that is 1 below :math:`(1-\texttt{rolloff})k_c` and rolls to 0 at
 :math:`k_c`: a hard step would ring with a :math:`\sin(k_c r)/r` tail that
 reaches far past the orbital.
@@ -189,10 +189,6 @@ FILTER_METHODS = tuple(_native.RADIAL_FILTER_METHODS)
 #: The default, chosen on the measurements tabulated in the module docstring.
 DEFAULT_FILTER_METHOD = FILTER_METHODS[0]
 
-#: Warn when the filter throws away more than this fraction of a function's
-#: norm -- at that point the cutoff is not smoothing the basis, it is
-#: replacing it.
-FILTER_WEIGHT_WARN = 0.05
 
 
 # --------------------------------------------------------------------------- #
@@ -293,18 +289,6 @@ def _angular_momentum(l) -> int:
     return l
 
 
-def residual_weight(r, values, l: int, k_c: float, oversample=None, *,
-                    context=None) -> float:
-    """Fraction of :math:`\\int R^2r^2dr` carried above ``k_c`` -- what the grid
-    cannot represent.  Computed natively from *below* the cutoff (never by
-    integrating a truncated high-:math:`k` tail, where the quadrature of
-    :math:`j_l(kr)` on the radial mesh degrades)."""
-    context = _native.Context(threads=1) if context is None else context
-    return 1.0 - _native.radial_band_weight(
-        context, _table(r), _table(values), _angular_momentum(l), float(k_c),
-        oversample)
-
-
 #: ``key -> (filtered, info, warning)``: a radial table's filter is a pure
 #: function of the table and the options, and every crystal build (a strained
 #: cell for the stress, each relaxation step) asked for the same ones again.
@@ -355,7 +339,7 @@ def filter_radial(r, values, l: int, k_c: float, *, context=None, **options):
             options.get("method"), options.get("rolloff"),
             options.get("oversample"), options.get("renormalize", True),
             options.get("switch_margin"))
-        (before, after, support, outer, masked, kept, change) = report
+        (before, after, support, outer, masked, kept, change, lost_percent) = report
         info = {
             "l": l, "cutoff": k_c,
             "method": options.get("method") or DEFAULT_FILTER_METHOD,
@@ -367,11 +351,11 @@ def filter_radial(r, values, l: int, k_c: float, *, context=None, **options):
         # The warning is recorded with the entry, so that a cached call warns
         # exactly as the first one did.
         message = None
-        if 1.0 - kept > FILTER_WEIGHT_WARN:
+        if lost_percent is not None:
             message = (
                 f"the basis filter at k_c = {k_c:.3g} Bohr^-1 "
                 f"({cutoff_energy_ev(k_c):.0f} eV) removed "
-                f"{100 * (1.0 - kept):.1f}% of the norm of an l = {l} radial "
+                f"{lost_percent:.1f}% of the norm of an l = {l} radial "
                 "function: at that cutoff the filter is replacing the basis, "
                 "not smoothing it.  Raise the cutoff (or the grid resolution).")
         cached = (filtered, info, message)

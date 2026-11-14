@@ -53,3 +53,51 @@ pub fn estimator_precision(shots: u64) -> f64 {
 pub fn mps_job_gigabytes(bases: u64) -> f64 {
     execution::mps_job_gigabytes(bases)
 }
+
+/// `(rdm_circuits, instances, total_shots)` of a device force (`execution::device_force_cost`).
+#[pyfunction]
+fn device_force_cost(rotations: u64, circuits: u64, bases: u64, shots: u64) -> PyResult<(u64, u64, u64)> {
+    execution::device_force_cost(rotations, circuits, bases, shots).map_err(error)
+}
+
+/// The jobs of a submission, `(request indices, bases)` each (`execution::pack_jobs`).
+#[pyfunction]
+#[pyo3(signature = (loads, limit = None))]
+fn pack_jobs(loads: Vec<u64>, limit: Option<u64>) -> Vec<(Vec<usize>, u64)> {
+    execution::pack_jobs(&loads, limit)
+}
+
+/// `(entangling, single, total)` gate counts of `(name, qubits, count)` gates
+/// (`execution::gate_tally`).
+#[pyfunction]
+#[pyo3(signature = (gates, skipped, entanglers = None))]
+fn gate_tally(
+    gates: Vec<(String, usize, u64)>,
+    skipped: Vec<String>,
+    entanglers: Option<Vec<String>>,
+) -> (u64, u64, u64) {
+    execution::gate_tally(&gates, &skipped, entanglers.as_deref())
+}
+
+/// The wire of qubit `k` in an SDK that numbers its wires from the other end
+/// (`execution::reversed_wire`).
+#[pyfunction]
+fn reversed_wire(n_qubits: usize, k: usize) -> PyResult<usize> {
+    execution::reversed_wire(n_qubits, k).map_err(error)
+}
+
+/// The `[start, end)` bounds of `parts` equal consecutive chunks of `total` items
+/// (`execution::equal_chunks`).
+#[pyfunction]
+fn equal_chunks(total: usize, parts: usize) -> Vec<(usize, usize)> {
+    execution::equal_chunks(total, parts)
+}
+
+pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(reversed_wire, m)?)?;
+    m.add_function(wrap_pyfunction!(equal_chunks, m)?)?;
+    m.add_function(wrap_pyfunction!(device_force_cost, m)?)?;
+    m.add_function(wrap_pyfunction!(pack_jobs, m)?)?;
+    m.add_function(wrap_pyfunction!(gate_tally, m)?)?;
+    Ok(())
+}

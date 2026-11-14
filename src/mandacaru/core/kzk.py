@@ -42,15 +42,6 @@ __all__ = ["KZKCorrection", "effective_length", "fs_exchange",
            "infinite_exchange_correlation", "kzk_correction",
            "leading_term_cancellation"]
 
-#: Hartree per Rydberg.  The parametrization below is Rydberg throughout.
-HARTREE_PER_RYDBERG = 0.5
-
-#: ``a_1, a_2, a_3`` of Eq. (3), Table I, in Rydberg atomic units.
-A1, A2, A3 = -2.2037, 0.4710, -0.0150
-
-#: ``g_1 .. g_4`` of Eq. (6), Table I, in Rydberg atomic units.
-G1, G2, G3, G4 = 0.1182, 1.1656, -5.2884, -1.1233
-
 #: Densities below this are treated as vacuum and contribute nothing.
 DENSITY_FLOOR = 1e-12
 
@@ -138,14 +129,14 @@ class KZKCorrection:
     @property
     def correction_per_cell(self) -> float:
         """Hartree to add to a per-primitive-cell energy."""
-        return self.correction / self.n_cells
+        return _native.ratio(self.correction, self.n_cells)
 
     @property
     def corrected_energy_per_cell(self) -> float | None:
         """The finite-size-corrected energy per primitive cell, in Hartree."""
         if self.energy_per_cell is None:
             return None
-        return self.energy_per_cell + self.correction_per_cell
+        return _native.total([self.energy_per_cell, self.correction_per_cell])
 
     def summary(self) -> str:
         """One line, in eV."""

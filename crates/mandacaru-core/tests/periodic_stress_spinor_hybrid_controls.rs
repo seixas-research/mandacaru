@@ -144,7 +144,7 @@ fn wrong_spin_structures_miss_the_difference_by_more_than_100_gates() {
     let mut dropped = [[0f64; 3]; 3];
     let mut kept = [[0f64; 3]; 3];
     for (k, (point, d)) in c.points.iter().zip(&r.d).enumerate() {
-        let dc = tangents.projection_strain(k).unwrap();
+        let dc = pairs(tangents.projection_strain(k, &units()).unwrap());
         for (target, wanted_equal) in [(&mut dropped, false), (&mut kept, true)] {
             let mut z = DMatrix::<C64>::zeros(p, m);
             for s in 0..2 {

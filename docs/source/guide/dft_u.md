@@ -63,7 +63,9 @@ grid for both forms and for a spin-polarized state (`result.force_details` lists
 `hubbard/projection`). A request the molecule cannot carry raises when the calculation starts:
 an element the molecule does not contain, or a shell the dataset lacks, is an error and never
 runs as plain DFT. A molecule on a fully relativistic dataset (`lda-fr`, `pbe-fr`) runs spinor
-Kohn–Sham, which has no +U: `hubbard_u` raises `NotImplementedError`.
+Kohn–Sham, which has no +U: `hubbard_u` raises `NotImplementedError`. A converged +U molecule also
+takes `calc.get_excitations(...)`: the +U energy is quadratic in the shell occupations, so its
+response kernel is exact ([r2SCAN and DFT+U](#excited-states-meta-u)).
 
 ## Subspace projection: what `n` is
 

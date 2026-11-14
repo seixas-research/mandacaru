@@ -24,6 +24,7 @@
 //! only, `T (x) I_2`; the bra row `(sigma, mu)` reads the tangent of the function `mu`), the moved
 //! ket is one function per component, and the shapes and kernel are spin independent.
 use super::{Sources, Tangents, Terms};
+use crate::periodic::stress_terms::Directions;
 use crate::{
     math::{fft::Fft3, storage::MatrixSource},
     periodic::{
@@ -31,15 +32,16 @@ use crate::{
         screened_augmentation::Augmentation,
         screened_exchange::{
             kernel_weights, occupied_states, periodic_part, weighted_pairs, ExxDivTreatment,
-            PairInputs, Part, Screening,
+            OccupiedStates, PairInputs, Part, Screening,
         },
         setup::strain_grid::VOIGT,
         Crystal,
     },
     product,
     quantum::C64,
-    Buffer, Result,
+    Buffer, Level, Result,
 };
+use nalgebra::DMatrix;
 
 /// The Voigt row (xx, yy, zz, yz, xz, xy) of the symmetric pair `(a, b)`.
 fn row(a: usize, b: usize) -> usize {
@@ -64,19 +66,38 @@ fn dot(rows: &[C64], v: &[C64], kw: &[f64]) -> f64 {
         .sum()
 }
 
-const PAIRS: [(usize, usize); 9] = [
-    (0, 0),
-    (0, 1),
-    (0, 2),
-    (1, 0),
-    (1, 1),
-    (1, 2),
-    (2, 0),
-    (2, 1),
-    (2, 2),
-];
+/// The terms of one share or of the sum, one number per strain direction.
+#[derive(Clone, Default)]
+struct Shares {
+    energy: f64,
+    jacobian: Vec<f64>,
+    kernel: Vec<f64>,
+    shape_volume: Vec<f64>,
+    shape_form: Vec<f64>,
+    bra: Vec<f64>,
+    ket: Vec<f64>,
+}
 
-pub(super) fn run<M: MatrixSource>(
+impl Shares {
+    fn new(directions: usize) -> Self {
+        let zero = || vec![0.; directions];
+        Self {
+            energy: 0.,
+            jacobian: zero(),
+            kernel: zero(),
+            shape_volume: zero(),
+            shape_form: zero(),
+            bra: zero(),
+            ket: zero(),
+        }
+    }
+}
+
+fn trace(e: &[[f64; 3]; 3]) -> f64 {
+    e[0][0] + e[1][1] + e[2][2]
+}
+
+pub(super) fn run<M: MatrixSource + Sync>(
     c: &Crystal,
     matrices: &[M],
     screening: Screening,
@@ -84,19 +105,21 @@ pub(super) fn run<M: MatrixSource>(
     aug: &Augmentation,
     tangents: &Tangents,
     sources: &dyn Sources,
+    directions: &Directions,
 ) -> Result<Terms> {
+    let dirs = directions.as_slice();
     let (nk, n, m) = (c.points.len(), c.grid.index.points(), c.m);
     // Rows of the pair buffers and size of the density matrices: `(sigma, mu)` for a spinor.
     let components = if c.spinor { 2 } else { 1 };
     let rows = components * m;
     let dv = c.grid.index.dv();
-    // The periodic parts of the strain tangents of every k-point and every `(a, b)`: nine
-    // `m x N` arrays per point, charged to the context.
+    // The periodic parts of the strain tangents of every k-point and every direction: one
+    // `m x N` array per direction and point, charged to the context.
     let mut tangent: Vec<Vec<Buffer<C64>>> = Vec::with_capacity(nk);
     for (k, point) in c.points.iter().enumerate() {
-        let mut per_pair = Vec::with_capacity(9);
-        for &(a, b) in &PAIRS {
-            let samples = tangents.samples(k, a, b)?;
+        let mut per_pair = Vec::with_capacity(dirs.len());
+        for e in dirs {
+            let samples = tangents.samples_along(k, e)?;
             if samples.as_slice().len() != m * n {
                 return Err(invalid("a strain tangent must hold m x N samples"));
             }
@@ -113,23 +136,41 @@ pub(super) fn run<M: MatrixSource>(
     } else {
         (1.0, 1.0)
     };
-    let mut out = Terms::default();
-    let mut fft = Fft3::new(&c.context, c.grid.index.shape())?;
-    let mut pair = c.context.allocate::<C64>(n)?;
-    let mut unit = c.context.allocate::<f64>(n)?;
-    unit.as_mut_slice().fill(1.);
-    let mut raw = c.context.allocate::<C64>(rows * n)?;
-    let mut v = c.context.allocate::<C64>(rows * n)?;
-    let mut work = c.context.allocate::<C64>(rows * n)?;
-    let mut density = vec![0.; n];
+    // The target points of a spin channel run on the `kpts` lanes, the states of each source on
+    // the `bands` lanes of its target. Every state adds exactly one value to each entry of the
+    // terms it touches, so its share is a delta of the terms, and the deltas are added in the
+    // order of the serial sweep (spin, target, source, state): the same sums on every layout.
+    let ctx = &c.context;
+    let k_lanes = ctx.lanes(Level::Kpts, nk);
+    let b_lanes = ctx.lanes(Level::Bands, usize::MAX);
+    let lane_bytes = product(&[3 * rows + 1, n, 16])?
+        .checked_add(product(&[
+            *c.grid.index.shape().iter().max().unwrap_or(&1),
+            4096,
+        ])?)
+        .ok_or(crate::Error::Overflow)?;
+    ctx.check_lanes(Level::Bands, b_lanes, lane_bytes)?;
+    ctx.check_lanes(
+        Level::Kpts,
+        k_lanes,
+        product(&[m, n, 16])?
+            .checked_add(product(&[b_lanes, lane_bytes])?)
+            .ok_or(crate::Error::Overflow)?,
+    )?;
+    let mut targets: Vec<Vec<StateLane>> = (0..k_lanes)
+        .map(|_| (0..b_lanes).map(|_| StateLane::default()).collect())
+        .collect();
+    let mut out = Shares::new(dirs.len());
     for s in 0..c.spins {
         let occupied = occupied_states(c, matrices, s, spin_scale, Some((aug, Part::Both)))?;
-        for (k, point) in c.points.iter().enumerate() {
+        let deltas = ctx.map_tasks(Level::Kpts, &mut targets, nk, |lanes, k| {
+            let point = &c.points[k];
             let d = matrices[s * nk + k].matrix(&c.context)?;
             let d = &*d * C64::new(spin_scale, 0.);
             let mut u = c.context.allocate::<C64>(m * n)?;
             periodic_part(c, point.k, &point.psi.read(&c.context)?, u.as_mut_slice());
             let scale = -0.5 * screening.fraction * mult * point.weight;
+            let mut shares = Vec::new();
             for (q, source) in occupied.iter().enumerate() {
                 if source.wavefunctions.is_empty() {
                     continue;
@@ -143,117 +184,248 @@ pub(super) fn run<M: MatrixSource>(
                     return Err(invalid("the kernel strain must hold six rows of N values"));
                 }
                 let strain = sources.shapes(aug, c, k_diff)?;
-                let forms = PAIRS
+                let forms = dirs
                     .iter()
-                    .map(|&(a, b)| strain.form(&c.context, a, b))
-                    .collect::<Result<Vec<_>>>()?;
-                let prefactor = source.weight * dv / n as f64;
-                for (state, psi) in source.wavefunctions.iter().enumerate() {
-                    let moments = aug.moments(c, point, &source.projected[state]);
-                    let both = PairInputs {
-                        u_k: u.as_slice(),
-                        psi,
-                        moments: Some(&moments),
-                        shapes: Some(shapes.as_slice()),
-                        kernel: unit.as_slice(),
-                        part: Part::Both,
-                    };
-                    weighted_pairs(c, &mut fft, &mut pair, &both, raw.as_mut_slice())?;
-                    v.as_mut_slice().fill(C64::default());
-                    for i in 0..rows {
-                        for j in 0..rows {
-                            let dij = d[(i, j)];
-                            for at in 0..n {
-                                v.as_mut_slice()[i * n + at] += dij * raw.as_slice()[j * n + at];
-                            }
-                        }
-                    }
-                    density.fill(0.);
-                    for i in 0..rows {
-                        for at in 0..n {
-                            density[at] +=
-                                (raw.as_slice()[i * n + at] * v.as_slice()[i * n + at].conj()).re;
-                        }
-                    }
-                    let energy: f64 =
-                        scale * kw.iter().zip(&density).map(|(w, r)| w * r).sum::<f64>();
-                    out.energy += energy;
-                    for a in 0..3 {
-                        out.jacobian[a][a] += energy;
-                    }
-                    for &(a, b) in &PAIRS {
-                        let line = &dkernel.as_slice()[row(a, b) * n..(row(a, b) + 1) * n];
-                        out.kernel[a][b] += scale
-                            * prefactor
-                            * line.iter().zip(&density).map(|(x, r)| x * r).sum::<f64>();
-                    }
-                    // H-3: the compensation rows alone, the `1 / dv` of `T_a` ...
-                    let comp = PairInputs {
-                        u_k: u.as_slice(),
-                        psi,
-                        moments: Some(&moments),
-                        shapes: Some(shapes.as_slice()),
-                        kernel: unit.as_slice(),
-                        part: Part::Compensation,
-                    };
-                    weighted_pairs(c, &mut fft, &mut pair, &comp, work.as_mut_slice())?;
-                    let volume = 2. * scale * dot(work.as_slice(), v.as_slice(), &kw);
-                    for a in 0..3 {
-                        out.shape_volume[a][a] -= volume;
-                    }
-                    // ... and the form factors.
-                    for (&(a, b), form) in PAIRS.iter().zip(&forms) {
-                        let input = PairInputs {
-                            u_k: u.as_slice(),
-                            psi,
-                            moments: Some(&moments),
-                            shapes: Some(form.as_slice()),
-                            kernel: unit.as_slice(),
-                            part: Part::Compensation,
-                        };
-                        weighted_pairs(c, &mut fft, &mut pair, &input, work.as_mut_slice())?;
-                        out.shape_form[a][b] +=
-                            2. * scale * dot(work.as_slice(), v.as_slice(), &kw);
-                    }
-                    // H-4: the bra slot (the target's functions) and the ket slot (the state).
-                    for (index, &(a, b)) in PAIRS.iter().enumerate() {
-                        let bra = PairInputs {
-                            u_k: tangent[k][index].as_slice(),
-                            psi,
-                            moments: None,
-                            shapes: None,
-                            kernel: unit.as_slice(),
-                            part: Part::Pseudo,
-                        };
-                        weighted_pairs(c, &mut fft, &mut pair, &bra, work.as_mut_slice())?;
-                        out.bra[a][b] += 2. * scale * dot(work.as_slice(), v.as_slice(), &kw);
-                        // The moved state: one function per spin component.
-                        let mut moved = Vec::with_capacity(components);
-                        for component in 0..components {
-                            let mut buffer = c.context.allocate::<C64>(n)?;
-                            for mu in 0..m {
-                                let coefficient = source.coefficients[state][component * m + mu];
-                                let slice = &tangent[q][index].as_slice()[mu * n..(mu + 1) * n];
-                                for (x, y) in buffer.as_mut_slice().iter_mut().zip(slice) {
-                                    *x += coefficient * y;
+                    .map(|e| {
+                        // The form factor part is linear in the strain: `sum_ab E_ab form(a, b)`.
+                        let mut combined: Option<Buffer<C64>> = None;
+                        for a in 0..3 {
+                            for b in 0..3 {
+                                if e[a][b] == 0. {
+                                    continue;
+                                }
+                                let form = strain.form(&c.context, a, b)?;
+                                let sum = match combined.as_mut() {
+                                    Some(sum) => sum,
+                                    None => combined
+                                        .insert(c.context.allocate::<C64>(form.as_slice().len())?),
+                                };
+                                for (to, from) in sum.as_mut_slice().iter_mut().zip(form.as_slice())
+                                {
+                                    *to += from * e[a][b];
                                 }
                             }
-                            moved.push(buffer);
                         }
-                        let ket = PairInputs {
-                            u_k: u.as_slice(),
-                            psi: &moved,
-                            moments: None,
-                            shapes: None,
-                            kernel: unit.as_slice(),
-                            part: Part::Pseudo,
-                        };
-                        weighted_pairs(c, &mut fft, &mut pair, &ket, work.as_mut_slice())?;
-                        out.ket[a][b] += 2. * scale * dot(work.as_slice(), v.as_slice(), &kw);
-                    }
+                        combined.ok_or_else(|| invalid("a strain direction without entries"))
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                let pair = PairData {
+                    aug,
+                    point,
+                    u: u.as_slice(),
+                    d: &d,
+                    scale,
+                    kw: &kw,
+                    shapes: shapes.as_slice(),
+                    dkernel: dkernel.as_slice(),
+                    forms: &forms,
+                    prefactor: source.weight * dv / n as f64,
+                    source,
+                    bra_tangents: &tangent[k],
+                    ket_tangents: &tangent[q],
+                    directions: dirs,
+                };
+                let states = source.wavefunctions.len();
+                let window = lanes.len().max(1);
+                for first in (0..states).step_by(window) {
+                    let count = window.min(states - first);
+                    shares.extend(c.context.map_tasks(
+                        Level::Bands,
+                        &mut lanes[..count],
+                        count,
+                        |lane, offset| state_terms(c, lane, &pair, first + offset),
+                    )?);
                 }
             }
+            Ok(shares)
+        })?;
+        for share in deltas.into_iter().flatten() {
+            add(&mut out, &share);
         }
+    }
+    Ok(Terms {
+        energy: out.energy,
+        jacobian: directions.assemble(&out.jacobian),
+        kernel: directions.assemble(&out.kernel),
+        shape_volume: directions.assemble(&out.shape_volume),
+        shape_form: directions.assemble(&out.shape_form),
+        bra: directions.assemble(&out.bra),
+        ket: directions.assemble(&out.ket),
+        ..Terms::default()
+    })
+}
+
+/// What a state lane keeps from one state to the next: its transform and its pair buffers, made on
+/// the lane's own thread the first time (so the transform takes the lane's share of the workers).
+#[derive(Default)]
+struct StateLane {
+    fft: Option<Fft3>,
+    buffers: Option<[Buffer<C64>; 4]>,
+}
+
+/// What the states of one (target, source) pair share.
+struct PairData<'a> {
+    aug: &'a Augmentation<'a>,
+    point: &'a crate::periodic::KPoint,
+    u: &'a [C64],
+    d: &'a DMatrix<C64>,
+    scale: f64,
+    kw: &'a [f64],
+    shapes: &'a [C64],
+    dkernel: &'a [f64],
+    forms: &'a [Buffer<C64>],
+    prefactor: f64,
+    source: &'a OccupiedStates,
+    bra_tangents: &'a [Buffer<C64>],
+    ket_tangents: &'a [Buffer<C64>],
+    directions: &'a [[[f64; 3]; 3]],
+}
+
+/// `out += share`, every entry: a share holds one value per entry the state touched and zeros
+/// elsewhere (`out` is never a negative zero, so adding `+0` leaves it as it is).
+fn add(out: &mut Shares, share: &Shares) {
+    out.energy += share.energy;
+    for (to, from) in [
+        (&mut out.jacobian, &share.jacobian),
+        (&mut out.kernel, &share.kernel),
+        (&mut out.shape_volume, &share.shape_volume),
+        (&mut out.shape_form, &share.shape_form),
+        (&mut out.bra, &share.bra),
+        (&mut out.ket, &share.ket),
+    ] {
+        for (t, f) in to.iter_mut().zip(from) {
+            *t += f;
+        }
+    }
+}
+
+/// H-1..H-4 of one occupied state of a (target, source) pair, as a delta of the terms.
+fn state_terms(c: &Crystal, lane: &mut StateLane, pd: &PairData, state: usize) -> Result<Shares> {
+    let (n, m) = (c.grid.index.points(), c.m);
+    let components = if c.spinor { 2 } else { 1 };
+    let rows = components * m;
+    if lane.fft.is_none() {
+        lane.fft = Some(Fft3::new(&c.context, c.grid.index.shape())?);
+    }
+    if lane.buffers.is_none() {
+        lane.buffers = Some([
+            c.context.allocate::<C64>(n)?,
+            c.context.allocate::<C64>(rows * n)?,
+            c.context.allocate::<C64>(rows * n)?,
+            c.context.allocate::<C64>(rows * n)?,
+        ]);
+    }
+    let (Some(fft), Some([pair, raw, v, work])) = (lane.fft.as_mut(), lane.buffers.as_mut()) else {
+        unreachable!()
+    };
+    let (point, source, scale, kw) = (pd.point, pd.source, pd.scale, pd.kw);
+    let psi = &source.wavefunctions[state];
+    let mut out = Shares::new(pd.directions.len());
+    let mut density = vec![0.; n];
+    let unit = vec![1.; n];
+    let moments = pd.aug.moments(c, point, &source.projected[state]);
+    let both = PairInputs {
+        u_k: pd.u,
+        psi,
+        moments: Some(&moments),
+        shapes: Some(pd.shapes),
+        kernel: &unit,
+        part: Part::Both,
+    };
+    weighted_pairs(c, fft, pair, &both, raw.as_mut_slice())?;
+    v.as_mut_slice().fill(C64::default());
+    for i in 0..rows {
+        for j in 0..rows {
+            let dij = pd.d[(i, j)];
+            for at in 0..n {
+                v.as_mut_slice()[i * n + at] += dij * raw.as_slice()[j * n + at];
+            }
+        }
+    }
+    for i in 0..rows {
+        for at in 0..n {
+            density[at] += (raw.as_slice()[i * n + at] * v.as_slice()[i * n + at].conj()).re;
+        }
+    }
+    let energy: f64 = scale * kw.iter().zip(&density).map(|(w, r)| w * r).sum::<f64>();
+    out.energy += energy;
+    // The kernel's derivative against the pair density, for the six symmetric pairs.
+    let kernel_rows: Vec<f64> = (0..6)
+        .map(|r| {
+            let line = &pd.dkernel[r * n..(r + 1) * n];
+            scale * pd.prefactor * line.iter().zip(&density).map(|(x, r)| x * r).sum::<f64>()
+        })
+        .collect();
+    for (d, e) in pd.directions.iter().enumerate() {
+        out.jacobian[d] += trace(e) * energy;
+        for a in 0..3 {
+            for b in 0..3 {
+                out.kernel[d] += e[a][b] * kernel_rows[row(a, b)];
+            }
+        }
+    }
+    // H-3: the compensation rows alone, the `1 / dv` of `T_a` ...
+    let comp = PairInputs {
+        u_k: pd.u,
+        psi,
+        moments: Some(&moments),
+        shapes: Some(pd.shapes),
+        kernel: &unit,
+        part: Part::Compensation,
+    };
+    weighted_pairs(c, fft, pair, &comp, work.as_mut_slice())?;
+    let volume = 2. * scale * dot(work.as_slice(), v.as_slice(), kw);
+    for (d, e) in pd.directions.iter().enumerate() {
+        out.shape_volume[d] -= trace(e) * volume;
+    }
+    // ... and the form factors.
+    for (d, form) in pd.forms.iter().enumerate() {
+        let input = PairInputs {
+            u_k: pd.u,
+            psi,
+            moments: Some(&moments),
+            shapes: Some(form.as_slice()),
+            kernel: &unit,
+            part: Part::Compensation,
+        };
+        weighted_pairs(c, fft, pair, &input, work.as_mut_slice())?;
+        out.shape_form[d] += 2. * scale * dot(work.as_slice(), v.as_slice(), kw);
+    }
+    // H-4: the bra slot (the target's functions) and the ket slot (the state).
+    for index in 0..pd.directions.len() {
+        let bra = PairInputs {
+            u_k: pd.bra_tangents[index].as_slice(),
+            psi,
+            moments: None,
+            shapes: None,
+            kernel: &unit,
+            part: Part::Pseudo,
+        };
+        weighted_pairs(c, fft, pair, &bra, work.as_mut_slice())?;
+        out.bra[index] += 2. * scale * dot(work.as_slice(), v.as_slice(), kw);
+        // The moved state: one function per spin component.
+        let mut moved = Vec::with_capacity(components);
+        for component in 0..components {
+            let mut buffer = c.context.allocate::<C64>(n)?;
+            for mu in 0..m {
+                let coefficient = source.coefficients[state][component * m + mu];
+                let slice = &pd.ket_tangents[index].as_slice()[mu * n..(mu + 1) * n];
+                for (x, y) in buffer.as_mut_slice().iter_mut().zip(slice) {
+                    *x += coefficient * y;
+                }
+            }
+            moved.push(buffer);
+        }
+        let ket = PairInputs {
+            u_k: pd.u,
+            psi: &moved,
+            moments: None,
+            shapes: None,
+            kernel: &unit,
+            part: Part::Pseudo,
+        };
+        weighted_pairs(c, fft, pair, &ket, work.as_mut_slice())?;
+        out.ket[index] += 2. * scale * dot(work.as_slice(), v.as_slice(), kw);
     }
     Ok(out)
 }

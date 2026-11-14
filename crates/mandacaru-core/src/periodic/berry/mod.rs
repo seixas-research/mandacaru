@@ -2,34 +2,38 @@
 //! anomalous Hall conductivity of a converged crystal. Atomic units; `dev_plan/BERRY_PLAN.md`
 //! holds the formulas and conventions.
 //!
-//! Everything is built on the Wannier sampler: [`Frame::from_point`] re-diagonalizes at a k-point
+//! Everything is built on the shared Bloch-mesh sampler ([`crate::periodic::bloch_mesh`]):
+//! [`Frame::from_point`] re-diagonalizes at a k-point
 //! with the converged Hamiltonian (DFT+U operator, hybrid exchange `K(k)`, meta-GGA and spinor
-//! potentials included), and [`sampling::link`] forms the PAW overlap
+//! potentials included), and `wannier::sampling::link` forms the PAW overlap
 //! `M_mn(k, b) = <psi_mk| e^{-i b.r} |psi_n,k+b>`: the smooth part on the cell grid plus the
-//! one-center monopole and dipole of every sphere with its phase `e^{-i b.R_a}` (first order in
-//! `b`; the dropped second-order term is Hermitian and enters `arg det` only at `b^3`, so a string
-//! of N points converges as `1/N^2`). No functional, spin treatment or correction needs a case here:
+//! exact one-center plane wave of every sphere with its phase `e^{-i b.R_a}`
+//! (`wannier::sampling::Augmentation::operator`). No functional, spin treatment or correction needs a case here:
 //! a spinor frame carries both components, a collinear channel is its own frame.
 //!
 //! A mesh is `k = origin + sum_j (i_j / n_j) G_j`; a link along `G_j` goes to the next point with
 //! the true displacement `G_j / n_j`, reusing the frame of the wrapped point at the zone edge, so
 //! every string closes in the periodic gauge.
 pub mod curvature;
+pub mod flow;
 pub mod hall;
 pub mod links;
+pub mod parity;
+pub mod perturbation;
 pub mod polarization;
 pub mod strings;
+pub mod topology;
 pub mod weighted;
 
 use super::{
+    bloch_mesh::{MeshIndex, SEPARATION},
     invalid,
-    setup::PeriodicSetup,
-    wannier::sampling::{self, Augmentation, Frame},
-    Crystal, PeriodicResult,
+    wannier::sampling::Frame,
 };
-use crate::{product, quantum::C64, Error, Result};
-use nalgebra::{DMatrix, Matrix3, Vector3};
-use std::f64::consts::PI;
+use crate::{quantum::C64, Error, Result};
+use nalgebra::{DMatrix, Vector3};
+
+use super::bloch_mesh::Sampler;
 
 type Matrix = DMatrix<C64>;
 
@@ -37,8 +41,6 @@ type Matrix = DMatrix<C64>;
 pub const LINK_TOLERANCE: f64 = 1e-6;
 /// An occupation within this fraction of empty or full counts as that (an insulator).
 pub const OCCUPATION_TOLERANCE: f64 = 1e-4;
-/// The smallest gap (Hartree) that separates a band group from its neighbors.
-pub const SEPARATION: f64 = 1e-6;
 
 /// The bands a Berry quantity is taken over.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -95,55 +97,15 @@ impl Manifold {
     }
 }
 
-/// The converged crystal, its setup (which makes states at any k-point) and the PAW one-center
-/// geometry of the links.
-pub struct Sampler<'a> {
-    pub crystal: &'a Crystal,
-    pub state: &'a PeriodicResult,
-    pub setup: &'a PeriodicSetup,
-    /// Lattice vectors as columns (Bohr).
-    pub lattice: Matrix3<f64>,
-    /// Reciprocal lattice vectors `G_j` as columns (1/Bohr), `G_i . a_j = 2 pi delta_ij`.
-    pub reciprocal: Matrix3<f64>,
-    augmentation: Augmentation,
-}
-
 /// The frames of a mesh, per channel.
 pub struct Lattice {
-    pub size: [usize; 3],
-    pub origin: [f64; 3],
+    pub mesh: MeshIndex,
     /// Frames of each channel in C order of the mesh; empty for an empty channel.
     pub frames: Vec<Vec<Frame>>,
     pub ranges: Vec<(usize, usize)>,
 }
 
 impl Lattice {
-    pub fn points(&self) -> usize {
-        self.size.iter().product()
-    }
-    /// The mesh indices `(i_0, i_1, i_2)` of point `index` (C order).
-    pub fn indices(&self, index: usize) -> [usize; 3] {
-        let [_, n1, n2] = self.size;
-        [index / (n1 * n2), (index / n2) % n1, index % n2]
-    }
-    pub fn index(&self, at: [usize; 3]) -> usize {
-        let [_, n1, n2] = self.size;
-        (at[0] * n1 + at[1]) * n2 + at[2]
-    }
-    /// The index of the next point along `direction`, wrapping at the zone edge.
-    pub fn next(&self, index: usize, direction: usize) -> usize {
-        self.advance(index, direction, 1)
-    }
-    /// The index `steps` points further along `direction`, wrapping at the zone edge.
-    pub fn advance(&self, index: usize, direction: usize, steps: usize) -> usize {
-        let mut at = self.indices(index);
-        at[direction] = (at[direction] + steps) % self.size[direction];
-        self.index(at)
-    }
-    /// The fractional k-point of mesh index `at`.
-    pub fn fractional(&self, at: [usize; 3]) -> [f64; 3] {
-        std::array::from_fn(|a| self.origin[a] + at[a] as f64 / self.size[a] as f64)
-    }
     /// The bands of `channel`.
     pub fn bands(&self, channel: usize) -> usize {
         let (lo, hi) = self.ranges[channel];
@@ -151,82 +113,7 @@ impl Lattice {
     }
 }
 
-fn mesh_size(size: [usize; 3]) -> Result<()> {
-    if size.contains(&0) {
-        return Err(invalid(
-            "a Berry k mesh needs a positive size in every direction",
-        ));
-    }
-    product(&size)?;
-    Ok(())
-}
-
-impl<'a> Sampler<'a> {
-    pub fn new(
-        crystal: &'a Crystal,
-        state: &'a PeriodicResult,
-        setup: &'a PeriodicSetup,
-    ) -> Result<Self> {
-        if !state.converged {
-            return Err(invalid(
-                "the crystal's self-consistent field did not converge: its Berry phases would \
-                 belong to an unconverged Hamiltonian",
-            ));
-        }
-        let lattice = setup.lattice;
-        let grid = sampling::lattice(&crystal.grid);
-        if (lattice - grid).norm() > 1e-8 * lattice.norm() {
-            return Err(invalid(
-                "the setup lattice and the crystal grid describe different cells",
-            ));
-        }
-        let reciprocal = 2.
-            * PI
-            * lattice
-                .try_inverse()
-                .ok_or_else(|| invalid("singular crystal lattice"))?
-                .transpose();
-        let augmentation = Augmentation {
-            centers: setup.centers.clone(),
-            labels: setup
-                .channels
-                .iter()
-                .map(|&(atom, l, m)| {
-                    Ok([
-                        i32::try_from(atom).map_err(|_| Error::Overflow)?,
-                        i32::try_from(l).map_err(|_| Error::Overflow)?,
-                        m,
-                    ])
-                })
-                .collect::<Result<Vec<_>>>()?,
-        };
-        augmentation.validate(crystal)?;
-        Ok(Self {
-            crystal,
-            state,
-            setup,
-            lattice,
-            reciprocal,
-            augmentation,
-        })
-    }
-
-    /// Spin channels: two for a collinear spin-polarized crystal, one otherwise (a spinor
-    /// crystal's frames carry both components).
-    pub fn channels(&self) -> usize {
-        self.crystal.spins
-    }
-
-    /// Electrons one band of a channel holds: 2 unpolarized, 1 per spin channel or spinor.
-    pub fn degeneracy(&self) -> f64 {
-        self.crystal.degeneracy()
-    }
-
-    /// `G_j` (1/Bohr).
-    pub fn reciprocal_vector(&self, j: usize) -> [f64; 3] {
-        self.reciprocal.column(j).into()
-    }
-
+impl Sampler<'_> {
     /// The occupied bands of an insulator, from the SCF occupations: every one empty or full
     /// within [`OCCUPATION_TOLERANCE`], one count per channel at every SCF point, and the counts
     /// holding the cell's electrons.
@@ -310,54 +197,38 @@ impl<'a> Sampler<'a> {
         origin: [f64; 3],
         manifold: &Manifold,
     ) -> Result<Lattice> {
-        mesh_size(size)?;
-        if origin.iter().any(|v| !v.is_finite()) {
-            return Err(invalid("a Berry mesh origin must be finite"));
-        }
+        let mesh = MeshIndex::new(size, origin)?;
         if manifold.ranges.len() != self.channels() {
             return Err(invalid("the Berry manifold must name every spin channel"));
         }
-        let ctx = &self.crystal.context;
-        ctx.run(|| {
-            let mut out = Lattice {
-                size,
-                origin,
-                frames: (0..self.channels()).map(|_| vec![]).collect(),
-                ranges: manifold.ranges.clone(),
-            };
-            // The highest occupied and lowest empty level over every channel and point: an
-            // insulator keeps them apart (a semimetal overlaps them with a direct gap everywhere).
-            let (mut top, mut bottom) = (f64::NEG_INFINITY, f64::INFINITY);
-            for index in 0..out.points() {
-                let fractional = out.fractional(out.indices(index));
-                let point = self
-                    .setup
-                    .matrices_at(ctx, &[fractional], &[1.])?
-                    .into_iter()
-                    .next()
-                    .ok_or_else(|| invalid("the setup made no states at a Berry k-point"))?;
-                for (s, &(lo, hi)) in manifold.ranges.iter().enumerate() {
-                    if lo == hi {
-                        continue;
-                    }
-                    let bands: Vec<usize> = (lo..hi).collect();
-                    let frame = Frame::from_point(self.crystal, self.state, &point, s, &bands)?;
-                    Self::check_point(&frame, s, lo, hi, manifold)?;
-                    let levels = frame.levels.as_slice();
-                    top = top.max(levels[hi - 1]);
-                    if let Some(empty) = levels.get(hi) {
-                        bottom = bottom.min(*empty);
-                    }
-                    out.frames[s].push(frame);
-                }
+        // The highest occupied and lowest empty level over every channel and point: an
+        // insulator keeps them apart (a semimetal overlaps them with a direct gap everywhere).
+        let (mut top, mut bottom) = (f64::NEG_INFINITY, f64::INFINITY);
+        let bands: Vec<Vec<usize>> = manifold
+            .ranges
+            .iter()
+            .map(|&(lo, hi)| (lo..hi).collect())
+            .collect();
+        let frames = self.frames(&mesh, &bands, |s, frame| {
+            let (lo, hi) = manifold.ranges[s];
+            Self::check_point(frame, s, lo, hi, manifold)?;
+            let levels = frame.levels.as_slice();
+            top = top.max(levels[hi - 1]);
+            if let Some(empty) = levels.get(hi) {
+                bottom = bottom.min(*empty);
             }
-            if manifold.occupied && bottom - top <= SEPARATION {
-                return Err(manifold.metal.error(format!(
-                    "the highest occupied level of the mesh ({top:.6} Ha) is not below its \
-                     lowest empty level ({bottom:.6} Ha): the bands overlap (a metal or semimetal)"
-                )));
-            }
-            Ok(out)
+            Ok(())
+        })?;
+        if manifold.occupied && bottom - top <= SEPARATION {
+            return Err(manifold.metal.error(format!(
+                "the highest occupied level of the mesh ({top:.6} Ha) is not below its \
+                 lowest empty level ({bottom:.6} Ha): the bands overlap (a metal or semimetal)"
+            )));
+        }
+        Ok(Lattice {
+            mesh,
+            frames,
+            ranges: manifold.ranges.clone(),
         })
     }
 
@@ -372,9 +243,6 @@ impl<'a> Sampler<'a> {
     ) -> Result<()> {
         let levels = frame.levels.as_slice();
         let at = frame.fractional;
-        if !manifold.occupied && !manifold.isolated {
-            return Ok(());
-        }
         if manifold.occupied {
             if hi < levels.len() && levels[hi] - levels[hi - 1] <= SEPARATION {
                 return Err(manifold.metal.error(format!(
@@ -385,20 +253,11 @@ impl<'a> Sampler<'a> {
             }
             return Ok(());
         }
-        if lo > 0 && levels[lo] - levels[lo - 1] <= SEPARATION {
-            return Err(invalid(format!(
-                "bands {lo}..{hi} of channel {channel} touch band {} at k = {at:?}: the group is \
-                 not isolated",
-                lo - 1
-            )));
+        if !manifold.isolated {
+            return Ok(());
         }
-        if hi < levels.len() && levels[hi] - levels[hi - 1] <= SEPARATION {
-            return Err(invalid(format!(
-                "bands {lo}..{hi} of channel {channel} touch band {hi} at k = {at:?}: the group \
-                 is not isolated"
-            )));
-        }
-        Ok(())
+        let bands: Vec<usize> = (lo..hi).collect();
+        super::bloch_mesh::check_isolated(frame, channel, &bands, "so its Berry phase is undefined")
     }
 
     /// The link `M(k, k + G_j / n_j)` from point `index` of `lattice` to the next point along
@@ -425,7 +284,7 @@ impl<'a> Sampler<'a> {
     ) -> Result<Matrix> {
         if direction > 2
             || channel >= lattice.frames.len()
-            || index >= lattice.points()
+            || index >= lattice.mesh.points()
             || stride == 0
         {
             return Err(invalid("invalid Berry link request"));
@@ -435,13 +294,11 @@ impl<'a> Sampler<'a> {
             return Err(invalid("an empty band channel has no links"));
         }
         let b = Vector3::from(self.reciprocal_vector(direction)) * stride as f64
-            / lattice.size[direction] as f64;
-        sampling::link(
-            self.crystal,
+            / lattice.mesh.size[direction] as f64;
+        self.overlap(
             &frames[index],
-            &frames[lattice.advance(index, direction, stride)],
+            &frames[lattice.mesh.advance(index, direction, stride)],
             b.into(),
-            &self.augmentation,
         )
     }
 }

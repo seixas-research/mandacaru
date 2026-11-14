@@ -13,7 +13,11 @@ class ASEProperties:
         """Localize periodic Bloch states with the native PAW Wannier solver.
 
         Energy windows use eV on the ASE eigenvalue scale. Centers and
-        spreads are returned in Angstrom and Angstrom squared.
+        spreads are returned in Angstrom and Angstrom squared. Raises
+        ``ValueError`` for an unconverged SCF, a band group without
+        ``windows=`` that is not isolated, or a magnetic spinor subspace with a
+        nonzero Chern number, and ``NotImplementedError`` for a crystal loaded
+        from a snapshot.
         """
         from .wannier import calculate
 
@@ -64,6 +68,46 @@ class ASEProperties:
         return self.get_berry_curvature(plane, kpts=kpts, offset=offset,
                                         bands=bands).chern_number
 
+    def get_wannier_charge_center_flow(self, plane, direction, kpts=None, offset=0.0, bands=None):
+        """The flow of the hybrid Wannier charge centers across a k plane
+        (:class:`~mandacaru.analysis.berry.WannierChargeCenterFlow`).
+
+        ``plane`` is the index of the reciprocal vector ``G_c`` normal to the plane and
+        ``direction`` that of the in-plane ``G_a`` the strings run along (the third vector is
+        the flow parameter). ``kpts`` is as in :meth:`get_berry_curvature`: its ``direction``
+        entry is the string length (at least 3) and its transverse entry the number of first
+        transverse intervals per period, bisected where the centers move too far. A
+        time-reversal-invariant plane of a time-reversal-invariant crystal (``offset`` 0 or
+        1/2, occupied bands) is flown over half the period and gives its Z2 index; any other
+        plane over the whole period and gives the Chern number as the winding. ``bands`` is as
+        in :meth:`get_berry_phase`. A metal raises ``ValueError``; a collinear spin-polarized
+        crystal ``NotImplementedError``.
+        """
+        from .berry import wannier_charge_center_flow
+
+        return wannier_charge_center_flow(self._calculation_owner(), plane, direction, kpts=kpts,
+                                          offset=offset, bands=bands)
+
+    def get_z2_invariant(self, kpts=None, plane=None, offset=0.0, direction=None, method="flow"):
+        """The Z2 topological invariant of a time-reversal-invariant insulator
+        (:class:`~mandacaru.analysis.berry.Z2Invariant`).
+
+        Without ``plane``, the indices ``(nu_0; nu_1 nu_2 nu_3)`` of the crystal from its six
+        planes ``k_c`` in {0, 1/2} (strings along ``G_{c+1}`` of the mesh ``kpts``, default the
+        calculation's ``kpts``); with ``plane`` (and ``offset`` 0 or 1/2) the index of that
+        plane, the 2D invariant. ``method="flow"`` counts the crossings of the Wannier-center
+        flow of each plane (Soluyanov and Vanderbilt); ``method="parity"`` takes the Fu-Kane
+        product of the inversion eigenvalues at the eight time-reversal-invariant points and
+        needs an inversion center. Without spin-orbit coupling the occupied manifold is spin
+        doubled and every index is zero. A metal or a flow that does not settle raises
+        ``ValueError``; a collinear spin-polarized crystal or a magnetic spinor one (neither is
+        time-reversal invariant) ``NotImplementedError``.
+        """
+        from .berry import z2_invariant
+
+        return z2_invariant(self._calculation_owner(), kpts=kpts, plane=plane, offset=offset,
+                            direction=direction, method=method)
+
     def get_polarization(self, kpts=None):
         """The Berry-phase electric polarization of an insulating crystal
         (:class:`~mandacaru.analysis.berry.Polarization`).
@@ -111,9 +155,11 @@ class ASEProperties:
         """The lowest ``num_states`` linear-response excitations of a converged molecule
         (:class:`~mandacaru.analysis.excitations.Excitations`).
 
-        Time-dependent DFT on a ``method="dft"`` state (``xc="lda"``, ``"pbe"`` or ``"hse06"``:
-        the adiabatic kernel of the functional, with the short-range exact exchange of the
-        screened hybrid in both A and B) and TDHF/CIS on an ``rhf`` or ``uhf`` state.
+        Time-dependent DFT on a ``method="dft"`` state (``xc="lda"``, ``"pbe"``, ``"r2scan"``
+        or ``"hse06"``: the adiabatic kernel of the functional, with the kinetic-density
+        response of the meta-GGA and the short-range exact exchange of the screened hybrid in
+        both A and B; with ``hubbard_u`` its +U kernel) and TDHF/CIS on an ``rhf`` or ``uhf``
+        state.
         ``approximation`` is ``"tda"`` (Tamm-Dancoff) or ``"casida"`` (the full equations).
         A closed shell is spin-adapted: ``spin`` is ``"singlet"`` (the default) or
         ``"triplet"``. An unrestricted reference (an open shell, or ``spin=True`` /
@@ -126,9 +172,8 @@ class ASEProperties:
         engine's energy, whose one-center terms are linearized; the view reports, per root,
         the first-order shift the missing one-center Hartree kernel would make. The view holds
         the length-form strengths and the velocity form (with the PAW one-center part of the
-        gradient), which agree only as the basis is completed. Meta-GGAs, rVV10, DFT+U,
-        spin-orbit datasets, fractional occupations, crystals and ``precision="float32"``
-        raise. Each call appends an ``[EXCITED STATES]`` block to the
+        gradient), which agree only as the basis is completed. rVV10, spin-orbit datasets,
+        fractional occupations, crystals and ``precision="float32"`` raise. Each call appends an ``[EXCITED STATES]`` block to the
         run log.
         """
         from .excitations import excitations
@@ -136,6 +181,37 @@ class ASEProperties:
         return excitations(self._calculation_owner(), num_states, approximation=approximation,
                            spin=spin, kernel=kernel, tolerance=tolerance,
                            max_iterations=max_iterations)
+
+    def get_real_time(self, duration=40.0, time_step=0.005, *, direction="x", strength=0.002,
+                      kick="density", gauge=None, propagator="etrs", corrector_tolerance=1e-6,
+                      max_energy_drift=0.05):
+        """Propagate a converged molecule in real time after a delta kick
+        (:class:`~mandacaru.analysis.real_time.RealTime`).
+
+        The occupied orbitals of the ``method="dft"`` (``xc="lda"``, ``"pbe"`` or ``"hse06"``,
+        with ``hubbard_u`` its +U on the complex shell occupations), ``rhf`` or ``uhf`` reference
+        are propagated under the state's own Fock matrix for ``duration`` in steps of
+        ``time_step`` (fs; atomic time units with ``atomic_units=True``) after a kick of
+        ``strength`` (1/Angstrom; 1/Bohr) along ``direction`` (``"x"``, ``"y"``, ``"z"`` or a
+        vector). ``kick="density"`` multiplies every orbital by ``exp(-i strength r)`` (the length
+        gauge; the spectrum's weights are the oscillator strengths of ``get_excitations``);
+        ``kick="spin"`` kicks the two spins oppositely and excites the triplets of a closed
+        shell. ``gauge="velocity"`` applies a vector-potential step instead. ``propagator`` is
+        ``"etrs"`` (the default, enforced time-reversal symmetry with a corrector converged to
+        ``corrector_tolerance`` at the default kick, scaled with ``strength``), ``"aetrs"`` or ``"midpoint"``; each refuses a ``time_step``
+        whose product with the basis width ``W`` of the Fock matrix exceeds its stability bound
+        (4 for ETRS, 1 for the others). The run raises when the energy drifts by more than
+        ``max_energy_drift`` kick energies (``None`` checks nothing). The view's
+        ``strength_function`` and ``polarizability`` are the spectra. r2SCAN, rVV10, spin-orbit
+        datasets, fractional occupations, crystals and ``precision="float32"`` raise. Each call
+        appends a ``[REAL TIME]`` block to the run log.
+        """
+        from .real_time import real_time
+
+        return real_time(self._calculation_owner(), duration, time_step, direction=direction,
+                         strength=strength, kick=kick, gauge=gauge, propagator=propagator,
+                         corrector_tolerance=corrector_tolerance,
+                         max_energy_drift=max_energy_drift)
 
     def _calculation_owner(self):
         return self
@@ -311,7 +387,12 @@ class ASEProperties:
         return np.asarray(native["eigenvalues"])
 
     def band_structure(self, path=None, npoints=100):
-        """The mean-field band structure along an ASE band path (eV).
+        """The mean-field band structure along a band path (eV), as an ASE ``BandStructure``.
+
+        ``path`` is a string of the lattice's high-symmetry labels (see :meth:`band_path`), a
+        sequence of fractional points (each optionally a ``(label, point)`` pair: any lattice) or
+        ``None`` for the lattice's default path; the path, its labels and its ``npoints`` k-points
+        are computed by the engine and match ASE's ``cell.bandpath`` where ASE names the lattice.
 
         A DFT crystal is diagonalized at every path point. A quantum method on a crystal
         reports the bands of its supercell mean-field reference unfolded onto the primitive
@@ -319,13 +400,20 @@ class ASEProperties:
         between them. The correlated quasiparticle energies are those of
         :meth:`get_spectral_function`, at the mesh points only.
         """
+        from ase.dft.kpoints import BandPath
         from ase.spectrum.band_structure import BandStructure
 
         calculation = self._calculation_owner()
         if not _bloch.is_supercell(calculation):
             self._periodic_snapshot()
         atoms = calculation.atoms if calculation.atoms is not None else self.atoms
-        bandpath = atoms.cell.bandpath(path=path, npoints=npoints, pbc=atoms.pbc)
+        # The k-path, its labels and the named points are the engine's; ASE only holds them.
+        text, points = _kspace.path_arguments(path)
+        raw = _native.ase_band_path(
+            np.ascontiguousarray(atoms.cell.array, dtype=float), [bool(p) for p in atoms.pbc],
+            int(npoints), text, points)
+        bandpath = BandPath(atoms.cell, kpts=raw["kpoints"], special_points=raw["special_points"],
+                            path=raw["path"])
         return BandStructure(
             bandpath,
             energies=_native.to_user_units(
@@ -410,12 +498,11 @@ class ASEProperties:
             # (spins, nk, orbital, band) -> (spins, nk, band, orbital)
             weights = np.swapaxes(np.asarray(raw["projections"]), 2, 3)
         atoms = calculation.atoms if calculation.atoms is not None else self.atoms
-        reciprocal = np.ascontiguousarray(atoms.cell.reciprocal(), dtype=float)
         axis = self._energy_axis(levels, npoints, energies, 0.5)
         raw = _native.tetrahedron_dos(
             calculation.context,
             list(size),
-            reciprocal,
+            np.ascontiguousarray(atoms.cell.array, dtype=float),
             [list(map(float, k)) for k in fractional],
             np.ascontiguousarray(levels, dtype=np.float64),
             _native.energy_to_hartree(np.ascontiguousarray(axis, dtype=float), "eV"),

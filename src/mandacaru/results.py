@@ -263,6 +263,12 @@ class CalculationResult:
         return self._raw.get("num_screenings", 0)
 
     @property
+    def replica_swaps(self):
+        """``(accepted, attempted)`` replica exchanges of a search with ``replicas > 1``; else ``None``."""
+        swaps = self._raw.get("swap_acceptance")
+        return None if swaps is None else tuple(swaps)
+
+    @property
     def proposal_ready(self):
         return self._raw.get("proposal_ready", False)
 

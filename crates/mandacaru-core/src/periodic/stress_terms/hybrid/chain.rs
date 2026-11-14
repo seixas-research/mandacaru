@@ -4,6 +4,7 @@
 //! `w_k`, the spin factor and `-a/2` already inside). It is contracted here per k-point, never
 //! added to the semilocal response of the pulay terms (that would weight it twice).
 use super::{Tangents, Terms};
+use crate::periodic::stress_terms::Directions;
 use crate::{
     periodic::{hybrid_gradient::Gradient, invalid, Crystal},
     Result,
@@ -30,6 +31,7 @@ pub(super) fn contract(
     tangents: &Tangents,
     gradient: &Gradient,
     terms: &mut Terms,
+    directions: &Directions,
 ) -> Result<()> {
     let nk = c.points.len();
     if gradient.compensation.len() != c.spins * nk || gradient.sphere.len() != c.spins * nk {
@@ -37,21 +39,23 @@ pub(super) fn contract(
             "exchange strain: the response must hold one matrix per spin and k-point",
         ));
     }
+    let mut compensation = vec![0.; directions.len()];
+    let mut sphere_terms = vec![0.; directions.len()];
     for k in 0..nk {
-        let dc = tangents.projection_strain(k)?;
+        let dc = tangents.projection_strain(k, directions.as_slice())?;
         for s in 0..c.spins {
             let at = s * nk + k;
             let (comp, sphere) = (&gradient.compensation[at], &gradient.sphere[at]);
             if comp.shape() != (c.p, c.m) || sphere.shape() != (c.p, c.m) {
                 return Err(invalid("exchange strain: the response is p x m"));
             }
-            for a in 0..3 {
-                for b in 0..3 {
-                    terms.compensation[a][b] += 2. * trace(&dc[a][b], comp);
-                    terms.sphere[a][b] += 2. * trace(&dc[a][b], sphere);
-                }
+            for (d, dc) in dc.iter().enumerate() {
+                compensation[d] += 2. * trace(dc, comp);
+                sphere_terms[d] += 2. * trace(dc, sphere);
             }
         }
     }
+    terms.compensation = directions.assemble(&compensation);
+    terms.sphere = directions.assemble(&sphere_terms);
     Ok(())
 }

@@ -17,17 +17,25 @@
 //! in the dual basis.
 use super::{
     description::Description,
-    gradient::{gradient, scf, Bands, Breakdown, State},
+    gradient::{
+        check_request, contract as contract_forces, scf, Bands, Breakdown, Derivatives, Frozen,
+        State,
+    },
     invalid,
     point_group::PointGroup,
-    setup::provider::SetupDerivatives,
+    setup::{
+        projection_table::SetupTables,
+        provider::{Fields, SetupDerivatives},
+    },
     stress_terms::{
-        crystal::{crystal_strain, crystal_stress, SpinOrbitInputs},
+        crystal::{crystal_strain_reusing, crystal_stress_along, Reuse, SpinOrbitInputs},
+        directions::Directions,
         stress as stress_of, Stress,
     },
     Crystal, PeriodicResult,
 };
 use crate::{math::storage::MatrixSource, product, Error, Result};
+use std::sync::{Arc, Mutex, OnceLock};
 
 pub(in crate::periodic) mod setup;
 use setup::Setup;
@@ -99,10 +107,177 @@ fn own_group(c: &Crystal) -> Option<PointGroup> {
     c.description.as_ref().and_then(|d| d.point_group.clone())
 }
 
+/// What a force and a stress of one converged crystal share: the geometry rebuilt from the
+/// snapshot, the quadrature of the projections of every k-point, the engine's copy of the bands and
+/// the frozen output-density state (potentials and re-diagonalized bands). The first call forms
+/// each, the next ones read it; build one per [`PeriodicResult`] and ask it for both.
+pub struct Response {
+    setup: Setup,
+    projections: Arc<SetupTables>,
+    state: OnceLock<State>,
+    frozen: OnceLock<Frozen<Fields>>,
+    forming: Mutex<()>,
+}
+
+impl Response {
+    /// Rebuilds the geometry of `c` from its snapshot; raises, naming the cause, for a crystal
+    /// the engines do not differentiate.
+    pub fn new(c: &Crystal) -> Result<Self> {
+        Ok(Self {
+            setup: Setup::new(c)?,
+            projections: Arc::new(SetupTables::new()),
+            state: OnceLock::new(),
+            frozen: OnceLock::new(),
+            forming: Mutex::new(()),
+        })
+    }
+
+    fn state(&self, c: &Crystal, r: &PeriodicResult) -> Result<&State> {
+        let _forming = self.forming.lock().unwrap_or_else(|e| e.into_inner());
+        if self.state.get().is_none() {
+            let _ = self.state.set(state(c, r)?);
+        }
+        self.state
+            .get()
+            .ok_or_else(|| invalid("the engine's bands were not formed"))
+    }
+
+    /// The frozen state of the output density of `r`, formed once with `provider`.
+    fn frozen<'s>(
+        &'s self,
+        c: &Crystal,
+        r: &PeriodicResult,
+        provider: &SetupDerivatives<'_>,
+    ) -> Result<&'s Frozen<Fields>> {
+        let state = self.state(c, r)?;
+        let _forming = self.forming.lock().unwrap_or_else(|e| e.into_inner());
+        if self.frozen.get().is_none() {
+            let frozen = crate::periodic::gradient::freeze(provider, state, c.hubbard_hook())?;
+            let _ = self.frozen.set(frozen);
+        }
+        self.frozen
+            .get()
+            .ok_or_else(|| invalid("the frozen state was not formed"))
+    }
+
+    /// `-dF/dtau` per atom (Hartree/Bohr), the engines' sum of every term averaged over the
+    /// symmetry operations of a reduced mesh.
+    pub fn forces(&self, c: &Crystal, r: &PeriodicResult) -> Result<Vec<[f64; 3]>> {
+        Ok(self.breakdown(c, r)?.forces())
+    }
+
+    /// The per-term [`Breakdown`] (`dF/dtau`) behind [`Response::forces`].
+    pub fn breakdown(&self, c: &Crystal, r: &PeriodicResult) -> Result<Breakdown> {
+        self.breakdown_with_group(c, r, own_group(c))
+    }
+
+    /// Runs `f` on the force provider of the setup, tied to the SCF crystal, with the shared
+    /// projections and the averaging over `group`.
+    fn with_provider<T>(
+        &self,
+        c: &Crystal,
+        r: &PeriodicResult,
+        group: Option<PointGroup>,
+        f: impl FnOnce(&SetupDerivatives<'_>) -> Result<T>,
+    ) -> Result<T> {
+        scf::refuse(c)?;
+        let _held = reserve_state(c)?;
+        let setup = &self.setup;
+        let cores = setup.cores()?;
+        let (so_projectors, so_couplings) = setup.spin_orbit(c)?;
+        let mut provider = SetupDerivatives::new(
+            &c.context,
+            setup.inputs(c, &cores),
+            setup.layout(c),
+            setup.operators(),
+        )?
+        .with_scf(c, r.options.clone())?
+        .with_projections(self.projections.clone());
+        if c.spinor {
+            provider = provider.with_spin_orbit(&so_projectors, &so_couplings)?;
+        }
+        provider.set_point_group(group);
+        f(&provider)
+    }
+
+    fn ensure_frozen(&self, c: &Crystal, r: &PeriodicResult) -> Result<&Frozen<Fields>> {
+        match self.frozen.get() {
+            Some(frozen) => Ok(frozen),
+            None => self.with_provider(c, r, None, |provider| self.frozen(c, r, provider)),
+        }
+    }
+
+    fn breakdown_with_group(
+        &self,
+        c: &Crystal,
+        r: &PeriodicResult,
+        group: Option<PointGroup>,
+    ) -> Result<Breakdown> {
+        self.with_provider(c, r, group, |provider| {
+            check_request(&provider.layout().request)?;
+            contract_forces(provider, self.frozen(c, r, provider)?)
+        })
+    }
+
+    /// The analytic stress of the converged crystal `r` at the pins of its snapshot (node counts,
+    /// ion width, basis): `g_ab = dF/d eps_ab` and `sigma = (g + g^T) / (2 Omega)`, averaged over
+    /// the symmetry operations of a reduced mesh.
+    pub fn stress(&self, c: &Crystal, r: &PeriodicResult) -> Result<Stress> {
+        self.stress_along(c, r, own_group(c), None)
+    }
+
+    fn stress_along(
+        &self,
+        c: &Crystal,
+        r: &PeriodicResult,
+        group: Option<PointGroup>,
+        entries: Option<Directions>,
+    ) -> Result<Stress> {
+        crate::periodic::stress_terms::crystal::refuse(c)?;
+        let _held = reserve_state(c)?;
+        let setup = &self.setup;
+        let cores = setup.cores()?;
+        let (so_projectors, so_couplings) = setup.spin_orbit(c)?;
+        let spin_orbit = c.spinor.then_some(SpinOrbitInputs {
+            projectors: &so_projectors,
+            couplings: &so_couplings,
+        });
+        let state = self.state(c, r)?;
+        let reuse = Reuse {
+            frozen: Some(self.ensure_frozen(c, r)?),
+            projections: Some(self.projections.clone()),
+        };
+        let (inputs, layout, operators) =
+            (setup.inputs(c, &cores), setup.layout(c), setup.operators());
+        if c.screened_exchange()?.is_some() {
+            if group.is_some() {
+                return Err(Error::Unsupported(
+                    "the analytic crystal stress is not available for a hybrid crystal on a k mesh \
+                     reduced by space-group symmetry (use symmetry=False)"
+                        .into(),
+                ));
+            }
+            return crystal_stress_along(
+                &c.context, inputs, layout, operators, c, &r.options, state, spin_orbit, entries,
+                reuse,
+            );
+        }
+        let mut strain = crystal_strain_reusing(
+            &c.context, inputs, layout, operators, c, &r.options, state, spin_orbit, reuse,
+        )?;
+        match entries {
+            Some(entries) => strain.strain.set_directions(entries),
+            None => strain.strain.set_point_group(group)?,
+        }
+        stress_of(&strain.strain, &strain.frozen)
+    }
+}
+
 /// `-dF/dtau` per atom (Hartree/Bohr) of the converged crystal `r`, the engines' sum of every term
-/// averaged over the symmetry operations of a reduced mesh.
+/// averaged over the symmetry operations of a reduced mesh. A fresh [`Response`]: a caller that
+/// asks for the stress too builds one and asks it for both.
 pub fn forces(c: &Crystal, r: &PeriodicResult) -> Result<Vec<[f64; 3]>> {
-    forces_with_group(c, r, own_group(c))
+    Response::new(c)?.forces(c, r)
 }
 
 /// [`forces`] with the averaging over `group` instead of the crystal's own: the controls of the
@@ -115,45 +290,20 @@ pub fn forces_with_group(
     r: &PeriodicResult,
     group: Option<PointGroup>,
 ) -> Result<Vec<[f64; 3]>> {
-    Ok(breakdown_with_group(c, r, group)?.forces())
-}
-
-fn breakdown_with_group(
-    c: &Crystal,
-    r: &PeriodicResult,
-    group: Option<PointGroup>,
-) -> Result<Breakdown> {
-    scf::refuse(c)?;
-    let _held = reserve_state(c)?;
-    let setup = Setup::new(c)?;
-    let cores = setup.cores()?;
-    let (so_projectors, so_couplings) = setup.spin_orbit(c)?;
-    let mut provider = SetupDerivatives::new(
-        &c.context,
-        setup.inputs(c, &cores),
-        setup.layout(c),
-        setup.operators(),
-    )?
-    .with_scf(c, r.options.clone())?;
-    if c.spinor {
-        provider = provider.with_spin_orbit(&so_projectors, &so_couplings)?;
-    }
-    provider.set_point_group(group);
-    gradient(&provider, &state(c, r)?, c.hubbard_hook())
+    Ok(Response::new(c)?.breakdown_with_group(c, r, group)?.forces())
 }
 
 /// The per-term [`Breakdown`] (`dF/dtau`) behind [`forces`], for the tests that check a term is
 /// not vacuous. A caller of the engine uses [`forces`].
 #[doc(hidden)]
 pub fn breakdown(c: &Crystal, r: &PeriodicResult) -> Result<Breakdown> {
-    breakdown_with_group(c, r, own_group(c))
+    Response::new(c)?.breakdown(c, r)
 }
 
-/// The analytic stress of the converged crystal `r` at the pins of its snapshot (node counts, ion
-/// width, basis): `g_ab = dF/d eps_ab` and `sigma = (g + g^T) / (2 Omega)`, averaged over the
-/// symmetry operations of a reduced mesh.
+/// The analytic stress of the converged crystal `r` ([`Response::stress`]) from a fresh
+/// [`Response`].
 pub fn stress(c: &Crystal, r: &PeriodicResult) -> Result<Stress> {
-    stress_with_group(c, r, own_group(c))
+    Response::new(c)?.stress(c, r)
 }
 
 /// [`stress`] with the averaging over `group` instead of the crystal's own (see
@@ -164,32 +314,15 @@ pub fn stress_with_group(
     r: &PeriodicResult,
     group: Option<PointGroup>,
 ) -> Result<Stress> {
-    crate::periodic::stress_terms::crystal::refuse(c)?;
-    let _held = reserve_state(c)?;
-    let setup = Setup::new(c)?;
-    let cores = setup.cores()?;
-    let (so_projectors, so_couplings) = setup.spin_orbit(c)?;
-    let spin_orbit = c.spinor.then_some(SpinOrbitInputs {
-        projectors: &so_projectors,
-        couplings: &so_couplings,
-    });
-    let state = state(c, r)?;
-    let (inputs, layout, operators) = (setup.inputs(c, &cores), setup.layout(c), setup.operators());
-    if c.screened_exchange()?.is_some() {
-        if group.is_some() {
-            return Err(Error::Unsupported(
-                "the analytic crystal stress is not available for a hybrid crystal on a k mesh \
-                 reduced by space-group symmetry (use symmetry=False)"
-                    .into(),
-            ));
-        }
-        return crystal_stress(
-            &c.context, inputs, layout, operators, c, &r.options, &state, spin_orbit,
-        );
-    }
-    let mut strain = crystal_strain(
-        &c.context, inputs, layout, operators, c, &r.options, &state, spin_orbit,
-    )?;
-    strain.strain.set_point_group(group);
-    stress_of(&strain.strain, &strain.frozen)
+    Response::new(c)?.stress_along(c, r, group.clone(), None)
+}
+
+/// The stress along the nine unit strain tensors ([`Directions::all_entries`]): every entry of
+/// `g_ab` unsymmetrized, averaged over the crystal's own operations, and the antisymmetric part.
+/// The finite-difference tests gate these entries; the production stress contracts along the
+/// invariant directions only.
+#[doc(hidden)]
+pub fn stress_all_entries(c: &Crystal, r: &PeriodicResult) -> Result<Stress> {
+    let group = own_group(c);
+    Response::new(c)?.stress_along(c, r, group.clone(), Some(Directions::all_entries(group)))
 }

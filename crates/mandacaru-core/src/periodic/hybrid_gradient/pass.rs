@@ -23,7 +23,7 @@ use crate::{
         Crystal, KPoint,
     },
     quantum::C64,
-    Buffer, Result,
+    Buffer, Level, Result,
 };
 
 pub(super) struct Pass {
@@ -46,14 +46,75 @@ struct Target<'a> {
     du: Option<[Buffer<C64>; 3]>,
 }
 
-struct Work<'a> {
-    c: &'a Crystal,
-    aug: &'a Augmentation<'a>,
-    motion: Option<&'a dyn Motion>,
-    fft: Fft3,
-    pair: Buffer<C64>,
-    out: Pass,
-    channel_owner: Vec<usize>,
+/// One addition to the [`Pass`], recorded by a state and replayed in the order of the serial
+/// sweep: an entry can receive several additions from one state (the channels of an atom, the
+/// rows it owns, the target and the source part of `Z` when `q = k`), so a state's share is the
+/// list of its additions, not their sum.
+enum Add {
+    Energy(f64),
+    Phase {
+        component: usize,
+        atom: usize,
+        axis: usize,
+        value: f64,
+    },
+    Bra {
+        component: usize,
+        atom: usize,
+        axis: usize,
+        value: f64,
+    },
+    Ket {
+        component: usize,
+        atom: usize,
+        axis: usize,
+        value: f64,
+    },
+    /// `compensation[at] += matrix` (`p x m`), every entry once.
+    Compensation {
+        component: usize,
+        at: usize,
+        matrix: Matrix,
+    },
+}
+
+fn apply(out: &mut Pass, adds: Vec<Add>) {
+    for add in adds {
+        match add {
+            Add::Energy(value) => out.energy += value,
+            Add::Phase {
+                component,
+                atom,
+                axis,
+                value,
+            } => out.components[component].phase[atom][axis] += value,
+            Add::Bra {
+                component,
+                atom,
+                axis,
+                value,
+            } => out.components[component].bra[atom][axis] += value,
+            Add::Ket {
+                component,
+                atom,
+                axis,
+                value,
+            } => out.components[component].ket[atom][axis] += value,
+            Add::Compensation {
+                component,
+                at,
+                matrix,
+            } => out.components[component].compensation[at] += matrix,
+        }
+    }
+}
+
+/// What a state lane keeps from one state to the next: its transform and pair row, made on the
+/// lane's own thread the first time (so the transform takes the lane's share of the workers).
+#[derive(Default)]
+struct StateLane {
+    fft: Option<Fft3>,
+    pair: Option<Buffer<C64>>,
 }
 
 /// Spin components of a state's wave function: 2 for a spinor, 1 otherwise.
@@ -100,7 +161,15 @@ fn rows_dot<'a>(w: &'a [C64], v: &'a [C64], n: usize) -> impl Iterator<Item = C6
         .map(|(a, b)| a.iter().zip(b).map(|(x, y)| x * y.conj()).sum())
 }
 
-pub(super) fn run<M: MatrixSource>(
+/// What the pass shares with every state of every target.
+struct Sweep<'a> {
+    c: &'a Crystal,
+    aug: &'a Augmentation<'a>,
+    motion: Option<&'a dyn Motion>,
+    channel_owner: Vec<usize>,
+}
+
+pub(super) fn run<M: MatrixSource + Sync>(
     c: &Crystal,
     matrices: &[M],
     screening: Screening,
@@ -129,59 +198,102 @@ pub(super) fn run<M: MatrixSource>(
     } else {
         (1.0, 1.0)
     };
-    let mut work = Work {
+    let sweep = Sweep {
         c,
         aug,
         motion,
-        fft: Fft3::new(&c.context, c.grid.index.shape())?,
-        pair: c.context.allocate::<C64>(n)?,
-        out: Pass {
-            energy: 0.,
-            components: (0..components(c))
-                .map(|_| Component {
-                    phase: vec![[0.; 3]; atoms],
-                    bra: vec![[0.; 3]; atoms],
-                    ket: vec![[0.; 3]; atoms],
-                    compensation: vec![Matrix::zeros(c.p, c.m); c.spins * nk],
-                })
-                .collect(),
-        },
         channel_owner: aug.sites().channels.iter().map(|ch| ch.0).collect(),
     };
+    let mut out = Pass {
+        energy: 0.,
+        components: (0..components(c))
+            .map(|_| Component {
+                phase: vec![[0.; 3]; atoms],
+                bra: vec![[0.; 3]; atoms],
+                ket: vec![[0.; 3]; atoms],
+                compensation: vec![Matrix::zeros(c.p, c.m); c.spins * nk],
+            })
+            .collect(),
+    };
+    // The target points run on the `kpts` lanes, the states of a source on the target's `bands`
+    // lanes; each state records its additions, replayed in the order of the serial sweep (spin,
+    // target, source, state). A window of `kpts` targets is held at a time.
+    let ctx = &c.context;
+    let k_lanes = ctx.lanes(Level::Kpts, nk);
+    let b_lanes = ctx.lanes(Level::Bands, usize::MAX);
+    let lane_bytes = crate::product(&[5 * rows + 1, n, 16])?
+        .checked_add(crate::product(&[
+            *c.grid.index.shape().iter().max().unwrap_or(&1),
+            4096,
+        ])?)
+        .ok_or(crate::Error::Overflow)?;
+    ctx.check_lanes(Level::Bands, b_lanes, lane_bytes)?;
+    ctx.check_lanes(
+        Level::Kpts,
+        k_lanes,
+        crate::product(&[4 * c.m + c.m * c.m, n, 16])?
+            .checked_add(crate::product(&[b_lanes, lane_bytes])?)
+            .ok_or(crate::Error::Overflow)?,
+    )?;
+    let mut targets: Vec<Vec<StateLane>> = (0..k_lanes)
+        .map(|_| (0..b_lanes).map(|_| StateLane::default()).collect())
+        .collect();
     // A spinor has one channel (`spins = 1`) whose matrices are `2m x 2m`.
     for s in 0..c.spins {
         let occupied = occupied_states(c, matrices, s, spin_scale, Some((aug, Part::Both)))?;
-        for (k, point) in c.points.iter().enumerate() {
-            let d = matrices[s * nk + k].matrix(&c.context)?;
-            let mut u = c.context.allocate::<C64>(c.m * n)?;
-            periodic_part(c, point.k, &point.psi.read(&c.context)?, u.as_mut_slice());
-            let target = Target {
-                point,
-                d: &*d * C64::new(spin_scale, 0.),
-                scale: -0.5 * screening.fraction * mult * point.weight,
-                at: s * nk + k,
-                u,
-                du: motion.map(|mo| slopes(c, mo, k)).transpose()?,
-            };
-            for (q, source) in occupied.iter().enumerate() {
-                if !source.wavefunctions.is_empty() {
-                    work.source(&target, s * nk + q, q, source, screening, exxdiv)?;
+        for first in (0..nk).step_by(k_lanes.max(1)) {
+            let count = k_lanes.max(1).min(nk - first);
+            let window = ctx.map_tasks(Level::Kpts, &mut targets[..count], count, |lanes, i| {
+                let k = first + i;
+                let point = &c.points[k];
+                let d = matrices[s * nk + k].matrix(&c.context)?;
+                let mut u = c.context.allocate::<C64>(c.m * n)?;
+                periodic_part(c, point.k, &point.psi.read(&c.context)?, u.as_mut_slice());
+                let target = Target {
+                    point,
+                    d: &*d * C64::new(spin_scale, 0.),
+                    scale: -0.5 * screening.fraction * mult * point.weight,
+                    at: s * nk + k,
+                    u,
+                    du: motion.map(|mo| slopes(c, mo, k)).transpose()?,
+                };
+                let mut adds = Vec::new();
+                for (q, source) in occupied.iter().enumerate() {
+                    if !source.wavefunctions.is_empty() {
+                        sweep.source(
+                            lanes,
+                            &target,
+                            s * nk + q,
+                            q,
+                            source,
+                            screening,
+                            exxdiv,
+                            &mut adds,
+                        )?;
+                    }
                 }
+                Ok(adds)
+            })?;
+            for adds in window {
+                apply(&mut out, adds);
             }
         }
     }
-    Ok(work.out)
+    Ok(out)
 }
 
-impl Work<'_> {
+impl Sweep<'_> {
+    #[allow(clippy::too_many_arguments)]
     fn source(
-        &mut self,
+        &self,
+        lanes: &mut [StateLane],
         t: &Target,
         z_source: usize,
         q: usize,
         source: &OccupiedStates,
         screening: Screening,
         exxdiv: ExxDivTreatment,
+        adds: &mut Vec<Add>,
     ) -> Result<()> {
         let c = self.c;
         let point = &c.points[q];
@@ -194,57 +306,109 @@ impl Work<'_> {
             self.aug.pair_shape_slopes(c, k_diff, 2)?,
         ];
         let du_source = self.motion.map(|mo| slopes(c, mo, q)).transpose()?;
-        for (state, psi) in source.wavefunctions.iter().enumerate() {
-            let moments = self.aug.moments(c, t.point, &source.projected[state]);
-            let n = c.grid.index.points();
-            let rows = components(c) * c.m;
-            debug_assert_eq!(moments.nrows(), rows);
-            let mut w = c.context.allocate::<C64>(rows * n)?;
-            let input = PairInputs {
-                u_k: t.u.as_slice(),
-                psi,
-                moments: Some(&moments),
-                shapes: Some(shapes.as_slice()),
-                kernel: kernel.as_slice(),
-                part: Part::Both,
-            };
-            weighted_pairs(c, &mut self.fft, &mut self.pair, &input, w.as_mut_slice())?;
-            // V = D W
-            let mut v = c.context.allocate::<C64>(rows * n)?;
-            for i in 0..rows {
-                for j in 0..rows {
-                    let dij = t.d[(i, j)];
-                    for at in 0..n {
-                        v.as_mut_slice()[i * n + at] += dij * w.as_slice()[j * n + at];
-                    }
-                }
-            }
-            self.out.energy += t.scale
-                * rows_dot(w.as_slice(), v.as_slice(), n)
-                    .map(|x| x.re)
-                    .sum::<f64>();
-            let args = State {
-                t,
-                z_source,
-                source,
-                state,
-                kernel: kernel.as_slice(),
-                shapes: shapes.as_slice(),
-                dshapes: &dshapes,
-                v: v.as_slice(),
-                psi,
-            };
-            self.compensation(&args, &moments)?;
-            if let Some(du_source) = &du_source {
-                self.functions(&args, du_source)?;
+        let states = source.wavefunctions.len();
+        let window = lanes.len().max(1);
+        for first in (0..states).step_by(window) {
+            let count = window.min(states - first);
+            let shares =
+                c.context
+                    .map_tasks(Level::Bands, &mut lanes[..count], count, |lane, offset| {
+                        self.state(
+                            lane,
+                            t,
+                            z_source,
+                            source,
+                            first + offset,
+                            kernel.as_slice(),
+                            shapes.as_slice(),
+                            &dshapes,
+                            du_source.as_ref(),
+                        )
+                    })?;
+            for share in shares {
+                adds.extend(share);
             }
         }
         Ok(())
     }
 
+    /// The additions of one occupied state against the target.
+    #[allow(clippy::too_many_arguments)]
+    fn state(
+        &self,
+        lane: &mut StateLane,
+        t: &Target,
+        z_source: usize,
+        source: &OccupiedStates,
+        state: usize,
+        kernel: &[f64],
+        shapes: &[C64],
+        dshapes: &[Buffer<C64>; 3],
+        du_source: Option<&[Buffer<C64>; 3]>,
+    ) -> Result<Vec<Add>> {
+        let c = self.c;
+        if lane.fft.is_none() {
+            lane.fft = Some(Fft3::new(&c.context, c.grid.index.shape())?);
+        }
+        if lane.pair.is_none() {
+            lane.pair = Some(c.context.allocate::<C64>(c.grid.index.points())?);
+        }
+        let (Some(fft), Some(pair)) = (lane.fft.as_mut(), lane.pair.as_mut()) else {
+            unreachable!()
+        };
+        let mut adds = Vec::new();
+        let psi = &source.wavefunctions[state];
+        let moments = self.aug.moments(c, t.point, &source.projected[state]);
+        let n = c.grid.index.points();
+        let rows = components(c) * c.m;
+        debug_assert_eq!(moments.nrows(), rows);
+        let mut w = c.context.allocate::<C64>(rows * n)?;
+        let input = PairInputs {
+            u_k: t.u.as_slice(),
+            psi,
+            moments: Some(&moments),
+            shapes: Some(shapes),
+            kernel,
+            part: Part::Both,
+        };
+        weighted_pairs(c, fft, pair, &input, w.as_mut_slice())?;
+        // V = D W
+        let mut v = c.context.allocate::<C64>(rows * n)?;
+        for i in 0..rows {
+            for j in 0..rows {
+                let dij = t.d[(i, j)];
+                for at in 0..n {
+                    v.as_mut_slice()[i * n + at] += dij * w.as_slice()[j * n + at];
+                }
+            }
+        }
+        adds.push(Add::Energy(
+            t.scale
+                * rows_dot(w.as_slice(), v.as_slice(), n)
+                    .map(|x| x.re)
+                    .sum::<f64>(),
+        ));
+        let args = State {
+            t,
+            z_source,
+            source,
+            state,
+            kernel,
+            shapes,
+            dshapes,
+            v: v.as_slice(),
+            psi,
+        };
+        self.compensation(&args, &moments, &mut adds);
+        if let Some(du_source) = du_source {
+            self.functions(fft, pair, &args, du_source, &mut adds)?;
+        }
+        Ok(adds)
+    }
+
     /// The phase of the shapes and the response `Z` of the projections. The rows of `moments` and
     /// of `V` run over `(component, mu)`; `Z` sums the components.
-    fn compensation(&mut self, a: &State, moments: &Matrix) -> Result<()> {
+    fn compensation(&self, a: &State, moments: &Matrix, adds: &mut Vec<Add>) {
         let (c, t) = (self.c, a.t);
         let (m, p, channels) = (c.m, c.p, self.channel_owner.len());
         let rows = moments.nrows();
@@ -252,11 +416,16 @@ impl Work<'_> {
         for axis in 0..3 {
             let phi_axis = response_of(a.v, a.kernel, a.dshapes[axis].as_slice(), rows, channels);
             for (channel, &atom) in self.channel_owner.iter().enumerate() {
-                for (component, part) in self.out.components.iter_mut().enumerate() {
+                for component in 0..rows / m {
                     let sum: C64 = (component * m..(component + 1) * m)
                         .map(|i| moments[(i, channel)] * phi_axis[(i, channel)])
                         .sum();
-                    part.phase[atom][axis] += 2.0 * t.scale * sum.re;
+                    adds.push(Add::Phase {
+                        component,
+                        atom,
+                        axis,
+                        value: 2.0 * t.scale * sum.re,
+                    });
                 }
             }
         }
@@ -276,7 +445,11 @@ impl Work<'_> {
                         .sum();
                 }
             }
-            self.out.components[component].compensation[t.at] += (&b * phi.transpose()) * scale;
+            adds.push(Add::Compensation {
+                component,
+                at: t.at,
+                matrix: (&b * phi.transpose()) * scale,
+            });
             // Gamma[p'] = sum_{a, p} (Phi^T C)[a, p] B_a[p, p']
             let weighted = phi.transpose() * &t.point.projections;
             let mut gamma = vec![C64::default(); p];
@@ -288,28 +461,41 @@ impl Work<'_> {
                         .sum::<C64>();
                 }
             }
-            // The source part of both components lands in the same `p x m` matrix.
+            // The source part of both components lands in the same `p x m` matrix: every entry
+            // once per state, as one addition of the whole matrix.
+            let mut source = Matrix::zeros(p, m);
             for nu in 0..m {
                 let coefficient = coefficients[component * m + nu];
                 for (pp, g) in gamma.iter().enumerate() {
-                    self.out.components[component].compensation[a.z_source][(pp, nu)] +=
-                        (coefficient * g).conj() * scale;
+                    source[(pp, nu)] = (coefficient * g).conj() * scale;
                 }
             }
+            adds.push(Add::Compensation {
+                component,
+                at: a.z_source,
+                matrix: source,
+            });
         }
-        Ok(())
     }
 
     /// The basis functions of the grid pair moving with their atoms: the bra functions (rows of
     /// the target basis, `owner[i % m]` for the row `(component, mu)`) and the ket (the state's
     /// own functions, one moved function per component), each explicitly.
-    fn functions(&mut self, a: &State, du_source: &[Buffer<C64>; 3]) -> Result<()> {
+    fn functions(
+        &self,
+        fft: &mut Fft3,
+        pair: &mut Buffer<C64>,
+        a: &State,
+        du_source: &[Buffer<C64>; 3],
+        adds: &mut Vec<Add>,
+    ) -> Result<()> {
         let (c, t) = (self.c, a.t);
         let (m, n) = (c.m, c.grid.index.points());
         let owner = self.motion.map(|mo| mo.owner()).unwrap_or(&[]);
         let du = t.du.as_ref().unwrap();
         let coefficients = &a.source.coefficients[a.state];
         let components = components(c);
+        let atoms = self.aug.sites().atoms.len();
         let mut rows = c.context.allocate::<C64>(components * m * n)?;
         for axis in 0..3 {
             let bra = PairInputs {
@@ -320,12 +506,17 @@ impl Work<'_> {
                 kernel: a.kernel,
                 part: Part::Pseudo,
             };
-            weighted_pairs(c, &mut self.fft, &mut self.pair, &bra, rows.as_mut_slice())?;
+            weighted_pairs(c, fft, pair, &bra, rows.as_mut_slice())?;
             let dots: Vec<C64> = rows_dot(rows.as_slice(), a.v, n).collect();
             for (i, dot) in dots.iter().enumerate() {
-                self.out.components[i / m].bra[owner[i % m]][axis] += 2.0 * t.scale * dot.re;
+                adds.push(Add::Bra {
+                    component: i / m,
+                    atom: owner[i % m],
+                    axis,
+                    value: 2.0 * t.scale * dot.re,
+                });
             }
-            for atom in 0..self.out.components[0].ket.len() {
+            for atom in 0..atoms {
                 if !owner.contains(&atom) {
                     continue;
                 }
@@ -349,10 +540,15 @@ impl Work<'_> {
                     kernel: a.kernel,
                     part: Part::Pseudo,
                 };
-                weighted_pairs(c, &mut self.fft, &mut self.pair, &ket, rows.as_mut_slice())?;
+                weighted_pairs(c, fft, pair, &ket, rows.as_mut_slice())?;
                 // Rows of component `s` carry the moved component `s` alone.
                 for (i, dot) in rows_dot(rows.as_slice(), a.v, n).enumerate() {
-                    self.out.components[i / m].ket[atom][axis] += 2.0 * t.scale * dot.re;
+                    adds.push(Add::Ket {
+                        component: i / m,
+                        atom,
+                        axis,
+                        value: 2.0 * t.scale * dot.re,
+                    });
                 }
             }
         }

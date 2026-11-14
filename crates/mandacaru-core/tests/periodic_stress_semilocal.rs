@@ -100,7 +100,7 @@ fn the_stress_is_the_derivative_of_the_frozen_energy() {
             let want = 0.5 * (sum[a][c] + sum[c][a]) / result.volume;
             assert_eq!(result.sigma[a][c], want);
             assert_eq!(result.sigma[a][c], result.sigma[c][a]);
-            assert_eq!(result.antisymmetric[a][c], 0.5 * (sum[a][c] - sum[c][a]));
+            assert_eq!(result.antisymmetric.unwrap()[a][c], 0.5 * (sum[a][c] - sum[c][a]));
         }
     }
     let trace = result.sigma[0][0] + result.sigma[1][1] + result.sigma[2][2];

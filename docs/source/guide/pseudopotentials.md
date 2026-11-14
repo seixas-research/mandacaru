@@ -200,6 +200,36 @@ regenerated; they load unchanged. Files saved by this build use the native
 writer, whose zstd works at its fastest level, so a regenerated file can be larger
 than the one it replaces.
 
+(paw-lcao-format-versions)=
+#### Format versions and core states
+
+A dataset file carries a format version. Version 2 holds the valence data; version 3
+adds the **core states**: the occupied core subshells of the reference atom, each as
+`n`, `l`, its occupation, its eigenvalue and its radial orbital `u = r R` in a column
+`core_wave_n{n}_l{l}`, one state per `(n, l)` (at most 28). They are the orbitals that
+the stored core density was summed from. The reader takes versions 1 to 3 and raises on
+a newer one; a version-3 file without its states, a version-2 file with them, a
+malformed or duplicated state and more core electrons than the nuclear charge are
+refused by name.
+
+Which writer produces which version:
+
+- The development tool `mandacaru-build` (`mandacaru.pseudopotentials.build_cli`, not an
+  installed console command; generating a dataset is otherwise outside this manual)
+  generates, writes, reads back and checks a dataset inside the native engine, and
+  writes version 3 with the core states of the element (a hydrogen file has an empty
+  core). The record never crosses into Python on its way to the file.
+- `save_pseudopotential` of a dataset loaded into Python writes version 2, without core
+  states: the Python view does not model them, so loading a version-3 file and saving it
+  again drops them.
+- The shipped library was not regenerated, so its files carry no core states.
+
+The core states are stored and read back; no calculation reads them yet. Hartree–Fock
+does not use them, and its multi-shell core exchange is still open ([native
+cutover](../development/native_cutover.md)). The content digest that a saved crystal pins
+a dataset by (`content_sha256`, [Kohn–Sham density functional theory](dft.md)) leaves the
+core states out, so a version-2 file and its version-3 upgrade have the same digest.
+
 ## Why the family is the basis
 
 A dataset fixes its own first zeta: the construction pseudizes each valence

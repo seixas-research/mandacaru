@@ -14,11 +14,17 @@
 //! proposal with 2/1/1. Dropping the proposal-ratio term from the acceptance must break the
 //! balance, which proves the check sees the term it is there to guard.
 //!
+//! With two replicas (parallel tempering) at the fixed temperatures `T` and `2 T`, each replica's
+//! step is the single chain's kernel at its own temperature, and the swap of the two states is
+//! checked to balance the product target `pi_T x pi_2T` on all 73 x 73 pairs, with every recorded
+//! swap's log acceptance reproduced from the per-sequence costs.
+//!
 //! Not a test, on purpose: `warm_start = true` (the default). Its relaxation starts from the
 //! current angles, so a sequence's cost, probabilities and importances depend on the path that
 //! reached it, there is no fixed target, and the balance does not hold (on H2 with a flat double
 //! excitation manifold the visit frequency of one sequence was 60 percent above `pi`). The default
 //! chain is an optimizer, not a sampler; the tutorial says so.
+mod search_support;
 use mandacaru_core::{
     quantum::{
         optimizer,
@@ -26,82 +32,14 @@ use mandacaru_core::{
             driver::Options,
             kernel::{self, Kernel},
         },
-        CachedProblem, Encoding, Operator, C64,
     },
     Context,
 };
+use search_support::architectures;
 use std::collections::BTreeMap;
 
 const TEMPERATURE: f64 = 0.5;
 const LENGTH_PENALTY: f64 = 0.02;
-const MODES: usize = 6;
-
-/// A number-conserving Hermitian Hamiltonian on three spatial orbitals (modes 0-2 alpha, 3-5 beta)
-/// with orbital energies, hopping, an on-site and an inter-orbital density interaction.
-fn hamiltonian(context: &Context) -> Operator {
-    let mut terms = BTreeMap::<String, f64>::new();
-    let string = |paulis: &[(usize, char)]| -> String {
-        let mut chars = vec!['I'; MODES];
-        for &(mode, pauli) in paulis {
-            chars[mode] = pauli;
-        }
-        chars.into_iter().collect()
-    };
-    let mut add = |key: String, value: f64| *terms.entry(key).or_default() += value;
-    // n_p = (1 - Z_p) / 2.
-    for offset in [0, 3] {
-        for (orbital, energy) in [0.0, 0.5, 1.1].into_iter().enumerate() {
-            add(string(&[]), energy / 2.);
-            add(string(&[(offset + orbital, 'Z')]), -energy / 2.);
-        }
-        // Hopping between orbitals p < q of one spin: (X Z..Z X + Y Z..Z Y) / 2.
-        for (p, q, t) in [(0, 1, -0.35), (1, 2, -0.2), (0, 2, 0.15)] {
-            for pauli in ['X', 'Y'] {
-                let mut paulis = vec![(offset + p, pauli), (offset + q, pauli)];
-                paulis.extend((offset + p + 1..offset + q).map(|mode| (mode, 'Z')));
-                add(string(&paulis), t / 2.);
-            }
-        }
-    }
-    // Density-density terms n_a n_b = (1 - Z_a - Z_b + Z_a Z_b) / 4.
-    let mut density = |a: usize, b: usize, u: f64| {
-        add(string(&[]), u / 4.);
-        add(string(&[(a, 'Z')]), -u / 4.);
-        add(string(&[(b, 'Z')]), -u / 4.);
-        add(string(&[(a, 'Z'), (b, 'Z')]), u / 4.);
-    };
-    for p in 0..3 {
-        density(p, 3 + p, 0.6);
-    }
-    density(0, 4, 0.25);
-    density(1, 5, 0.15);
-    density(2, 3, 0.3);
-    let terms: Vec<_> = terms
-        .into_iter()
-        .map(|(key, value)| (key, C64::new(value, 0.)))
-        .collect();
-    Operator::new(context, MODES, &terms).unwrap()
-}
-
-fn architectures(pool: usize, maximum: usize) -> Vec<Vec<usize>> {
-    let mut all = vec![vec![]];
-    let mut last = vec![vec![]];
-    for _ in 0..maximum {
-        let next: Vec<Vec<usize>> = last
-            .iter()
-            .flat_map(|source: &Vec<usize>| {
-                (0..pool).map(move |op| {
-                    let mut next = source.clone();
-                    next.push(op);
-                    next
-                })
-            })
-            .collect();
-        all.extend(next.clone());
-        last = next;
-    }
-    all
-}
 
 /// What the driver evaluated for one sequence.
 struct State {
@@ -136,6 +74,7 @@ fn transition(
     states: &[Vec<usize>],
     data: &BTreeMap<Vec<usize>, State>,
     with_ratio: bool,
+    temperature: f64,
 ) -> Vec<Vec<f64>> {
     let mut matrix = vec![vec![0.; states.len()]; states.len()];
     for (i, source) in states.iter().enumerate() {
@@ -159,7 +98,7 @@ fn transition(
             } else {
                 forward
             };
-            let ratio = kernel::log_acceptance(TEMPERATURE, from.cost, to.cost, forward, reverse);
+            let ratio = kernel::log_acceptance(temperature, from.cost, to.cost, forward, reverse);
             matrix[i][j] = forward.exp() * ratio.min(0.).exp();
             moved += matrix[i][j];
         }
@@ -168,14 +107,18 @@ fn transition(
     matrix
 }
 
-fn boltzmann(states: &[Vec<usize>], data: &BTreeMap<Vec<usize>, State>) -> Vec<f64> {
+fn boltzmann(
+    states: &[Vec<usize>],
+    data: &BTreeMap<Vec<usize>, State>,
+    temperature: f64,
+) -> Vec<f64> {
     let lowest = states
         .iter()
         .map(|s| data[s].cost)
         .fold(f64::INFINITY, f64::min);
     let weights: Vec<f64> = states
         .iter()
-        .map(|s| (-(data[s].cost - lowest) / TEMPERATURE).exp())
+        .map(|s| (-(data[s].cost - lowest) / temperature).exp())
         .collect();
     let total: f64 = weights.iter().sum();
     weights.into_iter().map(|w| w / total).collect()
@@ -193,17 +136,8 @@ fn worst_imbalance(matrix: &[Vec<f64>], pi: &[f64]) -> f64 {
 
 fn check(uniform: bool, move_weights: [f64; 3], seed: u64) {
     let context = Context::new(Some(1), 512 << 20).unwrap();
-    let problem = CachedProblem::new(
-        &context,
-        Encoding::new("jordan_wigner", MODES, [1, 1]).unwrap(),
-        hamiltonian(&context),
-        true,
-        false,
-        true,
-    )
-    .unwrap();
+    let problem = search_support::problem(&context);
     let pool = problem.pool.len();
-    assert_eq!(pool, 8, "the model's pool is the eight singles and doubles");
     let options = Options {
         // Long enough that the gradient chain (seed 11) sources all 73 sequences; 4000 missed [6, 4].
         max_steps: 20000,
@@ -278,8 +212,8 @@ fn check(uniform: bool, move_weights: [f64; 3], seed: u64) {
         assert!((row["log_acceptance"].as_f64().unwrap() - ratio).abs() < 1e-12);
     }
 
-    let pi = boltzmann(&states, &data);
-    let matrix = transition(&context, &kernel, &states, &data, true);
+    let pi = boltzmann(&states, &data, TEMPERATURE);
+    let matrix = transition(&context, &kernel, &states, &data, true, TEMPERATURE);
     for (i, row) in matrix.iter().enumerate() {
         assert!(
             (row.iter().sum::<f64>() - 1.).abs() < 1e-12,
@@ -301,7 +235,7 @@ fn check(uniform: bool, move_weights: [f64; 3], seed: u64) {
         );
     }
 
-    let biased = transition(&context, &kernel, &states, &data, false);
+    let biased = transition(&context, &kernel, &states, &data, false, TEMPERATURE);
     let broken = worst_imbalance(&biased, &pi);
     assert!(
         broken > 1e-4,
@@ -320,4 +254,162 @@ fn the_gradient_proposal_chain_balances_on_all_73_sequences() {
 #[test]
 fn the_uniform_proposal_chain_balances_on_all_73_sequences() {
     check(true, [2., 1., 1.], 5);
+}
+
+#[test]
+fn two_replicas_keep_their_targets_and_the_swap_balances_the_product() {
+    let context = Context::new(Some(1), 512 << 20).unwrap();
+    let problem = search_support::problem(&context);
+    let pool = problem.pool.len();
+    let spacing = 2.;
+    let temperatures = [TEMPERATURE, TEMPERATURE * spacing];
+    let options = Options {
+        max_steps: 20000,
+        max_length: 2,
+        move_weights: [1., 2., 3.],
+        temperatures: [TEMPERATURE; 2],
+        length_penalty: LENGTH_PENALTY,
+        proposal_temperature: 0.3,
+        warm_start: false,
+        record: true,
+        seed: 11,
+        replicas: 2,
+        replica_spacing: spacing,
+        optimizer: optimizer::Options {
+            max_evaluations: 300,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let result = problem.search(&options, &[], &[]).unwrap();
+    let kernel = Kernel::new(pool, options.max_length, options.move_weights).unwrap();
+    assert_eq!(result.steps.len(), 2 * options.max_steps);
+    assert_eq!(result.swaps.len(), options.max_steps);
+
+    // One data set for both replicas: with `warm_start = false` a sequence's cost and proposal are
+    // the same whichever replica evaluates it.
+    let mut data = BTreeMap::<Vec<usize>, State>::new();
+    for row in &result.records {
+        data.entry(indices(&row["source"]))
+            .or_insert_with(|| State {
+                cost: row["source_cost"].as_f64().unwrap(),
+                probabilities: floats(&row["source_probabilities"]),
+                removal: floats(&row["source_removal"]),
+            });
+    }
+    let states = architectures(pool, options.max_length);
+    for state in &states {
+        assert!(
+            data.contains_key(state),
+            "no replica sourced {state:?}: lengthen the chain"
+        );
+    }
+    for row in &result.records {
+        let replica = row["replica"].as_u64().unwrap() as usize;
+        let temperature = temperatures[replica];
+        assert_eq!(row["temperature"].as_f64().unwrap(), temperature);
+        let (source, target) = (indices(&row["source"]), indices(&row["proposed"]));
+        let (from, to) = (&data[&source], &data[&target]);
+        assert_eq!(row["source_cost"].as_f64().unwrap(), from.cost);
+        assert_eq!(floats(&row["source_probabilities"]), from.probabilities);
+        assert_eq!(floats(&row["source_removal"]), from.removal);
+        let forward = kernel
+            .log_q(
+                &context,
+                &target,
+                &source,
+                &from.probabilities,
+                &from.removal,
+            )
+            .unwrap();
+        let reverse = kernel
+            .log_q(&context, &source, &target, &to.probabilities, &to.removal)
+            .unwrap();
+        let ratio = kernel::log_acceptance(temperature, from.cost, to.cost, forward, reverse);
+        assert!((row["log_acceptance"].as_f64().unwrap() - ratio).abs() < 1e-12);
+    }
+
+    // Each replica's own step balances its own target.
+    let pis: Vec<Vec<f64>> = temperatures
+        .iter()
+        .map(|&t| {
+            let pi = boltzmann(&states, &data, t);
+            let matrix = transition(&context, &kernel, &states, &data, true, t);
+            let imbalance = worst_imbalance(&matrix, &pi);
+            assert!(
+                imbalance < 1e-12,
+                "replica at T = {t} fails detailed balance by {imbalance:e}"
+            );
+            pi
+        })
+        .collect();
+
+    // The swap balances the product target on every pair of states.
+    let swap = |a: usize, b: usize| {
+        let log = (1. / temperatures[0] - 1. / temperatures[1])
+            * (data[&states[a]].cost - data[&states[b]].cost);
+        log.min(0.).exp()
+    };
+    for a in 0..states.len() {
+        for b in 0..states.len() {
+            let forward = pis[0][a] * pis[1][b] * swap(a, b);
+            let backward = pis[0][b] * pis[1][a] * swap(b, a);
+            assert!(
+                (forward - backward).abs() <= 1e-12 * forward.max(backward),
+                "the swap of {:?} and {:?} is not balanced",
+                states[a],
+                states[b]
+            );
+        }
+    }
+
+    // Every recorded swap reads the replicas' current states, and an accepted one exchanges them:
+    // each replica's next row starts where the swap left it.
+    let mut accepted = 0;
+    let rows: Vec<_> = result.records.iter().collect();
+    for (step, row) in result.swaps.iter().enumerate() {
+        let sequences: Vec<Vec<usize>> = row["sequences"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(indices)
+            .collect();
+        let costs = floats(&row["costs"]);
+        assert_eq!(
+            costs,
+            vec![data[&sequences[0]].cost, data[&sequences[1]].cost]
+        );
+        let expected = (1. / temperatures[0] - 1. / temperatures[1]) * (costs[0] - costs[1]);
+        assert!((row["log_acceptance"].as_f64().unwrap() - expected).abs() < 1e-12);
+        let mut after: Vec<Vec<usize>> = (0..2)
+            .map(|r| {
+                let moved = rows[2 * step + r];
+                assert_eq!(moved["replica"].as_u64().unwrap() as usize, r);
+                if moved["accepted"] == true {
+                    indices(&moved["proposed"])
+                } else {
+                    indices(&moved["source"])
+                }
+            })
+            .collect();
+        assert_eq!(after, sequences);
+        if row["accepted"] == true {
+            accepted += 1;
+            after.swap(0, 1);
+        }
+        if step + 1 < result.swaps.len() {
+            for (r, sequence) in after.iter().enumerate() {
+                assert_eq!(&indices(&rows[2 * (step + 1) + r]["source"]), sequence);
+            }
+        }
+    }
+    assert!(
+        accepted > 0 && accepted < result.swaps.len(),
+        "{accepted} of {} swaps",
+        result.swaps.len()
+    );
+    assert_eq!(result.swap_acceptance, (accepted, result.swaps.len()));
+    drop(result);
+    drop(problem);
+    assert_eq!(context.memory_used(), 0);
 }

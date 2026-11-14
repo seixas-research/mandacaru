@@ -13,16 +13,21 @@
 //! channel potentials `m_a` and the moments `q` held at their output values; `explicit_ab`
 //! differentiates the energy functional at fixed `D`, `rho_i`, `q`. The matrix terms are the
 //! force engine's algebra with a strain tangent instead of an atom displacement (rows are NOT
-//! owner-masked: every function, projector and node moves); the derivatives are of the
-//! DISCRETIZED functional at the pins of `ANALYTIC_STRESS_PLAN` section 2 (node counts, ion
+//! owner-masked: every function, projector and node moves; the matrices themselves are never
+//! formed: each term is contracted with `D` or `W` first, along the strain directions below);
+//! the derivatives are of the DISCRETIZED functional at the pins of `ANALYTIC_STRESS_PLAN` section 2 (node counts, ion
 //! width, filter cutoff, lattice operations of the alias averages, integer triples of every
 //! cutoff list, sphere rules).
 //!
 //! Convention: `x -> (1 + eps) x` on the lattice, the atoms and the grid nodes; `G -> (1 - eps^T) G`,
 //! `d f(G) / d eps_ab = -G_a d_b f`, `d chi / d eps_ab = sum_T e^{ik.T} (d_a phi)(y) y_b`; `eps`
-//! has nine independent entries. [`Stress::sigma`] is `(g_ab + g_ba) / (2 Omega)` with
-//! `g_ab = dF/d eps_ab`, Hartree/Bohr^3 (`units.py` owns the eV/A^3 factor); the antisymmetric
-//! part is reported as a diagnostic.
+//! has nine independent entries, of which the stress needs the symmetric part averaged over the
+//! point group of the mesh: the terms are contracted along an orthonormal basis of the invariant
+//! symmetric tensors ([`directions`]: one direction for a cubic crystal, two for a hexagonal,
+//! trigonal or tetragonal one, up to six), and `g` is rebuilt from those numbers.
+//! [`Stress::sigma`] is `(g_ab + g_ba) / (2 Omega)` with `g_ab = dF/d eps_ab`, Hartree/Bohr^3
+//! (`units.py` owns the eV/A^3 factor); the antisymmetric part exists only for the nine-entry
+//! contraction of the tests ([`Directions::all_entries`]).
 //!
 //! # Terms (a [`Breakdown`] entry each, `g_ab` per entry)
 //!
@@ -58,16 +63,18 @@
 //! missing term would give a silently wrong stress, so a provider that cannot supply a term
 //! raises, it never returns zero.
 pub mod crystal;
+pub mod directions;
 pub mod electrostatic;
 pub mod hybrid;
 pub mod pulay;
 pub mod spin_orbit;
 pub mod xc;
 
+pub use directions::{Direction, Directions};
+
 use super::{
     gradient::{Frozen, Layout, Matrix, SpinOrbit, Term},
     invalid,
-    point_group::PointGroup,
 };
 use crate::{models, quantum::C64, Error, Result};
 
@@ -86,16 +93,26 @@ pub struct Dense {
 /// A geometry provider for the strain: everything the stress needs that is not the converged
 /// state. Every derivative method returns the derivative of the named quantity with respect to
 /// `eps_ab` (energies, never a stress) at the pins of the module documentation.
-pub trait Strain {
+/// A provider and its fields are `Sync`: the matrix terms produce their per-k-point derivatives on
+/// k-point lanes, different k-points at once.
+pub trait Strain: Sync {
     /// The potentials, moments and output-density data (opaque to the engine).
-    type Fields;
+    type Fields: Sync;
 
     fn layout(&self) -> &Layout;
-    /// The operations a symmetry-reduced k mesh was built with (CF-6); the contraction averages
-    /// every term over them. `None`: a whole mesh.
-    fn point_group(&self) -> Option<&PointGroup> {
+    /// The calculation context whose `kpts` lanes the per-k-point strain derivatives run on
+    /// ([`pulay::contract`]); `None` (the default) runs them on the calling thread. Either way
+    /// every result is the same.
+    fn context(&self) -> Option<&crate::Context> {
         None
     }
+    /// The strain directions the matrix terms are contracted along, and how the numbers become
+    /// the tensors of the [`Breakdown`] ([`Directions`]): the invariant symmetric basis of the
+    /// operations of a symmetry-reduced mesh, the six symmetric tensors without operations.
+    fn directions(&self) -> &Directions;
+    /// The bytes one k-point lane holds while it forms the matrix terms of `terms` terms (the
+    /// provider's working arrays; [`pulay::contract`] adds `C` and the `dC` of every direction).
+    fn lane_bytes(&self, terms: usize) -> Result<usize>;
     /// The channel blocks `B_a` (`p x p`, strain independent).
     fn blocks(&self) -> &[Matrix];
     /// `q` with `S = S_grid + C q C^+`.
@@ -106,19 +123,25 @@ pub trait Strain {
     fn volume(&self) -> f64;
     /// `C_k` (`m x p`).
     fn projection(&self, k: usize) -> Result<Matrix>;
-    /// `dC_ab` (`m x p`) with the quadrature spheres rigid about their atoms.
-    fn projection_strain(&self, k: usize) -> Result<Tensor<Matrix>>;
-    /// `d M_ab` of one matrix term for `spin` at k-point `k` (`m x m`) with the potentials of
-    /// `fields` held fixed. [`Term::Overlap`] and [`Term::Kinetic`] carry the `delta_ab` of their
-    /// `dv`; [`Term::Local`] and [`Term::KineticDensity`] do not (the node values `rho_i` stay fixed: the `dv` Jacobian of the
-    /// charge is [`electrostatic`]'s E-1), [`Term::ShortRange`] is the sum over the spheres.
+    /// `sum_ab E_ab dC_ab` (`m x p`) for each direction `E`, the quadrature spheres rigid about
+    /// their atoms.
+    fn projection_strain(&self, k: usize, directions: &[Direction]) -> Result<Vec<Matrix>>;
+    /// `Re tr[M_t dM_t(E)]` of every term `t` of `terms` for every spin channel and direction
+    /// `E`, at k-point `k` with the potentials of `fields` held fixed: `[spin][term][direction]`.
+    /// `M_t` is the energy-weighted density `W` of [`Term::Overlap`] and the density `D` of the
+    /// others (`matrices[spin]`). [`Term::Overlap`] and [`Term::Kinetic`] carry the `tr(E)` of
+    /// their `dv`; [`Term::Local`] and [`Term::KineticDensity`] do not (the node values `rho_i`
+    /// stay fixed: the `dv` Jacobian of the charge is [`electrostatic`]'s E-1),
+    /// [`Term::ShortRange`] is the sum over the spheres. The matrices `dM` are never formed: the
+    /// provider contracts with `M` first.
     fn matrix_strain(
         &self,
-        spin: usize,
         k: usize,
-        term: Term,
         fields: &Self::Fields,
-    ) -> Result<Tensor<Matrix>>;
+        matrices: &[SpinMatrices],
+        terms: &[Term],
+        directions: &[Direction],
+    ) -> Result<Vec<Vec<Vec<f64>>>>;
     /// The channel potentials `m_a`.
     fn moments<'a>(&self, fields: &'a Self::Fields) -> &'a [C64];
     /// E-1..E-4 at the output density of `fields` and the moments `q`.
@@ -140,14 +163,22 @@ pub trait Strain {
     fn spin_orbit_projection(&self, _k: usize) -> Result<Matrix> {
         Err(no_spin_orbit())
     }
-    /// `dC^SO_ab` (`m x p_so`), the quadrature spheres rigid about their atoms.
-    fn spin_orbit_strain(&self, _k: usize) -> Result<Tensor<Matrix>> {
+    /// `sum_ab E_ab dC^SO_ab` (`m x p_so`) per direction, the quadrature spheres rigid about
+    /// their atoms.
+    fn spin_orbit_strain(&self, _k: usize, _directions: &[Direction]) -> Result<Vec<Matrix>> {
         Err(no_spin_orbit())
     }
 }
 
 fn no_spin_orbit() -> Error {
     Error::Unsupported("this strain provider carries no spin-orbit projectors".into())
+}
+
+/// The density `D` and the energy-weighted density `W` of one spin channel at one k-point, as the
+/// contraction of the matrix terms reads them.
+pub struct SpinMatrices {
+    pub density: Matrix,
+    pub weighted: Matrix,
 }
 
 /// `dF/d eps_ab` term by term, so a caller can report, gate or damage one term.
@@ -184,34 +215,6 @@ pub struct Breakdown {
 }
 
 impl Breakdown {
-    /// Replaces every term by its average over the operations of `group` (CF-6).
-    pub fn symmetrize(&mut self, group: &PointGroup) {
-        for term in [
-            &mut self.overlap,
-            &mut self.kinetic,
-            &mut self.local,
-            &mut self.short_range,
-            &mut self.projection,
-            &mut self.hartree,
-            &mut self.kernel,
-            &mut self.hats,
-            &mut self.ions,
-            &mut self.dense,
-            &mut self.linear,
-            &mut self.constants,
-            &mut self.xc_jacobian,
-            &mut self.xc_gradient,
-            &mut self.xc_core,
-            &mut self.spin_orbit,
-            &mut self.exchange,
-            &mut self.kinetic_density,
-            &mut self.xc_core_kinetic,
-            &mut self.xc_nonlocal,
-        ] {
-            group.tensor(term);
-        }
-    }
-
     pub fn terms(&self) -> [(&'static str, &Tensor<f64>); 20] {
         [
             ("overlap", &self.overlap),
@@ -255,25 +258,29 @@ impl Breakdown {
 #[derive(Clone, Debug)]
 pub struct Stress {
     pub breakdown: Breakdown,
-    /// `g_ab = dF/d eps_ab` (Hartree), unsymmetrized.
+    /// `g_ab = dF/d eps_ab` (Hartree). For the invariant contraction it is the symmetric part
+    /// averaged over the point group (the part `sigma` is made of); for
+    /// [`Directions::all_entries`] it is the unsymmetrized `g_ab` (averaged over the group).
     pub gradient: Tensor<f64>,
     /// The cell volume (Bohr^3).
     pub volume: f64,
     /// `sigma_ab = (g_ab + g_ba) / (2 Omega)` (Hartree/Bohr^3).
     pub sigma: Tensor<f64>,
-    /// `(g_ab - g_ba) / 2` (Hartree): the torque diagnostic. It vanishes up to the grid floor
-    /// for a non-magnetic state with complete (atom, l, m) shells.
-    pub antisymmetric: Tensor<f64>,
+    /// `(g_ab - g_ba) / 2` (Hartree): the torque diagnostic, only for [`Directions::all_entries`]
+    /// (it vanishes up to the grid floor for a non-magnetic state with complete (atom, l, m)
+    /// shells). `None` otherwise: the symmetric contraction does not see it, and a zero would
+    /// read as "no torque".
+    pub antisymmetric: Option<Tensor<f64>>,
 }
 
 impl Stress {
-    fn new(breakdown: Breakdown, volume: f64) -> Self {
+    fn new(breakdown: Breakdown, volume: f64, all_entries: bool) -> Self {
         let gradient = breakdown.gradient();
         let sigma = std::array::from_fn(|a| {
             std::array::from_fn(|b| 0.5 * (gradient[a][b] + gradient[b][a]) / volume)
         });
-        let antisymmetric = std::array::from_fn(|a| {
-            std::array::from_fn(|b| 0.5 * (gradient[a][b] - gradient[b][a]))
+        let antisymmetric = all_entries.then(|| {
+            std::array::from_fn(|a| std::array::from_fn(|b| 0.5 * (gradient[a][b] - gradient[b][a])))
         });
         Self {
             breakdown,
@@ -372,7 +379,11 @@ fn validate<S: Strain>(s: &S, frozen: &Frozen<S::Fields>) -> Result<()> {
 pub fn stress<S: Strain>(s: &S, frozen: &Frozen<S::Fields>) -> Result<Stress> {
     check_request(s.layout())?;
     validate(s, frozen)?;
-    Ok(Stress::new(contract(s, frozen)?, s.volume()))
+    Ok(Stress::new(
+        contract(s, frozen)?,
+        s.volume(),
+        s.directions().is_all_entries(),
+    ))
 }
 
 /// The stress of a scalar collinear HYBRID crystal (AS-9): every semilocal term of [`contract`]
@@ -388,42 +399,49 @@ pub fn stress_hybrid<S: Strain>(
     let mut breakdown = contract(s, frozen)?;
     breakdown.exchange = exchange.total();
     breakdown.exchange_parts = Some(exchange);
-    Ok(Stress::new(breakdown, s.volume()))
+    Ok(Stress::new(
+        breakdown,
+        s.volume(),
+        s.directions().is_all_entries(),
+    ))
 }
 
 /// The term-by-term contraction on a consistent frozen state.
 pub fn contract<S: Strain>(s: &S, frozen: &Frozen<S::Fields>) -> Result<Breakdown> {
     validate(s, frozen)?;
+    let directions = s.directions();
+    if directions.is_empty() {
+        return Err(invalid("crystal stress: no strain direction"));
+    }
     let matrix = pulay::contract(s, frozen)?;
+    // The explicit terms form every entry `g_ab` at once; the part along the directions is the
+    // one the matrix terms carry.
+    let project = |t: Tensor<f64>| directions.project(&t);
     let hartree = s.hartree(&frozen.fields, &frozen.q)?;
     let dense = electrostatic::dense_terms(&s.dense()?, &frozen.q)?;
     let constants = s.constants()?;
     let xc = s.xc(&frozen.fields)?;
-    let mut breakdown = Breakdown {
+    Ok(Breakdown {
         overlap: matrix.overlap,
         kinetic: matrix.kinetic,
         local: matrix.local,
         short_range: matrix.short_range,
         projection: matrix.projection,
-        hartree: hartree.jacobian,
-        kernel: hartree.kernel,
-        hats: hartree.hats,
-        ions: hartree.ions,
-        dense: dense.dense,
-        linear: dense.linear,
-        constants,
-        xc_jacobian: xc.jacobian,
-        xc_gradient: xc.gradient,
-        xc_core: xc.core,
+        hartree: project(hartree.jacobian),
+        kernel: project(hartree.kernel),
+        hats: project(hartree.hats),
+        ions: project(hartree.ions),
+        dense: project(dense.dense),
+        linear: project(dense.linear),
+        constants: project(constants),
+        xc_jacobian: project(xc.jacobian),
+        xc_gradient: project(xc.gradient),
+        xc_core: project(xc.core),
         kinetic_density: matrix.kinetic_density,
-        xc_core_kinetic: xc.core_kinetic,
-        xc_nonlocal: xc.nonlocal,
+        xc_core_kinetic: project(xc.core_kinetic),
+        xc_nonlocal: project(xc.nonlocal),
         spin_orbit: matrix.spin_orbit,
         exchange: [[0.; 3]; 3],
         exchange_parts: None,
-    };
-    if let Some(group) = s.point_group() {
-        breakdown.symmetrize(group);
-    }
-    Ok(breakdown)
+    })
 }

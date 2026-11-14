@@ -25,12 +25,10 @@ SCF_LABELS = {"rhf": "restricted Hartree-Fock (closed shell)",
 
 def grid_text(grid):
     """The realized grid: points and, for an orthogonal grid, the spacing per axis."""
-    step = grid.step_bohr
     points = " x ".join(str(n) for n in grid.shape)
-    if any(step[i][j] != 0 for i in range(3) for j in range(3) if i != j):
+    if not grid.is_orthorhombic():
         return f"{points} (non-orthogonal step vectors)"
-    diagonal = _native.to_user_units(
-        np.ascontiguousarray([float(step[i][i]) for i in range(3)]), "length")
+    diagonal = _native.to_user_units(np.ascontiguousarray(grid.spacings, dtype=float), "length")
     spacing = " x ".join(f"{value:.4f}" for value in diagonal)
     return f"{points} (spacing {spacing} Angstrom)"
 
@@ -107,7 +105,8 @@ def electrons(driver, result, geometry):
     elif driver._loaded_two_body is not None:
         fields["two-body integrals"] = loaded_two_body_text(driver)
     alpha, beta = result.num_particles
-    fields["spin-polarized"] = f"{alpha != beta} (multiplicity {abs(alpha - beta) + 1})"
+    _moment, multiplicity, polarized = _native.spin_summary(alpha, beta)
+    fields["spin-polarized"] = f"{polarized} (multiplicity {multiplicity})"
     if quantum:
         fields["reference state"] = "hartree-fock"
         fields["Z2 tapering"] = tapering.text(driver, result._problem)
@@ -369,6 +368,9 @@ def search_setup(driver, result):
     if driver._search_record is not None:
         extra["record_directory"] = str(driver._search_record)
     extra["seed"] = search["seed"]
+    if search["replicas"] > 1:
+        extra["replicas"] = search["replicas"]
+        extra["replica_spacing"] = f"{search['replica_spacing']:g}"
     if driver._transfer:
         extra["transfer_threshold"] = f"{driver._transfer_threshold:g}"
         if driver._transfer_steps is not None:
@@ -386,6 +388,10 @@ def search_summary(result):
     unit = result.energy_unit
     moves = ", ".join(f"{name} {taken}/{tried}"
                       for name, (taken, tried) in result.acceptance_by_move.items())
-    return {f"final_energy_{unit}": f"{result.final_energy:.10f}",
-            "acceptance_by_move": moves,
-            "num_architectures": result.num_architectures}
+    fields = {f"final_energy_{unit}": f"{result.final_energy:.10f}",
+              "acceptance_by_move": moves,
+              "num_architectures": result.num_architectures}
+    if result.replica_swaps is not None:
+        taken, tried = result.replica_swaps
+        fields["replica_swaps"] = f"{taken}/{tried}"
+    return fields

@@ -26,7 +26,7 @@ use crate::{
         invalid,
         pseudize::snap,
         radial::shape,
-        record::{Array, Channel, Defects, Nlcc, PawDataset, SpinOrbit},
+        record::{Array, Channel, CoreState, Defects, Nlcc, PawDataset, SpinOrbit},
     },
     product, Buffer, Context, Result,
 };
@@ -224,6 +224,28 @@ pub fn finish(
         })
         .collect::<Result<Vec<_>>>()?;
     let core = core_density(r, &core_shells)?;
+    // The same subshells, stored with the record (format version 3): the core-valence exchange
+    // of Hartree-Fock needs the orbitals, which the density alone does not give.
+    let core_states = shells
+        .core
+        .iter()
+        .map(|&(key, occupancy)| {
+            let at = atom
+                .occupations
+                .iter()
+                .position(|s| (s.0, s.1) == key)
+                .ok_or_else(|| invalid(format!("the reference atom has no {key:?} subshell")))?;
+            Ok(CoreState {
+                n: u32::try_from(key.0).map_err(|_| invalid("a core n out of range"))?,
+                l: u32::try_from(key.1).map_err(|_| invalid("a core l out of range"))?,
+                occupation: occupancy,
+                energy: *atom.eigenvalues.get(at).ok_or_else(|| {
+                    invalid("the reference atom has no eigenvalue for a core level")
+                })?,
+                orbital: ctx.copy_slice(orbital(atom, key)?)?,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
     let smooth_core = if shells.core.is_empty() {
         vec![0.; n]
     } else {
@@ -345,6 +367,8 @@ pub fn finish(
         valence_density: table(&sums.smooth_valence)?,
         core_density: table(&core)?,
         smooth_core_density: table(&smooth_core)?,
+        core_states: Some(core_states),
+        core_scheme: None,
         defaults_applied: Vec::new(),
         _small: ctx.reserve(1 << 20)?,
     })

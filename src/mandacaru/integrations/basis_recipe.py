@@ -81,6 +81,7 @@ def basis_tables(context, family, options, species, cutoff, report):
         out[symbol] = [SimpleNamespace(n=n, l=l, zeta=zeta, polarization=polarization,
                                        diffuse=diffuse, r=np.asarray(r), values=np.asarray(values))
                        for n, l, zeta, polarization, diffuse, r, values in built["shells"]]
+        report.setdefault("shells", {})[symbol] = out[symbol]
         for c in built["confined"]:
             report["confinement"].setdefault(symbol, {})[(c["l"], c["state"])] = SimpleNamespace(**c)
         if built["polarization"] is not None:
@@ -101,5 +102,5 @@ def basis_entries(symbols, tables_of, hold):
             r_key, values_key = held[(symbol, index)]
             entries.extend(dict(atom=atom, l=int(shell.l), m=int(m), r=r_key, values=values_key,
                                 diffuse=bool(shell.diffuse))
-                           for m in range(-shell.l, shell.l + 1))
+                           for m in _native.magnetic_numbers(shell.l))
     return entries

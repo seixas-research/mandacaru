@@ -13,7 +13,7 @@ functional names, and a self-consistent PBE atom.
 import numpy as np
 import pytest
 
-from mandacaru.basis.atomic_solver import lda_correlation, lda_xc
+from mandacaru.basis.atomic_solver import lda_correlation, lda_exchange
 from .xc_points import spin_partials
 
 
@@ -42,7 +42,8 @@ class TestPerdewZunger:
     def test_the_spin_form_reduces_to_the_restricted_one(self):
         rho = np.array([1e-3, 0.05, 0.2387, 1.0, 10.0])
         f = spin_partials("lda", 0.5 * rho, 0.5 * rho)[0]
-        assert np.allclose(f, rho * lda_xc(rho)[0], rtol=1e-12, atol=0)
+        e_xc = lda_exchange(rho)[0] + lda_correlation(rho)[0]
+        assert np.allclose(f, rho * e_xc, rtol=1e-12, atol=0)
 
 
 class TestTheGeneratorsFunctionals:

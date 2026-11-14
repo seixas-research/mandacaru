@@ -15,7 +15,7 @@ use crate::periodic::{
     },
     invalid,
     setup::{
-        pulay::{grid_cross, projection, tau_cross, Matrix},
+        pulay::{tau_cross, Matrix},
         spheres::Projector,
         spin_orbit::labels,
     },
@@ -49,10 +49,7 @@ impl<'a> SetupDerivatives<'a> {
 
     /// The local term of a spinor: `sum_a sigma_a x G^a` over the Pauli channels of the fields.
     pub(super) fn spinor_local(&self, k: usize, fields: &Fields) -> Result<[Matrix; 3]> {
-        let mut channels = Vec::with_capacity(fields.local.len());
-        for v in &fields.local {
-            channels.push(self.with_samples(k, |s| grid_cross(self.ctx, &self.mesh, s, Some(v)))?);
-        }
+        let channels = self.with_grid(k, fields, |g| g.local.clone())?;
         let mut out = [
             Matrix::zeros(0, 0),
             Matrix::zeros(0, 0),
@@ -101,7 +98,8 @@ impl<'a> SetupDerivatives<'a> {
                 "crystal gradient: spin-orbit projectors belong to a spinor request",
             ));
         }
-        let found = crate::models::spin_orbit::channels(self.ctx, &labels(projectors), couplings, false)?;
+        let found =
+            crate::models::spin_orbit::channels(self.ctx, &labels(projectors), couplings, false)?;
         let b = operator(self.ctx, projectors.len(), &found)?;
         let owner = self.layout.row_owner[..self.functions].to_vec();
         let operator = SpinOrbit::new(
@@ -133,13 +131,7 @@ impl<'a> SetupDerivatives<'a> {
             return Ok(());
         };
         for (k, point) in crystal.points.iter().enumerate() {
-            let c = projection(
-                self.ctx,
-                self.inputs.shells,
-                &self.inputs.sites.lattice,
-                self.kpoint(k)?,
-                so.projectors,
-            )?;
+            let c = self.spin_orbit_table()?.value(self.kpoint(k)?)?;
             let ours = so.operator.matrix(&c);
             let Some(theirs) = &point.spin_orbit else {
                 return Err(invalid(

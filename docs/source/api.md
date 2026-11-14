@@ -54,6 +54,15 @@ excitations of a molecule ([Excited states of molecules](guide/excited_states.md
    :members:
 ```
 
+`calc.get_real_time(...)` returns a `RealTime` view of a molecule propagated in real time
+after a delta kick, with the strength function and polarizability of the trace
+([Real-time TD-DFT of molecules](guide/real_time.md)):
+
+```{eval-rst}
+.. autoclass:: mandacaru.analysis.real_time.RealTime
+   :members:
+```
+
 The result's `hamiltonian` property explicitly requests dense transformed
 integrals. Reading energies, forces or ordinary snapshots leaves that Hamiltonian
 unconstructed. Mean-field exchange uses Coulomb Cholesky factors.

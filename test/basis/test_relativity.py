@@ -204,21 +204,22 @@ class TestSpinOrbitSplittingsOfRealAtoms:
                                                        measured_ev, tolerance):
         atom = solve_atom(Z, points=4000, r_max=20.0, relativity="dirac",
                           tolerance=1e-5, mixing=0.3)
-        splitting = atom.spin_orbit_splitting(n, l) * HARTREE_EV
+        levels = atom.eigenvalues_j      # j = l + 1/2 is kappa = -(l + 1), j = l - 1/2 is kappa = l
+        splitting = (levels[(n, l, -(l + 1))] - levels[(n, l, l)]) * HARTREE_EV
         assert splitting > 0                       # j = l+1/2 lies above
         assert splitting == pytest.approx(measured_ev, rel=tolerance)
 
     def test_an_s_shell_does_not_split(self):
         atom = solve_atom(10, points=3000, r_max=18.0, relativity="dirac",
                           tolerance=1e-5, mixing=0.3)
-        assert atom.spin_orbit_splitting(1, 0) == 0.0
-        assert atom.spin_orbit_splitting(2, 0) == 0.0
+        assert (1, 0, 0) not in atom.eigenvalues_j      # an s shell has the one j = 1/2 level
+        assert (2, 0, 0) not in atom.eigenvalues_j
+        assert (2, 0, -1) in atom.eigenvalues_j
 
     def test_a_scalar_atom_reports_no_splitting_because_it_has_no_term(self):
         atom = solve_atom(10, points=3000, r_max=18.0, relativity="scalar",
                           tolerance=1e-5, mixing=0.3)
-        assert not atom.eigenvalues_j
-        assert atom.spin_orbit_splitting(2, 1) == 0.0
+        assert not atom.eigenvalues_j        # no j levels: the equation has no spin-orbit term
 
 
 class TestTheSelfConsistentAtom:

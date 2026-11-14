@@ -5,9 +5,8 @@
 use crate::setup_shells_support::dataset;
 use mandacaru_core::{
     models::hubbard_request::Request,
-    paw::digest::sha256_file,
     periodic::{
-        berry::Sampler,
+        bloch_mesh::Sampler,
         setup::{
             parse::{create_setup, AtomSpec, SetupInput},
             PeriodicSetup,
@@ -55,6 +54,16 @@ impl Solved {
 }
 
 pub fn solve(cell: &Cell) -> Solved {
+    solve_in(cell, "raw")
+}
+
+/// [`solve`] with the projectors and operator blocks in `projector_basis` (`"raw"` or `"dual"`).
+pub fn solve_in(cell: &Cell, projector_basis: &str) -> Solved {
+    solve_sized(cell, projector_basis, "SZ")
+}
+
+/// [`solve_in`] with the PAW-LCAO basis `size` (`"SZ"`, `"DZP"`, `"QZ2P"`, ...).
+pub fn solve_sized(cell: &Cell, projector_basis: &str, size: &str) -> Solved {
     let ctx = Context::new(Some(2), 1 << 30).unwrap();
     let mut species: Vec<&str> = vec![];
     for symbol in &cell.symbols {
@@ -70,7 +79,11 @@ pub fn solve(cell: &Cell) -> Solved {
             let path = root.join(format!("{symbol}.parquet"));
             (
                 path.to_string_lossy().into_owned(),
-                sha256_file(&path).unwrap(),
+                mandacaru_core::paw::digest::dataset_content_sha256(
+                    &mandacaru_core::Context::new(Some(1), 1 << 30).unwrap(),
+                    &path,
+                )
+                .unwrap(),
             )
         })
         .collect();
@@ -82,7 +95,7 @@ pub fn solve(cell: &Cell) -> Solved {
     let input = SetupInput {
         mesh: None,
         recipes: None,
-        projector_basis: "raw".into(),
+        projector_basis: projector_basis.into(),
         lattice: cell.lattice,
         grid_shape: cell.grid,
         atoms: cell
@@ -103,7 +116,7 @@ pub fn solve(cell: &Cell) -> Solved {
         weights: vec![1. / count as f64; count],
         functional: cell.functional.into(),
         precision: "float64".into(),
-        basis_size: "SZ".into(),
+        basis_size: size.into(),
         spinor: cell.spinor,
         spin: cell.spin,
         symmetry: false,

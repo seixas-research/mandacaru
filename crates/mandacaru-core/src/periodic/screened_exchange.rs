@@ -17,8 +17,9 @@ use super::{
 };
 use crate::{
     math::{fft::Fft3, reciprocal, storage::MatrixSource},
+    product,
     quantum::C64,
-    Buffer, Result,
+    Buffer, Level, Result,
 };
 use nalgebra::DMatrix;
 use std::f64::consts::PI;
@@ -354,16 +355,112 @@ pub(super) fn weighted_pairs(
     Ok(())
 }
 
+/// What one band lane of the exchange keeps from one state to the next: its transform and its
+/// pair row, made on the lane's own thread the first time it is needed (so the transform takes
+/// the lane's share of the workers).
+#[derive(Default)]
+pub(super) struct BandLane {
+    fft: Option<Fft3>,
+    pair: Option<Buffer<C64>>,
+}
+
+/// The band lanes one target task of the exchange runs its occupied states on.
+pub(super) struct TargetLane {
+    bands: Vec<BandLane>,
+}
+
+impl TargetLane {
+    pub(super) fn new(c: &Crystal) -> Self {
+        let lanes = c.context.lanes(Level::Bands, usize::MAX);
+        Self {
+            bands: (0..lanes).map(|_| BandLane::default()).collect(),
+        }
+    }
+}
+
+/// The bytes one band lane holds while it assembles the pairs of one state: the weighted pairs
+/// of the target basis, the pair row, the transform (plans, lines and scratch of its share of the
+/// workers) and the state's lower-triangle Gram matrix.
+fn band_lane_bytes(c: &Crystal, workers: usize) -> Result<usize> {
+    let n = c.grid.index.points();
+    let n_basis = c.bands();
+    let line = *c.grid.index.shape().iter().max().unwrap_or(&1);
+    [
+        product(&[n_basis, n, 16])?,
+        product(&[n, 16])?,
+        product(&[line, 4096])?,
+        product(&[workers.max(1), line, 96])?,
+        product(&[n_basis, n_basis, 16])?,
+    ]
+    .into_iter()
+    .try_fold(0usize, |total, bytes| {
+        total.checked_add(bytes).ok_or(crate::Error::Overflow)
+    })
+}
+
+/// The lower triangle `G_ij = sum_Q W_i(Q) W_j(Q)^*` (`j <= i`, row by row) of one occupied
+/// state `psi_j` at a source point against the target basis: the work one band lane does.
+#[allow(clippy::too_many_arguments)]
+fn state_gram(
+    c: &Crystal,
+    lane: &mut BandLane,
+    target_point: &KPoint,
+    u_k: &[C64],
+    occ_q: &OccupiedStates,
+    state: usize,
+    kernel: &[f64],
+    shapes: Option<&[C64]>,
+    stage: Stage,
+) -> Result<Vec<C64>> {
+    let n = c.grid.index.points();
+    let n_basis = c.bands();
+    let part = stage.map_or(Part::Pseudo, |(_, part)| part);
+    if lane.fft.is_none() {
+        lane.fft = Some(Fft3::new(&c.context, c.grid.index.shape())?);
+    }
+    if lane.pair.is_none() {
+        lane.pair = Some(c.context.allocate::<C64>(n)?);
+    }
+    let (Some(fft), Some(pair_buf)) = (lane.fft.as_mut(), lane.pair.as_mut()) else {
+        unreachable!()
+    };
+    let mut transformed_pairs = c.context.allocate::<C64>(n_basis * n)?;
+    let moments = stage
+        .map(|(augmentation, _)| augmentation.moments(c, target_point, &occ_q.projected[state]));
+    let input = PairInputs {
+        u_k,
+        psi: &occ_q.wavefunctions[state],
+        moments: moments.as_ref(),
+        shapes,
+        kernel,
+        part,
+    };
+    weighted_pairs(c, fft, pair_buf, &input, transformed_pairs.as_mut_slice())?;
+    let mut gram = Vec::with_capacity(n_basis * (n_basis + 1) / 2);
+    for i in 0..n_basis {
+        let w_i = &transformed_pairs.as_slice()[i * n..(i + 1) * n];
+        for j in 0..=i {
+            let w_j = &transformed_pairs.as_slice()[j * n..(j + 1) * n];
+            gram.push((0..n).map(|at| w_i[at] * w_j[at].conj()).sum::<C64>());
+        }
+    }
+    Ok(gram)
+}
+
 /// `K(k)` of one target point against the occupied states of every point of the mesh (one spin
 /// channel): `K_ij = sum_{q, n} sum_Q v(Q) rho_{i n}(Q) rho_{j n}(Q)^*`.
-#[allow(clippy::too_many_arguments)]
+///
+/// The occupied states of a source point run on the target lane's band lanes (`bands` of the
+/// layout), a window of one state per lane at a time, each its own serial Gram matrix; the
+/// matrices are added to `K` in the order of the points and states, the additions of the
+/// serial sum. So `K` is the same, bit for bit, on every number of band lanes and threads.
 fn target_matrix(
     c: &Crystal,
     occupied: &[OccupiedStates],
     target_point: &KPoint,
     omega: f64,
     exxdiv: ExxDivTreatment,
-    fft: &mut Fft3,
+    lane: &mut TargetLane,
     stage: Stage,
 ) -> Result<Matrix> {
     let m = c.m;
@@ -380,7 +477,7 @@ fn target_matrix(
     }
 
     let mut k_mat = Matrix::zeros(n_basis, n_basis);
-    let mut pair_buf = c.context.allocate::<C64>(n)?;
+    let lanes = lane.bands.len().max(1);
 
     // Loop over source q-points
     for (q, occ_q) in occupied.iter().enumerate() {
@@ -398,33 +495,37 @@ fn target_matrix(
             Some((augmentation, _)) => Some(augmentation.pair_shapes(c, k_diff)?),
             None => None,
         };
-
-        // Loop over occupied states j at q
-        for (state, psi_j) in occ_q.wavefunctions.iter().enumerate() {
-            let mut transformed_pairs = c.context.allocate::<C64>(n_basis * n)?;
-            let moments = stage.map(|(augmentation, _)| {
-                augmentation.moments(c, target_point, &occ_q.projected[state])
-            });
-
-            let input = PairInputs {
-                u_k: u_k.as_slice(),
-                psi: psi_j,
-                moments: moments.as_ref(),
-                shapes: shapes.as_ref().map(|s| s.as_slice()),
-                kernel: sqrt_kernel_weight.as_slice(),
-                part,
-            };
-            weighted_pairs(c, fft, &mut pair_buf, &input, transformed_pairs.as_mut_slice())?;
-
-            // Accumulate into K: K_{i, j} += sum_{at} W_i[at] * W_j[at]^*
-            for i in 0..n_basis {
-                let w_i = &transformed_pairs.as_slice()[i * n..(i + 1) * n];
-                for j in 0..=i {
-                    let w_j = &transformed_pairs.as_slice()[j * n..(j + 1) * n];
-                    let dot: C64 = (0..n).map(|at| w_i[at] * w_j[at].conj()).sum();
-                    k_mat[(i, j)] += dot;
-                    if j != i {
-                        k_mat[(j, i)] += dot.conj();
+        let states = occ_q.wavefunctions.len();
+        for first in (0..states).step_by(lanes) {
+            let window = lanes.min(states - first);
+            let grams = c.context.map_tasks(
+                Level::Bands,
+                &mut lane.bands[..window],
+                window,
+                |band, offset| {
+                    state_gram(
+                        c,
+                        band,
+                        target_point,
+                        u_k.as_slice(),
+                        occ_q,
+                        first + offset,
+                        sqrt_kernel_weight.as_slice(),
+                        shapes.as_ref().map(|s| s.as_slice()),
+                        stage,
+                    )
+                },
+            )?;
+            // Accumulate into K in state order: K_{i, j} += sum_{at} W_i[at] * W_j[at]^*
+            for gram in grams {
+                let mut dots = gram.into_iter();
+                for i in 0..n_basis {
+                    for j in 0..=i {
+                        let dot = dots.next().expect("a Gram matrix of the target basis");
+                        k_mat[(i, j)] += dot;
+                        if j != i {
+                            k_mat[(j, i)] += dot.conj();
+                        }
                     }
                 }
             }
@@ -435,7 +536,27 @@ fn target_matrix(
     Ok((&k_mat + k_mat.adjoint()) * C64::new(0.5, 0.0))
 }
 
-/// The mesh loop: `K_s(k)` for every spin channel and point, and the exchange energy.
+/// The lanes of the exchange of one spin channel: `kpts` target lanes (at most the `nk` targets),
+/// each with `bands` band lanes. Refused when they do not fit in the free budget, naming the
+/// largest `bands`, then the largest `kpts`, that does.
+fn exchange_lanes(c: &Crystal, nk: usize) -> Result<Vec<TargetLane>> {
+    let ctx = &c.context;
+    let k_lanes = ctx.lanes(Level::Kpts, nk);
+    let b_lanes = ctx.lanes(Level::Bands, usize::MAX);
+    let layout = ctx.layout();
+    let band_bytes = band_lane_bytes(c, layout.threads)?;
+    ctx.check_lanes(Level::Bands, b_lanes, band_bytes)?;
+    let target_bytes = product(&[c.m, c.grid.index.points(), 16])?
+        .checked_add(product(&[b_lanes, band_bytes])?)
+        .ok_or(crate::Error::Overflow)?;
+    ctx.check_lanes(Level::Kpts, k_lanes, target_bytes)?;
+    Ok((0..k_lanes).map(|_| TargetLane::new(c)).collect())
+}
+
+/// The mesh loop: `K_s(k)` for every spin channel and point, and the exchange energy. The target
+/// points run on the `kpts` lanes of the layout (one task per point), each target's states on
+/// its `bands` lanes; the matrices come back in point order and the energy is summed in that
+/// order, so both are the same on every layout.
 fn build<M: MatrixSource>(
     c: &Crystal,
     matrices: &[M],
@@ -447,7 +568,7 @@ fn build<M: MatrixSource>(
     let spinor = c.spinor;
     let n_spin_channels = if spinor { 1 } else { c.spins };
     let spin_scale = if !spinor && c.spins == 1 { 0.5 } else { 1.0 };
-    let mut fft = Fft3::new(&c.context, c.grid.index.shape())?;
+    let mut lanes = exchange_lanes(c, nk)?;
 
     let mut operators = Vec::with_capacity(n_spin_channels * nk);
     let mut total_exchange_energy = 0.0;
@@ -456,19 +577,23 @@ fn build<M: MatrixSource>(
         // 1. Extract occupied wavefunctions for all q-points
         let all_occupied = occupied_states(c, matrices, s, spin_scale, stage)?;
 
-        // 2. Loop over target k-points
-        for k in 0..nk {
-            let target_point = &c.points[k];
-            let k_herm = target_matrix(
-                c,
-                &all_occupied,
-                target_point,
-                screening.omega,
-                exxdiv,
-                &mut fft,
-                stage,
-            )?;
+        // 2. The target k-points, one task each
+        let targets = c
+            .context
+            .map_tasks(Level::Kpts, &mut lanes, nk, |lane, k| {
+                target_matrix(
+                    c,
+                    &all_occupied,
+                    &c.points[k],
+                    screening.omega,
+                    exxdiv,
+                    lane,
+                    stage,
+                )
+            })?;
 
+        for (k, k_herm) in targets.into_iter().enumerate() {
+            let target_point = &c.points[k];
             // Exact exchange energy contribution
             let d_mat = matrices[s * nk + k].matrix(&c.context)?;
             let d_spin = &*d_mat * C64::new(spin_scale, 0.);
@@ -610,14 +735,19 @@ pub fn exchange_operator_at_k_with<M: MatrixSource>(
     let spin_scale = if !c.spinor && c.spins == 1 { 0.5 } else { 1.0 };
     let stage = augmentation.map(|a| (a, Part::Both));
     let all_occupied = occupied_states(c, matrices, spin, spin_scale, stage)?;
-    let mut fft = Fft3::new(&c.context, c.grid.index.shape())?;
+    let mut lane = TargetLane::new(c);
+    c.context.check_lanes(
+        Level::Bands,
+        lane.bands.len(),
+        band_lane_bytes(c, c.context.layout().threads)?,
+    )?;
     let mut k_mat = target_matrix(
         c,
         &all_occupied,
         target_point,
         screening.omega,
         exxdiv,
-        &mut fft,
+        &mut lane,
         stage,
     )?;
     if let Some(model) = augmentation.and_then(|a| a.one_center()) {

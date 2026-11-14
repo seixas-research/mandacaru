@@ -313,7 +313,29 @@ impl PySpatialGrid {
             }
         };
 
-        let center_vec: Vec<f64> = if let Ok(v) = center.extract::<Vec<f64>>() {
+        // `center=None` with a `cell` is the cell's center, half the sum of its vectors, summed in
+        // `units` before the conversion (the center of a periodic grid).
+        let center_vec: Vec<f64> = if center.is_none() {
+            let arr: PyReadonlyArray2<'_, f64> = match cell {
+                Some(c) if !c.is_none() => c
+                    .extract()
+                    .map_err(|_| PyValueError::new_err("cell must be a (3, 3) tensor"))?,
+                _ => {
+                    return Err(PyValueError::new_err(
+                        "a grid without a center needs a cell: its center is the middle of the cell",
+                    ))
+                }
+            };
+            layout(&arr)?;
+            if arr.shape() != [3, 3] {
+                return Err(PyValueError::new_err(format!(
+                    "cell must be a (3, 3) tensor, got {:?}",
+                    arr.shape()
+                )));
+            }
+            let sl = arr.as_slice()?;
+            (0..3).map(|i| 0.5 * (sl[i] + sl[3 + i] + sl[6 + i])).collect()
+        } else if let Ok(v) = center.extract::<Vec<f64>>() {
             v
         } else if let Ok(arr) = center.extract::<PyReadonlyArray1<'_, f64>>() {
             layout(&arr)?;
@@ -680,7 +702,89 @@ pub fn grid_step_max_norm(step: PyReadonlyArray2<'_, f64>) -> PyResult<f64> {
     Ok(col0.max(col1).max(col2))
 }
 
+fn rows(cell: &PyReadonlyArray2<'_, f64>) -> PyResult<[[f64; 3]; 3]> {
+    layout(cell)?;
+    if cell.shape() != [3, 3] {
+        return Err(PyValueError::new_err("cell must have shape (3, 3)"));
+    }
+    let c = cell.as_slice()?;
+    Ok([[c[0], c[1], c[2]], [c[3], c[4], c[5]], [c[6], c[7], c[8]]])
+}
+
+fn points(positions: &PyReadonlyArray2<'_, f64>) -> PyResult<Vec<[f64; 3]>> {
+    layout(positions)?;
+    if positions.ndim() != 2 || positions.shape()[1] != 3 {
+        return Err(PyValueError::new_err("positions must have shape (n, 3)"));
+    }
+    Ok(positions.as_slice()?.chunks_exact(3).map(|r| [r[0], r[1], r[2]]).collect())
+}
+
+/// The fractional coordinates of `positions` in the cell (rows) in the same length unit; the
+/// periodic ones are wrapped into `[0, 1)` unless `wrap` is false (`geometry::fractional_coordinates`).
+#[pyfunction]
+#[pyo3(signature = (cell, positions, pbc, wrap = true))]
+fn fractional_coordinates<'py>(
+    py: Python<'py>,
+    cell: PyReadonlyArray2<'py, f64>,
+    positions: PyReadonlyArray2<'py, f64>,
+    pbc: [bool; 3],
+    wrap: bool,
+) -> PyResult<Array<'py, f64>> {
+    let (cell, positions) = (rows(&cell)?, points(&positions)?);
+    let out = py
+        .detach(|| mandacaru_core::geometry::fractional_coordinates(&cell, &positions, pbc, wrap))
+        .map_err(error)?;
+    array(py, &[out.len(), 3], out.concat())
+}
+
+/// `(numbers, positions, cell, moments)` of the supercell of `repeats` cells along the cell
+/// vectors; `moments` is one value per atom, repeated with them (`geometry::repeat_cell`).
+#[pyfunction]
+fn repeat_cell<'py>(
+    py: Python<'py>,
+    numbers: Vec<u8>,
+    positions: PyReadonlyArray2<'py, f64>,
+    cell: PyReadonlyArray2<'py, f64>,
+    moments: Vec<f64>,
+    repeats: [usize; 3],
+) -> PyResult<(Vec<u8>, Array<'py, f64>, Array<'py, f64>, Vec<f64>)> {
+    let (cell, positions) = (rows(&cell)?, points(&positions)?);
+    if moments.len() != numbers.len() {
+        return Err(PyValueError::new_err("one moment per atom"));
+    }
+    let out = py
+        .detach(|| mandacaru_core::geometry::repeat_cell(&cell, &positions, &numbers, repeats))
+        .map_err(error)?;
+    let moments = out.source.iter().map(|&i| moments[i]).collect();
+    Ok((
+        out.numbers,
+        array(py, &[out.positions.len(), 3], out.positions.concat())?,
+        array(py, &[3, 3], out.cell.concat())?,
+        moments,
+    ))
+}
+
+/// For each atom, the vectors to its neighbors closer than `cutoff`, periodic images included
+/// (`geometry::neighbor_vectors`), as an `(m, 3)` array per atom.
+#[pyfunction]
+fn neighbor_vectors<'py>(
+    py: Python<'py>,
+    cell: PyReadonlyArray2<'py, f64>,
+    pbc: [bool; 3],
+    positions: PyReadonlyArray2<'py, f64>,
+    cutoff: f64,
+) -> PyResult<Vec<Array<'py, f64>>> {
+    let (cell, positions) = (rows(&cell)?, points(&positions)?);
+    let found = py
+        .detach(|| mandacaru_core::geometry::neighbor_vectors(&cell, pbc, &positions, cutoff))
+        .map_err(error)?;
+    found.into_iter().map(|v| array(py, &[v.len(), 3], v.concat())).collect()
+}
+
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(fractional_coordinates, m)?)?;
+    m.add_function(wrap_pyfunction!(repeat_cell, m)?)?;
+    m.add_function(wrap_pyfunction!(neighbor_vectors, m)?)?;
     m.add_function(wrap_pyfunction!(positions_center, m)?)?;
     m.add_function(wrap_pyfunction!(grid_step_max_norm, m)?)?;
     Ok(())

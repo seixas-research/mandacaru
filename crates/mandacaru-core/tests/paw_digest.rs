@@ -1,7 +1,6 @@
-//! The file digest that guards a dataset handed to a hybrid crystal (`paw::digest`): SHA-256
-//! against the NIST vectors and a streamed file.
-use mandacaru_core::paw::digest::{sha256, sha256_file};
-use std::path::PathBuf;
+//! The digest that guards a dataset handed to a crystal (`paw::digest`): SHA-256 against the
+//! NIST vectors, across block boundaries.
+use mandacaru_core::paw::digest::sha256;
 
 #[test]
 fn the_digest_equals_the_nist_vectors_and_streams_a_file_across_block_boundaries() {
@@ -17,14 +16,25 @@ fn the_digest_equals_the_nist_vectors_and_streams_a_file_across_block_boundaries
         sha256(b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"),
         "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"
     );
-    // One million 'a', written to a file and streamed in 64 KiB blocks.
-    let path = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("p2_digest_million_a.bin");
-    std::fs::write(&path, vec![b'a'; 1_000_000]).unwrap();
-    let digest = sha256_file(&path).unwrap();
-    std::fs::remove_file(&path).unwrap();
+    // One million 'a': 15625 blocks of 64 bytes.
     assert_eq!(
-        digest,
+        sha256(&vec![b'a'; 1_000_000]),
         "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0"
     );
-    assert!(sha256_file(&path).is_err(), "a missing file is an error");
+}
+
+#[test]
+fn a_pinned_entry_gives_its_content_digest_and_an_old_file_pin_is_refused() {
+    use mandacaru_core::paw::digest::pinned_content;
+    use serde_json::json;
+    let digest = "ab".repeat(32);
+    assert_eq!(
+        pinned_content(&json!({"file": "x", "content_sha256": digest})).unwrap(),
+        digest
+    );
+    assert_eq!(pinned_content(&json!({"file": ""})).unwrap(), "");
+    let old = pinned_content(&json!({"file": "x", "sha256": digest}))
+        .unwrap_err()
+        .to_string();
+    assert!(old.contains("save it again"), "{old}");
 }

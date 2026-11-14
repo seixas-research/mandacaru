@@ -30,14 +30,6 @@ def _option_text(value):
     return str(value)
 
 
-def _per_element(spec, symbol, default):
-    """One element's value of an option that may be ``{symbol: value}``."""
-    if isinstance(spec, dict):
-        table = {(k if k == "*" else str(k).capitalize()): v for k, v in spec.items()}
-        spec = table.get(symbol.capitalize(), table.get("*"))
-    return default if spec is None else spec
-
-
 def _functions(driver, symbols):
     """``basis_functions`` and the ``functions`` table, from the native report."""
     from .. import _native
@@ -106,20 +98,24 @@ def _dataset_row(symbol, pp):
     return (symbol, int(round(float(getattr(pp, "atomic_number", 0) or 0))),
             f"{float(pp.valence_charge):g}", max(pp.channels), f"{r_cut:.4f}",
             os.path.basename(str(getattr(pp, "source", IN_MEMORY))).replace(" ", "_"),
-            getattr(pp, "source_sha256", None) or "none")
+            getattr(pp, "content_sha256", None) or "none")
 
 
-def _orbital_rows(symbol, pp, options, confined):
+def _orbital_rows(symbol, pp, report):
     """One row per basis state, and one per channel without one.
 
     A semicore channel has two states; an empty channel keeps its row,
-    unconfined, because the dataset has it.
+    unconfined, because the dataset has it. The zetas of a state and the polarization shells
+    are those the engine built (``_native.paw_basis`` shells), not a restatement of the recipe.
     """
-    from ..models.radial import resolve_zeta
     from ..pseudopotentials.confinement import free_energy
     from ..pseudopotentials.orbitals import basis_states
 
-    n_zeta, n_polarization = resolve_zeta(_per_element(options.get("size"), symbol, "SZ"))
+    confined = report["confinement"]
+    shells = report["shells"][symbol]
+    n_polarization = len([shell for shell in shells if shell.polarization])
+    zetas = Counter((shell.n, shell.l) for shell in shells
+                    if not shell.polarization and not shell.diffuse)
     states = basis_states(pp)
     held = {state.l for state in states}
     channels = sorted(pp.channels.items())
@@ -140,18 +136,18 @@ def _orbital_rows(symbol, pp, options, confined):
                      f"{from_hartree(float(orbital.free_energy), 'eV'):.6f}",
                      f"{from_hartree(float(orbital.energy), 'eV'):.6f}",
                      f"{orbital.achieved_shift:.6f}")
-        table.append((symbol, n, l, 1 if semicore else n_zeta, polarization) + cells)
+        table.append((symbol, n, l, zetas.get((n, l), 0), polarization) + cells)
     return table
 
 
 def _tables(species, options, report, symbols):
     """The ``datasets``, ``orbitals`` and ``polarization_shells`` tables."""
-    datasets = [("symbol", "Z", "Z_ion", "l_max", "r_cut_Bohr", "source", "sha256")]
+    datasets = [("symbol", "Z", "Z_ion", "l_max", "r_cut_Bohr", "source", "content_sha256")]
     orbitals = [("symbol", "n", "l", "zetas", "polarization", "r_c_Bohr", "r_c_Angstrom",
                  "eps_free_eV", "eps_basis_eV", "shift_eV")]
     for symbol, pp in species.items():
         datasets.append(_dataset_row(symbol, pp))
-        orbitals.extend(_orbital_rows(symbol, pp, options, report["confinement"]))
+        orbitals.extend(_orbital_rows(symbol, pp, report))
     tables = {"datasets": datasets, "orbitals": orbitals}
     if report["polarization"]:
         tables["polarization_shells"] = [

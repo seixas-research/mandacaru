@@ -18,6 +18,7 @@ rather than misapplied.
 """
 
 import json
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -559,6 +560,23 @@ class TestResumeEnergyIdentity:
         assert fingerprint(one) == fingerprint(other)
         assert fingerprint(PauliSum({"ZI": 1.0})) != fingerprint(one)
         assert fingerprint(None) is None
+
+    def test_the_digest_is_the_one_the_python_route_wrote(self):
+        """The engine's digest (``term_lists::pauli_fingerprint``) is byte-identical to the
+        ``hashlib`` digest of the Python formatting it replaced, on 50 frozen cases: negative
+        zeros, coefficients at the rounding digit and the tolerances 1e-12 to 0.5."""
+        path = (Path(__file__).resolve().parents[1] / "migration" / "reference"
+                / "checkpoint_fingerprints.json")
+        cases = json.loads(path.read_text())["cases"]
+        assert len(cases) == 50
+        for case in cases:
+            h = PauliSum({label: complex(re, im) for label, re, im in case["terms"]},
+                         num_qubits=case["n"])
+            assert fingerprint(h, case["atol"]) == case["digest"], case
+
+    def test_a_nonpositive_tolerance_is_refused(self):
+        with pytest.raises(ValueError):
+            fingerprint(PauliSum({"ZI": 1.0}), 0.0)
 
 
 class TestCheckpointRecordsThePreparation:

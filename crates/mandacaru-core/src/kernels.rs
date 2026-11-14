@@ -534,8 +534,8 @@ pub fn bloch_project(
     c64_finite(columns, "projector columns")?;
     let size = product(&[call.images.len(), call.ms.len(), projectors])?;
     let mut output = ctx.allocate::<C64>(size)?;
-    // Each fixed group of point blocks sums into a private copy of the output, one group per
-    // worker at a time, the copies added in group order afterwards.
+    // Each worker keeps a private partial of the output for the images it owns
+    // (`bloch::bloch_project`): at most one per thread of the width.
     let _scratch = ctx.reserve(product(&[ctx.width(), size, 16])?)?;
     let spline = call.spline;
     let points_i = i64::try_from(points).map_err(|_| Error::Overflow)?;

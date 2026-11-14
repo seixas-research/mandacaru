@@ -13,7 +13,6 @@ _EXPORTS = {
     "filter_label": (".filtering", "filter_label"),
     "filter_radial": (".filtering", "filter_radial"),
     "filter_table": (".filtering", "filter_table"),
-    "residual_weight": (".filtering", "residual_weight"),
     "resolve_filter_cutoff": (".filtering", "resolve_filter_cutoff"),
     "validate_filter_cutoff": (".filtering", "validate_filter_cutoff"),
 }

@@ -35,6 +35,17 @@ pub struct Options {
     pub record: bool,
     pub seed: u64,
     pub optimizer: optimizer::Options,
+    /// Chains run side by side (parallel tempering, Hukushima and Nemoto 1996). Replica `r` runs at
+    /// `replica_spacing^r` times the schedule's temperature, so replica 0 is the chain of
+    /// `replicas = 1` at the same seed; after every step one adjacent pair, drawn uniformly, swaps
+    /// its states with probability `min(1, exp((1/T_r - 1/T_{r+1}) (F_r - F_{r+1})))`. The product
+    /// of the replicas' targets is invariant under the swap, so with `warm_start = false` and a
+    /// fixed temperature every replica keeps its own target; otherwise the exchange is a heuristic
+    /// of the optimizer, like the annealed chain itself. The returned state is the lowest cost any
+    /// replica evaluated; `final` is replica 0's.
+    pub replicas: usize,
+    /// The ratio of adjacent replica temperatures (at least 1).
+    pub replica_spacing: f64,
 }
 impl Default for Options {
     fn default() -> Self {
@@ -53,6 +64,8 @@ impl Default for Options {
             record: false,
             seed: 0,
             optimizer: optimizer::Options::default(),
+            replicas: 1,
+            replica_spacing: 2.,
         }
     }
 }
@@ -70,6 +83,15 @@ impl Options {
         {
             return Err(invalid("search needs finite nonnegative temperatures and length penalty, positive proposal temperature, and recording for screened insertions"));
         }
+        if self.replicas == 0
+            || !self.replica_spacing.is_finite()
+            || self.replica_spacing < 1.
+            || (self.replicas > 1 && (self.temperatures.contains(&0.) || self.screen_insertions > 0))
+            || (self.replicas > 1
+                && self.temperatures.iter().any(|t| !(t * self.replica_spacing.powi(self.replicas as i32 - 1)).is_finite()))
+        {
+            return Err(invalid("replica exchange needs at least one replica, a finite temperature spacing of at least 1, positive temperatures and no screened insertions"));
+        }
         Ok(())
     }
     fn temperature(&self, step: usize, steps: usize) -> f64 {
@@ -78,6 +100,15 @@ impl Options {
         }
         self.temperatures[0]
             * (self.temperatures[1] / self.temperatures[0]).powf(step as f64 / (steps - 1) as f64)
+    }
+    /// Replica `replica`'s temperature at `step`: the schedule's, times `replica_spacing^replica`.
+    fn replica_temperature(&self, step: usize, steps: usize, replica: usize) -> f64 {
+        let base = self.temperature(step, steps);
+        if replica == 0 {
+            base
+        } else {
+            base * self.replica_spacing.powi(replica as i32)
+        }
     }
 }
 /// The pool screen of a state and the operator proposal drawn from it. `gradients` is empty when
@@ -151,7 +182,26 @@ pub struct SearchResult {
     /// objective call) were trial points its line search rejected on the energy alone.
     pub num_gradient_evaluations: usize,
     pub failures: Vec<(usize, String)>,
+    /// One row per attempted replica swap (empty with one replica): the step, the pair, their
+    /// temperatures and costs, the log acceptance and the decision.
+    pub swaps: Vec<Value>,
+    /// Accepted and attempted replica swaps.
+    pub swap_acceptance: (usize, usize),
     _memory: Reservation,
+}
+/// One replica: its current state and its own random stream.
+struct Replica {
+    current: Evaluated,
+    random: Rng,
+}
+/// Replica `replica`'s stream: replica 0 draws the stream of a single chain at `seed`.
+fn replica_stream(seed: u64, replica: usize) -> Rng {
+    if replica == 0 {
+        Rng(seed)
+    } else {
+        let mut mixer = Rng(seed ^ (replica as u64).wrapping_mul(0xa0761d6478bd642f));
+        Rng(mixer.next_u64())
+    }
 }
 struct Evaluator<'a> {
     problem: &'a CachedProblem,
@@ -411,7 +461,9 @@ impl CachedProblem {
         self.context.run(|| {
             let started = Instant::now();
             let ctx: &Context = &self.context;
-            let evaluations = options.max_steps.max(options.transfer_steps.unwrap_or(0)).checked_mul(options.screen_insertions.min(self.pool.len())+1).and_then(|v|v.checked_add(3)).ok_or(Error::Overflow)?;
+            let replicas = options.replicas;
+            // Every replica proposes once per step.
+            let evaluations = options.max_steps.max(options.transfer_steps.unwrap_or(0)).checked_mul(options.screen_insertions.min(self.pool.len())+1).and_then(|v|v.checked_add(3)).and_then(|v|v.checked_mul(replicas)).ok_or(Error::Overflow)?;
             let memory = ctx.reserve(product(&[evaluations,self.pool.len()+options.max_length+32,256])?)?;
             let result_memory = ctx.reserve(product(&[evaluations,options.optimizer.max_evaluations,8])?)?;
             let graph = if learned.is_some_and(|m| m.ready) {Some(Graph::from_problem(self)?)} else {None};
@@ -452,15 +504,23 @@ impl CachedProblem {
                 if start.energy<best_energy.energy {best_energy=start;}
             }
             let kernel = if self.pool.is_empty() {None} else {Some(Kernel::new(self.pool.len(),options.max_length,options.move_weights)?)};
-            let mut random = Rng(options.seed);
+            // Replica 0 is the single chain: the same start, the same stream, the same draws.
+            let mut chains: Vec<Replica> = (1..replicas).map(|r| Replica {current: current.clone(), random: replica_stream(options.seed, r)}).collect();
+            chains.insert(0, Replica {current, random: replica_stream(options.seed, 0)});
+            let mut swap_random = Rng(options.seed ^ 0x5851f42d4c957f2d);
             let mut screening_random = Rng(options.seed ^ 0xd1b54a32d192ed03);
             let mut records = Vec::new();
             let mut steps = Vec::new();
+            let mut swaps = Vec::new();
+            let mut swap_acceptance = (0, 0);
             let mut acceptance = [(0,0);3];
             let mut screened = BTreeSet::new();
             for step in 0..if kernel.is_some() {chain_steps} else {0} {
                 let kernel = kernel.as_ref().unwrap();
-                let temperature = options.temperature(step,chain_steps);
+                for (replica, chain) in chains.iter_mut().enumerate() {
+                let temperature = options.replica_temperature(step,chain_steps,replica);
+                let current = &mut chain.current;
+                let random = &mut chain.random;
                 if options.screen_insertions>0 && current.sequence.len()<options.max_length && screened.insert(current.sequence.clone()) {
                     let mut remaining: Vec<_> = (0..self.pool.len()).collect();
                     let probabilities = &current.screened()?.probabilities;
@@ -474,11 +534,11 @@ impl CachedProblem {
                         let initial = if options.warm_start {action.transfer(&current.parameters,options.replace_inherit)} else {vec![0.;sequence.len()]};
                         let proposed = evaluator.evaluate(sequence,initial,step+1)?;
                         // A screened insertion is only recorded: its relaxation is all the row reads.
-                        records.push(record(step+1,action,&current,&proposed,temperature,None,true)?);
+                        records.push(record(step+1,action,current,&proposed,temperature,None,true)?);
                     }
                 }
                 let (screen,weights) = (current.screened()?,current.weighed()?);
-                let action = kernel.draw(ctx,&current.sequence,&screen.probabilities,&weights.removal,&mut random)?;
+                let action = kernel.draw(ctx,&current.sequence,&screen.probabilities,&weights.removal,random)?;
                 let sequence = action.apply(&current.sequence);
                 let initial = if options.warm_start {action.transfer(&current.parameters,options.replace_inherit)} else {vec![0.;sequence.len()]};
                 let mut proposed = evaluator.evaluate(sequence,initial,step+1)?;
@@ -493,7 +553,8 @@ impl CachedProblem {
                 let accepted = ratio>=0. || random.uniform().ln()<ratio;
                 // A rejected state is never drawn from; an accepted one becomes `current` complete.
                 if accepted {evaluator.complete(&mut proposed)?;}
-                let row = record(step+1,action,&current,&proposed,temperature,Some((forward,reverse,ratio,accepted)),options.record)?;
+                let mut row = record(step+1,action,current,&proposed,temperature,Some((forward,reverse,ratio,accepted)),options.record)?;
+                if replicas > 1 {row["replica"] = json!(replica);}
                 if options.record {records.push(row.clone());}
                 steps.push(row);
                 let move_index = match action.kind {Move::Insert=>0,Move::Delete=>1,Move::Replace=>2};
@@ -501,8 +562,26 @@ impl CachedProblem {
                 if accepted {acceptance[move_index].0+=1;}
                 if proposed.energy<best_energy.energy {best_energy=proposed.clone();}
                 if proposed.cost<best.cost {best=proposed.clone();}
-                if accepted {current=proposed;}
+                if accepted {*current=proposed;}
+                }
+                if replicas > 1 {
+                    // One adjacent pair exchanges its states; the streams stay with their replicas.
+                    let pair = swap_random.index(replicas - 1);
+                    let (cold, hot) = (options.replica_temperature(step,chain_steps,pair), options.replica_temperature(step,chain_steps,pair+1));
+                    let (cold_cost, hot_cost) = (chains[pair].current.cost, chains[pair+1].current.cost);
+                    let sequences = json!([chains[pair].current.sequence, chains[pair+1].current.sequence]);
+                    let ratio = (1./cold - 1./hot)*(cold_cost - hot_cost);
+                    let accepted = ratio>=0. || swap_random.uniform().ln()<ratio;
+                    swap_acceptance.1 += 1;
+                    if accepted {
+                        swap_acceptance.0 += 1;
+                        let (lower, upper) = chains.split_at_mut(pair+1);
+                        std::mem::swap(&mut lower[pair].current, &mut upper[0].current);
+                    }
+                    swaps.push(json!({"step":step+1,"replicas":[pair,pair+1],"temperatures":[cold,hot],"costs":[cold_cost,hot_cost],"sequences":sequences,"log_acceptance":ratio,"accepted":accepted}));
+                }
             }
+            let current = chains.swap_remove(0).current;
             let final_state = self.prepare_state(&best.sequence,&best.parameters,true)?;
             // A state that was not screened (a uniform chain that records nothing) is screened once.
             // (`best` may be a rejected state whose screen was skipped, or a transferred start.)
@@ -519,7 +598,7 @@ impl CachedProblem {
                 records,steps,acceptance,optimal_cost:best.cost,best_energy:best_energy.energy,
                 best_energy_indices:best_energy.sequence,best_energy_parameters:best_energy.parameters,final_energy:current.energy,
                 final_indices:current.sequence,final_parameters:current.parameters,num_architectures:evaluator.seen.len(),
-                num_screenings:evaluator.screenings,num_importance_evaluations:evaluator.importance_evaluations,importance_work:evaluator.importance_work,num_gradient_evaluations:evaluator.gradient_evaluations,failures:evaluator.failures,_memory:memory,
+                num_screenings:evaluator.screenings,num_importance_evaluations:evaluator.importance_evaluations,importance_work:evaluator.importance_work,num_gradient_evaluations:evaluator.gradient_evaluations,failures:evaluator.failures,swaps,swap_acceptance,_memory:memory,
             })
         })
     }

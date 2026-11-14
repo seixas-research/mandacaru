@@ -272,6 +272,10 @@ class TestTheSpectralFunction:
     def test_the_state_is_gapped_and_the_bands_follow_the_poles(self, spectral):
         assert spectral.gap > 0
         assert spectral.removal_edge < spectral.chemical_potential < spectral.addition_edge
+        # the engine's own midpoint and difference, in eV
+        assert spectral.chemical_potential == pytest.approx(
+            0.5 * (spectral.removal_edge + spectral.addition_edge), abs=1e-12)
+        assert spectral.gap == pytest.approx(spectral.addition_edge - spectral.removal_edge, abs=1e-12)
         bands = solved().calc.bands()
         assert bands.shape == (2, 1)
         # k = 0 is occupied (its strongest pole is a removal), k = 1/2 empty.
@@ -296,3 +300,59 @@ class TestTheSpectralFunction:
         atoms.get_potential_energy()
         with pytest.raises(ValueError, match="full orbital space"):
             atoms.calc.get_spectral_function()
+
+
+def lih_chain(active, **options):
+    """LiH chain (a = 3.2 A, H off the axis) on three k-points: its +-k states are exactly
+    degenerate pairs (a Li 1s pair and a sigma pair occupied, the lowest virtual pair at orbitals
+    6 and 7), and a periodic grid has no deterministic frame for them."""
+    atoms = Atoms("LiH", positions=[[0.0, 0.0, 0.0], [1.45, 0.05, 0.0]],
+                  cell=np.diag([3.2, 6.0, 6.0]), pbc=[True, False, False])
+    atoms.calc = Mandacaru(method="vqe", basis="HAO", grid_spacing=0.3,
+                           kpts={"size": (3, 1, 1), "gamma": True}, active_space=active,
+                           optimizer=SLSQP, parallelization={"threads": 1}, **REAL, **options)
+    return atoms
+
+
+#: The three occupied sigma orbitals and one member of the degenerate virtual pair.
+SPLIT = {"orbitals": 4, "frozen": [0, 1, 2]}
+#: The same with the whole pair.
+WHOLE = {"orbitals": 5, "frozen": [0, 1, 2]}
+
+
+class TestADegenerateGroupSplitByTheActiveSpace:
+    """The split-group guard (``MeanField::split_groups``; owner 2026-11-12, Q6): a force is
+    refused by name, an energy run warns in the ``[ACTIVE SPACE]`` block. Before the guard the
+    finite-difference force of ``SPLIT`` was not a derivative: net force (-0.0162, 0.0144,
+    0.0018) eV/A, the H y component 0.01503, 0.01094, 0.00380 eV/A at 0.53, 2 and 4 mA, and a
+    nonzero z force across the mirror plane z = 0."""
+
+    def test_the_force_is_refused_by_name(self):
+        atoms = lih_chain(SPLIT, trace=False)
+        with pytest.raises(NotImplementedError,
+                           match="splits 1 exactly degenerate orbital group"):
+            atoms.get_forces()
+
+    def test_the_energy_run_warns_in_the_active_space_block(self, tmp_path):
+        from mandacaru.utils.logging import parse_output
+
+        log = tmp_path / "split.log"
+        atoms = lih_chain(SPLIT, trace=False, txt=str(log))
+        atoms.get_potential_energy()
+        warning = parse_output(str(log))["active_space"]["warning"]
+        assert "splits 1 exactly degenerate orbital group" in warning
+        # The fourth active orbital is one member of the virtual +-k pair (orbitals 6 and 7).
+        assert "orbital energy" in warning and "active [6] deleted [7]" in warning
+
+    def test_a_whole_group_runs_and_its_force_sums_to_zero(self, tmp_path):
+        """Measured 2026-11-12 (finite differences, 1 mBohr): H (2.9484749, 0.0067956, 0)
+        eV/A, net force 2e-10."""
+        from mandacaru.utils.logging import parse_output
+
+        log = tmp_path / "whole.log"
+        atoms = lih_chain(WHOLE, trace=False, txt=str(log))
+        forces = atoms.get_forces()
+        assert np.abs(forces.sum(axis=0)).max() < 1e-7
+        assert forces[1, 0] == pytest.approx(2.9484749, abs=5e-5)
+        assert abs(forces[1, 2]) < 1e-7
+        assert "warning" not in parse_output(str(log))["active_space"]

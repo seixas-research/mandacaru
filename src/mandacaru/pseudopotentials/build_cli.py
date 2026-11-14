@@ -28,8 +28,12 @@ read back.
 What is released is the file, not the object in memory: it is written beside
 its final name, read back, and moved into place only when every channel's
 lowest levels are those of the generated dataset to
-:data:`RELOAD_LEVEL_TOLERANCE` (:func:`reload_errors`).  The report's checks
-are those of the file read back.
+:data:`RELOAD_LEVEL_TOLERANCE`.  The report's checks are those of the file read
+back.  Generation, writing, reading back and every check run in Rust
+(``_native.paw_build``, ``paw::generate::build``), so the record never crosses
+into Python on its way to the file and keeps everything it carries (the core
+states of dataset format 3 included); this module parses the options and
+prints the report.
 """
 
 from __future__ import annotations
@@ -38,7 +42,6 @@ import argparse
 import os
 import sys
 import time
-import warnings
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
 from .. import _native
@@ -50,16 +53,6 @@ FAMILIES = {"paw": "paw-lcao", "paw-lcao": "paw-lcao",
 #: read back from the file written for it, at the library stride (:data:`.io.STRIDE`; the stored
 #: digits do not matter): defined in Rust (``paw::record``), with the check itself.
 RELOAD_LEVEL_TOLERANCE = _native.RELOAD_LEVEL_TOLERANCE
-
-
-def reload_errors(generated, loaded, levels) -> dict:
-    """``{l: shift}``: the channels whose bound levels (those of ``levels(pp, l)`` below zero in
-    the generated dataset) moved by more than :data:`RELOAD_LEVEL_TOLERANCE` Hartree between the
-    dataset as generated and as read back from its file (``paw::record::reload_errors``)."""
-    channels = sorted(generated.channels)
-    return dict(_native.paw_reload_errors(
-        [(int(l), [float(v) for v in levels(generated, l)]) for l in channels],
-        [(int(l), [float(v) for v in levels(loaded, l)]) for l in channels]))
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -132,104 +125,53 @@ def _paw_dataset(family: str, output, install: bool, xc: str = "lda",
     return os.path.join(output if output is not None else os.getcwd(), family)
 
 
-def _generate(family: str, symbol: str, options: dict):
-    from .generation import generate_paw, generate_upaw
-
-    return (generate_paw if family == "paw-lcao" else generate_upaw)(symbol, **options)
-
-
-def build_one(family: str, symbol: str, options: dict, paw_dataset: str,
-              fmt: str, check: bool) -> tuple[bool, str]:
-    """Generate, write and check one dataset; ``(ok, report)``.
-
-    Numerical ``RuntimeWarning`` noise is silenced for this call only; any
-    other warning the generator raises (a cutoff past where a channel is
-    trustworthy, say) is kept and listed in the report.
-    """
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("ignore", RuntimeWarning)
-        warnings.simplefilter("always", UserWarning)
-        ok, report = _build_one(family, symbol, options, paw_dataset, fmt, check)
-    notes = sorted({str(w.message) for w in caught
-                    if not issubclass(w.category, RuntimeWarning)})
-    if notes:
-        report += "".join(f"\n    warning: {note}" for note in notes)
-    return ok, report
-
-
 def _limit_threads(threads: int) -> None:
     """Pool initializer: cap a worker's BLAS and OpenMP pools at ``threads``."""
     for name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "RAYON_NUM_THREADS"):
         os.environ[name] = str(threads)
 
 
-def _build_one(family: str, symbol: str, options: dict, paw_dataset: str,
-               fmt: str, check: bool) -> tuple[bool, str]:
-    from .diagnostics import diagnose, ghost_levels
+def build_one(family: str, symbol: str, options: dict, paw_dataset: str,
+              fmt: str, check: bool) -> tuple[bool, str]:
+    """Generate, write and check one dataset in Rust (``_native.paw_build``); ``(ok, report)``.
+
+    The generator's observations (a cutoff past where a channel is trustworthy, say) are listed
+    in the report as warnings.
+    """
     from .io import STRIDE, library_file
-    from .record import read_dataset, write_dataset
+    from .native_context import context
+    from .record import dataset_from_record
 
     started = time.perf_counter()
-    solved: dict = {}
-
-    def levels(dataset, l):
-        """The ghost-test levels of channel ``l``, once per dataset."""
-        if id(dataset) not in solved:
-            solved[id(dataset)] = ghost_levels(dataset)
-        return solved[id(dataset)][int(l)]
-
-    staged = None
     try:
-        pp = _generate(family, symbol, options)
         os.makedirs(paw_dataset, exist_ok=True)
-        path = library_file(symbol, paw_dataset, fmt)
-        # Written beside its final name and read back: what is released is
-        # the file (its stride and digits), so that is what is checked, and
-        # it replaces nothing until it passes.
-        staged = write_dataset(pp, f"{path}.new", stride=STRIDE, format=fmt)
-        loaded = read_dataset(staged, warn=False)
-        moved = reload_errors(pp, loaded, levels)
-        if moved:
-            sorted_moved = sorted(moved.items())
-            raise RuntimeError(
-                "the file read back does not reproduce the dataset: "
-                + ", ".join(f"l={l} levels moved {shift:.1e} Ha"
-                            for l, shift in sorted_moved)
-                + f" (tolerance {RELOAD_LEVEL_TOLERANCE:g} Ha); not written")
-        # The checks of the file, against the atom its record names.
-        found = diagnose(loaded)
-        ghosts = found["ghosts"]
-        phases = found["phases"] if check else {}
-        spectra = {l: levels(loaded, l)[:2] for l in loaded.channels}
-        os.replace(staged, path)
-        staged = None
+        answer = _native.paw_build(context(), symbol, {"family": family, **options},
+                                   library_file(symbol, paw_dataset, fmt), format=fmt,
+                                   stride=STRIDE, check=check)
     except Exception as error:                          # noqa: BLE001
-        if staged is not None and os.path.exists(staged):
-            os.remove(staged)
+        answer = {"refusal": f"{type(error).__name__}: {error}"}
+    if "refusal" in answer:
         return False, (f"{symbol:>2}  FAILED after {time.perf_counter() - started:.1f} s  "
-                       f"{type(error).__name__}: {error}")
-    elapsed = time.perf_counter() - started
+                       f"{answer['refusal']}")
+    pp = dataset_from_record(answer["payload"], answer["tables"], warn=False)
     lines = [f"{symbol:>2}  {pp!r}"]
-    if getattr(pp, "defects", None):
+    if pp.defects:
         from .defects import defect_message
         lines = [f"{symbol:>2}  FLAGGED  " + defect_message(symbol, family, pp.defects), f"    {pp!r}"]
-    lines.append(f"    {elapsed:.1f} s, Rust generator -> {path} "
+    lines.append(f"    {time.perf_counter() - started:.1f} s, Rust generator -> {answer['path']} "
                  f"(read back: levels within {RELOAD_LEVEL_TOLERANCE:g} Ha of the generated dataset)")
-    sorted_channels = sorted(loaded.channels.items())
-    for l, channel in sorted_channels:
-        first, _second = spectra[l]
-        reference = float(channel.reference_energies[0])
-        line = (f"    l={l}  r_c={channel.r_cut:.3f}  eps_ref={reference:+.6f}  "
-                f"lowest-eps_ref={first - reference:+.1e}  {'GHOST' if l in ghosts else 'no ghost'}")
-        if l in phases:
-            near, far = phases[l]
-            line += f"  phase {near:.3f}/{far:.3f} rad"
+    for c in answer["channels"]:
+        line = (f"    l={c['l']}  r_c={c['r_cut']:.3f}  eps_ref={c['reference_energy']:+.6f}  "
+                f"lowest-eps_ref={c['lowest'] - c['reference_energy']:+.1e}  "
+                f"{'GHOST' if c['ghost'] else 'no ghost'}")
+        if c["phase"] is not None:
+            line += f"  phase {c['phase'][0]:.3f}/{c['phase'][1]:.3f} rad"
         lines.append(line)
-    unloaded_ghosts = sorted(set(ghosts) - set(loaded.channels))
-    for l in unloaded_ghosts:
-        lines.append(f"    l={l}  no projectors  local potential binds {ghosts[l]:+.1e} Ha below the atom  GHOST")
-    lines.append(f"    local potential: r_cl={loaded.r_cut_local:.3f} Bohr, "
-                 f"shift {loaded.local_shift:+.1f} Ha")
+    for l, depth in answer["unprojected_ghosts"].items():
+        lines.append(f"    l={l}  no projectors  local potential binds {depth:+.1e} Ha below the atom  GHOST")
+    lines.append(f"    local potential: r_cl={pp.r_cut_local:.3f} Bohr, "
+                 f"shift {pp.local_shift:+.1f} Ha")
+    lines += [f"    warning: {note}" for note in answer["notes"]]
     return True, "\n".join(lines)
 
 

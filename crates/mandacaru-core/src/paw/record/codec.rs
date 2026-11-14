@@ -14,7 +14,10 @@ use serde_json::{Map, Value};
 
 use super::json::*;
 use super::parts::{defects, nlcc, spin_orbit, subshells};
-use super::{Array, Channel, Family, PawDataset, FORMAT_TAG, FORMAT_VERSION};
+use super::{
+    Array, Channel, CoreState, Family, PawDataset, CORE_SCHEMES, FORMAT_TAG, FORMAT_VERSION,
+    MAX_CORE_STATES,
+};
 use crate::{Buffer, Context, Result};
 
 /// Radial tables by column name; `assemble` removes what it uses.
@@ -151,6 +154,83 @@ fn channel(
 }
 
 // ---------------------------------------------------------------------------
+// The core states (format version 3).
+// ---------------------------------------------------------------------------
+
+/// A declared core state before its table is taken: `(n, l, occupation, energy)`.
+type CoreEntry = (u32, u32, f64, f64);
+
+/// The `core_states` list of a version-3 payload, every size bounded by what a core can hold:
+/// at most [`MAX_CORE_STATES`] entries, `1 <= n <= 7`, `l < n`, `0 < occupation <= 2 (2l + 1)`,
+/// a finite energy, each `(n, l)` once, and the column name the state's own
+/// ([`PawDataset::core_table`]). The tables and the bound of the total charge by `Z` are checked
+/// once the radial tables are known. That the states reproduce `core_density` is the
+/// Hartree-Fock reader's check, not the file's (a dataset's reference atom may be ionized, so
+/// `Z - valence_charge` is not the core's charge in general).
+fn core_entries(value: Value) -> Result<Vec<CoreEntry>> {
+    let what = "core_states";
+    let items = match value {
+        Value::Array(items) => items,
+        other => {
+            return Err(fail(
+                what,
+                format!("expected a list, found {}", kind(&other)),
+            ))
+        }
+    };
+    if items.len() > MAX_CORE_STATES {
+        return Err(fail(
+            what,
+            format!(
+                "{} states declared; a core holds at most {MAX_CORE_STATES} subshells",
+                items.len()
+            ),
+        ));
+    }
+    let mut out: Vec<CoreEntry> = Vec::with_capacity(items.len());
+    for (i, item) in items.into_iter().enumerate() {
+        let at = format!("{what}.{i}");
+        let mut map = object(item, &at)?;
+        let n = integer(&mut map, "n", &at)?;
+        let l = integer(&mut map, "l", &at)?;
+        let occupation = float(&mut map, "occupation", &at)?;
+        let energy = float(&mut map, "energy", &at)?;
+        let table = text(&mut map, "table", &at)?;
+        nothing_left(&map, &at)?;
+        if !(1..=7).contains(&n) || l >= n {
+            return Err(fail(&at, format!("(n, l) = ({n}, {l}) is not a subshell")));
+        }
+        let capacity = f64::from(2 * (2 * l + 1));
+        if !(occupation > 0.0 && occupation <= capacity) {
+            return Err(fail(
+                &at,
+                format!("occupation {occupation} is outside (0, {capacity}]"),
+            ));
+        }
+        if !energy.is_finite() {
+            return Err(fail(&at, "the energy is not finite"));
+        }
+        if table != PawDataset::core_table(n, l) {
+            return Err(fail(
+                &at,
+                format!(
+                    "the table {table:?} is not the state's column {:?}",
+                    PawDataset::core_table(n, l)
+                ),
+            ));
+        }
+        if out.iter().any(|e| (e.0, e.1) == (n, l)) {
+            return Err(fail(&at, format!("(n, l) = ({n}, {l}) is declared twice")));
+        }
+        out.push((n, l, occupation, energy));
+    }
+    Ok(out)
+}
+
+/// Slack of the bound `sum occupation <= Z` (roundoff of the declared occupations).
+const CORE_CHARGE_TOLERANCE: f64 = 1e-8;
+
+// ---------------------------------------------------------------------------
 // The record.
 // ---------------------------------------------------------------------------
 
@@ -168,8 +248,8 @@ pub(crate) fn assemble(
         other => return Err(fail(what, format!("format {other} is not {FORMAT_TAG:?}"))),
     }
     let version = take(&mut payload, "version", what)?;
-    match version.as_u64() {
-        Some(v) if (1..=FORMAT_VERSION).contains(&v) => {}
+    let version = match version.as_u64() {
+        Some(v) if (1..=FORMAT_VERSION).contains(&v) => v,
         Some(v) if v > FORMAT_VERSION => {
             return Err(fail(
                 what,
@@ -184,7 +264,7 @@ pub(crate) fn assemble(
                 format!("version {version} is not a format version"),
             ))
         }
-    }
+    };
     let family = Family::parse(&text(&mut payload, "family", what)?)?;
     let symbol = text(&mut payload, "symbol", what)?;
     let atomic_number = integer(&mut payload, "atomic_number", what)?;
@@ -231,6 +311,33 @@ pub(crate) fn assemble(
     let defects = defects(take(&mut payload, "defects", what)?)?;
     let spin_orbit_value = take(&mut payload, "spin_orbit", what)?;
     let channels_value = take(&mut payload, "channels", what)?;
+    // Version 3 carries the core states and must; an older file has no such key, and the
+    // `nothing_left` below refuses one that does.
+    let core_entries = if version >= FORMAT_VERSION {
+        Some(core_entries(take(&mut payload, "core_states", what)?)?)
+    } else {
+        None
+    };
+    // Optional at version 3, one of the named schemes; an older file has no such key.
+    let core_scheme = match (version >= FORMAT_VERSION, payload.remove("core_scheme")) {
+        (_, None) => None,
+        (true, Some(value)) => {
+            let name = string(value, "core_scheme")?;
+            if !CORE_SCHEMES.contains(&name.as_str()) {
+                return Err(fail(
+                    "core_scheme",
+                    format!("{name:?} is not one of {CORE_SCHEMES:?}"),
+                ));
+            }
+            Some(name)
+        }
+        (false, Some(_)) => {
+            return Err(fail(
+                what,
+                "the key \"core_scheme\" is not part of the schema",
+            ))
+        }
+    };
     nothing_left(&payload, what)?;
 
     let r = grab(&mut tables, "r")?;
@@ -261,6 +368,29 @@ pub(crate) fn assemble(
             channel(ctx, l, entry, &mut tables, &mut defaults_applied)?,
         );
     }
+    let core_states = match core_entries {
+        None => None,
+        Some(entries) => {
+            let declared: f64 = entries.iter().map(|e| e.2).sum();
+            if declared > f64::from(atomic_number) + CORE_CHARGE_TOLERANCE {
+                return Err(fail(
+                    "core_states",
+                    format!("the states hold {declared} electrons, more than Z = {atomic_number}"),
+                ));
+            }
+            let mut states = Vec::with_capacity(entries.len());
+            for (n, l, occupation, energy) in entries {
+                states.push(CoreState {
+                    n,
+                    l,
+                    occupation,
+                    energy,
+                    orbital: grab(&mut tables, &PawDataset::core_table(n, l))?,
+                });
+            }
+            Some(states)
+        }
+    };
     if let Some(name) = tables.keys().next() {
         return Err(fail(
             "radial_tables",
@@ -298,6 +428,8 @@ pub(crate) fn assemble(
         valence_density,
         core_density,
         smooth_core_density,
+        core_states,
+        core_scheme,
         defaults_applied,
         _small: small,
     };

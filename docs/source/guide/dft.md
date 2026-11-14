@@ -218,13 +218,14 @@ owns them; for geometry work use a PAW-LCAO basis.
 
 ## Excited states
 
-After a converged molecular `dft` run with `xc="lda"` or `xc="pbe"`,
-`calc.get_excitations(num_states, approximation="tda"|"casida", spin="singlet"|"triplet")`
+After a converged molecular `dft` run with `xc="lda"`, `"pbe"` or `"hse06"`,
+`calc.get_excitations(num_states, approximation="tda"|"casida", spin=None|"singlet"|"triplet")`
 solves the adiabatic linear-response (TD-DFT) equations for the lowest excitations, with
-oscillator strengths, transition dipoles and natural transition orbitals. `hse06`,
-`r2scan`, the rVV10 pairings, DFT+U, open shells, spin-orbit datasets and crystals
-raise. The guide [Excited states of molecules](excited_states.md) owns the method, the
-limits of an adiabatic semilocal kernel in a confined basis and the refusals.
+oscillator strengths, transition dipoles and natural transition orbitals. An open shell
+(unrestricted Kohn-Sham) gives the spin-conserving excitations of both spins, with `<S^2>`
+of each root, and leaves `spin` unset. `r2scan`, the rVV10 pairings, DFT+U, spin-orbit
+datasets and crystals raise. The guide [Excited states of molecules](excited_states.md)
+owns the method, the limits of an adiabatic kernel in a confined basis and the refusals.
 
 (dft-periodic)=
 ## Periodic calculations
@@ -266,12 +267,23 @@ stress differentiates by that re-meshing: 5e-6 eV/Å³ measured on Si with HSE06
 the stress you want to resolve.
 
 A hybrid crystal is built from its PAW spheres. The setup records the atom centers,
-the projector basis and, per atom, the dataset file with its SHA-256 digest; Rust
-reads each file again when it builds the crystal. A saved crystal (`load_crystal=`)
-therefore needs its dataset files at load time, and a file whose digest differs from
-the recorded one raises. A hybrid setup without that record, such as one written
-before the one-center terms existed, raises as well, and so does a magnetic
-(non-time-reversal) spinor hybrid; a spinor hybrid with time-reversal symmetry runs.
+the projector basis and, per atom, the dataset file with the SHA-256 digest of the
+dataset's physics content (`content_sha256`, the digest the `[BASIS]` run-log table
+shows; it does not change when the file is re-encoded or upgraded to a newer format, and
+it changes with any stored number); Rust reads each file again when it builds the crystal.
+A saved crystal (`load_crystal=`) therefore needs its dataset files at load time, and a
+file whose content digest differs from the recorded one raises. A hybrid setup without
+that record, such as one written before the one-center terms existed, raises as well, and
+so does a magnetic (non-time-reversal) spinor hybrid; a spinor hybrid with time-reversal
+symmetry runs.
+
+A crystal saved before snapshots pinned datasets by content recorded the SHA-256 of the
+file's bytes instead. A semilocal crystal of that kind still loads and gives its energy,
+which needs no dataset file; its forces and its stress refuse it. A hybrid crystal builds
+its spheres from the dataset files when the snapshot loads, so an old hybrid snapshot is
+refused outright, energy included. Each refusal gives the remedy: build the crystal again
+from its structure and save it again. There is no second accepted form: a snapshot pins
+its datasets one way.
 
 The exact exchange enters the self-consistent mixing with the density. The
 `tolerance` of `periodic_scf_options` (default `1e-7` Ha) therefore bounds the change
@@ -312,15 +324,23 @@ then the hardware. The three levels nest:
   channels), so a spin-polarized crystal on 4 k-points has 8 tasks. This
   `kpts` is a processor count and not the `kpts` mesh of the calculator: it never changes
   which k-points are sampled.
-- `bands` splits the occupied states of the exact exchange of a hybrid into groups. It is
-  not implemented yet ([not yet available](#not-yet-available)).
-- `threads` is the number of workers each group runs its kernels on. Outside the k-point
-  tasks (the setup, the grid fields) every kernel runs on all `k * b * t` processors.
+- `bands` splits the occupied states of the exact exchange of a hybrid (`xc="hse06"`) into
+  groups: each exchange target's occupied states are spread over `b` groups, and the
+  targets themselves over the `kpts` groups. Without a hybrid functional there is no exact
+  exchange to split, and `bands` above 1 raises.
+- `threads` is the number of workers each group runs its kernels on: a kernel running
+  inside a `kpts` or `bands` group uses only that group's share of the processors. Outside
+  the k-point tasks and the exchange (the setup, the grid fields) every kernel runs on all
+  `k * b * t` processors.
 
 ```python
 atoms.calc = Mandacaru(method="dft", xc="pbe", basis={"name": "PAW-LCAO", "size": "SZ"},
                        kpts={"size": (4, 4, 4), "gamma": True},
                        parallelization={"kpts": 4, "threads": 2})   # 8 processors
+
+atoms.calc = Mandacaru(method="dft", xc="hse06", basis={"name": "PAW-LCAO", "size": "SZ"},
+                       kpts={"size": (2, 2, 2), "gamma": True},
+                       parallelization={"kpts": 2, "bands": 2, "threads": 2})   # 8 processors
 ```
 
 The layout changes how long a crystal takes and not what it computes: the energy, the
@@ -329,6 +349,14 @@ processor count, because every reduction runs in a fixed order. Each k-point tas
 its own Hamiltonian and state blocks, so memory grows with `kpts`; a layout that does not
 fit `memory_limit_bytes` raises `MemoryError`, naming the largest `kpts` that does.
 
+Each `bands` group of the hybrid exchange holds the weighted pair densities of one state
+against the target basis, about `n_basis * grid points * 16` bytes, plus one FFT of its
+share of the workers. A layout whose band groups do not fit in `memory_limit_bytes`
+raises `MemoryError` naming the largest `bands` that does (the `kpts` groups of the
+exchange are checked next, with the same naming). In the exchange, a spin-polarized crystal
+uses at most `nk` k-point groups, `nk` being the k-points the setup keeps, even when the SCF
+itself uses up to `2 * nk`; the extra `kpts` groups sit idle there.
+
 A layout the calculation cannot use raises instead of running another one:
 
 | Request | What happens |
@@ -336,15 +364,16 @@ A layout the calculation cannot use raises instead of running another one:
 | An unknown key or a value that is not an integer; a value that is not a `dict` | `TypeError` |
 | A value below 1, or more than 1024 processors | `ValueError` |
 | `kpts` or `bands` above 1 with a method other than `"dft"` | `ValueError` at construction |
-| `kpts` above 1 on a structure with no periodic axis | `ValueError` at `run()` |
+| `kpts` or `bands` above 1 on a structure with no periodic axis | `ValueError` at `run()` |
 | `kpts` above the number of k-point tasks | `ValueError` at `run()`, naming the largest that fits |
 | `bands` above 1 without `xc="hse06"` | `ValueError` |
-| `bands` above 1 with `xc="hse06"` | `NotImplementedError` |
+| `bands` groups that do not fit in `memory_limit_bytes` | `MemoryError`, naming the largest `bands` that fits |
 | `parallelization` together with `native_model` | `ValueError` |
 
 The k-point tasks of the SCF (the eigensolve and the density matrices of each task) run on
-the `kpts` level. The hybrid exchange, the forces and stress, the setup's k-point loop and
-the post-processing still run on all the processors, whatever `kpts` says.
+the `kpts` level, and the hybrid exchange of the SCF runs on the `kpts` and `bands` levels.
+The forces and stress, the setup's k-point loop and the post-processing still run on all
+the processors as one task, whatever `kpts` and `bands` say.
 
 ## Dispersion correction
 

@@ -71,3 +71,16 @@ fn a_propagator_keeps_the_real_terms_and_sums_their_magnitudes() {
     let overflow = [("XX".to_string(), c(f64::MAX, 0.)), ("YY".to_string(), c(f64::MAX, 0.))];
     assert!(term_lists::real_pauli_terms(2, &overflow).is_err());
 }
+
+#[test]
+fn a_pauli_fingerprint_depends_on_the_terms_above_the_tolerance_and_not_on_their_order() {
+    use mandacaru_core::quantum::term_lists::pauli_fingerprint;
+    let a = vec![("ZZ".to_string(), c(0.5, 0.)), ("XI".to_string(), c(-0.25, 0.1))];
+    let b = vec![("XI".to_string(), c(-0.25, 0.1)), ("ZZ".to_string(), c(0.5, 0.)), ("IY".to_string(), c(1e-13, 0.))];
+    let fa = pauli_fingerprint(2, &a, 1e-10).unwrap();
+    assert_eq!(fa.len(), 32);
+    assert_eq!(fa, pauli_fingerprint(2, &b, 1e-10).unwrap(), "a term below the tolerance is dropped");
+    assert_ne!(fa, pauli_fingerprint(3, &a, 1e-10).unwrap(), "the register width is part of it");
+    assert_ne!(fa, pauli_fingerprint(2, &a, 1e-12).unwrap(), "a tighter tolerance prints more digits");
+    assert!(pauli_fingerprint(2, &a, 0.0).is_err());
+}

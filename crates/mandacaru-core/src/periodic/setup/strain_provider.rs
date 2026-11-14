@@ -21,19 +21,18 @@
 //! caller-supplied list of reciprocal vectors ([`StrainSetup::with_dense_vectors`], the pinned
 //! integer triples of the plan's section 2 at the reference cell): the derivative of a
 //! re-enumerated list would add a jump that is not a derivative.
+mod matrix;
 mod spinor;
 
 use super::{
-    basis_gradient::ShortRange,
     electrostatics::{hats, ion_charge},
     gradients::ion_constants_strain,
     provider::{Inputs, Operators},
-    pulay::{mesh_dot, projection, Matrix, Mesh},
+    projection_table::{SetupTables, ProjectionTable},
+    pulay::{mesh_dot, Matrix, Mesh},
     shapes::visit_lattice,
     strain_grid::{core_strain, hats_strain, ions_strain, kernel_strain, VOIGT},
-    strain_pulay::{bloch_values, grid_strain, kinetic_strain, tau_strain, Tensor as Matrices},
-    strain_samples::StrainSamples,
-    strain_spheres::{linear_strain, projection_strain, short_range_strain},
+    strain_spheres::linear_strain,
     strain_sums::CouplingsStrainSum,
 };
 use crate::{
@@ -44,12 +43,13 @@ use crate::{
         point_group::PointGroup,
         stress_terms::{
             electrostatic::{self, Grid, Hartree},
-            xc, Dense, Strain, Tensor,
+            xc, Dense, Direction, Directions, SpinMatrices, Strain, Tensor,
         },
     },
     quantum::C64,
     Context, Result,
 };
+use std::sync::Arc;
 
 /// The output-density data of the xc strain terms.
 #[derive(Clone, Debug)]
@@ -98,8 +98,11 @@ pub struct StrainSetup<'a> {
     spin_orbit: Option<spinor::SpinOrbitData<'a>>,
     mesh: Mesh,
     dense_vectors: Option<Vec<[f64; 3]>>,
-    /// The operations of a symmetry-reduced mesh, averaged over by the contraction.
-    point_group: Option<PointGroup>,
+    /// The strain directions of the contraction: the invariant basis of the operations of a
+    /// symmetry-reduced mesh (six symmetric tensors without).
+    directions: Directions,
+    /// The image-resolved projections, shared with the force provider of the same setup.
+    projections: Arc<SetupTables>,
 }
 
 impl<'a> StrainSetup<'a> {
@@ -138,20 +141,45 @@ impl<'a> StrainSetup<'a> {
             operators,
             spin_orbit: None,
             dense_vectors: None,
-            point_group: None,
+            directions: Directions::invariant(None)?,
+            projections: Arc::new(SetupTables::new()),
         })
     }
 
-    /// Averages the stress over the operations a symmetry-reduced mesh was built with (CF-6).
-    pub fn with_point_group(mut self, group: Option<PointGroup>) -> Self {
-        self.point_group = group;
-        self
+    /// Contracts along the strain directions invariant under the operations a symmetry-reduced
+    /// mesh was built with (CF-6); without operations, along the six symmetric tensors.
+    pub fn with_point_group(mut self, group: Option<PointGroup>) -> Result<Self> {
+        self.set_point_group(group)?;
+        Ok(self)
     }
 
     /// The same, in place (the controls of the symmetrizer replace the crystal's own group).
     #[doc(hidden)]
-    pub fn set_point_group(&mut self, group: Option<PointGroup>) {
-        self.point_group = group;
+    pub fn set_point_group(&mut self, group: Option<PointGroup>) -> Result<()> {
+        self.directions = Directions::invariant(group.as_ref())?;
+        Ok(())
+    }
+
+    /// Contracts along these directions ([`Directions::all_entries`] for the nine entries of
+    /// `g_ab`, the finite-difference tests' and the torque diagnostic's).
+    #[doc(hidden)]
+    pub fn set_directions(&mut self, directions: Directions) {
+        self.directions = directions;
+    }
+
+    /// Reads the projections from `cache`, which the force provider of the same setup shares.
+    pub fn with_projections(mut self, cache: Arc<SetupTables>) -> Self {
+        self.projections = cache;
+        self
+    }
+
+    fn projection_table(&self) -> Result<&ProjectionTable> {
+        self.projections.scalar(
+            self.ctx,
+            self.inputs.shells,
+            self.lattice(),
+            self.inputs.projectors,
+        )
     }
 
     /// Sums the dense sums over these reciprocal vectors (Cartesian, at the reference cell)
@@ -199,87 +227,6 @@ impl<'a> StrainSetup<'a> {
             ))
         }
     }
-
-    /// `v_tau` of channel `spin`; a meta-GGA's fields without it raise (never a zero term).
-    fn kinetic_block<'f>(&self, spin: usize, fields: &'f StrainFields) -> Result<&'f [f64]> {
-        let (blocks, _) = fields.kinetic.as_ref().ok_or_else(|| {
-            invalid("crystal stress: the meta-GGA term needs the fields' v_tau")
-        })?;
-        blocks
-            .get(spin)
-            .map(|v| v.as_slice())
-            .ok_or_else(|| invalid("crystal stress: one v_tau per channel"))
-    }
-
-    /// The matrix tangent of one term in the SCALAR frame (`M x M`) for the potential of channel
-    /// `spin`.
-    fn scalar_strain(
-        &self,
-        spin: usize,
-        k: usize,
-        term: Term,
-        fields: &StrainFields,
-    ) -> Result<Matrices> {
-        let (ctx, shells, kpoint) = (self.ctx, self.inputs.shells, self.kpoint(k)?);
-        let strain = || StrainSamples::new(shells, self.lattice(), &self.mesh, kpoint);
-        let values = || bloch_values(ctx, shells, self.lattice(), &self.mesh, kpoint);
-        let tensor: Matrices = match term {
-            Term::KineticDensity => {
-                let v = self.kinetic_block(spin, fields)?;
-                tau_strain(ctx, self.inputs.grid, &self.mesh, &strain(), values()?.as_slice(), kpoint, v)?
-            }
-            Term::Overlap => {
-                grid_strain(ctx, &self.mesh, &strain(), values()?.as_slice(), None, true)?
-            }
-            Term::Kinetic => kinetic_strain(
-                ctx,
-                self.inputs.grid,
-                &self.mesh,
-                &strain(),
-                values()?.as_slice(),
-                kpoint,
-            )?,
-            Term::Local => {
-                let v = fields
-                    .local
-                    .get(spin)
-                    .ok_or_else(|| invalid("crystal stress: one local potential per spin"))?;
-                grid_strain(
-                    ctx,
-                    &self.mesh,
-                    &strain(),
-                    values()?.as_slice(),
-                    Some(v),
-                    false,
-                )?
-            }
-            Term::ShortRange => {
-                let sites = &self.inputs.sites;
-                let spheres: Vec<ShortRange> = sites
-                    .atoms
-                    .iter()
-                    .zip(self.inputs.potentials)
-                    .map(|(atom, potential)| ShortRange {
-                        center: atom.center,
-                        potential,
-                        sigma: sites.sigma,
-                    })
-                    .collect();
-                let per_sphere = short_range_strain(ctx, shells, self.lattice(), kpoint, &spheres)?;
-                let m = self.functions;
-                let mut total: Matrices = collect(|_, _| Matrix::zeros(m, m));
-                for sphere in &per_sphere {
-                    for a in 0..3 {
-                        for b in 0..3 {
-                            total[a][b] += &sphere[a][b];
-                        }
-                    }
-                }
-                total
-            }
-        };
-        Ok(tensor)
-    }
 }
 
 fn collect<T>(f: impl Fn(usize, usize) -> T) -> Tensor<T> {
@@ -292,8 +239,21 @@ impl Strain for StrainSetup<'_> {
     fn layout(&self) -> &Layout {
         &self.layout
     }
-    fn point_group(&self) -> Option<&PointGroup> {
-        self.point_group.as_ref()
+    fn context(&self) -> Option<&Context> {
+        Some(self.ctx)
+    }
+    fn directions(&self) -> &Directions {
+        &self.directions
+    }
+    fn lane_bytes(&self, terms: usize) -> Result<usize> {
+        // The kinetic ket (one array of the mesh and the basis) and, for the streamed block, the
+        // Bloch sums, one tangent and the contracted kets of every form (an overlap, a potential or
+        // a kinetic form per spin channel).
+        let forms = 2 * self.layout.spins.max(1) * terms.max(1) + 6;
+        let block = super::pulay::block_len(self.ctx, self.functions, self.mesh.len(), forms);
+        crate::product(&[self.functions, self.mesh.len(), 16])?
+            .checked_add(crate::product(&[self.functions, block, 16, forms])?)
+            .ok_or(crate::Error::Overflow)
     }
     fn blocks(&self) -> &[Matrix] {
         &self.operators.blocks
@@ -309,40 +269,27 @@ impl Strain for StrainSetup<'_> {
     }
 
     fn projection(&self, k: usize) -> Result<Matrix> {
-        Ok(self.frame(projection(
-            self.ctx,
-            self.inputs.shells,
-            self.lattice(),
-            self.kpoint(k)?,
-            self.inputs.projectors,
-        )?))
+        Ok(self.frame(self.projection_table()?.value(self.kpoint(k)?)?))
     }
 
-    fn projection_strain(&self, k: usize) -> Result<Tensor<Matrix>> {
-        Ok(self.frame_tensor(projection_strain(
-            self.ctx,
-            self.inputs.shells,
-            self.lattice(),
-            self.kpoint(k)?,
-            self.inputs.projectors,
-        )?))
+    fn projection_strain(&self, k: usize, directions: &[Direction]) -> Result<Vec<Matrix>> {
+        Ok(self
+            .projection_table()?
+            .strain(self.kpoint(k)?, directions)?
+            .into_iter()
+            .map(|dc| self.frame(dc))
+            .collect())
     }
 
     fn matrix_strain(
         &self,
-        spin: usize,
         k: usize,
-        term: Term,
         fields: &StrainFields,
-    ) -> Result<Tensor<Matrix>> {
-        self.check_fields(fields)?;
-        if self.layout.request.spinor && term == Term::Local {
-            return self.spinor_local(k, fields);
-        }
-        if self.layout.request.spinor && term == Term::KineticDensity {
-            return self.spinor_kinetic(k, fields);
-        }
-        Ok(self.frame_tensor(self.scalar_strain(spin, k, term, fields)?))
+        matrices: &[SpinMatrices],
+        terms: &[Term],
+        directions: &[Direction],
+    ) -> Result<Vec<Vec<Vec<f64>>>> {
+        self.matrix_terms(k, fields, matrices, terms, directions)
     }
 
     fn moments<'f>(&self, fields: &'f StrainFields) -> &'f [C64] {
@@ -420,23 +367,11 @@ impl Strain for StrainSetup<'_> {
     }
 
     fn spin_orbit_projection(&self, k: usize) -> Result<Matrix> {
-        projection(
-            self.ctx,
-            self.inputs.shells,
-            self.lattice(),
-            self.kpoint(k)?,
-            self.spin_orbit_data()?.projectors,
-        )
+        self.spin_orbit_table()?.value(self.kpoint(k)?)
     }
 
-    fn spin_orbit_strain(&self, k: usize) -> Result<Tensor<Matrix>> {
-        projection_strain(
-            self.ctx,
-            self.inputs.shells,
-            self.lattice(),
-            self.kpoint(k)?,
-            self.spin_orbit_data()?.projectors,
-        )
+    fn spin_orbit_strain(&self, k: usize, directions: &[Direction]) -> Result<Vec<Matrix>> {
+        self.spin_orbit_table()?.strain(self.kpoint(k)?, directions)
     }
 
     fn xc(&self, fields: &StrainFields) -> Result<xc::Terms> {

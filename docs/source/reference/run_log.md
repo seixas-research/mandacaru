@@ -4,8 +4,8 @@
 A calculation can describe itself in a plain-text log: a fixed set of blocks of
 `key: value` lines, readable by eye and by a line scanner. This page lists the
 blocks that the calculator writes, with a real excerpt of each, and says which
-block owns which fact. Everything below, except the layout excerpt of
-`[EXCITED STATES]`, was produced by running the calculator on
+block owns which fact. Everything below, except the layout excerpts of
+`[EXCITED STATES]` and `[REAL TIME]`, was produced by running the calculator on
 H2, LiH and a PAW-LCAO H2, with `txt=` and `trace=True`. [What is still not
 written](#run-log-not-written) is listed at the end.
 
@@ -40,7 +40,7 @@ atoms.get_potential_energy()
 - Read a log back with `parse_output`, which returns a dictionary of the blocks
   (`system`, `basis`, `electrons`, `setup`, `scf_iterations`, `active_space`,
   `gradient_measurement`, `iterations`, `summary`, `forces`, `excited_states`,
-  `performance` and a `steps` list for a multi-step file; a key is present only when
+  `real_time`, `performance` and a `steps` list for a multi-step file; a key is present only when
   its block was written). The `scf_`-prefixed keys of `[SCF SETUP]` land in `setup`:
 
 ```python
@@ -71,7 +71,8 @@ A periodic calculation (a crystal) writes `[SYSTEM]` (from a geometry), `[BASIS]
 | `[VARIATIONAL QUANTUM SUMMARY]` | quantum methods | Always for them |
 | `[SCF SUMMARY]` | `rhf`, `uhf`, `ghf`, `dft` | Always for them |
 | `[FORCES]` | any method | Each time forces are computed |
-| `[EXCITED STATES]` | `rhf`, `dft` | Each time `get_excitations()` is called, at the end of the file ([below](#run-log-excited-states)) |
+| `[EXCITED STATES]` | `rhf`, `uhf`, `dft` | Each time `get_excitations()` is called, at the end of the file ([below](#run-log-excited-states)) |
+| `[REAL TIME]` | `rhf`, `uhf`, `dft` | Each time `get_real_time()` is called, at the end of the file ([below](#run-log-real-time)) |
 | `[PERFORMANCE]` | any method | At the end of every ASE calculation (`get_potential_energy`, `get_forces`), after `[FORCES]`; never from a direct `run()` |
 | `[GEOMETRY OPTIMIZATION SUMMARY]`, `[RELAXATION COMPLETE]` | a relaxation | When you call `write_optimization_summary` |
 
@@ -165,7 +166,7 @@ basis functions of the whole system, and `functions` counts them per element.
 
 A PAW-LCAO basis resolves what the options left alone: the defaults (confined by
 `energy_shift`, Fourier-filtered), the radii an `energy_shift` gives each orbital, and
-the dataset files with the digest of the bytes that were read.
+the dataset files with the digest of their physics content (`content_sha256`).
 
 ```text
 [BASIS]
@@ -185,7 +186,7 @@ the dataset files with the digest of the bytes that were read.
     basis_functions: 4
     precision: float64
     datasets:
-        symbol  Z  Z_ion  l_max  r_cut_Bohr  source     sha256
+        symbol  Z  Z_ion  l_max  r_cut_Bohr  source     content_sha256
         ...
     orbitals:
         symbol  n  l  zetas  polarization  r_c_Bohr    r_c_Angstrom  eps_free_eV  eps_basis_eV  shift_eV
@@ -195,6 +196,12 @@ the dataset files with the digest of the bytes that were read.
         ---------------------------------
         H       2      2
 ```
+
+`content_sha256` is the SHA-256 of what a dataset says, not of the bytes of its file: the
+scalar record and the radial tables, without the format version and the core states of a
+version-3 file. A dataset file, its upgrade to a newer format and a re-encoding with another
+compression codec therefore share one digest, and any change of a stored number changes it. It is
+the digest a saved crystal pins each dataset by ([the DFT guide](../guide/dft.md)).
 
 `datasets` and `orbitals` come first and `functions` last; between them a Gaussian
 polarization shell adds `polarization_shells`, and diffuse shells add `diffuse_shells`
@@ -383,6 +390,22 @@ orbital counts are not repeated here: `[BASIS]` owns the number of basis functio
 `[ELECTRONS]` the number of orbitals of the register. The selector's occupation
 numbers and the reference occupancy are not in the table.
 
+A `warning` line follows `frozen_orbitals` when the selection splits an exactly degenerate
+orbital group (labels within 1e-8) on a reference whose orbitals no deterministic frame fixes: a
+crystal's supercell, a non-aufbau or complex reference ([Degenerate
+orbitals](#degenerate-orbitals)). Orbitals inside such a group are the eigensolver's choice, so the
+energy of the run depends on it. The line counts the groups and names each by its label (the orbital
+energy for a restricted reference, the natural occupation for an unrestricted one, the MP2
+natural occupation for the virtual orbitals of an MP2 selection), its value and the orbitals of
+the group that are frozen, active and deleted:
+
+```text
+    warning: the active space splits 1 exactly degenerate orbital group (orbital energy <value> Ha: active [6] deleted [7]); orbitals inside a group are the eigensolver's choice here, so this energy depends on it and forces are refused; keep each group whole
+```
+
+Without a split the key is absent. `[ACTIVE SPACE]` owns this warning. A molecule on a restricted
+or unrestricted aufbau reference keeps the deterministic cut and never writes it.
+
 ## `[ENERGY MEASUREMENT]`
 
 For a run with `shots > 0`, how one energy is measured on the device: the scheme
@@ -546,6 +569,9 @@ search itself runs in Hartree):
   `update_between_geometries=True` it adds `proposal_model_update`.
 - `transfer_threshold` and `transfer_steps` are written only for a run with `transfer=True`
   (`transfer_steps` only when set).
+- `replicas` and `replica_spacing` are written only for a run with `replicas > 1`. The summary
+  of a run with several replicas adds `replica_swaps`, the accepted over the attempted replica
+  exchanges.
 
 The lineage of a search with `transfer=True` says where the chain started, and it is the
 only owner of that fact. A start from the previous geometry's ansatz writes the lines above:
@@ -799,6 +825,26 @@ layout; `<...>` stands for a number the run determines:
 ========================================================================
 ```
 
+On an open shell (an unrestricted reference) the block adds a `reference_spin_squared`
+key after `orbitals` and a `spin_squared` column between `residual` and `one_center_eV`,
+`spin` reads `unrestricted`, and each transition carries its spin:
+
+```text
+[EXCITED STATES]
+    approximation: tda
+    spin: unrestricted
+    kernel: adiabatic (lda)
+    reference: kohn-sham lda
+    ...
+    orbitals: 0-based indices of the reference in ascending energy
+    reference_spin_squared: <number>
+    ...
+    roots:
+        root            energy_eV        wavelength_nm  oscillator_strength           f_velocity             residual         spin_squared         one_center_eV transitions
+           1             <number>             <number>             <number>             <number>             <number>              <number>              <number> <transitions>
+========================================================================
+```
+
 - `approximation`, `spin` and `kernel` are what was solved. `kernel` reads
   `adiabatic (lda)`, `adiabatic (pbe)` or `adiabatic (hse06)` for the reference's whole
   kernel, and `hartree` or `independent` for the two limits; on `rhf`, `reference` reads
@@ -814,7 +860,16 @@ layout; `<...>` stands for a number the run determines:
   residual.
 - The `root` column counts from 1; the `Excitations` methods take a root from 0.
   `transitions` lists `occupied->empty(weight)`, comma-separated, with 0-based indices of
-  the reference's orbitals in ascending energy; weights below 0.01 are left out.
+  the reference's orbitals in ascending energy; weights below 0.01 are left out. On an
+  open shell the spin follows each index: `3a->5a(<weight>)` is the alpha transition from
+  orbital 3 to orbital 5 of the alpha channel, and `2b->4b(<weight>)` a beta one; indices
+  count in their own spin's orbitals.
+- `spin_squared` (open shell only) is `<S^2>` of each root, from the singles combination of
+  the reference's determinants with the root's `X` amplitudes, and `reference_spin_squared`
+  is that of the reference determinant. Both are contamination diagnostics: 0.75 for a clean
+  doublet. They are absent on a closed shell, whose roots are pure singlets or triplets.
+  `reference_spin_squared` is written by this block alone and is not repeated in
+  `[SCF SUMMARY]`.
 - The energy unit is in the key names (`energy_eV`, `one_center_eV`; `Ha` with
   `atomic_units=True`). `wavelength_nm` is always nm. The `one_center_*` key and column
   appear only on a PAW-LCAO Kohn-Sham state; the key line describes the column, and the
@@ -823,6 +878,73 @@ layout; `<...>` stands for a number the run determines:
 `parse_output` returns the block under `excited_states`: the keys as strings, and `roots`
 as a list of rows keyed by their column heading. It keeps only the last block of a step,
 so read a log with several requests by splitting it or ask for one request per log.
+
+(run-log-real-time)=
+## `[REAL TIME]`
+
+Written each time `calc.get_real_time(...)` returns, to `txt=` and, with `trace=True`, to
+standard output. It is appended where the log ends, one block per request, and carries no
+`step:` line. It records the request, the propagator's work and the checks of the run
+([Real-time TD-DFT of molecules](../guide/real_time.md)). The excerpt shows the layout;
+`<...>` stands for a number the run determines, and `<unit>` for the time unit
+(`fs`; `au` with `atomic_units=True`):
+
+```text
+[REAL TIME]
+    propagator: etrs
+    time_step_<unit>: <number>
+    steps: <n>
+    duration_<unit>: <number>
+    corrector_tolerance: 1.0e-06
+    effective_corrector_tolerance: <number>
+    corrector_iterations_max: <n>
+    fock_builds: <n>
+    kick: density
+    gauge: length
+    direction: <x> <y> <z>
+    strength_per_Angstrom: <number>
+    reference: kohn-sham lda
+    basis_width_eV: <number>
+    step_width: <number>
+    step_width_bound: 4
+    aliased_weight: <number>
+    kick_energy_eV: <number>
+    energy_drift: <number>
+    max_energy_drift: 0.05
+    worst_norm_error: <number>
+    wall_time_s: <number>
+========================================================================
+```
+
+- `propagator`, `kick` and `gauge` are what ran. `reference` reads `kohn-sham <xc>` (the
+  functional of the state) or `hartree-fock`.
+- `corrector_tolerance` is the ETRS tolerance requested, which applies at the default kick;
+  `effective_corrector_tolerance` is the one applied, `corrector_tolerance` times the kick
+  strength over the default strength (0.002 per Angstrom). The two are equal at the default
+  kick. The applied value is written for every propagator but only ETRS has a corrector.
+  `corrector_iterations_max` is the largest iteration count any step used, not the cap,
+  which is not an option of `get_real_time`.
+- `fock_builds` counts every build of the run, the initial ones included.
+- `time_step_*` and `duration_*` carry the time unit in the key. `duration_*` is the last
+  sample time, the number of steps times the time step, which can differ from the
+  `duration` requested by up to half a step. `direction` is written as given
+  (the run normalizes it), and `strength_per_Angstrom` reads `strength_per_Bohr` with
+  `atomic_units=True`.
+- `basis_width_*` is `W`, the width of the reference Fock matrix (eV; Ha with
+  `atomic_units=True`), `step_width` is `dt W` and `step_width_bound` the largest value
+  the propagator allows (4 for `etrs`, 1 for `aetrs` and `midpoint`); a run above it never
+  writes this block, because it raises first. `aliased_weight` is the fraction of the bare
+  Kohn-Sham oscillator weight along the kick above the Nyquist frequency.
+- `kick_energy_*` is the energy the kick put in, and `energy_drift` the largest deviation of
+  the energy from its value after the kick in kick energies; `max_energy_drift` is its limit
+  (`None` when unchecked). `worst_norm_error` is the largest `max abs(C^dagger C - 1)`.
+- The block does not repeat the ground-state energy or the orbital energies, which
+  `[SCF SUMMARY]` and `[SCF SETUP]` own, and it does not carry the damping or window of a
+  spectrum, which belong to the view.
+
+`parse_output` returns the block under `real_time` (at the top level for the last step, and
+in each entry of `steps`), the keys as strings and every value as a string. It keeps only
+the last block of a step.
 
 ## `[GEOMETRY OPTIMIZATION SUMMARY]` and `[RELAXATION COMPLETE]`
 
@@ -890,7 +1012,7 @@ owner.
 | The diffuse shells that were built, and whether the cell holds them | `[BASIS]` (`diffuse_shells`, `diffuse_box`) |
 | Grid, mapping, particle numbers, orbitals and qubits of the register | `[ELECTRONS]` |
 | What the mean-field reference stops on, and its iterations | `[SCF SETUP]`, `[SCF ITERATIONS]` |
-| Which orbitals were frozen, active or deleted | `[ACTIVE SPACE]` |
+| Which orbitals were frozen, active or deleted, and a split degenerate group | `[ACTIVE SPACE]` |
 | Optimizer, thresholds, growth budget, pool, device, shots, reference energy, lineage of a resumed run | `[OPTIMIZATION SETUP]` |
 | A search's controls (`max_steps`, moves, temperatures, proposals, seed) and where its chain started | `[OPTIMIZATION SETUP]` |
 | Cost of measuring the pool gradients | `[GRADIENT MEASUREMENT]` |
@@ -901,7 +1023,8 @@ owner.
 | Final mean-field energy and convergence | `[SCF SUMMARY]` |
 | The DFT+U correction (`hubbard_u=`): its energy, and `U`, `J` and `U_eff` per element | `[SCF SUMMARY]` |
 | Force vectors and their convention | `[FORCES]` |
-| An excited-state request: approximation, spin, kernel, roots, solver work, energies, strengths in both gauges, dominant transitions, the one-center Hartree diagnostic | `[EXCITED STATES]` |
+| An excited-state request: approximation, spin, kernel, roots, solver work, energies, strengths in both gauges, dominant transitions (with their spin on an open shell), `<S^2>` of the roots and of the reference on an open shell, the one-center Hartree diagnostic | `[EXCITED STATES]` |
+| A real-time request: propagator, time step, steps, corrector tolerance requested and applied, Fock builds, kick, reference, basis width and `dt W` with its bound, aliased weight, kick energy, energy drift, worst norm error | `[REAL TIME]` |
 | Stage timings, wall times, peak memory | `[PERFORMANCE]` |
 | Trajectory, relaxed geometry, verdict | `[GEOMETRY OPTIMIZATION SUMMARY]`, `[RELAXATION COMPLETE]` |
 

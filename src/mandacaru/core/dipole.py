@@ -106,5 +106,5 @@ def electric_dipole_potential(
     fermion = fermion + Fermion({(): constant})
     qubit = fermion.map_to_qubits(mapping, num_particles=num_particles)
     # Mapping an identically zero operator otherwise loses its register width.
-    width = one_body.shape[0] - (2 if mapping == "parity_reduced" else 0)
+    width = _native.register_qubits(mapping, one_body.shape[0])
     return PauliSum(qubit.terms, num_qubits=qubit.num_qubits or width)

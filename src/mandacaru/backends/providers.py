@@ -606,7 +606,7 @@ class QiskitProvider(CircuitProvider):
         # Qiskit is little-endian: Mandacaru qubit k lives on wire n-1-k so the
         # simulated amplitude ordering matches Mandacaru's without a permutation.
         def wire(k):
-            return n_qubits - 1 - int(k)
+            return _native.reversed_wire(n_qubits, int(k))
 
         for op in self._emit(n_qubits, list(occupied), generators, thetas):
             gate = op[0]
@@ -663,16 +663,16 @@ class QiskitProvider(CircuitProvider):
         else:
             compiled, _layout = self._transpiled(qc, n_qubits)
             basis = getattr(backend, "name", None) or str(backend)
-        counts = compiled.count_ops()
         two_q = two_qubit_gate_count(compiled)
+        # Single-qubit gates by name (the entanglers of the IBM sets are named), every gate in total.
+        _entangling, single, total = _native.gate_tally(
+            [(name, 0, int(count)) for name, count in compiled.count_ops().items()],
+            ["barrier", "measure", "reset", "delay"], ["cz", "cx", "ecr", "rzz", "swap"])
         return {"cnot_count": two_q,
                 "two_qubit_gates": two_q,
                 "depth": int(compiled.depth()),
-                "num_1q_gates": int(sum(
-                    v for k, v in counts.items()
-                    if k not in ("barrier", "measure", "reset", "delay")
-                    and k not in ("cz", "cx", "ecr", "rzz", "swap"))),
-                "total_gates": int(sum(counts.values())),
+                "num_1q_gates": single,
+                "total_gates": total,
                 "isa": basis}
 
     # -- Estimator energies (the hardware path) ---------------------------- #
@@ -699,7 +699,7 @@ class QiskitProvider(CircuitProvider):
                     f"physical_qubits has {len(self.physical_qubits)} entries "
                     f"for a {n_qubits}-qubit circuit")
             # Mandacaru qubit k sits on Qiskit wire n-1-k.
-            initial_layout = [self.physical_qubits[n_qubits - 1 - w]
+            initial_layout = [self.physical_qubits[_native.reversed_wire(n_qubits, w)]
                               for w in range(n_qubits)]
         isa = transpile(qc, backend=backend,
                         optimization_level=self.optimization_level,
@@ -723,7 +723,7 @@ class QiskitProvider(CircuitProvider):
         qc = QuantumCircuit(n_qubits)
 
         def wire(k):
-            return n_qubits - 1 - int(k)
+            return _native.reversed_wire(n_qubits, int(k))
 
         for q in occupied:
             qc.x(wire(q))
@@ -870,15 +870,8 @@ class QiskitProvider(CircuitProvider):
                 if chunk_index not in done:
                     bases = len(qwc_partition(chunk, **self._core_options()))
                     pending.append((index, chunk_index, chunk, bases))
-        jobs, current, load = [], [], 0
-        for item in pending:
-            if current and limit and load + item[3] > limit:
-                jobs.append((current, load))
-                current, load = [], 0
-            current.append(item)
-            load += item[3]
-        if current:
-            jobs.append((current, load))
+        jobs = [([pending[i] for i in indices], load)
+                for indices, load in _native.pack_jobs([item[3] for item in pending], limit)]
         self.jobs = []
         for job, bases in jobs:
             pubs = []
@@ -1093,11 +1086,12 @@ class BraketProvider(CircuitProvider):
         # {CNOT, 1q} set, so count it directly.  The identity padding is excluded.
         instructions = [ins for ins in circuit.instructions
                         if ins.operator.name != "I"]
-        cnots = sum(1 for ins in instructions if ins.operator.name == "CNot")
-        return {"cnot_count": int(cnots),
+        cnots, single, total = _native.gate_tally(
+            [(ins.operator.name, 0, 1) for ins in instructions], [], ["CNot"])
+        return {"cnot_count": cnots,
                 "depth": int(circuit.depth),
-                "num_1q_gates": int(len(instructions) - cnots),
-                "total_gates": int(len(instructions))}
+                "num_1q_gates": single,
+                "total_gates": total}
 
     # -- shot-based energy (QPU compatible) -------------------------------- #
 
@@ -1236,13 +1230,14 @@ class CirqProvider(CircuitProvider):
                              np.ones(len(generators)))
         ops = [op for op in circuit.all_operations()
                if not isinstance(op.gate, type(cirq.I))]
-        cnots = sum(1 for op in ops if len(op.qubits) == 2)
+        cnots, single, total = _native.gate_tally(
+            [(type(op.gate).__name__, len(op.qubits), 1) for op in ops], [])
         # Depth excluding the identity padding moment.
-        depth = max(len(cirq.Circuit(ops)), 0)
-        return {"cnot_count": int(cnots),
+        depth = len(cirq.Circuit(ops))
+        return {"cnot_count": cnots,
                 "depth": int(depth),
-                "num_1q_gates": int(len(ops) - cnots),
-                "total_gates": int(len(ops))}
+                "num_1q_gates": single,
+                "total_gates": total}
 
 
 # --------------------------------------------------------------------------- #
@@ -1300,7 +1295,7 @@ def qpu_usage(provider, wall_time_s: float | None = None,
     if shots:
         usage["qpu_shots"] = int(shots)
     if wall_time_s is not None:
-        usage["qpu_wall_time_s"] = round(float(wall_time_s), 4)
+        usage["qpu_wall_time_s"] = _native.round_total([float(wall_time_s)], 4)
 
     # A chunked submission is several jobs (`max_bases_per_job`); accounting
     # that reported only the last one would under-report the whole cost by the
@@ -1317,7 +1312,7 @@ def qpu_usage(provider, wall_time_s: float | None = None,
         return usage
     usage["qpu_jobs"] = len(jobs)
     ids = []
-    seconds: dict[str, float] = {}
+    seconds: dict[str, list[float]] = {}
     for job in jobs:
         try:
             ids.append(str(job.job_id()))
@@ -1329,15 +1324,15 @@ def qpu_usage(provider, wall_time_s: float | None = None,
             for key, name in (("quantum_seconds", "qpu_seconds"),
                               ("seconds", "qpu_billed_seconds")):
                 if reported.get(key) is not None:
-                    seconds[name] = seconds.get(name, 0.0) + float(reported[key])
+                    seconds.setdefault(name, []).append(float(reported[key]))
         except Exception:
             # Not a Runtime job, or the service could not be reached: the wall
             # time above stands on its own.
             pass
     if ids:
         usage["qpu_job_ids"] = ", ".join(ids)
-    for name, total in seconds.items():
-        usage[name] = round(total, 4)
+    for name, billed in seconds.items():
+        usage[name] = _native.round_total(billed, 4)
     return usage
 
 

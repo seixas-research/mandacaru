@@ -16,13 +16,13 @@
 use crate::periodic_gradient_crystals_support::{paw_root, provider, root, snapshot_of, Data};
 use mandacaru_core::{
     math::storage::MatrixSource,
+    models::noncollinear::component,
     paw::record::PawDataset,
     periodic::setup::{
         provider::{Core, SetupDerivatives},
         shells::Radial,
         spheres::Projector,
     },
-    models::noncollinear::component,
     periodic::PeriodicResult,
     Context,
 };

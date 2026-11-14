@@ -4,25 +4,29 @@
 //! the vacuum axes of a slab or a chain play no part, and the fractional coordinates of every
 //! point refer to the periodic axes in the order the cell lists them. The conventions are the
 //! standard ones of Setyawan and Curtarolo (Comput. Mater. Sci. 49, 299 (2010)) where that paper
-//! defines the lattice, and the obvious extensions to one and two dimensions elsewhere:
+//! defines the lattice, and, in one and two dimensions, ASE's (its square X lies along the second
+//! reciprocal vector and its square and rectangular paths are `MGXM` and `GXSYGS`), so a band
+//! path through the engine is the one ASE's `cell.bandpath` gives:
 //!
 //! | lattice | points (fractional, reciprocal basis) | default path |
 //! | --- | --- | --- |
 //! | chain | G 0, X 1/2 | `GX` |
-//! | square | G 0, X (1/2, 0), M (1/2, 1/2) | `GXMG` |
-//! | rectangular | G 0, X (1/2, 0), Y (0, 1/2), S (1/2, 1/2) | `GXSYG` |
+//! | square | G 0, X (0, 1/2), M (1/2, 1/2) | `MGXM` |
+//! | rectangular | G 0, X (1/2, 0), Y (0, 1/2), S (1/2, 1/2) | `GXSYGS` |
 //! | hexagonal 2D, gamma 120 | G 0, M (1/2, 0), K (1/3, 1/3) | `GMKG` |
-//! | hexagonal 2D, gamma 60 | G 0, M (1/2, 0), K (1/3, -1/3) | `GMKG` |
+//! | hexagonal 2D, gamma 60 | G 0, M (0, -1/2), K (1/3, -1/3) | `GMKG` |
 //! | cubic (a1, a2, a3 orthogonal, equal) | G, X (0, 1/2, 0), M (1/2, 1/2, 0), R (1/2, 1/2, 1/2) | `GXMGRX,MR` |
 //! | fcc (a1 = a(0,1,1)/2, a2 = a(1,0,1)/2, a3 = a(1,1,0)/2) | G, K (3/8, 3/8, 3/4), L (1/2, 1/2, 1/2), U (5/8, 1/4, 5/8), W (1/2, 1/4, 3/4), X (1/2, 0, 1/2) | `GXWKGLUWLK,UX` |
 //! | bcc (a1 = a(-1,1,1)/2, a2 = a(1,-1,1)/2, a3 = a(1,1,-1)/2) | G, H (1/2, -1/2, 1/2), N (0, 0, 1/2), P (1/4, 1/4, 1/4) | `GHNGPH,PN` |
 //! | tetragonal (a = b, c orthogonal) | G, A (1/2, 1/2, 1/2), M (1/2, 1/2, 0), R (0, 1/2, 1/2), X (0, 1/2, 0), Z (0, 0, 1/2) | `GXMGZRAZ,XR,MA` |
 //! | orthorhombic (orthogonal axes, lengths listed a < b < c, so X lies along the shortest) | G, R (1/2, 1/2, 1/2), S (1/2, 1/2, 0), T (0, 1/2, 1/2), U (1/2, 0, 1/2), X (1/2, 0, 0), Y (0, 1/2, 0), Z (0, 0, 1/2) | `GXSYGZURTZ,YT,UX,SR` |
 //! | hexagonal 3D (a = b, gamma 120, c orthogonal) | G, A (0, 0, 1/2), H (1/3, 1/3, 1/2), K (1/3, 1/3, 0), L (1/2, 0, 1/2), M (1/2, 0, 0) | `GMKGALHA,LM,KH` |
+//! | rhombohedral, alpha < 90 (three equal lengths, three equal angles, alpha not 60 or 90) | G, B, B1, F (1/2, 1/2, 0), L (1/2, 0, 0), L1 (0, 0, -1/2), P, P1, P2, Q, X, Z (1/2, 1/2, 1/2); eta = (1 + 4 cos alpha) / (2 + 4 cos alpha), nu = 3/4 - eta / 2 | `GLB1,BZGX,QFP1Z,LP` |
+//! | rhombohedral, 90 < alpha < 120 (not 109.47) | G, F (1/2, -1/2, 0), L (1/2, 0, 0), P, P1, Q, Q1, Z (1/2, -1/2, 1/2); eta = 1 / (2 tan^2(alpha / 2)), nu = 3/4 - eta / 2 | `GPZQGFP1Q1LZ` |
 //!
 //! `G` is the label of the zone center. A comma ends a continuous run: the path jumps from the
 //! last point before it to the first point after it. Any other lattice (oblique, centered
-//! rectangular, rhombohedral, monoclinic, triclinic, base-centered or a cell listed in another
+//! rectangular, monoclinic, triclinic, base-centered or a cell listed in another
 //! orientation) raises naming its lengths and angles: pass explicit points instead.
 use crate::periodic::invalid;
 use crate::Result;
@@ -96,8 +100,8 @@ pub fn convention(lattice: &Matrix3<f64>, periodic: [bool; 3]) -> Result<Convent
             if near(c, 0.) && close(a, b) {
                 Ok(table(
                     "square",
-                    &[(g, [0.; 3]), ("X", [0.5, 0., 0.]), ("M", [0.5, 0.5, 0.])],
-                    "GXMG",
+                    &[(g, [0.; 3]), ("X", [0., 0.5, 0.]), ("M", [0.5, 0.5, 0.])],
+                    "MGXM",
                 ))
             } else if near(c, 0.) {
                 Ok(table(
@@ -108,7 +112,7 @@ pub fn convention(lattice: &Matrix3<f64>, periodic: [bool; 3]) -> Result<Convent
                         ("Y", [0., 0.5, 0.]),
                         ("S", [0.5, 0.5, 0.]),
                     ],
-                    "GXSYG",
+                    "GXSYGS",
                 ))
             } else if close(a, b) && near(c, -0.5) {
                 Ok(table(
@@ -125,7 +129,7 @@ pub fn convention(lattice: &Matrix3<f64>, periodic: [bool; 3]) -> Result<Convent
                     "hexagonal-2d",
                     &[
                         (g, [0.; 3]),
-                        ("M", [0.5, 0., 0.]),
+                        ("M", [0., -0.5, 0.]),
                         ("K", [1. / 3., -1. / 3., 0.]),
                     ],
                     "GMKG",
@@ -230,6 +234,49 @@ pub fn convention(lattice: &Matrix3<f64>, periodic: [bool; 3]) -> Result<Convent
                     ],
                     "GMKGALHA,LM,KH",
                 ))
+            } else if equal && near(cos[0], cos[1]) && near(cos[1], cos[2]) && cos[0] > -0.5 {
+                // The rhombohedral cell: a1, a2, a3 of one length and one angle between any two.
+                let c = cos[0];
+                if c > 0. {
+                    let eta = (1. + 4. * c) / (2. + 4. * c);
+                    let nu = 0.75 - 0.5 * eta;
+                    Ok(table(
+                        "rhombohedral-1",
+                        &[
+                            (g, [0.; 3]),
+                            ("B", [eta, 0.5, 1. - eta]),
+                            ("B1", [0.5, 1. - eta, eta - 1.]),
+                            ("F", [0.5, 0.5, 0.]),
+                            ("L", [0.5, 0., 0.]),
+                            ("L1", [0., 0., -0.5]),
+                            ("P", [eta, nu, nu]),
+                            ("P1", [1. - nu, 1. - nu, 1. - eta]),
+                            ("P2", [nu, nu, eta - 1.]),
+                            ("Q", [1. - nu, nu, 0.]),
+                            ("X", [nu, 0., -nu]),
+                            ("Z", [0.5, 0.5, 0.5]),
+                        ],
+                        "GLB1,BZGX,QFP1Z,LP",
+                    ))
+                } else {
+                    let tangent = (0.5 * c.acos()).tan();
+                    let eta = 1. / (2. * tangent * tangent);
+                    let nu = 0.75 - 0.5 * eta;
+                    Ok(table(
+                        "rhombohedral-2",
+                        &[
+                            (g, [0.; 3]),
+                            ("F", [0.5, -0.5, 0.]),
+                            ("L", [0.5, 0., 0.]),
+                            ("P", [1. - nu, -nu, 1. - nu]),
+                            ("P1", [nu, nu - 1., nu - 1.]),
+                            ("Q", [eta, eta, eta]),
+                            ("Q1", [1. - eta, -eta, -eta]),
+                            ("Z", [0.5, -0.5, 0.5]),
+                        ],
+                        "GPZQGFP1Q1LZ",
+                    ))
+                }
             } else {
                 Err(refusal("three-dimensional", &l, &cos))
             }
@@ -241,7 +288,7 @@ fn refusal(kind: &str, lengths: &[f64], cosines: &[f64]) -> crate::Error {
     invalid(format!(
         "no named high-symmetry points for this {kind} lattice (lengths {lengths:?}, cosines \
          {cosines:?}): the conventions cover the chain, the square, rectangular and hexagonal \
-         planes, and the cubic, fcc, bcc, tetragonal, orthorhombic and hexagonal cells in the \
-         orientations of `periodic::kpath::convention`; pass the path as explicit points"
+         planes, and the cubic, fcc, bcc, rhombohedral, tetragonal, orthorhombic and hexagonal \
+         cells in the orientations of `periodic::kpath::convention`; pass the path as explicit points"
     ))
 }

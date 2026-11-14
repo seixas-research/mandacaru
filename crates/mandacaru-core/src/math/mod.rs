@@ -15,6 +15,7 @@ pub mod linalg;
 pub mod numpy_rules;
 pub mod peaks;
 pub mod projection;
+pub mod propagator;
 pub mod radial;
 pub mod random;
 pub mod reciprocal;

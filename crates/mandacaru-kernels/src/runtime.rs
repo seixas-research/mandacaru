@@ -34,6 +34,48 @@ struct Policy {
 
 thread_local! {
     static POLICY: RefCell<Option<Policy>> = const { RefCell::new(None) };
+    /// The calculation contexts this thread runs for, innermost last ([`enter_scope`]); a
+    /// thread started by [`spawn`] inherits its parent's.
+    static SCOPES: RefCell<Vec<ContextScope>> = const { RefCell::new(Vec::new()) };
+}
+
+/// One calculation context a thread runs for: its identity, the workers a kernel called from
+/// the thread may take, and whether the thread runs one lane of a parallel region of it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ContextScope {
+    pub id: usize,
+    pub width: usize,
+    pub lane: bool,
+}
+
+/// Leaves the scope [`enter_scope`] entered, on drop (and on unwind).
+pub struct ScopeGuard(usize);
+impl Drop for ScopeGuard {
+    fn drop(&mut self) {
+        SCOPES.with(|scopes| {
+            let entry = scopes.borrow_mut().pop();
+            debug_assert_eq!(entry.map(|scope| scope.id), Some(self.0));
+        });
+    }
+}
+
+/// Records on this thread that it runs for the context `id` with `width` workers (`lane`: as one
+/// lane of a parallel region), until the guard drops.
+pub fn enter_scope(id: usize, width: usize, lane: bool) -> ScopeGuard {
+    SCOPES.with(|scopes| scopes.borrow_mut().push(ContextScope { id, width, lane }));
+    ScopeGuard(id)
+}
+
+/// The innermost scope of the context `id` on this thread, if the thread runs for it.
+pub fn scope_of(id: usize) -> Option<ContextScope> {
+    SCOPES.with(|scopes| {
+        scopes
+            .borrow()
+            .iter()
+            .rev()
+            .find(|scope| scope.id == id)
+            .copied()
+    })
 }
 
 struct Restore(Option<Policy>);
@@ -79,7 +121,11 @@ where
     T: Send + 'scope,
 {
     let policy = POLICY.with(|p| p.borrow().clone());
+    // The scopes go with the thread: a kernel's worker that calls back into its context sees the
+    // width and the lane of the thread that started it, and re-enters instead of waiting for it.
+    let scopes = SCOPES.with(|s| s.borrow().clone());
     scope.spawn(move || {
+        SCOPES.with(|s| *s.borrow_mut() = scopes);
         if let Some(policy) = policy {
             as_worker(policy.threads, policy.stats, f)
         } else {
@@ -122,6 +168,30 @@ mod tests {
         });
         assert_eq!(stats.total(), 1);
         assert_eq!(stats.peak(), 1);
+    }
+
+    #[test]
+    fn a_spawned_worker_inherits_the_scopes_of_its_parent() {
+        let stats = Arc::new(WorkerStats::default());
+        let _outer = enter_scope(7, 6, false);
+        let _lane = enter_scope(7, 2, true);
+        with_policy(2, stats, || {
+            std::thread::scope(|s| {
+                spawn(s, || {
+                    assert_eq!(
+                        scope_of(7),
+                        Some(ContextScope {
+                            id: 7,
+                            width: 2,
+                            lane: true
+                        })
+                    );
+                    assert_eq!(scope_of(8), None);
+                });
+            });
+        });
+        drop(_lane);
+        assert_eq!(scope_of(7).map(|scope| scope.width), Some(6));
     }
 
     #[test]

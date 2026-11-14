@@ -451,3 +451,106 @@ fn the_unrestricted_empty_block_has_a_deterministic_frame() {
     }
     assert_eq!(ctx.memory_used(), 0);
 }
+
+// The split-group guard (`MeanField::split_groups`, `require_unsplit`).
+
+/// A LiH chain (a = 3.2 A, H off the axis) as the Born-von Karman supercell of three k-points
+/// on the all-electron (HAO) basis: its `+-k` states are exactly degenerate pairs, and a
+/// periodic grid has no deterministic frame for them.
+fn lih_supercell(ctx: &Context) -> MolecularIntegrals {
+    let primitive = mandacaru_core::Geometry::new(
+        vec![3, 1],
+        vec![[0.; 3], [1.45, 0.05, 0.]],
+        [[3.2, 0., 0.], [0., 6., 0.], [0., 0., 6.]],
+        [true, false, false],
+        mandacaru_core::LengthUnit::Angstrom,
+    )
+    .unwrap();
+    MolecularIntegrals::supercell(
+        ctx,
+        &primitive,
+        [3, 1, 1],
+        r#"{"name":"HAO"}"#,
+        0.3 / 0.529177210903,
+        None,
+        mandacaru_core::math::storage::Precision::Float64,
+    )
+    .unwrap()
+}
+
+#[test]
+fn an_active_space_that_splits_a_degenerate_supercell_pair_is_found_and_refused() {
+    let ctx = Context::new(Some(1), 1 << 30).unwrap();
+    {
+        let base = lih_supercell(&ctx);
+        let state = base
+            .mean_field(
+                "rhf",
+                [6, 6],
+                &mandacaru_core::molecular::ScfOptions::default(),
+            )
+            .unwrap();
+        // Three occupied sigma orbitals and the first of the degenerate virtual pair.
+        let split = state
+            .active_model(&base, r#"{"orbitals": 4, "frozen": [0, 1, 2]}"#)
+            .unwrap();
+        let groups = state.split_groups(&base, &split).unwrap();
+        assert_eq!(groups.len(), 1, "{groups:?}");
+        let group = &groups[0];
+        assert_eq!(group.label, "orbital energy");
+        assert_eq!(
+            (group.active.len(), group.deleted.len()),
+            (1, 1),
+            "{group:?}"
+        );
+        assert!(group.frozen.is_empty());
+        let error = state
+            .require_unsplit(&base, &split, "the test force")
+            .unwrap_err();
+        assert!(
+            matches!(error, mandacaru_core::Error::Unsupported(_))
+                && error
+                    .to_string()
+                    .contains("splits 1 exactly degenerate orbital group"),
+            "{error}"
+        );
+        // The whole pair active: nothing split, nothing refused.
+        let whole = state
+            .active_model(&base, r#"{"orbitals": 5, "frozen": [0, 1, 2]}"#)
+            .unwrap();
+        assert!(state.split_groups(&base, &whole).unwrap().is_empty());
+        state
+            .require_unsplit(&base, &whole, "the test force")
+            .unwrap();
+        // Freezing one Li 1s of the degenerate +-k core pair splits that group instead.
+        let core = state
+            .active_model(&base, r#"{"orbitals": 6, "frozen": [0, 1]}"#)
+            .unwrap();
+        let groups = state.split_groups(&base, &core).unwrap();
+        assert!(
+            groups
+                .iter()
+                .any(|g| g.frozen.len() == 1 && g.active.len() == 1),
+            "{groups:?}"
+        );
+    }
+    assert_eq!(ctx.memory_used(), 0);
+}
+
+#[test]
+fn a_covered_frame_reports_no_split_group_even_where_the_active_space_cuts_one() {
+    // Linear H4 on an isolated grid: the deterministic frame fixes the pi pair, so the cut of
+    // `cutting_spec` is deterministic (the owner's choice for the frame) and nothing is refused.
+    let ctx = Context::new(Some(2), 1 << 30).unwrap();
+    {
+        let base = integrals(&ctx, &H4, "lda");
+        let state = solve(&base, Method::Hf("rhf"), [2, 2]);
+        let (_, spec) = cutting_spec(&state);
+        let model = state.active_model(&base, &spec).unwrap();
+        assert!(state.split_groups(&base, &model).unwrap().is_empty());
+        state
+            .require_unsplit(&base, &model, "the test force")
+            .unwrap();
+    }
+    assert_eq!(ctx.memory_used(), 0);
+}

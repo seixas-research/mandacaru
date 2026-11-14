@@ -5,6 +5,8 @@ from numpy.typing import NDArray
 BOHR_TO_ANGSTROM: float
 HARTREE_TO_EV: float
 ANGSTROM_TO_BOHR: float
+PERIODIC_FORCE_STEP: float
+"""The central-difference step (Bohr) of a crystal force by finite differences (``quantum::periodic_response::FORCE_STEP``)."""
 EV_TO_HARTREE: float
 DEFAULT_ENERGY_SHIFT: float
 MIN_ENERGY_SHIFT: float
@@ -24,7 +26,6 @@ def grid_blas_threads() -> int: ...
 def worker_threads(workers: int) -> int: ...
 def quotients(numerators: NDArray[np.float64], denominators: NDArray[np.float64]) -> NDArray[np.float64]: ...
 def rounded_total(values: Sequence[float]) -> int: ...
-def paw_reload_errors(before: Sequence[tuple[int, Sequence[float]]], after: Sequence[tuple[int, Sequence[float]]]) -> dict[int, float]: ...
 def valence_subshells(configuration: Sequence[tuple[int, int, float]]) -> list[tuple[int, int]]: ...
 def relativity_kappa_of(l: int, j: float) -> int: ...
 def relativity_l_of(kappa: int) -> int: ...
@@ -292,6 +293,8 @@ def estimator_precision(shots: int) -> float:
     """``1 / sqrt(shots)``, zero without shots (``execution::estimator_precision``)."""
 def mps_job_gigabytes(bases: int) -> float:
     """GB a matrix-product-state simulator holds for one job of ``bases`` bases (``execution::mps_job_gigabytes``)."""
+def pauli_fingerprint(n_qubits: int, terms: Sequence[tuple[str, float, float]], atol: float) -> str:
+    """The 32-hex-digit digest of a Pauli sum: its terms above ``atol`` sorted by label and written with the decimal places ``atol`` resolves (``term_lists::pauli_fingerprint``)."""
 def pauli_term_sum(terms: Sequence[tuple[str, float, float]]) -> list[tuple[str, float, float]]:
     """Equal labels added where they first occur, in order (``term_lists::sum``)."""
 def pauli_term_scale(terms: Sequence[tuple[str, float, float]], real: float, imaginary: float) -> list[tuple[str, float, float]]:
@@ -311,7 +314,7 @@ def fermion_term_dagger(terms: Sequence[tuple[Sequence[tuple[int, bool]], float,
 def fermion_term_modes(terms: Sequence[tuple[Sequence[tuple[int, bool]], float, float]]) -> int:
     """One more than the largest mode any term acts on (``term_lists::fermion_modes``)."""
 def to_user_units(values: float | NDArray[np.float64], quantity: str, atomic_units: bool = False, cells: int = 1, total: bool = False, plus: NDArray[np.float64] | None = None) -> float | NDArray[np.float64]:
-    """``values`` (atomic units) in user units: ``quantity`` is ``energy``, ``length``, ``force``, ``gradient_to_force``, ``stress``, ``area``, ``inverse_energy``, ``polarization`` (e/Bohr^2 to C/m^2) or ``conductivity`` (e^2/(hbar Bohr) to S/cm); ``atomic_units`` keeps atomic units; ``cells`` divides a supercell value per primitive cell; ``plus`` (user units) is added after; ``total`` sums first and returns a float (``units::to_user_values``, ``units::to_user_total``)."""
+    """``values`` (atomic units) in user units: ``quantity`` is ``energy``, ``length``, ``force``, ``gradient_to_force``, ``stress``, ``area``, ``inverse_energy``, ``polarization`` (e/Bohr^2 to C/m^2), ``conductivity`` (e^2/(hbar Bohr) to S/cm), ``time`` (to fs), ``volume`` (to Angstrom^3) or ``wavenumber`` (1/Bohr to 1/Angstrom); ``atomic_units`` keeps atomic units; ``cells`` divides a supercell value per primitive cell; ``plus`` (user units) is added after; ``total`` sums first and returns a float (``units::to_user_values``, ``units::to_user_total``)."""
 def free_wavevector(energy_ev: float) -> float:
     """``sqrt(2 E)`` in 1/Bohr of a free electron of kinetic energy ``E`` in eV (``derived::free_wavevector``)."""
 def free_energy_ev(k: float) -> float:
@@ -348,6 +351,10 @@ def molecular_excitations(mean_field: MeanField, *, num_states: int, approximati
     """The lowest ``num_states`` linear-response excitations of a converged molecular reference, completed to whole multiplets (``molecular::excitations::excitations``): spin-adapted for a closed shell (``spin`` ``"singlet"``, the default, or ``"triplet"``), spin-conserving for an unrestricted reference (``spin`` must be ``None``); unsupported references raise ``NotImplementedError`` by name."""
 def line_spectrum(context: Context, positions: NDArray[np.float64], strengths: NDArray[np.float64], axis: NDArray[np.float64], *, width: float, shape: str = "gaussian") -> NDArray[np.float64]:
     """``sum_n s_n g(x - x_n)`` on ``axis`` with unit-area ``"gaussian"`` (standard deviation ``width``) or ``"lorentzian"`` (half width ``width``) lines (``models::spectrum::line_spectrum``)."""
+def molecular_real_time(mean_field: MeanField, *, direction: tuple[float, float, float] | list[float], strength: float, time_step: float, duration: float, atomic_units: bool = False, kick: str = "density", gauge: str = "length", propagator: str = "etrs", corrector_tolerance: float = 1e-6, max_corrector_iterations: int = 8, max_energy_drift: float | None = 0.05) -> dict[str, Any]:
+    """Propagate a converged molecular reference after a delta kick (``molecular::realtime::propagate``): ``strength`` in 1/Angstrom, ``time_step`` and ``duration`` in fs (atomic with ``atomic_units``); ``kick`` ``"density"`` or ``"spin"``, ``gauge`` ``"length"`` or ``"velocity"``, ``propagator`` ``"etrs"``, ``"aetrs"`` or ``"midpoint"`` (each held to its ``dt W`` bound). Returns the trace in atomic units: ``times_au``, ``dipole_au`` and ``momentum_au`` ``(nt, 3)``, ``along_au`` (the dipole along the kick), ``energy_ha``, ``norm_error``, and the record (``ground_energy_ha``, ``kick_energy_ha``, ``energy_drift``, ``width_ha``, ``largest_width_ha``, ``step_width`` (``dt W``), ``step_width_bound``, ``worst_norm_error``, ``effective_corrector_tolerance`` (the requested one scaled by the kick over the default 0.002 / Angstrom), ``aliased_weight``, ``builds``, ``corrector_iterations``, ``functional``) with the request."""
+def time_spectrum(context: Context, samples: NDArray[np.float64], frequencies: NDArray[np.float64], *, time_step: float, strength: float, damping: float, window: str = "exponential", kind: str = "strength", atomic_units: bool = False) -> tuple[NDArray[np.float64] | NDArray[np.complex128], float]:
+    """The response function of a trace sampled in atomic units at ``n time_step`` after a kick of ``strength`` (atomic units), on ``frequencies`` with ``damping`` in eV (Hartree with ``atomic_units``), in user units (``models::time_spectrum::spectrum_in_user_units``): ``kind`` ``"strength"`` (the real ``S``, 1/eV), ``"polarizability"`` (complex ``alpha``, Angstrom^3) or ``"dielectric"`` (complex ``epsilon = 1 - 4 pi i j / ((omega + i damping) A_0)``, exponential window only); ``window`` ``"exponential"`` or ``"gaussian"``. Returns ``(values, tail)``, ``tail`` the window's weight on the last sample."""
 def energy_to_hartree(values: Any, unit: str) -> Any:
     """An energy in ``unit`` (float, complex or array) in Hartree."""
 def convert_energy(values: Any, from_unit: str, to_unit: str) -> Any:
@@ -356,8 +363,6 @@ def length_to_bohr(values: Any, unit: str) -> Any:
     """A length in ``unit`` (float or array) in Bohr."""
 def energy_unit_factor(unit: str) -> float:
     """The Hartree-to-``unit`` factor of an accepted energy spelling (``units::energy_factor``)."""
-def mesh_fractions(shape: Sequence[int]) -> list[list[float]]:
-    """The fractional points ``[i/n0, j/n1, k/n2]`` of a Gamma-centered mesh, ``k`` fastest (``derived::mesh_fractions``)."""
 def total(values: Sequence[float]) -> float:
     """The sum of ``values`` as Python's ``sum`` computes it, compensated (``derived::total``)."""
 def vector_norm(vector: Sequence[float]) -> float:
@@ -422,14 +427,14 @@ def bloch_supercell(integrals: MolecularIntegrals) -> dict[str, Any]:
 def bloch_bands(mean_field: MeanField, kpoints: Sequence[Sequence[float]]) -> dict[str, NDArray[np.float64]]:
     """Unfolded mean-field bands: ``{"eigenvalues": (spins, nk, n), "weights": (spins, nk, n, n)}`` (Hartree; weights band-major)."""
 def bloch_spectral_function(mean_field: MeanField, model: MolecularModel, problem: QuantumProblem, state: NDArray[np.complex128], kpoints: Sequence[Sequence[float]], *, eta_ha: float, axis_ha: NDArray[np.float64] | None = None, points: int = 2001, krylov: int = 200) -> dict[str, Any]:
-    """Lehmann poles of ``A(k, omega)`` at mesh points: flat ``energies``/``weights``/``k``/``orbital``/``spin``/``addition``; ``dominant_energy``, ``dominant_weight``, ``sum_rule`` ``(nk, n, 2)``; ``axis_ha`` (the given one, or ``points`` spanning the poles) and ``values`` ``(nk, axis)``, the Lorentzian trace in 1/Ha; ``ground_energy_ha``, ``removal_edge_ha``, ``addition_edge_ha``, ``kpoints``, ``n_primitive``."""
+    """Lehmann poles of ``A(k, omega)`` at mesh points: flat ``energies``/``weights``/``k``/``orbital``/``spin``/``addition``; ``dominant_energy``, ``dominant_weight``, ``sum_rule`` ``(nk, n, 2)``; ``axis_ha`` (the given one, or ``points`` spanning the poles) and ``values`` ``(nk, axis)``, the Lorentzian trace in 1/Ha; ``ground_energy_ha``, ``removal_edge_ha``, ``addition_edge_ha``, ``chemical_potential_ha`` (their midpoint), ``gap_ha`` (their difference), ``kpoints``, ``n_primitive``."""
 def bloch_path_spectral_function(mean_field: MeanField, model: MolecularModel, problem: QuantumProblem, state: NDArray[np.complex128], cell: NDArray[np.float64], pbc: Sequence[bool], *, eta_ha: float, path: str | None = None, path_points: Sequence[tuple[str, Sequence[float]]] | None = None, irreducible: bool = False, positions: NDArray[np.float64] | None = None, numbers: NDArray[np.int64] | None = None, symprec: float = 1e-5, axis_ha: NDArray[np.float64] | None = None, points: int = 2001, krylov: int = 200) -> dict[str, Any]:
     """``bloch_spectral_function`` along a band path: one row per mesh point on the path (``kpoints`` are the path's points), plus ``kpath`` (the ``band_path`` dict) and ``audit`` (``None``, or ``representative``, ``image``, ``star_size``, ``residual``, ``symmetric`` of the irreducible reduction). ``cell`` rows are in the length unit of the returned ``kpath`` distances (inverse)."""
 def band_path(context: Context, cell: NDArray[np.float64], pbc: Sequence[bool], size: Sequence[int], *, gamma: bool = False, path: str | None = None, points: Sequence[tuple[str, Sequence[float]]] | None = None) -> dict[str, Any]:
     """The mesh points of the ``size`` mesh on a band path (named labels or explicit points): ``convention``, ``kpoints`` ``(n, 3)`` fractional, ``mesh_index``, ``distances`` ``(n,)`` (inverse of the cell's unit, ``2 pi`` included), ``labels``, ``label_distances``, ``missing`` and ``complete``."""
 def irreducible_zone(context: Context, cell: NDArray[np.float64], positions: NDArray[np.float64], numbers: NDArray[np.int64], size: Sequence[int], *, gamma: bool = False, symprec: float = 1e-5) -> dict[str, Any]:
     """The space group of the cell and the reduction of the ``size`` mesh by its rotations that preserve the mesh, and time reversal: ``full``, ``points``, ``weights``, ``mapping``, ``rotations`` ``(n, 3, 3)`` integers, ``space_group_operations``, ``distinct_rotations``."""
-def tetrahedron_dos(context: Context, shape: Sequence[int], reciprocal: NDArray[np.float64], kpoints: Sequence[Sequence[float]], eigenvalues: NDArray[np.float64], axis: NDArray[np.float64], *, projections: NDArray[np.float64] | None = None, degeneracy: float = 1.0) -> dict[str, NDArray[np.float64]]:
+def tetrahedron_dos(context: Context, shape: Sequence[int], cell: NDArray[np.float64], kpoints: Sequence[Sequence[float]], eigenvalues: NDArray[np.float64], axis: NDArray[np.float64], *, projections: NDArray[np.float64] | None = None, degeneracy: float = 1.0) -> dict[str, NDArray[np.float64]]:
     """Linear-tetrahedron ``{"dos", "integrated"}`` (and ``"projected"`` ``(axis, channels)``) on the full Gamma-centered mesh."""
 def read_parquet(context: Context, path: str) -> ParquetTable: ...
 def read_parquet_metadata(context: Context, path: str) -> ParquetFooter: ...
@@ -471,12 +476,23 @@ class PawDiagnosis(TypedDict, total=False):
     unprojected_missing: dict[int, float]
     defects: dict[str, Any]
     levels: dict[int, list[float]]
+    level_errors: dict[int, float]
     unevaluated: str
 
+def paw_upgrade_core_states(context: Context, input: str, output: str) -> dict:
+    """Upgrade a format-2 dataset file to format 3 at ``output`` (never over a file) with its core states solved again on the atom it was generated on, the radial scheme (``"atom-solver"`` or ``"variational"``) identified as the only one reproducing its stored core density and recorded as ``core_scheme`` (``None`` and no field when both reproduce it and their cores agree to 1e-7 of the orbital peak and 1e-6 Ha, ``"tie"`` then holding those two differences; refused when they disagree); proves every other column bit-identical and the content digest unchanged (``paw::generate::core_states``). ``{"symbol", "scheme", "tie", "stride", "states", "density_deviation", "charge_deviation", "core_charge", "radius", "charge_outside"}``; a failed check raises and writes nothing."""
+def paw_build(context: Context, symbol: str, options: dict, path: str, *, format: str = "parquet", stride: int = 1, check: bool = False) -> dict:
+    """Generate, write to ``path``, read back, refuse a file whose levels moved, check and move into place (``paw::generate::build``; the record never leaves Rust). ``{"payload", "tables"`` (the file read back), ``"path"``, the search's ``"index", "label", "tried", "flagged", "built", "notes", "missing"``, ``"channels"`` (``l, r_cut, reference_energy, lowest, ghost, phase``) ``"unprojected_ghosts"`` ``{l: depth}`` and ``"diagnosis"`` (every check of the file read back, a :class:`PawDiagnosis` plus ``"unprojected_missing"``, on the reference atom the search used)}``; or ``{"kind": "refused" | "exhausted" | "reload", "refusal": text}``."""
 def paw_record_read(context: Context, path: str) -> tuple[str, dict[str, NDArray[np.float64]]]: ...
+def paw_content_sha256(context: Context, path: str) -> str:
+    """SHA-256 (lowercase hex) of the dataset's physics content (`PawDataset::content_sha256`): its payload and tables without the format version and the core states, so a version-2 file and its version-3 upgrade share it."""
 def paw_record_write(context: Context, path: str, payload: str, tables: dict[str, NDArray[np.float64]], *, stride: int = 1, format: str = "parquet", codec: str = "zstd") -> None: ...
 def paw_local_value(context: Context, r: NDArray[np.float64], v_local: NDArray[np.float64], charge: float, radius: NDArray[np.float64]) -> tuple[NDArray[np.float64], NDArray[np.float64]]: ...
 def paw_generate(context: Context, symbol: str, options: dict[str, Any]) -> PawGenerated: ...
+DEFAULT_SPLIT_NORM: float
+"""The split norm of ``zeta_split="last_zeta"`` (``paw::basis_recipe::DEFAULT_SPLIT_NORM``)."""
+DEFAULT_TAIL_NORMS: tuple[float, float, float]
+"""The tail norms of ``zeta_split="first_zeta"`` (``paw::basis_recipe::DEFAULT_TAIL_NORMS``)."""
 def paw_basis(context: Context, payload: str, tables: dict[str, NDArray], recipe_json: str) -> dict[str, Any]: ...
 def paw_diffuse_box(integrals: MolecularIntegrals, cuts: Sequence[Sequence[float]]) -> dict[str, Any] | None: ...
 def paw_basis_states(context: Context, payload: str, tables: dict[str, NDArray]) -> list[tuple[int, int, int, bool, bool, float | None]]: ...
@@ -516,6 +532,10 @@ def paw_diagnose(context: Context, payload: str, tables: dict[str, NDArray[np.fl
 def paw_quality(context: Context, payload: str, tables: dict[str, NDArray[np.float64]], *, bond: float | None = None, twin: tuple[str, dict[str, NDArray[np.float64]]] | None = None) -> PawQuality: ...
 def paw_levels(context: Context, payload: str, tables: dict[str, NDArray[np.float64]], l: int, states: int, *, r_max: float | None = None) -> list[float]: ...
 def paw_ghost_levels(context: Context, payload: str, tables: dict[str, NDArray[np.float64]]) -> dict[int, list[float]]: ...
+def paw_projector_radii(context: Context, payload: str, tables: dict[str, NDArray[np.float64]]) -> dict[int, float]:
+    """The radius beyond which each channel's projectors vanish: its own cutoff or the local potential's, the larger (``diagnose::view::Channel::projector_radius``)."""
+def paw_spin_orbit_splittings(context: Context, payload: str, tables: dict[str, NDArray[np.float64]]) -> dict[int, dict[str, Any]]:
+    """The `j` splitting (Hartree) of every spin-orbit channel of a Dirac record through the engine operator in its DZP basis (``"engine"``) and in the all-electron Dirac atom (``"dirac"``), the bound level it is (``"state"``) and gate G13 (``"passes"``: within 2 percent or 10 meV)."""
 def paw_intruding_s_miss(context: Context, payload: str, tables: dict[str, NDArray[np.float64]]) -> float | None: ...
 def paw_reference_atom(context: Context, payload: str, tables: dict[str, NDArray[np.float64]]) -> dict[str, Any]: ...
 def paw_spectrum_box(context: Context, payload: str, tables: dict[str, NDArray[np.float64]], l: int) -> float: ...
@@ -651,7 +671,7 @@ def hubbard_table(context: Context, spec: str, spin_orbit: bool, symbols: list[s
     spin-orbit crystal.
     """
 RADIAL_FILTER_METHODS: list[str]
-def radial_filter(context: Context, r: NDArray[np.float64], values: NDArray[np.float64], l: int, k_c: float, method: str | None = None, rolloff: float | None = None, oversample: int | None = None, renormalize: bool = True, switch_margin: float | None = None) -> tuple[NDArray[np.float64], tuple[float, float, float, float, bool, float, float]]: ...
+def radial_filter(context: Context, r: NDArray[np.float64], values: NDArray[np.float64], l: int, k_c: float, method: str | None = None, rolloff: float | None = None, oversample: int | None = None, renormalize: bool = True, switch_margin: float | None = None) -> tuple[NDArray[np.float64], tuple[float, float, float, float, bool, float, float, float | None]]: ...
 def radial_band_weight(context: Context, r: NDArray[np.float64], values: NDArray[np.float64], l: int, k_c: float, oversample: int | None = None) -> float: ...
 def confinement_potential(r: NDArray[np.float64], r_c: float, amplitude: float, inner_fraction: float) -> NDArray[np.float64]: ...
 def confinement_energy(context: Context, r: NDArray[np.float64], local: NDArray[np.float64], projectors: NDArray[np.float64], coupling: NDArray[np.float64], overlap: NDArray[np.float64], wave: NDArray[np.float64], l: int, r_cut: float, r_c: float, amplitude: float, inner_fraction: float, state: int = 0) -> float: ...
@@ -696,6 +716,8 @@ class PauliOperator:
 
 class Propagator:
     def schedule(self) -> tuple[float, list[tuple[str, float]]]: ...
+    def circuit_plan(self, time: float, steps: int) -> tuple[float, list[tuple[str, float]]]:
+        """``(global phase, [(label, angle)])`` of an exported circuit of ``steps`` slices of ``time``: ``-time constant`` and, for one slice, ``time weight / steps`` per ordered rotation (``Propagator::circuit_plan``)."""
     @property
     def precision(self) -> str: ...
     def evolve(self, state: NDArray[np.complex64] | NDArray[np.complex128], time: float, *, steps: int = 1, inverse: bool = False, normalized: bool = True) -> NDArray[np.complex64] | NDArray[np.complex128]: ...
@@ -774,7 +796,7 @@ class RdmMeasurement:
         """``(one, two, one_error, two_error)`` from the ``measured`` values in request index order; with ``shots`` the errors include the covariances of strings read in one basis on the same shots."""
 
 class QuantumProblem:
-    def search(self, *, max_steps: int = 200, max_length: int = 20, move_weights: Sequence[float] = ..., temperatures: Sequence[float] = ..., length_penalty: float = 0., proposal_temperature: float = .1, proposal: str = "gradient", warm_start: bool = True, replace_start: str = "zero", screen_insertions: int = 0, record: bool = False, seed: int = 0, optimizer: str = "BFGS", max_iterations: int = 300, max_evaluations: int = 5000, tolerance: float | None = 1e-9, track_best: bool = True, initial_indices: Sequence[int] | None = None, initial_parameters: Sequence[float] | None = None, proposal_model: str | None = None, transfer_steps: int | None = None) -> QuantumResult: ...
+    def search(self, *, max_steps: int = 200, max_length: int = 20, move_weights: Sequence[float] = ..., temperatures: Sequence[float] = ..., length_penalty: float = 0., proposal_temperature: float = .1, proposal: str = "gradient", warm_start: bool = True, replace_start: str = "zero", screen_insertions: int = 0, record: bool = False, seed: int = 0, optimizer: str = "BFGS", max_iterations: int = 300, max_evaluations: int = 5000, tolerance: float | None = 1e-9, track_best: bool = True, initial_indices: Sequence[int] | None = None, initial_parameters: Sequence[float] | None = None, proposal_model: str | None = None, transfer_steps: int | None = None, replicas: int = 1, replica_spacing: float = 2.0) -> QuantumResult: ...
     def sample_fidelities(self, indices: Sequence[int], *, pairs: int = 3000, seed: int = 0, product_form: bool = True) -> NDArray[np.float64]: ...
     def hva(self, *, layers: int = 2, evolution: str = "exact", order: int = 2, steps: int = 1, seed_angle: float = 0.1) -> QuantumProblem: ...
     @property
@@ -840,7 +862,7 @@ class SpatialGrid:
     @staticmethod
     def from_geometry(geometry: Geometry, spacing_bohr: Sequence[float], *, periodic: bool = False, skew: bool = False) -> SpatialGrid: ...
     @staticmethod
-    def from_specs(center: Any, spacing: Any, *, box_size: Any = None, cell: NDArray[np.float64] | None = None, units: str = "angstrom", periodic: bool = False, skew: bool = False, commensurate: Sequence[int] | None = None) -> SpatialGrid: ...
+    def from_specs(center: Any | None, spacing: Any, *, box_size: Any = None, cell: NDArray[np.float64] | None = None, units: str = "angstrom", periodic: bool = False, skew: bool = False, commensurate: Sequence[int] | None = None) -> SpatialGrid: ...
     @property
     def shape(self) -> list[int]: ...
     @property
@@ -913,6 +935,10 @@ class MeanField:
         """``"aufbau"``, ``"fractional (Fermi-Dirac, width W Ha, -TS X Ha)"`` or ``"not aufbau (inversion X Ha)"`` (``MeanField::occupation_label``)."""
     @property
     def hubbard_energy(self) -> float | None: ...
+    def split_groups(self, model: MolecularModel) -> list[dict[str, Any]]:
+        """The exactly degenerate orbital groups ``model`` splits between frozen, active and deleted orbitals where no deterministic frame fixes them (a periodic grid, a non-aufbau or complex reference; ``MeanField::split_groups``): ``{"label", "value", "frozen", "active", "deleted", "description"}`` each. A covered frame returns ``[]``."""
+    def require_unsplit(self, model: MolecularModel, what: str) -> None:
+        """Raise ``NotImplementedError`` naming the group when ``model`` splits one (``MeanField::require_unsplit``); ``what`` names the refused result."""
     @property
     def model(self) -> MolecularModel: ...
     def active_model(self, spec: str, *, representation: str = "dense", truncation: float | None = None) -> MolecularModel:
@@ -987,10 +1013,6 @@ class PeriodicProblem:
     @property
     def electrons(self) -> float: ...
     @property
-    def centers(self) -> list[list[float]] | None: ...
-    @property
-    def channel_labels(self) -> list[list[int]] | None: ...
-    @property
     def kpoints(self) -> list[list[float]] | None: ...
     @property
     def kpoints_fractional(self) -> list[list[float]] | None: ...
@@ -1013,12 +1035,17 @@ class PeriodicResult:
     def forces(self) -> NDArray[np.float64]:
         """The analytic force ``-dF/dtau`` of the converged crystal, ``(n_atoms, 3)``, Hartree/Bohr. Raises ``NotImplementedError`` naming the cause for a crystal the engine does not differentiate."""
     def stress(self) -> dict[str, Any]:
-        """The analytic stress at the crystal's pins: ``sigma`` (Hartree/Bohr^3, ``(g + g^T) / (2 Omega)``), ``gradient`` (``g_ab = dF/d eps_ab``, Hartree), ``antisymmetric`` (Hartree) as ``(3, 3)`` arrays and ``volume`` (Bohr^3). Raises ``NotImplementedError`` naming the cause."""
-    def wannier_setup(self, metadata_json: str) -> WannierSetup: ...
+        """The analytic stress at the crystal's pins: ``sigma`` (Hartree/Bohr^3, ``(g + g^T) / (2 Omega)``), ``gradient`` (``g_ab = dF/d eps_ab``, Hartree, symmetrized and averaged over the point group of the mesh) as ``(3, 3)`` arrays and ``volume`` (Bohr^3). Raises ``NotImplementedError`` naming the cause."""
+    def wannier(self, request_json: str, *, max_iterations: int = 2000, tolerance: float = 1e-10, step: float = .5) -> WannierResult:
+        """Maximally localized Wannier functions of the converged crystal (``periodic::wannier::setup::Wannier::build``). ``request_json`` holds ``size``, ``trials``, ``n_functions``, ``windows`` (Hartree) and ``bands``; any other key raises ``ValueError`` (the atom centers and PAW channels are the setup's). The minimization (conjugate gradient, with a line search on the exact derivative of the spread) stops when the gradient norm is below 1e-6 Bohr^2 and the last step changed the spread by less than ``tolerance`` (Bohr^2); a saddle check (a small rotation and a new descent, up to three successive escapes) must then confirm the point, or ``converged`` is false. ``step`` scales the first trial step of each line search. Raises ``NotImplementedError`` without a native setup, ``ValueError`` for an unconverged SCF, a windowless band group that is not isolated, or a spinor subspace with a Chern number."""
     def berry_phase(self, direction: int, size: Sequence[int], *, bands: tuple[int, int] | None = None) -> dict[str, Any]:
         """Berry phases and Wilson loops of the strings along ``G_direction`` of the Gamma-anchored mesh ``size`` (``periodic::berry::strings``). ``bands`` is ``None`` (an insulator's occupied bands, per spin channel) or a half-open ``(lo, hi)``. Keys: ``direction``, ``size``, ``transverse_axes``, ``bands`` (per channel), ``starts`` ``(n1, n2, 3)`` fractional, ``phases`` ``(channels, n1, n2)`` radians, ``mean`` and ``spread`` per channel, ``centers`` and ``connection`` (one ``(n1, n2, n_bands)`` array per channel: Wannier charge centers, fractional in [0, 1), and the parallel-transport Berry connection, Bohr), ``minimum_singular_value``. Raises ``NotImplementedError`` without a native setup, ``ValueError`` for a metal or a band group that is not isolated."""
     def berry_curvature(self, normal: int, size: Sequence[int], *, offset: float = 0.0, bands: tuple[int, int] | None = None) -> dict[str, Any]:
         """The Berry curvature of the plane normal to ``G_normal`` on the in-plane entries ``(n_a, n_b)`` of the mesh ``size`` ``(n1, n2, n3)`` (``a, b`` the cyclic in-plane directions; the entry along the normal is not used), at the fractional ``offset`` along the normal (``periodic::berry::curvature``). Keys: ``normal``, ``axes``, ``size``, ``offset``, ``orientation`` (unit ``G_a x G_b``), ``flux`` ``(channels, n_a, n_b)`` radians, ``curvature`` (same shape, Bohr^2), ``centers`` ``(n_a, n_b, 3)`` fractional, ``bands``, ``chern`` (per channel), ``chern_total``, ``max_flux``, ``minimum_singular_value``."""
+    def wannier_flow(self, normal: int, direction: int, size: Sequence[int], *, offset: float = 0.0, bands: tuple[int, int] | None = None) -> dict[str, Any]:
+        """The Wannier-center flow of the plane normal to ``G_normal`` at the fractional ``offset``, with strings of ``size[direction]`` points along ``G_direction`` and ``size[transverse]`` first transverse intervals per period, bisected where a center moves by more than a quarter of the largest gap (``periodic::berry::flow``). A time-reversal-invariant plane (offset 0 or 1/2 of a time-reversal-invariant crystal, occupied bands) is flown over ``k_perp`` in [0, 1/2] and gives its Z2 index; any other plane over the whole period and gives the Chern number as the winding. Keys: ``normal``, ``direction``, ``transverse``, ``offset``, ``length``, ``k_perp`` ``(samples,)``, ``centers`` ``(samples, bands)`` fractional in [0, 1), ``half``, ``winding`` (``None`` for a half flow), ``z2``, ``crossings``, ``lines`` and ``gaps`` ``(samples,)`` (the largest-gap midpoint and size; ``None`` for a whole-period flow), ``spin_degenerate``, ``bands``, ``minimum_singular_value``, ``strings`` (strings computed). Raises ``ValueError`` for a metal, a flow that still moves too far after six halvings, or a plane that is not time-reversal invariant where it has to be, ``NotImplementedError`` for a collinear spin-polarized crystal."""
+    def z2_invariant(self, size: Sequence[int], *, method: str = "flow") -> dict[str, Any]:
+        """The Z2 indices ``(nu_0; nu_1 nu_2 nu_3)`` of the occupied bands of a time-reversal-invariant insulator. ``method="flow"`` takes the parity of the center crossings on the six planes ``k_c`` in {0, 1/2} (``periodic::berry::flow``; ``nu_0`` must agree for the three ``c``); ``method="parity"`` the Fu-Kane product of the inversion eigenvalues at the eight time-reversal-invariant points (``periodic::berry::parity``; needs an inversion center). Keys: ``size``, ``method``, ``strong``, ``weak`` ``(3,)``, ``planes`` (``{(c, half): z2}``), ``flows`` (the six ``wannier_flow`` records, ``c`` major, empty for ``parity``) and ``parity`` (``None`` for ``flow``; else ``center`` (fractional inversion center), ``spin_degenerate`` and ``trims``: per TRIM ``index``, ``occupied``, ``minus``, ``delta``, ``residual``, ``energies`` (Hartree) and ``parities`` of the occupied and the lowest empty levels). Raises ``ValueError`` for a metal, an unknown method or a crystal without the symmetry, ``NotImplementedError`` for a collinear spin-polarized or a magnetic spinor crystal (neither is time-reversal invariant)."""
     def polarization(self, size: Sequence[int]) -> dict[str, Any]:
         """The Berry-phase polarization of an insulator from strings cut from the mesh ``size`` (``periodic::berry::polarization``), e/Bohr^2. Keys: ``size``, ``degeneracy``, ``quantum`` (``g``), ``phases`` ``(channels, 3)``, ``spread`` ``(3,)``, ``electronic``, ``ionic``, ``raw``, ``fractional`` (coordinates in quanta), ``vector``, ``electronic_vector``, ``ionic_vector`` (Cartesian), ``quanta`` ``(3, 3)`` rows, ``volume`` (Bohr^3), ``minimum_singular_value``, ``warnings`` (a message per direction whose string phases spread by more than ``polarization::SPREAD_WARNING``)."""
     def anomalous_hall(self, size: Sequence[int]) -> dict[str, Any]:
@@ -1040,15 +1067,11 @@ class PeriodicResult:
     def dos(self, energies_ha: NDArray[np.float64], *, width_ha: float, projected: bool = False) -> NDArray[np.float64]: ...
     def projectability(self, trials: NDArray[np.complex128]) -> dict: ...
 
-class WannierSetup:
-    def add_point(self, metadata_json: str, arrays: dict[str, NDArray]) -> None: ...
-    def add_points_at(self, points_frac: Sequence[Sequence[float]]) -> None: ...
-    def localize(self, *, max_iterations: int = 2000, tolerance: float = 1e-10, step: float = .5) -> WannierResult: ...
-
 class WannierResult:
     @property
     def n_spins(self) -> int: ...
-    def snapshot(self, *, spin: int = 0) -> dict: ...
+    def snapshot(self, *, spin: int = 0) -> dict:
+        """One spin channel: ``centers`` (Bohr), ``spreads`` (Bohr^2), the spread components, ``converged``, ``history``, ``unitary``, ``kpoints``, ``lattice_vectors``, ``hamiltonian_R`` (Hartree), ``labels``, ``trial_weights`` ``(n_functions, n_trials)`` (``|<w_n|g_m>|^2``), ``bands``, ``size``."""
     def downfold(
         self,
         functions: Sequence[tuple[int, tuple[int, int, int]]] | None = None,
@@ -1301,8 +1324,56 @@ def divide_state(state: NDArray[np.complex64] | NDArray[np.complex128], divisor:
     """``state / divisor`` by NumPy's complex quotient, in the state's own dtype (``numpy_rules::divide_by_real``)."""
 def real_pauli_terms(n_qubits: int, terms: Sequence[tuple[str, float, float]]) -> tuple[list[tuple[str, float]], float]:
     """The real terms of a Hermitian Pauli sum and the sum of their magnitudes; raises ``ValueError`` for a bad label, a non-finite or non-Hermitian coefficient (``term_lists::real_pauli_terms``)."""
-def qpe_memory(system: int, evaluation: int, dense: bool | None = None, precision: str = "float64") -> tuple[int, int, int, bool]:
-    """``(statevector, working, unitary, dense)`` bytes of a QPE simulation; ``dense=None`` is ``system <= 12`` (``dynamics::qpe_memory``)."""
+def qpe_memory_report(system: int, evaluation: int, available: int, dense: bool | None = None, precision: str = "float64") -> dict[str, Any]:
+    """The sizes of a QPE simulation against ``available`` bytes (``dynamics::qpe_memory``; ``dense=None`` is ``system <= 12``): ``statevector``, ``working``, ``unitary``, ``dense``, ``total`` (the bytes a run claims), ``qubits`` (``system + evaluation``), ``fraction`` (``total / available``; ``None`` with no available memory) and ``gibibytes`` (the available memory)."""
+def difference(a: float, b: float) -> float:
+    """``a - b`` (``derived::difference``)."""
+def at_most(value: float, limit: float) -> bool:
+    """``value <= limit`` (``derived::at_most``)."""
+def magnetic_numbers(l: int) -> list[int]:
+    """The magnetic quantum numbers ``-l, ..., l`` of a shell (``derived::magnetic_numbers``)."""
+def percent(fraction: float) -> float:
+    """``100 * fraction`` (``derived::percent``)."""
+def round_total(values: Sequence[float], digits: int) -> float:
+    """The sum of ``values`` rounded to ``digits`` decimals as Python's ``round`` does (``derived::round_total``)."""
+def spin_summary(alpha: int, beta: int) -> tuple[float, int, bool]:
+    """``(alpha - beta, |alpha - beta| + 1, alpha != beta)``: the moment, the multiplicity and whether the electrons are spin-polarized (``derived::spin_summary``)."""
+def spin_orbital_count(n_spatial: int) -> int:
+    """``2 * n_spatial``: the spin-orbitals of ``n_spatial`` spatial orbitals."""
+def register_qubits(mapping: str, modes: int) -> int:
+    """The qubits ``modes`` spin-orbitals need under ``mapping``: ``modes``, two fewer for ``parity_reduced``; another name raises (``Encoding::register_qubits``)."""
+def nao_ae_wall_radii(onset: float, width: float) -> tuple[float, float, float]:
+    """``(onset, width, onset + width)`` in Bohr of a confining wall of ``onset`` and ``width`` in Angstrom (``nao_ae::wall_radii``)."""
+def dunning_ladder(zeta: int, core_correlating: bool) -> dict[str, Any]:
+    """The shell ladder of ``cc-pVXZ`` (``cc-pCVXZ`` with ``core_correlating``) for ``zeta = X`` in 2..6: ``core`` (the contraction of the core shell, capped at the engine's maximum), ``valence`` (contractions), ``polarization`` and ``polarization_h`` (``(l, count)`` shells on heavy atoms and on hydrogen) and ``tight`` (``basis::ladders::dunning``)."""
+def human_bytes(bytes: int) -> str:
+    """``"512 B"``, ``"1.50 GiB"``: a byte count in the largest binary unit below 1024 (``derived::human_bytes``)."""
+def device_force_cost(rotations: int, circuits: int, bases: int, shots: int) -> tuple[int, int, int]:
+    """``(rdm_circuits, instances, total_shots)`` of a device force: ``1 + 2 rotations`` RDM circuits, ``circuits + rdm_circuits bases`` instances, ``instances shots`` shots (``execution::device_force_cost``)."""
+def pack_jobs(loads: Sequence[int], limit: int | None = None) -> list[tuple[list[int], int]]:
+    """The jobs of a submission: consecutive requests of ``loads[i]`` bases packed in order into jobs of at most ``limit`` bases (none, or zero, packs all in one), as ``(request indices, bases)`` (``execution::pack_jobs``)."""
+def gate_tally(gates: Sequence[tuple[str, int, int]], skipped: Sequence[str], entanglers: Sequence[str] | None = None) -> tuple[int, int, int]:
+    """``(entangling, single, total)`` counts of ``(name, qubits, count)`` gates: names in ``skipped`` are neither; with ``entanglers`` the entangling gates are those named, without any unskipped gate on two qubits (``execution::gate_tally``)."""
+def reversed_wire(n_qubits: int, k: int) -> int:
+    """The wire of qubit ``k`` in an SDK that numbers its wires from the other end, ``n_qubits - 1 - k``; an index past the register raises (``execution::reversed_wire``)."""
+def equal_chunks(total: int, parts: int) -> list[tuple[int, int]]:
+    """The ``[start, end)`` bounds of ``parts`` consecutive chunks of ``total // parts`` items each; no parts give none (``execution::equal_chunks``)."""
+def qpe_unitary(lo: float, hi: float) -> tuple[float, float]:
+    """``(shift, time)`` of the QPE unitary of the window ``[lo, hi]``: ``(-lo, -2 pi / (hi - lo))`` (``dynamics::qpe_unitary``)."""
+def qpe_layout(evaluation: int, system: int) -> tuple[int, list[int]]:
+    """``(width, system wires)`` of a QPE circuit: the evaluation register first, the system register on the wires after it (``dynamics::qpe_layout``)."""
+def state_qubits(amplitudes: int) -> int:
+    """The qubits of a state vector of ``amplitudes`` entries, ``n`` for ``2^n``; another length raises (``dynamics::state_qubits``)."""
+def sign_phase(sign: float) -> float:
+    """The global phase of a Pauli string of real sign ``sign``: ``pi`` for a negative one, else zero (``dynamics::sign_phase``)."""
+def fractional_coordinates(cell: NDArray[np.float64], positions: NDArray[np.float64], pbc: Sequence[bool], wrap: bool = True) -> NDArray[np.float64]:
+    """The fractional coordinates of ``positions`` in ``cell`` (rows, the same length unit); the periodic ones wrapped into ``[0, 1)`` with ``wrap``. A cell with two zero vectors raises (``geometry::fractional_coordinates``)."""
+def repeat_cell(numbers: Sequence[int], positions: NDArray[np.float64], cell: NDArray[np.float64], moments: Sequence[float], repeats: Sequence[int]) -> tuple[list[int], NDArray[np.float64], NDArray[np.float64], list[float]]:
+    """``(numbers, positions, cell, moments)`` of the supercell of ``repeats`` cells along the cell vectors, the first repeat slowest (``geometry::repeat_cell``)."""
+def neighbor_vectors(cell: NDArray[np.float64], pbc: Sequence[bool], positions: NDArray[np.float64], cutoff: float) -> list[NDArray[np.float64]]:
+    """For each atom the ``(m, 3)`` vectors to its neighbors closer than ``cutoff``, periodic images included, ordered by neighbor and then lattice shift (``geometry::neighbor_vectors``)."""
+def ase_band_path(cell: NDArray[np.float64], pbc: Sequence[bool], npoints: int, path: str | None = None, points: Sequence[tuple[str, Sequence[float]]] | None = None) -> dict[str, Any]:
+    """The band path (the lattice's default for ``None``) or the explicit ``points`` (``(label, fractional)``; no lattice convention is read) sampled with ``npoints`` fractional points shared by segment length: ``kpoints`` ``(n, 3)``, ``distances``, ``vertex_distances``, ``path`` (the labels joined for explicit points), ``labels``, ``special_points`` (every named point of the lattice, or the labeled explicit ones) and ``convention`` (``kpath::interpolate``). Named points on a lattice without a convention raise."""
 def fourier_spectrum(signal: NDArray[np.complex128], dt: float, *, elastic: float = 0.0, window: str = "hann") -> tuple[NDArray[np.float64], NDArray[np.complex128]]:
     """``(energies, amplitudes)``: ``dt fftshift(fft(w (C - elastic)))`` at ``2 pi fftshift(fftfreq(N, dt))``, ``w`` the Hann window or ones (``dynamics::fourier_spectrum``)."""
 def givens_decomposition(unitary: NDArray[np.float64], tol: float = 1e-12) -> tuple[list[tuple[int, float]], NDArray[np.float64]]: ...

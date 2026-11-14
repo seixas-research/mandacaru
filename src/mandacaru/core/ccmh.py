@@ -47,10 +47,6 @@ DEFAULT_SHELLS = 3
 #: ``|m|`` of the integer reciprocal-lattice triples enumerated.
 GVECTOR_RANGE = 3
 
-#: Largest relative spread of ``S(k)/k^2`` across the fitted shells that still
-#: counts as "inside the quadratic regime".
-QUADRATIC_REGIME_SPREAD = 0.5
-
 
 @dataclass
 class StructureFactor:
@@ -94,6 +90,8 @@ class CCMHCorrection:
     correction: float
     limit: float
     rpa_limit: float
+    rpa_correction: float
+    reliable: bool
     plasma_frequency: float
     density: float
     volume: float
@@ -104,26 +102,16 @@ class CCMHCorrection:
     structure: StructureFactor | None = field(default=None, repr=False)
 
     @property
-    def reliable(self) -> bool:
-        """Whether ``S(k)/k^2`` was flat enough for the limit to mean anything."""
-        return self.quadratic_spread <= QUADRATIC_REGIME_SPREAD
-
-    @property
     def correction_per_cell(self) -> float:
         """Hartree to add to a per-primitive-cell energy."""
-        return self.correction / self.n_cells
+        return _native.ratio(self.correction, self.n_cells)
 
     @property
     def corrected_energy_per_cell(self) -> float | None:
         """The finite-size-corrected energy per primitive cell, in Hartree."""
         if self.energy_per_cell is None:
             return None
-        return self.energy_per_cell + self.correction_per_cell
-
-    @property
-    def rpa_correction(self) -> float:
-        r""":math:`\pi / (\Omega \omega_p)` -- what the RPA limit would give."""
-        return 6.283185307179586 * self.rpa_limit / self.volume
+        return _native.total([self.energy_per_cell, self.correction_per_cell])
 
     def summary(self) -> str:
         """One line, in eV."""
@@ -194,7 +182,7 @@ def ccmh_correction(structure: StructureFactor, *, volume, n_cells: int = 1,
         structure.n_electrons,
     )
     spread = raw["quadratic_spread"]
-    if spread > QUADRATIC_REGIME_SPREAD:
+    if not raw["reliable"]:
         import warnings
 
         warnings.warn(
@@ -210,6 +198,8 @@ def ccmh_correction(structure: StructureFactor, *, volume, n_cells: int = 1,
         limit=raw["limit"],
         quadratic_spread=spread,
         rpa_limit=raw["rpa_limit"],
+        rpa_correction=raw["rpa_correction"],
+        reliable=raw["reliable"],
         plasma_frequency=raw["plasma_frequency"],
         density=raw["density"],
         volume=raw["volume"],

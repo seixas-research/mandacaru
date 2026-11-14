@@ -102,6 +102,29 @@ basis: the bond derivative of the H2 chain is -5.155, -5.033, -5.321, -5.153, -5
 about 0.3 eV/A at 0.25 A and to about 0.02 eV/A below 0.1 A. `vasqa` and `valsqa` need `seed=`
 (each displaced energy is a new search), and a circuit run (shots, a device) raises.
 
+**A force with an active space that splits a degenerate orbital group is refused.** Translation
+symmetry makes exactly degenerate orbitals generic on a supercell (the `+-k` pairs of a mesh), and
+inside such a group no deterministic frame fixes the orbitals on a periodic grid: the eigensolver
+returns whichever combination the round-off of that geometry gives. An active space that freezes or
+keeps some members of a group and deletes the others (the orbitals of a group within 1e-8 in
+orbital energy, or in natural occupation for an unrestricted or MP2-ranked selection) therefore has
+an energy that depends on that choice, and its finite differences are not a derivative: the force
+of such a LiH chain did not sum to zero, and its components changed with the step. Before any
+displaced calculation, `get_forces()` raises `NotImplementedError` naming the group (its label, its
+value and which of its orbitals are frozen, active and deleted) and the remedy: choose an active
+space that keeps each group whole. The energy run still works and says so in the run log, in a
+`warning` line of the `[ACTIVE SPACE]` block ([run log](../reference/run_log.md)). A molecule keeps
+its deterministic cut ([Degenerate orbitals](#degenerate-orbitals)).
+
+The guard is structural: it compares the partition of the orbitals with the degenerate groups.
+It does not test that a truncated ansatz keeps the group's symmetry, so a group kept whole whose
+members an ansatz treats unequally (an operator sequence that picks one member first) is not
+caught. An unrestricted reference has one exact zero-occupation cluster of empty natural orbitals,
+so an energy-selected active space that truncates its virtual orbitals is refused for forces and
+warned for energies; an MP2 selection resolves the virtual orbitals by their MP2 occupations
+instead. The tolerance is the absolute 1e-8, so a tail of near-zero MP2 occupations can be flagged
+as a group when the selection cuts among them.
+
 **Stress** raises `NotImplementedError`: a strain moves the grid's wavevectors against the band
 limit, so the set of plane waves kept changes and the energy jumps (6 to 30 meV per cell in the
 second difference under a 1 percent uniaxial strain of the H2 chain). Crystal stress comes from
@@ -232,23 +255,26 @@ of fractional points (each optionally a `(label, point)` pair) or `None` for the
 path. The lattice class is read from the Gram matrix of the periodic cell vectors alone, so the
 vacuum axes of a slab or a chain play no part. The labelled points follow Setyawan and Curtarolo
 (Comput. Mater. Sci. 49, 299 (2010)) for the cubic, fcc, bcc, tetragonal, orthorhombic and
-hexagonal lattices, in the cell orientations of that paper (a tetragonal cell lists its two equal
-lengths first and an orthorhombic cell its lengths in increasing order, a < b < c; any other order
-raises, so a label always means the paper's point), and the plain extensions below for one and two
-dimensions (fractional coordinates of the periodic axes):
+hexagonal and rhombohedral lattices, in the cell orientations of that paper (a tetragonal cell
+lists its two equal lengths first and an orthorhombic cell its lengths in increasing order,
+a < b < c; any other order raises, so a label always means the paper's point), and ASE's for one
+and two dimensions (fractional coordinates of the periodic axes). `band_structure(path, npoints)`
+samples the same path, so its k-points, labels and named points are those of ASE's
+`cell.bandpath` on every lattice listed here:
 
 | Lattice | Points | Default path |
 | --- | --- | --- |
 | chain | G 0, X 1/2 | `GX` |
-| square | G, X (1/2, 0), M (1/2, 1/2) | `GXMG` |
-| rectangular | G, X (1/2, 0), Y (0, 1/2), S (1/2, 1/2) | `GXSYG` |
-| hexagonal plane (gamma 120 or 60) | G, M (1/2, 0), K (1/3, +-1/3) | `GMKG` |
+| square | G, X (0, 1/2), M (1/2, 1/2) | `MGXM` |
+| rectangular | G, X (1/2, 0), Y (0, 1/2), S (1/2, 1/2) | `GXSYGS` |
+| hexagonal plane, gamma 120 | G, M (1/2, 0), K (1/3, 1/3) | `GMKG` |
+| hexagonal plane, gamma 60 | G, M (0, -1/2), K (1/3, -1/3) | `GMKG` |
 | cubic | G, X (0, 1/2, 0), M (1/2, 1/2, 0), R (1/2, 1/2, 1/2) | `GXMGRX,MR` |
-| fcc, bcc, tetragonal, orthorhombic, hexagonal | the tables of the paper | `periodic/kpath/convention.rs` |
+| fcc, bcc, tetragonal, orthorhombic, hexagonal, rhombohedral | the tables of the paper | `periodic/kpath/convention.rs` |
 
-Any other lattice (oblique, centered rectangular, rhombohedral, monoclinic, triclinic, a cell in
-another orientation) raises `ValueError` naming its lengths and cosines: give the path as
-explicit points. Every named point is checked to lie on the boundary of the first Brillouin zone,
+Any other lattice (oblique, centered rectangular, monoclinic, triclinic, a cell in another
+orientation) raises `ValueError` naming its lengths and cosines: give the path as explicit points
+(`band_structure` takes them too). Every named point is checked to lie on the boundary of the first Brillouin zone,
 and those of the fcc and bcc lattices against their known Cartesian positions
 (`crates/mandacaru-core/tests/kpath.rs`).
 

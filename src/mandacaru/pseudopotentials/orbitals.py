@@ -143,7 +143,7 @@ class PseudoAtomicOrbital(_RadialTabulated):
                          channel.pseudo_waves[index] if radial is None
                          else radial, l, m, center, units, real=real)
         self.symbol = pseudopotential.symbol
-        self.n = int(channel.n) + index
+        self.n = int(_native.total([channel.n, index]))
         self.eigenvalue = float(channel.reference_energies[index]
                                 if eigenvalue is None else eigenvalue)
 
@@ -251,7 +251,7 @@ class PseudoShell(_RadialTabulated):
 def _shells(tables, center, units: str, real: bool) -> list[PseudoShell]:
     """Every ``m`` component of every radial table, in table order."""
     return [PseudoShell(table, m, center=center, units=units, real=real)
-            for table in tables for m in range(-table.l, table.l + 1)]
+            for table in tables for m in _native.magnetic_numbers(table.l)]
 
 
 def pseudo_basis(symbols, positions, potentials, units: str = "angstrom", options=None,

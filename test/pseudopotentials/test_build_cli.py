@@ -61,11 +61,11 @@ def test_it_writes_a_loadable_dataset(tmp_path, capsys, pp, family):
 
 def test_a_failed_element_is_reported_and_sets_the_exit_code(tmp_path, capsys,
                                                              monkeypatch):
-    from mandacaru.pseudopotentials import build_cli
+    from mandacaru import _native
 
-    def broken(family, symbol, options):
+    def broken(context, symbol, options, path, **keywords):
         raise RuntimeError("no bound state")
-    monkeypatch.setattr(build_cli, "_generate", broken)
+    monkeypatch.setattr(_native, "paw_build", broken)
     code = main(["--pp", "PAW", "--element", "H", "--output", str(tmp_path)])
     out = capsys.readouterr().out
     assert code == 1
@@ -73,22 +73,20 @@ def test_a_failed_element_is_reported_and_sets_the_exit_code(tmp_path, capsys,
     assert "0 of 1 dataset(s) written, 1 failed" in out
 
 
-def test_a_generator_warning_reaches_the_report(tmp_path, capsys, monkeypatch):
-    import warnings
+def test_a_generator_note_reaches_the_report(tmp_path, capsys, monkeypatch):
+    """The generator's observations (``Generated::notes``) are listed as warnings."""
+    from mandacaru import _native
+    real = _native.paw_build
 
-    from mandacaru.pseudopotentials import build_cli
-    real = build_cli._generate
-
-    def noisy(family, symbol, options):
-        warnings.warn("cutoff beyond the trustworthy range")
-        warnings.warn("overflow", RuntimeWarning)
-        return real(family, symbol, options)
-    monkeypatch.setattr(build_cli, "_generate", noisy)
+    def noted(*arguments, **keywords):
+        answer = real(*arguments, **keywords)
+        answer["notes"] = [*answer["notes"], "cutoff beyond the trustworthy range"]
+        return answer
+    monkeypatch.setattr(_native, "paw_build", noted)
     code = main(["--pp", "PAW", "--element", "H", "--output", str(tmp_path)])
     out = capsys.readouterr().out
     assert code == 0, out
     assert "warning: cutoff beyond the trustworthy range" in out
-    assert "overflow" not in out
 
 
 def test_install_needs_the_library_variable(monkeypatch, capsys):
@@ -140,25 +138,39 @@ def test_a_worker_shares_the_cores_out():
 
 
 
-def test_a_file_that_does_not_reproduce_its_dataset_is_not_written(
+def test_a_file_that_does_not_reproduce_its_dataset_is_reported_and_not_written(
         tmp_path, capsys, monkeypatch):
-    """The file is read back before it is released: when what comes back
-    (here a projector 1 % off) does not reproduce the generated levels, the
-    build fails without leaving a file (or its staged copy) behind."""
-    from mandacaru.pseudopotentials import record
+    """The file is read back in Rust before it is released (``paw::generate::build``; its
+    removal on failure is gated in ``crates/mandacaru-core/tests/paw_generate_build.rs``): a
+    read-back that moved the levels comes back as data and is reported as a failure."""
+    from mandacaru import _native
 
-    read = record.read_dataset
-
-    def damaged(path, **options):
-        pp = read(path, **options)
-        pp.projectors[0][0] = 1.01 * pp.projectors[0][0]
-        return pp
-    monkeypatch.setattr(record, "read_dataset", damaged)
+    def moved(context, symbol, options, path, **keywords):
+        return {"kind": "reload", "refusal": "the file read back does not reproduce the "
+                "dataset: l=0 levels moved 1.0e-02 Ha (tolerance 1e-05 Ha); not written"}
+    monkeypatch.setattr(_native, "paw_build", moved)
     code = main(["--pp", "PAW", "--element", "H", "--output", str(tmp_path)])
     out = capsys.readouterr().out
     assert code == 1, out
-    assert "does not reproduce the dataset" in out
+    assert "H  FAILED" in out and "does not reproduce the dataset" in out
     assert not list((tmp_path / "paw-lcao").iterdir())
+
+
+def test_the_build_writes_the_record_rust_generated(tmp_path, capsys):
+    """Nothing crosses the Python view on the way to the file: a cored element's file carries
+    its core states (dataset format 3), which the Python view does not model."""
+    from mandacaru import _native
+    from mandacaru.pseudopotentials.native_context import context
+
+    code = main(["--pp", "PAW", "--element", "Li", "--output", str(tmp_path)])
+    out = capsys.readouterr().out
+    assert code == 0, out
+    payload, tables = _native.paw_record_read(context(), str(tmp_path / "paw-lcao" / "Li.parquet"))
+    import json
+    meta = json.loads(payload)
+    assert meta["version"] == 3
+    assert [(s["n"], s["l"]) for s in meta["core_states"]] == [(1, 0)]
+    assert "core_wave_n1_l0" in tables
 
 
 def test_the_report_is_of_the_file_read_back(tmp_path, capsys):

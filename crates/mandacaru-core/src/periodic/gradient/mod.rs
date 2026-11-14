@@ -90,7 +90,7 @@ pub mod spinor;
 pub mod state;
 
 use super::{hybrid_gradient, invalid, point_group::PointGroup};
-use crate::{models, quantum::C64, Error, Result};
+use crate::{models, product, quantum::C64, Context, Error, Level, Result};
 use nalgebra::DMatrix;
 
 pub use spin_orbit::SpinOrbit;
@@ -168,11 +168,21 @@ pub struct Dense {
 ///
 /// Derivative methods return the derivative of the named quantity with respect to
 /// `tau_atom^axis` (the energy derivative, never a force).
-pub trait Derivatives {
+///
+/// The engine produces the per-k-point derivative data of [`pulay::contract`] and
+/// [`exchange::contract`] on the k-point lanes of the provider's [`Derivatives::context`], so a
+/// provider and its fields are `Sync`, and a per-k-point method may run for different k-points
+/// at once (on different threads).
+pub trait Derivatives: Sync {
     /// The potentials and moments of the output density (opaque to the engine).
-    type Fields;
+    type Fields: Sync;
 
     fn layout(&self) -> &Layout;
+    /// The calculation context whose `kpts` lanes the per-k-point work runs on; `None` (the
+    /// default) runs it on the calling thread. Either way every result is the same.
+    fn context(&self) -> Option<&Context> {
+        None
+    }
     /// The channel blocks `B_a` (`p x p`, position independent).
     fn blocks(&self) -> &[Matrix];
     /// `q` with `S = S_grid + C q C^+`.
@@ -506,4 +516,43 @@ pub fn contract<D: Derivatives>(d: &D, frozen: &Frozen<D::Fields>) -> Result<Bre
         breakdown.symmetrize(group);
     }
     Ok(breakdown)
+}
+
+/// The k-points `0..nk` in windows of the `kpts` lanes of `ctx`: `produce(k)` runs for the
+/// points of a window at once (on the calling thread without a context), then `consume(k, data)`
+/// for each of them in k order, on the calling thread. A force or stress term produces the
+/// derivative data of one point (its expensive part) and consumes it in the order of the serial
+/// loop, so the sums are the same, bit for bit, on every layout; at most one window of data is
+/// held. `per_lane` is what one point's data holds: lanes that do not fit in the free budget are
+/// refused, naming the largest `kpts` that does.
+pub(crate) fn kpoint_windows<T: Send>(
+    ctx: Option<&Context>,
+    nk: usize,
+    per_lane: usize,
+    produce: impl Fn(usize) -> Result<T> + Sync,
+    mut consume: impl FnMut(usize, T) -> Result<()>,
+) -> Result<()> {
+    let lanes = ctx.map_or(1, |ctx| ctx.lanes(Level::Kpts, nk)).max(1);
+    if let Some(ctx) = ctx {
+        ctx.check_lanes(Level::Kpts, lanes, per_lane)?;
+    }
+    let mut units = vec![(); lanes];
+    for first in (0..nk).step_by(lanes) {
+        let count = lanes.min(nk - first);
+        let window = match ctx {
+            Some(ctx) => ctx.map_tasks(Level::Kpts, &mut units[..count], count, |_, i| {
+                produce(first + i)
+            })?,
+            None => (first..first + count).map(&produce).collect::<Result<Vec<_>>>()?,
+        };
+        for (i, data) in window.into_iter().enumerate() {
+            consume(first + i, data)?;
+        }
+    }
+    Ok(())
+}
+
+/// The bytes of `count` complex `rows x columns` matrices, for a [`kpoint_windows`] estimate.
+pub(crate) fn matrix_bytes(count: usize, rows: usize, columns: usize) -> Result<usize> {
+    product(&[count, rows, columns, 16])
 }

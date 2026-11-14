@@ -6,7 +6,9 @@
 use mandacaru_core::{
     periodic::{
         gradient::{Layout, Matrix, SpinOrbit, Term},
-        stress_terms::{electrostatic::Hartree, xc, Dense, Strain, Tensor},
+        stress_terms::{
+            electrostatic::Hartree, xc, Dense, Direction, Directions, SpinMatrices, Strain, Tensor,
+        },
     },
     quantum::C64,
     Result,
@@ -30,14 +32,20 @@ pub struct Altered<'a, S: Strain> {
     pub wrong: Wrong,
 }
 
-fn alpha_only(t: Tensor<Matrix>) -> Tensor<Matrix> {
-    t.map(|row| {
-        row.map(|mut m| {
-            let half = m.nrows() / 2;
-            m.view_mut((half, half), (half, half)).fill(C64::default());
-            m
+/// The same densities with the beta block zeroed: the contraction sees the alpha block only.
+fn alpha_only(m: &[SpinMatrices]) -> Vec<SpinMatrices> {
+    let cut = |matrix: &Matrix| {
+        let mut m = matrix.clone();
+        let half = m.nrows() / 2;
+        m.view_mut((half, half), (half, half)).fill(C64::default());
+        m
+    };
+    m.iter()
+        .map(|m| SpinMatrices {
+            density: cut(&m.density),
+            weighted: cut(&m.weighted),
         })
-    })
+        .collect()
 }
 
 impl<S: Strain> Strain for Altered<'_, S> {
@@ -45,6 +53,12 @@ impl<S: Strain> Strain for Altered<'_, S> {
 
     fn layout(&self) -> &Layout {
         self.inner.layout()
+    }
+    fn directions(&self) -> &Directions {
+        self.inner.directions()
+    }
+    fn lane_bytes(&self, terms: usize) -> Result<usize> {
+        self.inner.lane_bytes(terms)
     }
     fn blocks(&self) -> &[Matrix] {
         self.inner.blocks()
@@ -61,22 +75,33 @@ impl<S: Strain> Strain for Altered<'_, S> {
     fn projection(&self, k: usize) -> Result<Matrix> {
         self.inner.projection(k)
     }
-    fn projection_strain(&self, k: usize) -> Result<Tensor<Matrix>> {
-        self.inner.projection_strain(k)
+    fn projection_strain(&self, k: usize, directions: &[Direction]) -> Result<Vec<Matrix>> {
+        self.inner.projection_strain(k, directions)
     }
     fn matrix_strain(
         &self,
-        spin: usize,
         k: usize,
-        term: Term,
         fields: &S::Fields,
-    ) -> Result<Tensor<Matrix>> {
-        let t = self.inner.matrix_strain(spin, k, term, fields)?;
-        Ok(if self.wrong == Wrong::AlphaOnly(term) {
-            alpha_only(t)
-        } else {
-            t
-        })
+        matrices: &[SpinMatrices],
+        terms: &[Term],
+        directions: &[Direction],
+    ) -> Result<Vec<Vec<Vec<f64>>>> {
+        let mut out = self.inner.matrix_strain(k, fields, matrices, terms, directions)?;
+        if let Wrong::AlphaOnly(term) = self.wrong {
+            if let Some(at) = terms.iter().position(|t| *t == term) {
+                let damaged = self.inner.matrix_strain(
+                    k,
+                    fields,
+                    &alpha_only(matrices),
+                    &[term],
+                    directions,
+                )?;
+                for (spin, per_term) in damaged.into_iter().enumerate() {
+                    out[spin][at] = per_term.into_iter().next().expect("one term");
+                }
+            }
+        }
+        Ok(out)
     }
     fn moments<'f>(&self, fields: &'f S::Fields) -> &'f [C64] {
         self.inner.moments(fields)
@@ -99,11 +124,11 @@ impl<S: Strain> Strain for Altered<'_, S> {
     fn spin_orbit_projection(&self, k: usize) -> Result<Matrix> {
         self.inner.spin_orbit_projection(k)
     }
-    fn spin_orbit_strain(&self, k: usize) -> Result<Tensor<Matrix>> {
-        let t = self.inner.spin_orbit_strain(k)?;
+    fn spin_orbit_strain(&self, k: usize, directions: &[Direction]) -> Result<Vec<Matrix>> {
+        let t = self.inner.spin_orbit_strain(k, directions)?;
         Ok(match self.wrong {
-            Wrong::NoSpinOrbit => t.map(|row| row.map(|m| Matrix::zeros(m.nrows(), m.ncols()))),
-            Wrong::SpinOrbitSign => t.map(|row| row.map(|m| m * C64::new(-1., 0.))),
+            Wrong::NoSpinOrbit => t.into_iter().map(|m| Matrix::zeros(m.nrows(), m.ncols())).collect(),
+            Wrong::SpinOrbitSign => t.into_iter().map(|m| m * C64::new(-1., 0.)).collect(),
             _ => t,
         })
     }

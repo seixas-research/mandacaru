@@ -37,7 +37,8 @@ def diagnose(pp, *, levels: bool = False) -> dict:
     ``wrong_phases`` (the phases outside their tolerances), ``unprojected_missing``
     (``{l: offset}``, Hartree, of the bound all-electron levels a channel without projectors
     does not reproduce) and ``defects`` (what a ``ghosts="flag"`` generation records).  With
-    ``levels``, ``levels`` holds the lowest levels the ghost test reads for each channel.
+    ``levels``, ``levels`` holds the lowest levels the ghost test reads for each channel and
+    ``level_errors`` the lowest of them minus the channel's first reference energy.
     """
     answer = _native.paw_diagnose(context(), *record_of(pp), levels=bool(levels))
     if "unevaluated" in answer:
@@ -137,7 +138,7 @@ def report_paw(pp) -> str:
                      + ", ".join(f"{e:+.4f}" for e in channel.reference_energies)
                      + f"  q={[[round(float(v), 5) for v in row] for row in channel.overlap_correction]}"
                      f"  duality={channel.duality_error:.1e}"
-                     f"  eps err={found['levels'][l][0] - channel.reference_energies[0]:+.1e}"
+                     f"  eps err={found['level_errors'][l]:+.1e}"
                      f"  phase={near:.3f}/{far:.3f} rad")
         lines.append("        D^ion = " + str([[round(float(v), 5) for v in row]
                                              for row in channel.coupling]))

@@ -77,6 +77,21 @@ class TestPauliSum:
 
 # --- Fermion operator algebra ---
 
+class TestShiftedOperator:
+    def test_the_constant_joins_the_identity_term_and_the_others_stay_in_order(self):
+        h = PauliSum({"ZI": 0.5, "XX": -0.25})
+        shifted = h.shifted(-1.5)
+        assert list(shifted.terms) == ["ZI", "XX", "II"]
+        assert shifted.terms["II"] == -1.5 and shifted.num_qubits == 2
+        again = shifted.shifted(1.5)
+        assert again.terms["II"] == 0.0
+        assert np.allclose(shifted.to_matrix(), h.to_matrix() - 1.5 * np.eye(4))
+
+    def test_it_equals_adding_the_scaled_identity(self):
+        h = PauliSum({"ZI": 0.5, "II": 2.0})
+        assert h.shifted(0.25).terms == (h + PauliSum.identity(2) * 0.25).terms
+
+
 class TestMatrixForms:
     """The sparse matrix is built by flip mask; the dense one is the oracle."""
 
@@ -598,3 +613,13 @@ class TestEncodingsAgainstTheFockMatrix:
             assert np.allclose(np.linalg.eigvalsh(_herm(mapped.to_matrix())),
                                np.linalg.eigvalsh(_herm(reference)),
                                atol=1e-10)
+
+
+@pytest.mark.parametrize("mapping", ["jordan_wigner", "parity", "bravyi_kitaev", "parity_reduced"])
+def test_the_register_width_is_the_modes_less_two_for_the_reduced_parity_encoding(mapping):
+    for spatial in range(1, 20):
+        modes = _native.spin_orbital_count(spatial)
+        assert modes == 2 * spatial
+        assert _native.register_qubits(mapping, modes) == modes - (2 if mapping == "parity_reduced" else 0)
+    with pytest.raises(ValueError, match="unknown mapping"):
+        _native.register_qubits("ternary", 4)

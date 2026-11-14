@@ -447,7 +447,7 @@ pub struct PyProblem {
 }
 #[pymethods]
 impl PyProblem {
-    #[pyo3(signature=(*,max_steps=200,max_length=20,move_weights=[1.0;3],temperatures=[0.003674932217565499,0.00003674932217565499],length_penalty=0.0,proposal_temperature=0.1,proposal="gradient",warm_start=true,replace_start="zero",screen_insertions=0,record=false,seed=0,optimizer="BFGS",max_iterations=300,max_evaluations=5000,tolerance=Some(1e-9),track_best=true,initial_indices=None,initial_parameters=None,proposal_model=None,transfer_steps=None))]
+    #[pyo3(signature=(*,max_steps=200,max_length=20,move_weights=[1.0;3],temperatures=[0.003674932217565499,0.00003674932217565499],length_penalty=0.0,proposal_temperature=0.1,proposal="gradient",warm_start=true,replace_start="zero",screen_insertions=0,record=false,seed=0,optimizer="BFGS",max_iterations=300,max_evaluations=5000,tolerance=Some(1e-9),track_best=true,initial_indices=None,initial_parameters=None,proposal_model=None,transfer_steps=None,replicas=1,replica_spacing=2.0))]
     fn search<'py>(
         &self,
         py: Python<'py>,
@@ -472,6 +472,8 @@ impl PyProblem {
         initial_parameters: Option<Vec<f64>>,
         proposal_model: Option<&str>,
         transfer_steps: Option<usize>,
+        replicas: usize,
+        replica_spacing: f64,
     ) -> PyResult<Bound<'py, PyDict>> {
         use mandacaru_core::quantum::search::driver::Options;
         if self.inner.taper.is_some() {
@@ -509,6 +511,8 @@ impl PyProblem {
                 track_best,
                 ..Default::default()
             },
+            replicas,
+            replica_spacing,
         };
         let mut result = py
             .detach(|| {
@@ -532,7 +536,12 @@ impl PyProblem {
             "best_energy_ha":result.best_energy,"best_energy_indices":result.best_energy_indices,"best_energy_parameters":result.best_energy_parameters,
             "final_energy_ha":result.final_energy,"final_indices":result.final_indices,
             "final_parameters":result.final_parameters,"num_architectures":result.num_architectures,"num_screenings":result.num_screenings,
-            "optimizer_failures":result.failures,"seed":seed,"completed":true});
+            "optimizer_failures":result.failures,"seed":seed,"completed":true,
+            "num_importance_evaluations":result.num_importance_evaluations,"num_gradient_evaluations":result.num_gradient_evaluations});
+        if replicas > 1 {
+            details["swap_acceptance"] = serde_json::json!(result.swap_acceptance);
+            details["swaps"] = serde_json::Value::Array(std::mem::take(&mut result.swaps));
+        }
         details["steps"] = serde_json::Value::Array(std::mem::take(&mut result.steps));
         details["records"] = serde_json::Value::Array(std::mem::take(&mut result.records));
         let details = serde_json::to_string(&details)

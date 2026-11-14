@@ -358,35 +358,39 @@ fn spectral_dict<'py>(
     let (removal_edge, addition_edge) = spectral.edges(1e-8);
     out.set_item("removal_edge_ha", removal_edge)?;
     out.set_item("addition_edge_ha", addition_edge)?;
+    out.set_item("chemical_potential_ha", spectral.chemical_potential(1e-8))?;
+    out.set_item("gap_ha", spectral.gap(1e-8))?;
     Ok(out)
 }
 
-/// Linear-tetrahedron density of states on the full Gamma-centered `shape` mesh.
+/// Linear-tetrahedron density of states on the full Gamma-centered `shape` mesh of the crystal
+/// whose lattice vectors are the rows of `cell` (any length unit; the mesh needs the reciprocal
+/// vectors, `inverse(cell)` as columns, without `2 pi`).
 /// `eigenvalues`: `(spins, nk, bands)` at `kpoints` (any order); `projections`: optional
 /// `(spins, nk, bands, channels)`. Returns `{"dos", "integrated"}` and, with projections,
 /// `"projected"` `(axis, channels)`, each summed over spins and times `degeneracy`.
 #[pyfunction]
-#[pyo3(signature=(context, shape, reciprocal, kpoints, eigenvalues, axis, *, projections=None, degeneracy=1.0))]
+#[pyo3(signature=(context, shape, cell, kpoints, eigenvalues, axis, *, projections=None, degeneracy=1.0))]
 #[allow(clippy::too_many_arguments)]
 pub fn tetrahedron_dos<'py>(
     py: Python<'py>,
     context: &PyContext,
     shape: [usize; 3],
-    reciprocal: PyReadonlyArray2<'py, f64>,
+    cell: PyReadonlyArray2<'py, f64>,
     kpoints: Vec<[f64; 3]>,
     eigenvalues: PyReadonlyArray3<'py, f64>,
     axis: PyReadonlyArray1<'py, f64>,
     projections: Option<PyReadonlyArray4<'py, f64>>,
     degeneracy: f64,
 ) -> PyResult<Bound<'py, PyDict>> {
-    if reciprocal.shape() != [3, 3] {
+    if cell.shape() != [3, 3] {
         return Err(PyValueError::new_err(
-            "reciprocal must be 3 x 3 (lattice vectors as rows)",
+            "cell must be 3 x 3 (lattice vectors as rows)",
         ));
     }
     let [spins, nk, bands]: [usize; 3] = eigenvalues.shape().try_into().unwrap();
     let ctx = &context.inner;
-    let (b, _b) = copy(ctx, &reciprocal)?;
+    let (rows, _rows) = copy(ctx, &cell)?;
     let (levels, _levels) = copy(ctx, &eigenvalues)?;
     let (x, _x) = copy(ctx, &axis)?;
     let projected = match &projections {
@@ -401,8 +405,10 @@ pub fn tetrahedron_dos<'py>(
         }
         None => None,
     };
-    // Rows of `reciprocal` are the reciprocal vectors; the mesh takes them as columns.
-    let lattice = Matrix3::from_row_slice(&b).transpose();
+    // The reciprocal vectors (without `2 pi`) are the columns of the inverse of the cell rows.
+    let lattice = Matrix3::from_row_slice(&rows)
+        .try_inverse()
+        .ok_or_else(|| PyValueError::new_err("the cell is singular"))?;
     let result = py
         .detach(|| {
             TetrahedronMesh::new(shape, &lattice)?.spin_summed(

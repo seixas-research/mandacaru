@@ -116,28 +116,6 @@ pub fn total(values: &[f64]) -> f64 {
     python_sum(values)
 }
 
-/// The fractional coordinates of a Gamma-centered `shape` mesh, `[i / n0, j / n1, k / n2]` with `k`
-/// running fastest (the order of the Wannier setup's points). Each entry is the correctly rounded
-/// quotient of two exactly representable integers, as Python's `i / n` is.
-pub fn mesh_fractions(shape: [usize; 3]) -> Result<Vec<[f64; 3]>> {
-    if shape.iter().any(|&n| n == 0) {
-        return Err(Error::Invalid("every mesh dimension must be positive".into()));
-    }
-    let mut points = Vec::with_capacity(shape[0] * shape[1] * shape[2]);
-    for i in 0..shape[0] {
-        for j in 0..shape[1] {
-            for k in 0..shape[2] {
-                points.push([
-                    i as f64 / shape[0] as f64,
-                    j as f64 / shape[1] as f64,
-                    k as f64 / shape[2] as f64,
-                ]);
-            }
-        }
-    }
-    Ok(points)
-}
-
 /// The Euclidean norm of `vector`.
 pub fn norm(vector: &[f64]) -> f64 {
     vector.iter().map(|v| v * v).sum::<f64>().sqrt()
@@ -405,4 +383,55 @@ pub fn python_sum(values: &[f64]) -> f64 {
         total += compensation;
     }
     total
+}
+
+/// `a - b`: the difference of two scalars in one unit (an echo response, a reading error).
+pub fn difference(a: f64, b: f64) -> f64 {
+    a - b
+}
+
+/// `100 fraction`: a fraction as a percentage.
+pub fn percent(fraction: f64) -> f64 {
+    100.0 * fraction
+}
+
+/// `bytes / 2^30`: a byte count in GiB.
+pub fn gibibytes(bytes: u128) -> f64 {
+    bytes as f64 / 1_073_741_824.0
+}
+
+/// A byte count in the largest binary unit that keeps it below 1024: `"512 B"`, `"1.50 GiB"`.
+pub fn human_bytes(bytes: u128) -> String {
+    let units = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
+    let mut value = bytes as f64;
+    for (i, unit) in units.iter().enumerate() {
+        if value < 1024. || i == units.len() - 1 {
+            return if i == 0 { format!("{} B", value as u128) } else { format!("{value:.2} {unit}") };
+        }
+        value /= 1024.;
+    }
+    unreachable!("the last unit returns")
+}
+
+/// The sum of `values` ([`python_sum`]) rounded to `digits` decimals as Python's `round` does: the
+/// correctly rounded decimal, ties to even on the exact binary value.
+pub fn round_total(values: &[f64], digits: usize) -> f64 {
+    format!("{:.digits$}", python_sum(values)).parse().unwrap_or(f64::NAN)
+}
+
+/// The spin facts of `alpha` and `beta` electrons: the moment `alpha - beta`, the multiplicity
+/// `|alpha - beta| + 1` and whether the two differ.
+pub fn spin_summary(alpha: u64, beta: u64) -> (f64, u64, bool) {
+    (alpha as f64 - beta as f64, alpha.abs_diff(beta) + 1, alpha != beta)
+}
+
+/// Whether `value <= limit`: a converged relaxation's largest force against its threshold.
+pub fn at_most(value: f64, limit: f64) -> bool {
+    value <= limit
+}
+
+/// The magnetic quantum numbers `-l, ..., l` of a shell of angular momentum `l`.
+pub fn magnetic_numbers(l: usize) -> Vec<i32> {
+    let l = l as i32;
+    (-l..=l).collect()
 }

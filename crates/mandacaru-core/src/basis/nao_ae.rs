@@ -109,6 +109,13 @@ fn hydrogenic(
         minimal: false,
     })
 }
+/// `(onset, width, wall radius)` in Bohr of a confining wall given by `onset` and `width` in
+/// Angstrom: the wall ends where its width does, `onset + width`.
+pub fn wall_radii(onset_angstrom: f64, width_angstrom: f64) -> (f64, f64, f64) {
+    let onset = crate::LengthUnit::Angstrom.to_bohr(onset_angstrom);
+    let width = crate::LengthUnit::Angstrom.to_bohr(width_angstrom);
+    (onset, width, onset + width)
+}
 fn real(spec: &Value, name: &str) -> Result<f64> {
     spec[name]
         .as_f64()

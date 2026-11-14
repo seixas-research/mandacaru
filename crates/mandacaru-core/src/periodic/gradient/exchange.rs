@@ -69,7 +69,8 @@ pub fn contract<D: Derivatives>(d: &D, state: &State) -> Result<Terms> {
     let mut out = Terms::new(l.atoms);
     out.phase.clone_from(&gradient.phase);
     out.functions = functions.total();
-    for k in 0..nk {
+    // `G_C(k)` and its chain, a k-point per lane; added to the atoms in k order.
+    let produce = |k: usize| {
         let mut gc = d.projection_gradient(k)?;
         if l.request.spinor {
             for g in gc.iter_mut() {
@@ -77,19 +78,30 @@ pub fn contract<D: Derivatives>(d: &D, state: &State) -> Result<Terms> {
             }
         }
         let z: Vec<_> = (0..l.spins).map(|s| response[s * nk + k].clone()).collect();
-        let chain = projection_forces(
+        projection_forces(
             &z,
             &[gc],
             &l.row_owner[..m],
             &l.projector_owner[..p],
             l.atoms,
-        )?;
-        for atom in 0..l.atoms {
-            for a in 0..3 {
-                out.rows[atom][a] += chain.rows[atom][a];
-                out.columns[atom][a] += chain.columns[atom][a];
+        )
+    };
+    let consume =
+        |_k: usize, chain: crate::periodic::hybrid_gradient::ProjectionForces| -> Result<()> {
+            for atom in 0..l.atoms {
+                for a in 0..3 {
+                    out.rows[atom][a] += chain.rows[atom][a];
+                    out.columns[atom][a] += chain.columns[atom][a];
+                }
             }
-        }
-    }
+            Ok(())
+        };
+    super::kpoint_windows(
+        d.context(),
+        nk,
+        super::matrix_bytes(3 + l.spins, l.m, l.p)?,
+        produce,
+        consume,
+    )?;
     Ok(out)
 }

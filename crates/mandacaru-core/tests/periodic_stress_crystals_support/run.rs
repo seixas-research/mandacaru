@@ -12,7 +12,10 @@ use super::{
 use crate::periodic_gradient_crystals_support::{inputs, Data};
 use mandacaru_core::periodic::{
     gradient::State,
-    stress_terms::{crystal::crystal_stress, Stress},
+    stress_terms::{
+        crystal::{all_entries, crystal_stress_along, Reuse},
+        Stress,
+    },
     Options,
 };
 use serde_json::Value;
@@ -26,7 +29,7 @@ pub const SCF_DENSITY_TOLERANCE: f64 = 1e-11;
 /// `options` (the smearing the occupations are taken with).
 pub fn stress_at(data: &Data, state: &State, options: &Options) -> Stress {
     let cores = data.cores();
-    crystal_stress(
+    crystal_stress_along(
         &data.crystal.context,
         inputs(data, &cores),
         data.layout(),
@@ -35,6 +38,8 @@ pub fn stress_at(data: &Data, state: &State, options: &Options) -> Stress {
         options,
         state,
         None,
+        Some(all_entries(&data.crystal)),
+        Reuse::default(),
     )
     .unwrap()
 }

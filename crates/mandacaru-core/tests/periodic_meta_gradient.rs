@@ -196,7 +196,7 @@ fn fields(
 /// Prints and returns `(1 - int tau_W / int tau` with the spectral gradient where the density
 /// is above 1e-3, the same with the product rule, `E_xc[spectral] - E_xc[product]` in Hartree)`.
 fn measure(system: &System, shape: [usize; 3]) -> (f64, f64, f64) {
-    use mandacaru_core::paw::digest::sha256_file;
+    use mandacaru_core::paw::digest::dataset_content_sha256;
     let ctx = context();
     let root =
         std::path::PathBuf::from(std::env::var_os("MANDACARU_PAW_PATH").unwrap()).join("pbe-sr");
@@ -207,7 +207,7 @@ fn measure(system: &System, shape: [usize; 3]) -> (f64, f64, f64) {
             let path = root.join(format!("{s}.parquet"));
             (
                 path.to_string_lossy().into_owned(),
-                sha256_file(&path).unwrap(),
+                dataset_content_sha256(&ctx, &path).unwrap(),
             )
         })
         .collect();

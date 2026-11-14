@@ -31,7 +31,10 @@ use mandacaru_core::{
             shells::{DenseRows, Sampling, Shells},
             spheres::Projector,
         },
-        stress_terms::hybrid::{exchange_strain, Production, Sources, Tangents, Terms},
+        stress_terms::{
+            hybrid::{exchange_strain, Production, Sources, Tangents, Terms},
+            Directions,
+        },
         Crystal,
     },
     quantum::C64,
@@ -69,6 +72,24 @@ pub const PROJECTIONS: Parts = Parts {
     samples: false,
     projections: true,
 };
+
+/// The strain direction of one entry `eps_ab`.
+pub fn unit(a: usize, b: usize) -> [[f64; 3]; 3] {
+    let mut e = [[0.; 3]; 3];
+    e[a][b] = 1.;
+    e
+}
+
+/// The nine unit directions, `a * 3 + b`.
+pub fn units() -> Vec<[[f64; 3]; 3]> {
+    (0..9).map(|i| unit(i / 3, i % 3)).collect()
+}
+
+/// The `[a][b]` tensor of nine per-entry values in the order of [`units`].
+pub fn pairs<T>(values: Vec<T>) -> [[T; 3]; 3] {
+    let mut it = values.into_iter();
+    std::array::from_fn(|_| std::array::from_fn(|_| it.next().expect("nine entries")))
+}
 
 pub fn entry(a: usize, b: usize, e: f64) -> Eps {
     let mut eps = [[0.; 3]; 3];
@@ -172,7 +193,15 @@ impl Rig {
         let cores = self.data.cores();
         let inp = inputs(&self.data, &cores);
         let tangents = Tangents::new(&self.data.crystal.context, &inp).unwrap();
-        exchange_strain(&self.data.crystal, &self.d, self.exxdiv, &tangents, sources).unwrap()
+        exchange_strain(
+            &self.data.crystal,
+            &self.d,
+            self.exxdiv,
+            &tangents,
+            sources,
+            &Directions::all_entries(None),
+        )
+        .unwrap()
     }
 
     /// The grid carried by `map`.
@@ -443,7 +472,7 @@ pub fn controls_kernel(case: &'static str, exxdiv: ExxDivTreatment, step: f64) {
     }
     if exxdiv == ExxDivTreatment::GygiBaldereschi {
         // Only the pairs with `k_diff = 0` (one per k-point) have a head entry.
-        assert!(no_head.heads.get() > 0, "no head entry in any pair");
-        println!("  the head control removed {} entries", no_head.heads.get());
+        assert!(no_head.heads.load(std::sync::atomic::Ordering::Relaxed) > 0, "no head entry in any pair");
+        println!("  the head control removed {} entries", no_head.heads.load(std::sync::atomic::Ordering::Relaxed));
     }
 }

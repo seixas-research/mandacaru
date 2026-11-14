@@ -1,144 +1,16 @@
-//! Owned Wannier setup/result bindings. Numerical work detaches from Python.
-use super::{array, copy, downfold::PyDownfolded, error, periodic::input_arrays, Array};
+//! Owned Wannier result bindings. Numerical work detaches from Python.
+use super::{array, copy, downfold::PyDownfolded, error, Array};
 use mandacaru_core::{
-    periodic::{
-        input::kpoint_arrays,
-        wannier::{
-            downfold::{CoulombBox, Request, Screening},
-            setup::{Setup, Wannier},
-            Options,
-        },
+    periodic::wannier::{
+        downfold::{CoulombBox, Request, Screening},
+        setup::Wannier,
     },
-    product,
     quantum::C64,
 };
 use numpy::{PyReadonlyArray2, PyUntypedArrayMethods};
 use pyo3::{prelude::*, types::PyDict};
 use std::sync::Arc;
 
-#[pyclass(name = "WannierSetup", module = "mandacaru._native")]
-pub struct PyWannierSetup {
-    pub inner: Option<Setup>,
-    pub setup: Option<Arc<mandacaru_core::periodic::setup::PeriodicSetup>>,
-}
-#[pymethods]
-impl PyWannierSetup {
-    #[pyo3(signature=(points_frac))]
-    fn add_points_at(
-        &mut self,
-        py: Python<'_>,
-        points_frac: Vec<[f64; 3]>,
-    ) -> PyResult<()> {
-        let setup_rec = self.setup.as_ref().ok_or_else(|| {
-            pyo3::exceptions::PyNotImplementedError::new_err(
-                "native off-mesh k-points require a native periodic setup",
-            )
-        })?;
-        let setup = self.inner.as_mut().ok_or_else(|| {
-            pyo3::exceptions::PyRuntimeError::new_err("Wannier setup has already been consumed")
-        })?;
-        let c = setup.crystal.clone();
-        let n_k = points_frac.len();
-        if n_k == 0 {
-            return Ok(());
-        }
-        let weights = vec![1.0 / n_k as f64; n_k];
-        let points = py
-            .detach(|| setup_rec.matrices_at(&c.context, &points_frac, &weights))
-            .map_err(error)?;
-        for p in points {
-            setup.add_point(p).map_err(error)?;
-        }
-        Ok(())
-    }
-
-    fn add_point(
-        &mut self,
-        py: Python<'_>,
-        metadata_json: &str,
-        values: &Bound<'_, PyDict>,
-    ) -> PyResult<()> {
-        let setup = self.inner.as_mut().ok_or_else(|| {
-            pyo3::exceptions::PyRuntimeError::new_err("Wannier setup has already been consumed")
-        })?;
-        let c = setup.crystal.clone();
-        let _metadata = c
-            .context
-            .reserve(product(&[metadata_json.len(), 32]).map_err(error)?)
-            .map_err(error)?;
-        let metadata: serde_json::Value = serde_json::from_str(metadata_json)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
-        let raw = metadata
-            .as_array()
-            .filter(|v| v.len() == 1)
-            .ok_or_else(|| {
-                pyo3::exceptions::PyValueError::new_err(
-                    "transfer one full-mesh Wannier k-point at a time",
-                )
-            })?;
-        let mut arrays = input_arrays(&c.context, values, metadata_json, Some(c.precision), false)?;
-        let _work = c
-            .context
-            .reserve(
-                product(&[
-                    c.bands(),
-                    c.bands()
-                        .checked_add(c.p)
-                        .ok_or_else(|| error(mandacaru_core::Error::Overflow))?,
-                    16,
-                    16,
-                ])
-                .map_err(error)?,
-            )
-            .map_err(error)?;
-        py.detach(|| {
-            let point = kpoint_arrays(
-                &c.context,
-                &raw[0],
-                c.m,
-                c.p,
-                c.grid.index.points(),
-                &mut arrays,
-                c.precision,
-            )?;
-            if !arrays.0.is_empty() {
-                return Err(mandacaru_core::Error::Invalid(
-                    "unreferenced Wannier k-point arrays".into(),
-                ));
-            }
-            setup.add_point(point)
-        })
-        .map_err(error)
-    }
-    #[pyo3(signature=(*,max_iterations=2000,tolerance=1e-10,step=0.5))]
-    fn localize(
-        &mut self,
-        py: Python<'_>,
-        max_iterations: usize,
-        tolerance: f64,
-        step: f64,
-    ) -> PyResult<PyWannierResult> {
-        let setup = self
-            .inner
-            .take()
-            .ok_or_else(|| {
-                pyo3::exceptions::PyRuntimeError::new_err("Wannier setup has already been consumed")
-            })?
-            .with_provider(self.setup.clone());
-        let inner = py
-            .detach(|| {
-                setup.finish(&Options {
-                    max_iterations,
-                    tolerance,
-                    step,
-                })
-            })
-            .map_err(error)?;
-        Ok(PyWannierResult {
-            inner: Arc::new(inner),
-        })
-    }
-}
 #[pyclass(name = "WannierResult", module = "mandacaru._native", frozen)]
 pub struct PyWannierResult {
     pub inner: Arc<Wannier>,
@@ -257,6 +129,10 @@ impl PyWannierResult {
                 .iter()
                 .map(|t| t.label.clone())
                 .collect::<Vec<_>>(),
+        )?;
+        out.set_item(
+            "trial_weights",
+            array(py, &[n, owner.trials.len()], channel.trial_weights.clone())?,
         )?;
         out.set_item("bands", owner.bands.clone())?;
         out.set_item("size", owner.size)?;
