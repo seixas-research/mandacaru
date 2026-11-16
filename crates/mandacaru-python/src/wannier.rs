@@ -50,14 +50,7 @@ impl PyWannierResult {
             array(
                 py,
                 &[n],
-                localized
-                    .spread
-                    .second_moments
-                    .as_slice()
-                    .iter()
-                    .zip(localized.spread.centers.as_slice())
-                    .map(|(second, r)| second - r.iter().map(|v| v * v).sum::<f64>())
-                    .collect(),
+                localized.spread.spreads(),
             )?,
         )?;
         out.set_item("omega_invariant", localized.spread.invariant)?;

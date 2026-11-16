@@ -15,12 +15,15 @@
 //!
 //! [`math::davidson::lowest`]: crate::math::davidson::lowest
 //! [`math::davidson::lowest_paired`]: crate::math::davidson::lowest_paired
+pub mod gradient;
 mod hubbard;
 mod meta;
 mod properties;
 mod response;
+pub mod spinor;
 mod unrestricted;
 
+pub use gradient::{excited_state, followed_excited_state, pick, ExcitedState, Followed, Picked, Track};
 pub use response::Response;
 pub use unrestricted::Unrestricted;
 
@@ -65,6 +68,8 @@ pub enum Spin {
     /// Both spins of an unrestricted reference, spin-conserving (not a user choice: what an
     /// unrestricted reference gives).
     Unrestricted,
+    /// The two-component states of a spinor reference, which mix the spins (not a user choice).
+    Spinor,
 }
 impl Spin {
     pub fn parse(name: &str) -> Result<Self> {
@@ -81,6 +86,7 @@ impl Spin {
             Self::Singlet => "singlet",
             Self::Triplet => "triplet",
             Self::Unrestricted => "unrestricted",
+            Self::Spinor => "spinor",
         }
     }
 }
@@ -202,9 +208,21 @@ pub struct Excitations {
     pub residuals: Vec<f64>,
     pub iterations: usize,
     pub applications: usize,
+    /// A spinor reference (a spin-orbit dataset or noncollinear moments): the complex moments,
+    /// amplitudes and spinors. Then `transition_dipoles`, `transition_velocities`, `plus` and
+    /// `minus` are empty, the one channel holds the spinor counts and energies (its real
+    /// `atomic_orbitals` empty) and the transitions are between spinors. `None` otherwise.
+    pub spinor: Option<spinor::Spinors>,
 }
 impl Excitations {
     fn amplitude(&self, root: usize, channel: usize) -> Result<(&DMatrix<f64>, &Channel)> {
+        if self.spinor.is_some() {
+            return Err(crate::Error::Unsupported(
+                "the transition density and natural transition orbitals of a spinor reference \
+                 are complex two-component matrices, which are not provided yet"
+                    .into(),
+            ));
+        }
         let plus = self
             .plus
             .get(root)
@@ -401,6 +419,10 @@ fn remedy(spin: Spin) -> &'static str {
              symmetry (start the unrestricted SCF from spin-polarized initial magnetic moments) \
              to reach the lower state"
         }
+        Spin::Spinor => {
+            "this spinor state is not the lowest of its symmetry; converge the spinor SCF to its \
+             lowest state"
+        }
         _ => "use a spin-unrestricted reference",
     }
 }
@@ -432,7 +454,7 @@ fn roots<O: Operator>(operator: &O, request: &Request) -> Result<(Solved, usize)
 
 /// The lowest `request.num_states` excitations of `reference` (completed to whole multiplets):
 /// spin-adapted for a closed-shell (restricted) reference, spin-conserving for an unrestricted
-/// one.
+/// one, two-component for a spinor Kohn-Sham reference ([`Excitations::spinor`]).
 pub fn excitations(
     integrals: &MolecularIntegrals,
     reference: &MeanField,
@@ -450,6 +472,9 @@ pub fn excitations(
         integrals.require_hartree_fock_core()?;
     }
     integrals.context.run(|| {
+        if reference.method == "ghf" && reference.functional.is_some() {
+            return spinor::spinor_excitations(integrals, reference, request);
+        }
         if reference.method == "uhf" {
             if request.spin.is_some() {
                 return Err(invalid(

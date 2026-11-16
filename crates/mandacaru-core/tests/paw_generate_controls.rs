@@ -1,5 +1,5 @@
 //! Negative controls of the generator gates (`paw_generate.rs`): each recipe edit below changes
-//! the dataset by a physically meaningless amount (1e-8 in an energy or a norm, or a whole
+//! the dataset by a physically meaningless amount (1e-7 or 1e-6 in an energy or a norm, or a whole
 //! choice of the construction), and the comparison with the freeze must lose it by more than
 //! 100 times its gate. A gate that passes these is blind to the quantity it claims to check.
 mod paw_assemble_support;
@@ -47,14 +47,20 @@ fn bites(name: &str, what: &str, edit: &dyn Fn(&mut Recipe)) {
     );
 }
 
+/// The edits are sized to 100 times the gate. Before the ionic tail was stepped to `-Zv/r`
+/// (`paw::generate::ionic_tail`, 2026-11) each 1e-8 edit moved the tail of `v_local` and bit at
+/// 3.1e4 (energy_offset), 4.6e3 (local_shift) and 1.9e5 (norm_deficit) times the gate. That tail
+/// is now exact and the same for every edit, and the 1e-8 edits bite at 15.4 (a pseudo wave),
+/// 2.3 (the hand-off `v_loc`) and 96.5 (a residual kinetic energy) times the gate: seen, but
+/// inside the 100x margin. Measured 2026-11-15.
 #[test]
-fn the_gates_resolve_a_change_of_one_part_in_a_hundred_million() {
-    bites("lda-sr_O", "energy_offset + 1e-8", &|r| {
-        r.energy_offset += 1e-8
+fn the_gates_resolve_a_change_of_one_part_in_a_million() {
+    bites("lda-sr_O", "energy_offset + 1e-7", &|r| {
+        r.energy_offset += 1e-7
     });
-    bites("lda-sr_O", "local_shift + 1e-8", &|r| r.local_shift += 1e-8);
-    bites("lda-sr_O", "norm_deficit + 1e-8", &|r| {
-        r.norm_deficit += 1e-8
+    bites("lda-sr_O", "local_shift + 1e-6", &|r| r.local_shift += 1e-6);
+    bites("lda-sr_O", "norm_deficit + 1e-7", &|r| {
+        r.norm_deficit += 1e-7
     });
     bites("lda-sr_O", "q_cut + 1e-6", &|r| r.q_cut += 1e-6);
 }

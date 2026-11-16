@@ -76,7 +76,7 @@ class CalculationResult:
     @property
     def energy_hartree(self):
         if self._reference is not None and self._problem is None:
-            parts = [self._raw["electronic_energy"], self._raw["nuclear_repulsion"]]
+            parts = [self._raw["electronic_energy"], self._raw["nuclear_repulsion"], self._raw.get("excitation", 0.0)]
         elif "energies_ha" in self._raw:
             parts = [float(self._raw["energies_ha"][0])]
         else:
@@ -579,8 +579,6 @@ class CalculationResult:
         or PAW-LCAO, is analytic, and ``force_details`` names the scheme and the stationarity
         of the state it differentiated.
         """
-        if hasattr(self, "_periodic_forces"):
-            return self._periodic_forces
         if self._problem is not None:
             if "states" in self._raw:
                 raise ValueError(

@@ -317,8 +317,8 @@ Molecular forces raise for:
   ([the Z-vector correction](#forces-lagrangian)).
 
 The force contraction accepts a frozen core of several shells. The limit of
-Hartree–Fock frozen-core exchange to an empty core or a single closed 1s shell
-belongs to the energy and is listed with the other
+Hartree–Fock frozen-core exchange to cores of closed subshells with stored core
+states belongs to the energy and is listed with the other
 [open items](#not-yet-available). Nothing falls back to a
 different calculation.
 

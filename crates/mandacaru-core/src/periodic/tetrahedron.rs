@@ -31,6 +31,14 @@ pub struct TetrahedronMesh {
 }
 
 impl TetrahedronMesh {
+    /// [`TetrahedronMesh::new`] from the cell's lattice vectors as rows (row-major): the
+    /// reciprocal vectors without `2 pi` are the columns of their inverse.
+    pub fn from_cell_rows(shape: [usize; 3], rows: &[f64; 9]) -> Result<Self> {
+        let lattice = Matrix3::from_row_slice(rows)
+            .try_inverse()
+            .ok_or_else(|| invalid("the cell is singular"))?;
+        Self::new(shape, &lattice)
+    }
     /// `reciprocal`: the reciprocal lattice vectors as columns (any common scale).
     pub fn new(shape: [usize; 3], reciprocal: &Matrix3<f64>) -> Result<Self> {
         if shape.contains(&0) {

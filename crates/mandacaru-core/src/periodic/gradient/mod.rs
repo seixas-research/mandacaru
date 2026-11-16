@@ -532,9 +532,9 @@ pub(crate) fn kpoint_windows<T: Send>(
     produce: impl Fn(usize) -> Result<T> + Sync,
     mut consume: impl FnMut(usize, T) -> Result<()>,
 ) -> Result<()> {
-    let lanes = ctx.map_or(1, |ctx| ctx.lanes(Level::Kpts, nk)).max(1);
+    let mut lanes = ctx.map_or(1, |ctx| ctx.lanes(Level::Kpts, nk)).max(1);
     if let Some(ctx) = ctx {
-        ctx.check_lanes(Level::Kpts, lanes, per_lane)?;
+        lanes = ctx.fit_lanes(Level::Kpts, lanes, per_lane)?;
     }
     let mut units = vec![(); lanes];
     for first in (0..nk).step_by(lanes) {

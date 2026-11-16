@@ -5,8 +5,9 @@ Two options configure a calculation's native context, each with one parser here:
 * ``parallelization`` -- the processor layout ``{"kpts": k, "bands": b, "threads": t}``:
   ``k`` groups of k-point (and spin channel) tasks, each split into ``b`` groups of states,
   each running its kernels on ``t`` workers; the processor count is ``k * b * t``. A missing
-  key is 1. Omitted, the context takes ``{"threads": default}``, the default being
-  ``MANDACARU_NUM_THREADS``, then ``OMP_NUM_THREADS``, then the hardware.
+  key is 1. Omitted, a calculation takes the ``auto`` layout: the default worker count
+  (``MANDACARU_NUM_THREADS``, then ``OMP_NUM_THREADS``, then the hardware) spread by the engine
+  over the k-point tasks of each region, with the bits of any explicit layout.
 * ``resources`` -- the memory budget (``memory_limit_bytes``), the size from which bulk arrays
   live on disk (``disk_offload_bytes``) and the scratch parent (``scratch_dir``).
 """
@@ -101,11 +102,10 @@ def native_context(resources=None, parallelization=None, *, takes_layout=False):
 
 def layout_label(context) -> str:
     """The layout of a native context as the run log writes it:
-    ``kpts 4 x bands 1 x threads 2 (8 workers)``."""
-    return (
-        f"kpts {context.kpts} x bands {context.bands} x threads {context.threads} "
-        f"({context.workers} workers)"
-    )
+    ``kpts 4 x bands 1 x threads 2 (8 workers)``, or ``auto (8 workers)``."""
+    return (f"auto ({context.workers} workers)" if context.auto else
+            f"kpts {context.kpts} x bands {context.bands} x threads {context.threads} "
+            f"({context.workers} workers)")
 
 
 class CalculationResources:
@@ -121,7 +121,7 @@ class CalculationResources:
         if context is not None:
             self.context = context
         elif layout is None:
-            self.context = _native.Context(**settings)
+            self.context = _native.Context(auto=True, **settings)
         else:
             self.context = _native.Context(
                 threads=layout["threads"], kpts=layout["kpts"], bands=layout["bands"],

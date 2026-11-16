@@ -29,7 +29,6 @@ def write_forces(driver, result, geometry, *, internal, translated):
         history.append(entry)
     driver._last_force_geometry = geometry
     driver._summary_written = False
-    targets = ([str(driver.txt)] if driver.txt is not None else []) + ([STDOUT] if driver.trace else [])
     convention = (
         "forces = negative energy derivative projected onto internal molecular directions"
         if internal else
@@ -37,7 +36,7 @@ def write_forces(driver, result, geometry, *, internal, translated):
         if translated else "forces = -dE/dR (ASE sign)"
     )
     details = getattr(result, "force_details", {})
-    for target in targets:
+    for target in _targets(driver):
         append_forces(
             target, [chemical_symbols[z] for z in geometry.numbers],
             driver.results["forces"], convention=convention,
@@ -51,8 +50,7 @@ def write_excitations(driver, view, *, tolerance):
     (``driver.txt``, and standard output when tracing)."""
     from ..utils.logging import append_excitations
 
-    targets = ([str(driver.txt)] if driver.txt is not None else []) + ([STDOUT] if driver.trace else [])
-    for target in targets:
+    for target in _targets(driver):
         append_excitations(target, view, tolerance=tolerance)
 
 
@@ -61,9 +59,18 @@ def write_real_time(driver, view, *, seconds):
     (``driver.txt``, and standard output when tracing)."""
     from ..utils.logging import append_real_time
 
-    targets = ([str(driver.txt)] if driver.txt is not None else []) + ([STDOUT] if driver.trace else [])
-    for target in targets:
+    for target in _targets(driver):
         append_real_time(target, view, seconds=seconds)
+
+
+def write_record(driver, title, view):
+    """Append the block ``title`` of a view with a native ``record`` (``[DIELECTRIC FUNCTION]``,
+    a crystal's ``[EXCITED STATES]``) to the run log (``driver.txt``, and standard output when
+    tracing)."""
+    from ..utils.logging import append_record
+
+    for target in _targets(driver):
+        append_record(target, title, view)
 
 
 def write_optimization_summary(driver, atoms=None, fmax=None, optimizer=None, force=False, status=None):
@@ -71,7 +78,7 @@ def write_optimization_summary(driver, atoms=None, fmax=None, optimizer=None, fo
     from ..structure import geometry_value
     from ..utils.logging import append_optimization_summary
 
-    targets = ([str(driver.txt)] if driver.txt is not None else []) + ([STDOUT] if driver.trace else [])
+    targets = _targets(driver)
     history = getattr(driver, "_optimization_history", [])
     if not targets or getattr(driver, "_summary_written", False) or not history or (len(history) < 2 and not force):
         return False
@@ -96,8 +103,7 @@ EXPRESSIVITY_PAIRS = 400
 
 
 def _targets(driver):
-    return ([str(driver.txt)] if driver.txt is not None else []) + (
-        [STDOUT] if driver.trace else [])
+    return ([str(driver.txt)] if driver.txt is not None else []) + ([STDOUT] if driver.trace else [])
 
 
 def write_performance(driver, result, wall_time_s, *, solver_ran):
@@ -119,8 +125,6 @@ def write_performance(driver, result, wall_time_s, *, solver_ran):
         return
     # The block owns the processor layout: the one place the run log writes it.
     resources = Timings(parallelization=layout_label(driver.context)).resources()
-    # The peak resident size is the one memory figure of the block.
-    resources.pop("resident_memory_MiB")
     extra = {}
     if solver_ran and result._problem is not None:
         extra["solver_wall_time_s"] = result.timings["solve_seconds"]
@@ -286,9 +290,9 @@ def write_calculation(driver, result, geometry, *, log_expressivity=False):
                 "SCF SUMMARY",
                 {
                     "converged": result.success,
-                    **({"occupation": driver.native_reference.occupation}
-                       if hasattr(driver.native_reference, "occupation") else {}),
+                    "occupation": getattr(driver.native_reference, "occupation", None),
                     f"energy_{result.energy_unit}": result.optimal_energy,
+                    **result._raw.get("excited_state", {}),
                     **run_log_fields.hubbard(result),
                 },
                 framed=True,

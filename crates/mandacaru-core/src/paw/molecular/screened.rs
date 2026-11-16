@@ -94,6 +94,33 @@ impl SpinTerms {
         })
     }
 
+    /// The second change of [`Self::polarization`]'s Fock matrices along the spin density
+    /// changes `d_up`, `d_down` from `up`, `down` (orthonormal frame): the `t^2` coefficient of
+    /// the Fock matrices at `(up + t d_up, down + t d_down)`, half the third derivative of the
+    /// polarization contracted twice with the change (before the hybrid's `-fraction`).
+    pub fn polarization_second_change(
+        &self,
+        up: &DMatrix<f64>,
+        down: &DMatrix<f64>,
+        d_up: &DMatrix<f64>,
+        d_down: &DMatrix<f64>,
+    ) -> Result<[DMatrix<f64>; 2]> {
+        let m = up.nrows();
+        let mut fock = [DMatrix::zeros(m, m), DMatrix::zeros(m, m)];
+        for (species, c) in &self.spheres {
+            let project = |d: &DMatrix<f64>| c.transpose() * d * c;
+            let [a, b] = self.atoms[*species].polarization.second_change(
+                &project(up),
+                &project(down),
+                &project(d_up),
+                &project(d_down),
+            )?;
+            fock[0] += c * a * c.transpose();
+            fock[1] += c * b * c.transpose();
+        }
+        Ok(fock)
+    }
+
     /// The non-collinear polarization energy of the spheres (see
     /// [`crate::paw::screened_polarization`]'s `vector`) and its channel Fock matrices
     /// `C O^a C^T` for the four real Pauli components `pauli` (`D_0 = D_uu + D_dd`, ...) of a

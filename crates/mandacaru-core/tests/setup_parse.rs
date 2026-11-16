@@ -167,8 +167,8 @@ fn unsupported_calculation_options_are_not_silently_ignored() {
     assert_eq!(parse_input_json(&input).unwrap().charge, Some(1.));
     input["charge"] = json!(0.);
     assert!(parse_input_json(&input).is_ok());
-    // A screened hybrid is a supported functional of the periodic setup (it keeps the whole mesh,
-    // see `setup/parse.rs`), so the request parses; the setup still refuses an atom whose dataset
+    // A screened hybrid is a supported functional of the periodic setup (its mesh is reduced by
+    // time reversal alone, see `setup/parse.rs`), so the request parses; the setup still refuses an atom whose dataset
     // is not supplied, before any dataset is read.
     input["functional"] = json!("hse06");
     let parsed = parse_input_json(&input).expect("an hse06 request parses");

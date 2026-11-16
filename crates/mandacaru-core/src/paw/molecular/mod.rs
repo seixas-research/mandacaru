@@ -533,6 +533,49 @@ impl Setup {
     }
 }
 
+/// One channel of the molecular PAW Hartree-Fock one-center operator, raw projectors, the same for
+/// every `m` (`refs x refs`): the reference atom's one-center exchange-correlation `xc`, its
+/// projected density per `m` (`reference`), the frozen core's exchange with the valence
+/// (`core_exchange`, `paw::core_exchange`) and `onsite = -xc - Delta W . reference + core_exchange`, the operator less the
+/// dataset's coupling (`onecenter::build`, the molecule's own `Delta W`).
+pub struct HartreeFockChannel {
+    pub l: usize,
+    pub xc: DMatrix<f64>,
+    pub reference: DMatrix<f64>,
+    pub core_exchange: DMatrix<f64>,
+    pub onsite: DMatrix<f64>,
+}
+
+/// The [`HartreeFockChannel`]s of `dataset`, the molecule's own one-center operator (one owner for
+/// the molecule and the supercell). A frozen core whose record has no core states, or a
+/// partially filled one, is refused by name, as in the molecule.
+pub fn hartree_fock_onsite_channels(
+    ctx: &Context,
+    dataset: &crate::paw::record::PawDataset,
+) -> Result<Vec<HartreeFockChannel>> {
+    let species = data::Species::from_dataset(ctx, dataset, true, false)?;
+    if let Some(reason) = &species.core_refusal {
+        return Err(invalid(reason.clone()));
+    }
+    let terms = onecenter::build(ctx, &species)?;
+    let mut out = Vec::new();
+    for (index, channel) in species.channels.iter().enumerate() {
+        let rows: Vec<usize> = (0..terms.projectors.len())
+            .filter(|&a| terms.projectors[a].channel == index && terms.projectors[a].m == 0)
+            .collect();
+        out.push(HartreeFockChannel {
+            l: channel.l,
+            xc: channel.xc.clone(),
+            reference: channel.reference.clone(),
+            core_exchange: channel.core_exchange.clone(),
+            onsite: DMatrix::from_fn(rows.len(), rows.len(), |i, j| {
+                -terms.ks_difference[(rows[i], rows[j])]
+            }),
+        });
+    }
+    Ok(out)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn build(
     ctx: &Context,
@@ -562,7 +605,6 @@ pub fn build(
         Some("dual") => false,
         _ => return Err(invalid("PAW projector basis must be raw or dual")),
     };
-    let allow_heavy_dft = metadata.get("allow_heavy_dft").and_then(|v| v.as_bool()).unwrap_or(false);
     // A molecule for spinor Kohn-Sham keeps its datasets' spin-orbit terms; every other one refuses
     // them (`Species::from_dataset`).
     let allow_spin_orbit = metadata.get("spin_orbit").and_then(|v| v.as_bool()).unwrap_or(false);
@@ -580,10 +622,9 @@ pub fn build(
         .ok_or_else(|| invalid("missing PAW species"))?
         .iter()
         .map(|s| {
-            let allow_heavy = allow_heavy_dft || s.get("allow_heavy_dft").and_then(|v| v.as_bool()).unwrap_or(false);
             if let Some(file) = s.get("file").and_then(|f| f.as_str()) {
                 let ds = crate::paw::record::PawDataset::read(ctx, std::path::Path::new(file))?;
-                Species::from_dataset(ctx, &ds, raw, allow_spin_orbit, allow_heavy)
+                Species::from_dataset(ctx, &ds, raw, allow_spin_orbit)
             } else if let Some(text) = s.get("record").and_then(|t| t.as_str()) {
                 // The dataset as its record: the payload text here, the radial tables among the
                 // arrays under the entry's `tables` prefix (`<prefix><column>`).
@@ -597,9 +638,9 @@ pub fn build(
                     .filter_map(|k| arrays.remove(&k).map(|v| (k[prefix.len()..].to_string(), v)))
                     .collect();
                 let ds = crate::paw::record::PawDataset::from_parts(ctx, text, columns)?;
-                Species::from_dataset(ctx, &ds, raw, allow_spin_orbit, allow_heavy)
+                Species::from_dataset(ctx, &ds, raw, allow_spin_orbit)
             } else {
-                Species::parse_with_options(ctx, s, &mut arrays, raw, false, allow_heavy)
+                Species::parse_with_options(ctx, s, &mut arrays, raw, false)
             }
         })
         .collect::<Result<Vec<_>>>()?;
@@ -1234,7 +1275,8 @@ impl Setup {
             }),
             charges,
             electrons: count.round() as usize,
-            core_supported: species.iter().all(|s| s.core_supported),
+            core_refusal: species.iter().find_map(|s| s.core_refusal.clone()),
+            hybrid_core_supported: species.iter().all(|s| s.hybrid_core_supported),
             hubbard,
             projections: Some(c),
             electrostatic: Some(u),

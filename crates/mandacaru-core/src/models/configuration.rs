@@ -150,16 +150,37 @@ pub fn rearrangements(z: u8, virtuals: usize) -> Result<Vec<Configuration>> {
     Ok(out)
 }
 
-/// Resolve `{(n, l): q}` into `{(n, l, kappa): q}` for a Dirac atom: a subshell is shared
-/// between its two `j` in proportion to `2j+1`, the lower `j = l - 1/2` filling first.
-pub fn split_configuration(configuration: &[(usize, usize, f64)]) -> Vec<(usize, usize, i32, f64)> {
+/// How an open subshell of a Dirac atom divides its electrons between its two `j`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JShares {
+    /// `j-j` filling: the lower `j = l - 1/2` fills first (the ground state of the atom).
+    LowerFirst,
+    /// In proportion to `2j + 1`: every state of the subshell holds the same fraction of an
+    /// electron, so the density is the spherical one the scalar partial waves of a PAW dataset
+    /// are built for. A closed subshell is the same in both.
+    Proportional,
+}
+
+/// Resolve `{(n, l): q}` into `{(n, l, kappa): q}` for a Dirac atom, the subshell shared between
+/// its two `j` as `shares` says.
+pub fn split_configuration(
+    configuration: &[(usize, usize, f64)],
+    shares: JShares,
+) -> Vec<(usize, usize, i32, f64)> {
     let mut out = Vec::new();
     for &(n, l, q) in configuration {
         let mut left = q;
         for kappa in relativity::kappa_values(l) {
             let room = relativity::degeneracy(kappa) as f64;
-            out.push((n, l, kappa, left.min(room)));
-            left = (left - room).max(0.);
+            match shares {
+                JShares::LowerFirst => {
+                    out.push((n, l, kappa, left.min(room)));
+                    left = (left - room).max(0.);
+                }
+                JShares::Proportional => {
+                    out.push((n, l, kappa, q * room / (2. * (2 * l + 1) as f64)))
+                }
+            }
         }
     }
     out

@@ -14,7 +14,7 @@
 //! it is kept as a small table `S_c(u)` per pair (`u` the cell index of the frequencies of `G`).
 //! Atomic units; `rho(G) = int rho(r) e^{-iG.r}`.
 use super::{
-    coulomb::{truncated, Cell},
+    coulomb::{Cell, Kernel},
     functions::{axis_sources, shifted_coefficients, Functions},
 };
 use crate::{
@@ -94,6 +94,49 @@ impl Pairs {
                 .extend(shifted_coefficients(functions, cell, mode.at, mode.cell));
         }
         pairs.fill_smooth(ctx, cell, functions, modes)?;
+        pairs.fill_charges(crystal, setup, cell)?;
+        Ok(pairs)
+    }
+
+    /// The projector coefficients and compensation charges of `modes` without their smooth
+    /// products: `smooth` is empty. The streamed columns ([`super::streamed`]) hold the functions
+    /// themselves and form each pair density's transform when a column asks for it; of this
+    /// value they read only `charges`, `sums` and `coefficients`.
+    pub(in crate::periodic) fn charges_only(
+        crystal: &Crystal,
+        setup: &Setup,
+        cell: &Cell,
+        functions: &Functions,
+        modes: &[Mode],
+    ) -> Result<Self> {
+        let ctx = &crystal.context;
+        let n = modes.len();
+        if n == 0 || modes.iter().any(|m| m.at >= functions.ids.len()) {
+            return Err(invalid("a fragment needs functions of the channel"));
+        }
+        let mut pairs = Self {
+            n,
+            points: cell.points(),
+            smooth: ctx.allocate::<C64>(0)?,
+            charges: Vec::new(),
+            sums: Vec::new(),
+            coefficients: Vec::new(),
+            channels: crystal.channels,
+            projectors: crystal.p,
+            cells: cell.cells,
+        };
+        let _scratch = ctx.reserve(product(&[
+            crystal.channels.max(1),
+            cell.cells,
+            n * n,
+            16,
+            2,
+        ])?)?;
+        for mode in modes {
+            pairs
+                .coefficients
+                .extend(shifted_coefficients(functions, cell, mode.at, mode.cell));
+        }
         pairs.fill_charges(crystal, setup, cell)?;
         Ok(pairs)
     }
@@ -213,12 +256,29 @@ impl Pairs {
         setup: &Setup,
         cell: &Cell,
     ) -> Result<(DMatrix<C64>, DMatrix<C64>)> {
+        let (n, points) = (self.n, self.points);
+        let metric = self.corrected_overlap(setup, |a, b| self.smooth.as_slice()[(a * n + b) * points]);
+        let mut origin = vec![C64::default(); n * n];
+        self.compact(setup, cell, &[0], &mut origin)?;
+        let charge = DMatrix::from_fn(n, n, |a, b| {
+            self.smooth.as_slice()[(a * n + b) * self.points] + origin[a * n + b]
+        });
+        Ok((metric, charge))
+    }
+
+    /// `<w_a|S|w_b>` from the smooth overlap `smooth_overlap(a, b)` on the grid (the pair density's
+    /// zeroth component) plus the overlap correction `Delta S` of the projectors.
+    pub(in crate::periodic) fn corrected_overlap(
+        &self,
+        setup: &Setup,
+        smooth_overlap: impl Fn(usize, usize) -> C64,
+    ) -> DMatrix<C64> {
         let (n, cells, p) = (self.n, self.cells, self.projectors);
         let correction = setup.overlap_correction();
         let mut metric = DMatrix::<C64>::zeros(n, n);
         for a in 0..n {
             for b in 0..n {
-                let mut sum = self.smooth.as_slice()[(a * n + b) * self.points];
+                let mut sum = smooth_overlap(a, b);
                 for t in 0..cells {
                     for i in 0..p {
                         let left = self.coefficients[(a * cells + t) * p + i].conj();
@@ -232,12 +292,7 @@ impl Pairs {
                 metric[(a, b)] = sum;
             }
         }
-        let mut origin = vec![C64::default(); n * n];
-        self.compact(setup, cell, &[0], &mut origin)?;
-        let charge = DMatrix::from_fn(n, n, |a, b| {
-            self.smooth.as_slice()[(a * n + b) * self.points] + origin[a * n + b]
-        });
-        Ok((metric, charge))
+        metric
     }
 
     /// The compensation part of every pair at the supercell grid indices `indices`:
@@ -383,20 +438,101 @@ pub struct Integrals {
 }
 
 /// `(pq|rs) = int int rho_pq(r) v(r - r') rho_rs(r')` between two sets of pair densities on the
-/// same supercell: the truncated kernel of the box on the grid, the compensation charges
-/// interacting only inside the sphere the grid carries, and each charge's own self-energy beyond
-/// it. `radius` is the truncation radius of the kernel. With `grid_only` only the smooth products
-/// on the grid interact: no compensation charge, no self-energy tail, no one-center remainder.
+/// same supercell: the `kernel` of the box on the grid, the compensation charges interacting
+/// only inside the sphere the grid carries, and each charge's own self-energy beyond it. With
+/// `grid_only` only the smooth products on the grid interact: no compensation charge, no
+/// self-energy tail, no one-center remainder.
 pub(in crate::periodic) fn coulomb(
     ctx: &Context,
     setup: &Setup,
     cell: &Cell,
-    radius: f64,
+    kernel_of: Kernel,
     first: &Pairs,
     second: &Pairs,
     grid_only: bool,
 ) -> Result<Integrals> {
+    coulomb_rows(ctx, setup, cell, kernel_of, first, second, grid_only, true, None, false)
+}
+
+/// [`coulomb`] for the left pairs `rows` only (`p * n1 + q`; `None`: every pair), in that order:
+/// `values[(row * n2 + r) * n2 + s]`; with `diagonal`, only each row's own pair on the right
+/// (`(pq|pq)`, `values[row]`; `first` and `second` the same pairs). Each integral is summed in the
+/// same order as in [`coulomb`]: a row of the pair matrix (a Cholesky column) costs one pass over
+/// the grid. Without `onsite` the one-center remainder is left out ([`onsite_factors`] holds it).
+#[allow(clippy::too_many_arguments)]
+pub(in crate::periodic) fn coulomb_rows(
+    ctx: &Context,
+    setup: &Setup,
+    cell: &Cell,
+    kernel_of: Kernel,
+    first: &Pairs,
+    second: &Pairs,
+    grid_only: bool,
+    onsite: bool,
+    rows: Option<&[usize]>,
+    diagonal: bool,
+) -> Result<Integrals> {
+    let values = coulomb_engine(
+        ctx,
+        setup,
+        cell,
+        kernel_of,
+        first,
+        second,
+        grid_only,
+        onsite,
+        rows,
+        Right::Pairs { diagonal },
+    )?;
+    Ok(Integrals {
+        first: first.n,
+        second: second.n,
+        values,
+    })
+}
+
+/// What the left pairs of the Coulomb engine meet on the right.
+#[derive(Clone, Copy)]
+enum Right<'a> {
+    /// Every right pair, or (`diagonal`) each row's own pair only.
+    Pairs { diagonal: bool },
+    /// The right pairs contracted with each weight set.
+    Contracted(&'a [Vec<C64>]),
+}
+
+#[allow(clippy::too_many_arguments)]
+fn coulomb_engine(
+    ctx: &Context,
+    setup: &Setup,
+    cell: &Cell,
+    kernel_of: Kernel,
+    first: &Pairs,
+    second: &Pairs,
+    grid_only: bool,
+    with_onsite: bool,
+    rows: Option<&[usize]>,
+    right_side: Right<'_>,
+) -> Result<Vec<C64>> {
     let (n1, n2) = (first.n, second.n);
+    let diagonal = matches!(right_side, Right::Pairs { diagonal: true });
+    let contracted = match right_side {
+        Right::Contracted(weights) => Some(weights),
+        Right::Pairs { .. } => None,
+    };
+    if diagonal && n1 != n2 {
+        return Err(invalid("the Coulomb diagonal pairs one set of pair densities with itself"));
+    }
+    let all: Vec<usize>;
+    let rows = match rows {
+        Some(rows) => rows,
+        None => {
+            all = (0..n1 * n1).collect();
+            &all
+        }
+    };
+    if rows.iter().any(|&pq| pq >= n1 * n1) {
+        return Err(invalid("a left pair of the Coulomb rows is out of range"));
+    }
     let points = cell.points();
     if first.points != points || second.points != points {
         return Err(invalid("the pair densities belong to another supercell"));
@@ -404,8 +540,16 @@ pub(in crate::periodic) fn coulomb(
     let sphere2 = cell.grid_sphere().powi(2);
     let (a, b) = (n1 * n1, n2 * n2);
     let block = BLOCK.min(points);
-    let _work = ctx.reserve(product(&[a + b, block, 16, 3])?)?;
-    let mut values = vec![C64::default(); a * b];
+    let forms = contracted.map_or(0, |w| w.len());
+    let _work = ctx.reserve(product(&[a + b + 2 * forms, block, 16, 3])?)?;
+    let width = match contracted {
+        Some(_) => forms,
+        None if diagonal => 1,
+        None => b,
+    };
+    let targets = |pq: usize| if diagonal { pq..pq + 1 } else { 0..b };
+    let _values = ctx.reserve(product(&[rows.len(), width, 16])?)?;
+    let mut values = vec![C64::default(); rows.len() * width];
     let (mut left, mut left_compact) = (
         vec![C64::default(); a * block],
         vec![C64::default(); a * block],
@@ -428,7 +572,7 @@ pub(in crate::periodic) fn coulomb(
             // component is an alias of whatever lies beyond the grid. The sphere's own surface
             // belongs to the tail (the planes touch it).
             let plane = cell.at_nyquist(cell.frequencies(index));
-            kernel[g] = if plane { 0. } else { truncated(g2, radius) };
+            kernel[g] = if plane { 0. } else { kernel_of.value(g2) };
             outside[g] = if g2 >= sphere2 * (1. - 1e-12) {
                 kernel[g]
             } else {
@@ -452,20 +596,59 @@ pub(in crate::periodic) fn coulomb(
         };
         assemble(first, &mut left, &mut left_compact)?;
         assemble(second, &mut right, &mut right_compact)?;
-        for p in 0..n1 {
-            for q in 0..n1 {
+        if let Some(weights) = contracted {
+            // The right density of each set, and its compensation part, at this block.
+            let mut density = vec![C64::default(); forms * count];
+            let mut density_compact = vec![C64::default(); forms * count];
+            for (f, w) in weights.iter().enumerate() {
+                let (d, dc) = (
+                    &mut density[f * count..][..count],
+                    &mut density_compact[f * count..][..count],
+                );
+                for (rs, weight) in w.iter().enumerate() {
+                    if weight.norm_sqr() == 0. {
+                        continue;
+                    }
+                    let (rr, rc) = (&right[rs * count..][..count], &right_compact[rs * count..][..count]);
+                    for g in 0..count {
+                        d[g] += weight * rr[g];
+                        dc[g] += weight * rc[g];
+                    }
+                }
+            }
+            for (row, &pq) in rows.iter().enumerate() {
+                let (p, q) = (pq / n1, pq % n1);
+                let swapped = q * n1 + p;
+                let l = &left[swapped * count..][..count];
+                let lc = &left_compact[swapped * count..][..count];
+                for f in 0..forms {
+                    let (d, dc) = (&density[f * count..][..count], &density_compact[f * count..][..count]);
+                    let mut sum = C64::default();
+                    for g in 0..count {
+                        sum += l[g].conj() * d[g] * kernel[g] - lc[g].conj() * dc[g] * outside[g];
+                    }
+                    values[row * width + f] += sum;
+                }
+            }
+            continue;
+        }
+        for (row, &pq) in rows.iter().enumerate() {
+            {
+                let (p, q) = (pq / n1, pq % n1);
                 // The pair (pq) enters as the conjugate of (qp): the left density of (pq|rs).
                 let swapped = q * n1 + p;
                 let l = &left[swapped * count..][..count];
                 let lc = &left_compact[swapped * count..][..count];
-                for r in 0..b {
+                let span = targets(pq);
+                let offset = span.start;
+                for r in span {
                     let rr = &right[r * count..][..count];
                     let rc = &right_compact[r * count..][..count];
                     let mut sum = C64::default();
                     for g in 0..count {
                         sum += l[g].conj() * rr[g] * kernel[g] - lc[g].conj() * rc[g] * outside[g];
                     }
-                    values[(p * n1 + q) * b + r] += sum;
+                    values[row * width + r - offset] += sum;
                 }
             }
         }
@@ -475,11 +658,7 @@ pub(in crate::periodic) fn coulomb(
         *v *= scale;
     }
     if grid_only {
-        return Ok(Integrals {
-            first: n1,
-            second: n2,
-            values,
-        });
+        return Ok(values);
     }
     // The self-energy of every compensation charge beyond the sphere, on its own site.
     let cutoff = cell.grid_sphere();
@@ -494,22 +673,35 @@ pub(in crate::periodic) fn coulomb(
             // The left density enters as the conjugate of the swapped pair, as in the Fourier sum
             // (`conj(rho_qp)`): the complex harmonics `Y_LM` pair with their own conjugate, so a
             // channel's self-energy is `conj(Q^{qp}_c) Q^{rs}_c`, not `Q^{pq}_c Q^{rs}_c`.
-            for p in 0..n1 {
-                for q in 0..n1 {
+            if let Some(weights) = contracted {
+                let charge: Vec<C64> = weights
+                    .iter()
+                    .map(|w| w.iter().zip(qb).map(|(x, y)| x * y).sum())
+                    .collect();
+                for (row, &pq) in rows.iter().enumerate() {
+                    let (p, q) = (pq / n1, pq % n1);
                     let left = qa[q * n1 + p].conj();
-                    for j in 0..b {
-                        values[(p * n1 + q) * b + j] += tail * left * qb[j];
+                    for (f, qw) in charge.iter().enumerate() {
+                        values[row * width + f] += tail * left * qw;
                     }
+                }
+                continue;
+            }
+            for (row, &pq) in rows.iter().enumerate() {
+                let (p, q) = (pq / n1, pq % n1);
+                let left = qa[q * n1 + p].conj();
+                let span = targets(pq);
+                let offset = span.start;
+                for j in span {
+                    values[row * width + j - offset] += tail * left * qb[j];
                 }
             }
         }
     }
-    onsite(ctx, setup, cell, first, second, &mut values)?;
-    Ok(Integrals {
-        first: n1,
-        second: n2,
-        values,
-    })
+    if with_onsite {
+        onsite(ctx, setup, cell, first, second, rows, right_side, &mut values)?;
+    }
+    Ok(values)
 }
 
 /// The Coulomb energy inside the augmentation spheres that the smooth pair densities and their
@@ -521,47 +713,24 @@ fn onsite(
     cell: &Cell,
     first: &Pairs,
     second: &Pairs,
+    rows: &[usize],
+    right_side: Right<'_>,
     values: &mut [C64],
 ) -> Result<()> {
+    let diagonal = matches!(right_side, Right::Pairs { diagonal: true });
     let (n1, n2) = (first.n, second.n);
-    let (a, b) = (n1 * n1, n2 * n2);
-    let owners = setup.projector_atoms();
-    let labels = setup.projector_labels();
+    let (a, b) = (rows.len(), n2 * n2);
     let p = first.projectors;
-    let mut cache: std::collections::BTreeMap<usize, crate::paw::onecenter::Tensor> =
-        Default::default();
-    let atoms = setup.sites().atoms.len();
-    for atom in 0..atoms {
-        let own: Vec<usize> = (0..p).filter(|j| owners[*j] == atom).collect();
-        if own.is_empty() {
-            continue;
-        }
-        let projectors: Vec<OneCenterProjector> = own
-            .iter()
-            .map(|&j| OneCenterProjector {
-                l: labels[j].0,
-                m: labels[j].1,
-                index: labels[j].2,
-                real: false,
-            })
-            .collect();
-        // Atoms of one species share a dataset and a projector list.
-        let key = setup.species()[atom];
-        if let std::collections::btree_map::Entry::Vacant(entry) = cache.entry(key) {
-            // The radial quadrature leaves DeltaW short of the symmetries of a Coulomb pair
-            // integral by about 1e-5 of itself: (ab|cd) = (cd|ab) and (ab|cd)^* = (ba|dc). The
-            // tensor is projected onto them, which keeps the interaction's pair symmetries (and
-            // so a Hermitian double counting) exact.
-            let raw = onsite_remainder(ctx, setup.dataset(atom), Basis::Raw, &projectors)?;
-            entry.insert(coulomb_symmetrized(&raw));
-        }
-        let tensor = &cache[&key];
+    let (atoms, tensors) = onsite_tensors(ctx, setup, p)?;
+    for (own, key) in atoms {
+        let tensor = &tensors[&key];
         let m = own.len();
         for t in 0..cell.cells {
             // left[pq][c][d] = sum_ab conj(a_p,a) a_q,b DeltaW[abcd]
             let mut left = vec![C64::default(); a * m * m];
-            for pp in 0..n1 {
-                for qq in 0..n1 {
+            for (row, &pq) in rows.iter().enumerate() {
+                {
+                    let (pp, qq) = (pq / n1, pq % n1);
                     for (ia, &ja) in own.iter().enumerate() {
                         let ca = first.coefficients[(pp * cell.cells + t) * p + ja].conj();
                         if ca.norm_sqr() == 0. {
@@ -574,7 +743,7 @@ fn onsite(
                                 continue;
                             }
                             let base = ((ia * m + ib) * m) * m;
-                            let dst = &mut left[(pp * n1 + qq) * m * m..][..m * m];
+                            let dst = &mut left[row * m * m..][..m * m];
                             for (slot, d) in dst.iter_mut().zip(&tensor.data[base..base + m * m]) {
                                 *slot += w * d;
                             }
@@ -582,23 +751,52 @@ fn onsite(
                     }
                 }
             }
-            for r in 0..n2 {
-                for s in 0..n2 {
+            let right_of = |r: usize, s: usize| {
+                let mut right = vec![C64::default(); m * m];
+                for (ic, &jc) in own.iter().enumerate() {
+                    let cc = second.coefficients[(r * cell.cells + t) * p + jc].conj();
+                    for (id, &jd) in own.iter().enumerate() {
+                        right[ic * m + id] = cc * second.coefficients[(s * cell.cells + t) * p + jd];
+                    }
+                }
+                right
+            };
+            let dot = |row: usize, right: &[C64]| {
+                let mut sum = C64::default();
+                for (x, y) in left[row * m * m..][..m * m].iter().zip(right) {
+                    sum += x * y;
+                }
+                sum
+            };
+            if diagonal {
+                for (row, &pq) in rows.iter().enumerate() {
+                    values[row] += dot(row, &right_of(pq / n2, pq % n2));
+                }
+                continue;
+            }
+            if let Right::Contracted(weights) = right_side {
+                let forms = weights.len();
+                for (f, w) in weights.iter().enumerate() {
                     let mut right = vec![C64::default(); m * m];
-                    for (ic, &jc) in own.iter().enumerate() {
-                        let cc = second.coefficients[(r * cell.cells + t) * p + jc].conj();
-                        for (id, &jd) in own.iter().enumerate() {
-                            right[ic * m + id] =
-                                cc * second.coefficients[(s * cell.cells + t) * p + jd];
+                    for (rs, weight) in w.iter().enumerate() {
+                        if weight.norm_sqr() == 0. {
+                            continue;
+                        }
+                        for (slot, x) in right.iter_mut().zip(right_of(rs / n2, rs % n2)) {
+                            *slot += weight * x;
                         }
                     }
+                    for row in 0..a {
+                        values[row * forms + f] += dot(row, &right);
+                    }
+                }
+                continue;
+            }
+            for r in 0..n2 {
+                for s in 0..n2 {
+                    let right = right_of(r, s);
                     for pq in 0..a {
-                        let row = &left[pq * m * m..][..m * m];
-                        let mut sum = C64::default();
-                        for (x, y) in row.iter().zip(&right) {
-                            sum += x * y;
-                        }
-                        values[pq * b + r * n2 + s] += sum;
+                        values[pq * b + r * n2 + s] += dot(pq, &right);
                     }
                 }
             }
@@ -607,9 +805,128 @@ fn onsite(
     Ok(())
 }
 
+/// The one-center remainder of the contracted Coulomb rows ([`super::streamed::Streamed::contracted`]) for the left pairs `rows` of
+/// `pairs` against the weight sets `weights`, added to `values[row * weights.len() + f]`: all the
+/// remainder needs of the pairs is their projector coefficients.
+pub(in crate::periodic) fn onsite_contracted(
+    ctx: &Context,
+    setup: &Setup,
+    cell: &Cell,
+    pairs: &Pairs,
+    rows: &[usize],
+    weights: &[Vec<C64>],
+    values: &mut [C64],
+) -> Result<()> {
+    onsite(ctx, setup, cell, pairs, pairs, rows, Right::Contracted(weights), values)
+}
+
+/// The projectors (columns of the `p` of the layout) of every atom that has any, with its species,
+/// and the one-center remainder `DeltaW` of each species in the complex harmonics of the layout.
+#[allow(clippy::type_complexity)]
+fn onsite_tensors(
+    ctx: &Context,
+    setup: &Setup,
+    p: usize,
+) -> Result<(
+    Vec<(Vec<usize>, usize)>,
+    std::collections::BTreeMap<usize, crate::paw::onecenter::Tensor>,
+)> {
+    let owners = setup.projector_atoms();
+    let labels = setup.projector_labels();
+    let mut cache: std::collections::BTreeMap<usize, crate::paw::onecenter::Tensor> =
+        Default::default();
+    let mut atoms = Vec::new();
+    for atom in 0..setup.sites().atoms.len() {
+        let own: Vec<usize> = (0..p).filter(|j| owners[*j] == atom).collect();
+        if own.is_empty() {
+            continue;
+        }
+        // Atoms of one species share a dataset and a projector list.
+        let key = setup.species()[atom];
+        if let std::collections::btree_map::Entry::Vacant(entry) = cache.entry(key) {
+            let projectors: Vec<OneCenterProjector> = own
+                .iter()
+                .map(|&j| OneCenterProjector {
+                    l: labels[j].0,
+                    m: labels[j].1,
+                    index: labels[j].2,
+                    real: false,
+                })
+                .collect();
+            // The radial quadrature leaves DeltaW short of the symmetries of a Coulomb pair
+            // integral by about 1e-5 of itself: (ab|cd) = (cd|ab) and (ab|cd)^* = (ba|dc). The
+            // tensor is projected onto them, which keeps the interaction's pair symmetries (and
+            // so a Hermitian double counting) exact.
+            let raw = onsite_remainder(ctx, setup.dataset(atom), Basis::Raw, &projectors)?;
+            entry.insert(coulomb_symmetrized(&raw));
+        }
+        atoms.push((own, key));
+    }
+    Ok((atoms, cache))
+}
+
+/// The one-center remainder of the Coulomb integrals of the real functions of `pairs` (the part
+/// [`coulomb_rows`] leaves out without `onsite`) as signed rank-one terms, `(pq|rs) = sum_k
+/// weights[k] factors[k][(p, q)] factors[k][(r, s)]`. On each atom copy the remainder is the
+/// bilinear form `x_pq^T M x_rs` of the projector pairs `x_pq[ab] = conj(<p_a|w_p>) <p_b|w_q>`;
+/// its real part, the integral of real functions, is `y_pq^T K y_rs` with `y = (Re x, Im x)` and
+/// `K = [[Re M, -Im M], [-Im M, -Re M]]` real symmetric, whose eigenvectors give the factors. The
+/// remainder is not positive semidefinite (a difference of two Coulomb energies inside the
+/// sphere), so it stays out of the pivoted Cholesky of the rest.
+pub(in crate::periodic) fn onsite_factors(
+    ctx: &Context,
+    setup: &Setup,
+    cell: &Cell,
+    pairs: &Pairs,
+) -> Result<(Vec<DMatrix<f64>>, Vec<f64>)> {
+    let (n, p) = (pairs.n, pairs.projectors);
+    let (atoms, tensors) = onsite_tensors(ctx, setup, p)?;
+    let (mut factors, mut weights) = (Vec::new(), Vec::new());
+    for (own, key) in atoms {
+        let tensor = &tensors[&key];
+        let m = own.len();
+        let d = m * m;
+        let k = DMatrix::from_fn(2 * d, 2 * d, |row, column| {
+            let value = tensor.data[(row % d) * d + column % d];
+            match (row < d, column < d) {
+                (true, true) => value.re,
+                (false, false) => -value.re,
+                _ => -value.im,
+            }
+        });
+        let eigen = ((&k + k.transpose()) * 0.5).symmetric_eigen();
+        let largest = eigen.eigenvalues.iter().fold(0f64, |a, v| a.max(v.abs()));
+        let kept: Vec<usize> = (0..2 * d)
+            .filter(|&j| eigen.eigenvalues[j].abs() > 1e-14 * largest)
+            .collect();
+        for t in 0..cell.cells {
+            let c = |q: usize, j: usize| pairs.coefficients[(q * cell.cells + t) * p + own[j]];
+            // y[(row, p * n + q)]: the real and imaginary parts of the projector pairs.
+            let y = DMatrix::from_fn(2 * d, n * n, |row, pq| {
+                let (a, b) = ((row % d) / m, (row % d) % m);
+                let x = c(pq / n, a).conj() * c(pq % n, b);
+                if row < d {
+                    x.re
+                } else {
+                    x.im
+                }
+            });
+            for &j in &kept {
+                let g = eigen.eigenvectors.column(j).transpose() * &y;
+                let g = DMatrix::from_fn(n, n, |r, s| 0.5 * (g[r * n + s] + g[s * n + r]));
+                factors.push(g);
+                weights.push(eigen.eigenvalues[j]);
+            }
+        }
+    }
+    Ok((factors, weights))
+}
+
 /// `1/4 (W[abcd] + W[cdab] + conj W[badc] + conj W[dcba])`: the part of a one-center tensor that
 /// has the symmetries of a Coulomb pair integral of complex orbitals.
-fn coulomb_symmetrized(w: &crate::paw::onecenter::Tensor) -> crate::paw::onecenter::Tensor {
+pub(super) fn coulomb_symmetrized(
+    w: &crate::paw::onecenter::Tensor,
+) -> crate::paw::onecenter::Tensor {
     let n = w.n;
     let at = |a: usize, b: usize, c: usize, d: usize| ((a * n + b) * n + c) * n + d;
     let mut data = vec![C64::default(); w.data.len()];

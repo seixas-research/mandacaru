@@ -51,32 +51,44 @@ def test_a_multi_atom_molecule_gives_the_same_bits_on_every_thread_count():
             assert np.array_equal(snapshot[name], runs[0][1][name]), name
 
 
-@pytest.mark.parametrize("active_space", [None, {"orbitals": 2}, {"orbitals": 2, "method": "mp2"}])
-def test_a_kohn_sham_reference_over_a_heavy_core_has_no_hamiltonian_without_core_valence_exchange(
-        active_space):
-    """Kohn-Sham DFT of NaH runs (its energy never reads a core-valence exchange), but the
-    second-quantized Hamiltonian over its frozen core does: the dense model, an active space and
-    the MP2 natural orbitals that select one are refused like Hartree-Fock (owner Q20)."""
-    atoms = Atoms("NaH", positions=[[0, 0, 0], [0, 0, 1.89]], cell=[7, 7, 7])
+def silane():
+    """SiH4: silicon's frozen core is 1s 2s 2p, three closed subshells."""
+    d = 1.48 / 3 ** 0.5
+    atoms = Atoms("SiH4", positions=[[0, 0, 0], [d, d, d], [d, -d, -d], [-d, d, -d], [-d, -d, d]],
+                  cell=[7, 7, 7])
     atoms.center()
+    return atoms
+
+
+@pytest.mark.parametrize("active_space", [None, {"orbitals": 6}])
+def test_a_hamiltonian_over_a_multi_shell_core_carries_its_core_valence_exchange(active_space):
+    """The second-quantized Hamiltonian over silicon's frozen 1s 2s 2p core (the dense model and
+    an active space) carries the valence's exchange with that core, built from the dataset's
+    stored core states (owner Q9); it was refused for any core beyond a closed 1s shell."""
+    atoms = silane()
     atoms.calc = Mandacaru(method="dft", xc="lda", basis={"name": "PAW-LCAO", "size": "SZ"},
                            grid_spacing=0.3, active_space=active_space)
     assert np.isfinite(atoms.get_potential_energy())
-    with pytest.raises(ValueError, match="frozen-core exchange"):
-        atoms.calc.result.hamiltonian
+    assert atoms.calc.result.hamiltonian is not None
 
 
-def test_a_hybrid_on_a_heavy_core_is_refused_by_name():
+def test_hartree_fock_runs_over_a_multi_shell_core():
+    atoms = silane()
+    atoms.calc = Mandacaru(method="rhf", basis={"name": "PAW-LCAO", "size": "SZ"}, grid_spacing=0.3)
+    assert np.isfinite(atoms.get_potential_energy())
+
+
+def test_a_hybrid_on_a_multi_shell_core_is_refused_by_name():
     """HSE06 takes a fraction of exact exchange, which includes the valence's exchange with the
-    frozen core: on NaH (a sodium core beyond a closed 1s shell) it raises, naming the
-    functional, while the semilocal functional of the same molecule runs."""
-    def nah(xc):
-        atoms = Atoms("NaH", positions=[[0, 0, 0], [0, 0, 1.89]], cell=[7, 7, 7])
-        atoms.center()
+    frozen core, which the screened one-center terms carry for an empty core or a single closed 1s
+    shell only: on SiH4 (a 1s 2s 2p core) it raises, naming the functional, while the semilocal
+    functional of the same molecule runs."""
+    def silane_with(xc):
+        atoms = silane()
         atoms.calc = Mandacaru(method="dft", xc=xc, basis={"name": "PAW-LCAO", "size": "SZ"},
                                grid_spacing=0.3)
         return atoms
 
-    assert np.isfinite(nah("pbe").get_potential_energy())
-    with pytest.raises(ValueError, match="hse06 takes 0.25 of exact exchange.*frozen-core exchange"):
-        nah("hse06").get_potential_energy()
+    assert np.isfinite(silane_with("pbe").get_potential_energy())
+    with pytest.raises(ValueError, match="hse06 takes 0.25 of exact exchange.*screened core-valence exchange"):
+        silane_with("hse06").get_potential_energy()

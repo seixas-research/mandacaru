@@ -182,7 +182,8 @@ class PAWDataset(PseudoPotential):
     #: What the search of :func:`generate_paw` noted (:class:`~.generation.SearchReport`);
     #: ``None`` for a dataset read from a file.
     search: SearchReport | None = None
-    #: The core states of the format-3 file it was read from, which this view does not hold.
+    #: The frozen core's subshells (``n``, ``l``, ``occupation``, ``energy``, ``table`` and the
+    #: radial ``orbital``); empty for a species without a core.
     core_states: list = field(default_factory=list)
 
     def projector_radius(self, l: int) -> float:

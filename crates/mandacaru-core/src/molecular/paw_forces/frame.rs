@@ -26,6 +26,10 @@ pub(super) fn stationarity_limit(float32: bool) -> f64 {
     }
 }
 
+/// Distance (float64) within which two occupations of a state are one: the eigenvalues of its
+/// density are exact to about 1e-13, so a separate fractional occupation is never merged.
+const OCCUPATION_RESOLUTION: f64 = 1e-10;
+
 pub(super) struct Frame {
     pub orbitals: Vec<Occupied>,
     pub stationarity: f64,
@@ -40,8 +44,8 @@ pub(super) fn occupied(
 ) -> Result<Frame> {
     let m = integrals.m();
     let restricted = state.method == "rhf";
-    let limit =
-        stationarity_limit(integrals.precision() == crate::math::storage::Precision::Float32);
+    let float32 = integrals.precision() == crate::math::storage::Precision::Float32;
+    let limit = stationarity_limit(float32);
     let mut orbitals = Vec::new();
     let mut stationarity = 0f64;
     for (spin, f) in fock.iter().enumerate() {
@@ -58,15 +62,20 @@ pub(super) fn occupied(
         // Occupation groups of the density (ascending eigenvalues): an aufbau state has one,
         // its eigenvalues 1; an ensemble adds the degenerate shell's shared value. Each group
         // must be one of the state's own occupations, and no eigenvalue may lie between them.
+        // Occupations are told apart to the density's own accuracy, not to the stationarity
+        // limit: a frontier tail of 1e-7 (water's 3 mHa gap at the default width) is an
+        // occupation of its own, the empty orbitals do not join it, and the full ones stay at 1.
+        let resolution = if float32 { limit } else { OCCUPATION_RESOLUTION };
         let occupations = &state.occupations[if restricted { 0 } else { spin }];
-        let mut levels: Vec<f64> = occupations.iter().copied().filter(|&o| o > 0.).collect();
+        let mut levels: Vec<f64> =
+            occupations.iter().copied().filter(|&o| o > resolution).collect();
         levels.sort_by(f64::total_cmp);
-        levels.dedup_by(|a, b| (*a - *b).abs() <= limit);
+        levels.dedup_by(|a, b| (*a - *b).abs() <= resolution);
         let mut groups: Vec<(f64, Vec<usize>)> = levels.iter().map(|&o| (o, vec![])).collect();
         for (j, &value) in values.iter().enumerate() {
-            match groups.iter_mut().find(|(o, _)| (value - o).abs() <= limit) {
+            match groups.iter_mut().find(|(o, _)| (value - o).abs() <= resolution) {
                 Some((_, members)) => members.push(j),
-                None if value.abs() <= limit => {}
+                None if value.abs() <= resolution => {}
                 None => {
                     return Err(invalid(
                         "the density of the state is not built from its occupations",
@@ -86,21 +95,23 @@ pub(super) fn occupied(
         }
         let fock = real(f);
         let fock = (&fock + fock.transpose()) * 0.5;
-        // [F, D] = 0 makes F block-diagonal across occupation groups: the residual of F on each
-        // group's space is the stationarity, and F is diagonalized inside each group.
+        // [F, D] = 0 makes F block-diagonal across occupation groups, and F is diagonalized
+        // inside each group. The stationarity is the commutator itself, which does not depend on
+        // how the density's eigenvectors split groups whose occupations differ by a small tail
+        // (a group of 1 - 1e-7 against one of 1 is resolved only to rounding over 1e-7).
+        let commutator = &fock * &density - &density * &fock;
+        stationarity = stationarity.max(commutator.iter().fold(0f64, |a, v| a.max(v.abs())));
+        if stationarity > limit {
+            return Err(invalid(format!(
+                "the SCF state is not stationary: [F, D] reaches {stationarity:.2e}, above the {limit:.0e} that its precision allows"
+            )));
+        }
         for (occupation, members) in groups {
             if members.is_empty() {
                 continue;
             }
             let space = DMatrix::from_fn(m, members.len(), |r, c| vectors[(r, members[c])]);
             let block = space.transpose() * &fock * &space;
-            let residual = &fock * &space - &space * &block;
-            stationarity = stationarity.max(residual.iter().fold(0f64, |a, v| a.max(v.abs())));
-            if stationarity > limit {
-                return Err(invalid(format!(
-                    "the SCF state is not stationary: (1 - D) F D reaches {stationarity:.2e}, above the {limit:.0e} that its precision allows"
-                )));
-            }
             let (energies, rotation) = real_eigen((&block + block.transpose()) * 0.5)?;
             let rotated = &integrals.lowdin * (&space * rotation);
             // A fractional orbital enters as `sqrt(f) a` with the channel's whole weight: every

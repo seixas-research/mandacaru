@@ -286,3 +286,57 @@ pub fn rotated_density(
     }
     Ok(density)
 }
+
+/// The spin-summed spatial density matrices of spin-orbital ones (`2M`, alpha modes first): `D_pq =
+/// g_pq + g_{p+M,q+M}` and, given the `(2M)^4` two-body one, `Gamma = aaaa + abab + baba + bbbb`.
+pub fn spatial_rdms(
+    gamma: &[f64],
+    gamma2: Option<&[f64]>,
+    m: usize,
+) -> Result<(Vec<f64>, Option<Vec<f64>>)> {
+    let dim = 2 * m;
+    if gamma.len() != dim * dim || gamma2.is_some_and(|g| g.len() != dim.pow(4)) {
+        return Err(invalid(
+            "the spin-orbital density matrices must be (2M, 2M) and (2M)^4",
+        ));
+    }
+    let mut d = vec![0.0_f64; m * m];
+    for p in 0..m {
+        for q in 0..m {
+            d[p * m + q] = gamma[p * dim + q] + gamma[(p + m) * dim + (q + m)];
+        }
+    }
+    let g = gamma2.map(|g2| {
+        let mut g = vec![0.0_f64; m * m * m * m];
+        for p in 0..m {
+            for q in 0..m {
+                for r in 0..m {
+                    for s in 0..m {
+                        g[((p * m + q) * m + r) * m + s] = g2[((p * dim + q) * dim + r) * dim + s]
+                            + g2[((p * dim + (q + m)) * dim + r) * dim + (s + m)]
+                            + g2[(((p + m) * dim + q) * dim + (r + m)) * dim + s]
+                            + g2[(((p + m) * dim + (q + m)) * dim + (r + m)) * dim + (s + m)];
+                    }
+                }
+            }
+        }
+        g
+    });
+    Ok((d, g))
+}
+
+/// The pair densities `psi_b psi_d` of `m` orbitals on `points` grid points (rows `b * m + d`).
+pub fn pair_densities(psi: &[f64], m: usize, points: usize) -> Vec<f64> {
+    let mut out = vec![0.0_f64; m * m * points];
+    for b in 0..m {
+        let psi_b = &psi[b * points..(b + 1) * points];
+        for d in 0..m {
+            let psi_d = &psi[d * points..(d + 1) * points];
+            let row = &mut out[(b * m + d) * points..(b * m + d + 1) * points];
+            for g in 0..points {
+                row[g] = psi_b[g] * psi_d[g];
+            }
+        }
+    }
+    out
+}

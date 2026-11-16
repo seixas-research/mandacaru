@@ -1,7 +1,6 @@
 //! Python bindings for finite-size corrections (KZK, MPC, CCMH).
 use crate::arrays::{array, error, layout, Array};
 use crate::context::PyContext;
-use mandacaru_core::math::fft::Fft3;
 use mandacaru_core::math::wigner_seitz::{
     minimum_image_kernel, voxel_self_potential as core_voxel_self_potential,
 };
@@ -9,8 +8,7 @@ use mandacaru_core::math::SpatialGrid;
 use mandacaru_core::periodic::finite_size::{
     ccmh_extrapolate as core_ccmh_extrapolate, kzk as core_kzk, kzk_flexible, CcmhShell,
 };
-use nalgebra::{Matrix3, Vector3};
-type C64 = nalgebra::Complex<f64>;
+use nalgebra::Matrix3;
 use numpy::{
     Complex64, PyReadonlyArray1, PyReadonlyArray2, PyReadonlyArrayDyn, PyUntypedArrayMethods,
 };
@@ -280,52 +278,13 @@ pub fn ccmh_shells<'py>(
 ) -> PyResult<(Array<'py, f64>, Array<'py, f64>)> {
     layout(&magnitudes)?;
     layout(&values)?;
-    let k_slice = magnitudes.as_slice()?;
-    let s_slice = values.as_slice()?;
-    if k_slice.is_empty() || count == 0 {
-        return Ok((array(py, &[0], vec![])?, array(py, &[0], vec![])?));
-    }
-    let mut pairs: Vec<(f64, f64)> = k_slice
-        .iter()
-        .copied()
-        .zip(s_slice.iter().copied())
-        .collect();
-    pairs.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
-
-    let max_k = pairs.last().map(|p| p.0).unwrap_or(1.0);
-    let tol = 1e-8 * max_k.max(1.0);
-
-    let mut k_means = Vec::new();
-    let mut s_means = Vec::new();
-
-    let mut current_k_sum = pairs[0].0;
-    let mut current_s_sum = pairs[0].1;
-    let mut current_count = 1usize;
-    let mut prev_k = pairs[0].0;
-
-    for &(k, s) in &pairs[1..] {
-        if (k - prev_k) > tol {
-            k_means.push(current_k_sum / current_count as f64);
-            s_means.push(current_s_sum / current_count as f64);
-            if k_means.len() >= count {
-                break;
-            }
-            current_k_sum = 0.0;
-            current_s_sum = 0.0;
-            current_count = 0;
-        }
-        current_k_sum += k;
-        current_s_sum += s;
-        current_count += 1;
-        prev_k = k;
-    }
-    if current_count > 0 && k_means.len() < count {
-        k_means.push(current_k_sum / current_count as f64);
-        s_means.push(current_s_sum / current_count as f64);
-    }
-
-    let n = k_means.len();
-    Ok((array(py, &[n], k_means)?, array(py, &[n], s_means)?))
+    let (k, v) = mandacaru_core::periodic::finite_size::ccmh::shell_means(
+        magnitudes.as_slice()?,
+        values.as_slice()?,
+        count,
+    );
+    let n = k.len();
+    Ok((array(py, &[n], k)?, array(py, &[n], v)?))
 }
 
 #[pyfunction]
@@ -336,45 +295,11 @@ pub fn ccmh_reciprocal_vectors<'py>(
 ) -> PyResult<(Array<'py, i64>, Array<'py, f64>)> {
     layout(&cell)?;
     if cell.shape() != [3, 3] {
-        return Err(pyo3::exceptions::PyValueError::new_err(
-            "cell must be (3, 3)",
-        ));
+        return Err(pyo3::exceptions::PyValueError::new_err("cell must be (3, 3)"));
     }
-    let c = cell.as_slice()?;
-    let mat = Matrix3::new(
-        c[0], c[1], c[2],
-        c[3], c[4], c[5],
-        c[6], c[7], c[8],
-    );
-    let inv_t = mat
-        .try_inverse()
-        .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("singular cell matrix"))?
-        .transpose();
-    let b = inv_t * (2.0 * std::f64::consts::PI);
-
-    let mut triples = Vec::new();
-    let mut kvectors = Vec::new();
-
-    for i in -limit..=limit {
-        for j in -limit..=limit {
-            for k in -limit..=limit {
-                if i == 0 && j == 0 && k == 0 {
-                    continue;
-                }
-                triples.push(i);
-                triples.push(j);
-                triples.push(k);
-                let m = Vector3::new(i as f64, j as f64, k as f64);
-                let kx = m[0] * b[(0, 0)] + m[1] * b[(1, 0)] + m[2] * b[(2, 0)];
-                let ky = m[0] * b[(0, 1)] + m[1] * b[(1, 1)] + m[2] * b[(2, 1)];
-                let kz = m[0] * b[(0, 2)] + m[1] * b[(1, 2)] + m[2] * b[(2, 2)];
-                kvectors.push(kx);
-                kvectors.push(ky);
-                kvectors.push(kz);
-            }
-        }
-    }
-
+    let c: [f64; 9] = cell.as_slice()?.try_into().expect("a (3, 3) cell");
+    let (triples, kvectors) =
+        mandacaru_core::periodic::finite_size::ccmh::reciprocal_triples(&c, limit).map_err(error)?;
     let n = triples.len() / 3;
     Ok((array(py, &[n, 3], triples)?, array(py, &[n, 3], kvectors)?))
 }
@@ -455,59 +380,6 @@ pub fn compute_structure_factor<'py>(
 // MPC functions
 // ---------------------------------------------------------------------------
 
-#[pyfunction]
-#[pyo3(signature = (hole_model, hole_periodic, v_madelung, n_electrons, n_cells=1, volume=None, cell=None))]
-pub fn mpc_correction<'py>(
-    py: Python<'py>,
-    hole_model: f64,
-    hole_periodic: f64,
-    v_madelung: f64,
-    n_electrons: f64,
-    n_cells: usize,
-    volume: Option<f64>,
-    cell: Option<PyReadonlyArray2<'py, f64>>,
-) -> PyResult<Bound<'py, PyDict>> {
-    let vol = if let Some(v) = volume {
-        v
-    } else if let Some(ref c) = cell {
-        layout(c)?;
-        let s = c.as_slice()?;
-        let m = Matrix3::new(
-            s[0], s[1], s[2],
-            s[3], s[4], s[5],
-            s[6], s[7], s[8],
-        );
-        m.determinant().abs()
-    } else {
-        return Err(pyo3::exceptions::PyValueError::new_err(
-            "either volume or cell must be provided to mpc_correction",
-        ));
-    };
-
-    let result = mandacaru_core::periodic::finite_size::mpc_from_hole_energies(
-        hole_model,
-        hole_periodic,
-        v_madelung,
-        n_electrons,
-        n_cells,
-        vol,
-    )
-    .map_err(error)?;
-
-    let dict = PyDict::new(py);
-    dict.set_item("correction", result.correction)?;
-    dict.set_item("correction_per_cell", result.correction_per_cell())?;
-    dict.set_item("hole_model", result.hole_model)?;
-    dict.set_item("hole_periodic", result.hole_periodic)?;
-    dict.set_item("madelung_shift", result.madelung_shift)?;
-    dict.set_item("v_madelung", result.v_madelung)?;
-    dict.set_item("n_electrons", result.n_electrons)?;
-    dict.set_item("n_cells", result.scope.n_cells)?;
-    dict.set_item("volume", result.scope.volume)?;
-    dict.set_item("raw_correction", result.raw_correction)?;
-
-    Ok(dict)
-}
 
 #[pyfunction]
 pub fn voxel_self_potential(step: PyReadonlyArray2<f64>) -> PyResult<f64> {
@@ -582,57 +454,11 @@ pub fn periodic_poisson_kernel<'py>(
     if step.shape() != [3, 3] {
         return Err(pyo3::exceptions::PyValueError::new_err("step must be 3x3"));
     }
-    let s = step.as_slice()?;
-    let step_mat = Matrix3::new(
-        s[0], s[1], s[2],
-        s[3], s[4], s[5],
-        s[6], s[7], s[8],
-    );
-    let diag = Matrix3::new(
-        shape.0 as f64, 0.0, 0.0,
-        0.0, shape.1 as f64, 0.0,
-        0.0, 0.0, shape.2 as f64,
-    );
-    let cell = step_mat * diag;
-    let inv_t = cell
-        .try_inverse()
-        .ok_or_else(|| pyo3::exceptions::PyValueError::new_err("singular cell"))?
-        .transpose();
-    let reciprocal = inv_t * (2.0 * std::f64::consts::PI);
-
-    let (nx, ny, nz) = shape;
-    let mut k = Vec::with_capacity(nx * ny * nz);
-
-    for i in 0..nx {
-        let mx = if i < (nx + 1) / 2 {
-            i as f64
-        } else {
-            i as f64 - nx as f64
-        };
-        for j in 0..ny {
-            let my = if j < (ny + 1) / 2 {
-                j as f64
-            } else {
-                j as f64 - ny as f64
-            };
-            for k_idx in 0..nz {
-                let mz = if k_idx < (nz + 1) / 2 {
-                    k_idx as f64
-                } else {
-                    k_idx as f64 - nz as f64
-                };
-                let m = Vector3::new(mx, my, mz);
-                let kvec = reciprocal * m;
-                let g2 = kvec.dot(&kvec);
-                if g2 > 0.0 {
-                    k.push((4.0 * std::f64::consts::PI / g2) / dv);
-                } else {
-                    k.push(0.0);
-                }
-            }
-        }
-    }
-    array(py, &[nx, ny, nz], k)
+    let s: [f64; 9] = step.as_slice()?.try_into().expect("a (3, 3) step");
+    let shape = [shape.0, shape.1, shape.2];
+    let k = mandacaru_core::periodic::finite_size::mpc::periodic_poisson_kernel(shape, &s, dv)
+        .map_err(error)?;
+    array(py, &shape, k)
 }
 
 #[pyfunction]
@@ -642,22 +468,15 @@ pub fn truncated_coulomb_kernel<'py>(
     shape: (usize, usize, usize),
 ) -> PyResult<Array<'py, f64>> {
     layout(&real_kernel)?;
-    let (nx, ny, nz) = shape;
-    let slice = real_kernel.as_slice()?;
-    if slice.len() != nx * ny * nz {
-        return Err(pyo3::exceptions::PyValueError::new_err(
-            "real_kernel size does not match shape",
-        ));
-    }
-
+    let shape = [shape.0, shape.1, shape.2];
     let ctx = mandacaru_core::Context::new(None, 64 << 20).map_err(error)?;
-    let mut fft = Fft3::new(&ctx, [nx, ny, nz]).map_err(error)?;
-
-    let mut buf: Vec<C64> = slice.iter().map(|&v| C64::new(v, 0.0)).collect();
-    fft.transform(&mut buf, false).map_err(error)?;
-
-    let real_data: Vec<f64> = buf.iter().map(|c| c.re).collect();
-    array(py, &[nx, ny, nz], real_data)
+    let out = mandacaru_core::periodic::finite_size::mpc::truncated_coulomb_kernel(
+        &ctx,
+        real_kernel.as_slice()?,
+        shape,
+    )
+    .map_err(error)?;
+    array(py, &shape, out)
 }
 
 #[pyfunction]
@@ -670,45 +489,28 @@ pub fn poisson_solve_stack<'py>(
 ) -> PyResult<Array<'py, f64>> {
     layout(&kernel)?;
     layout(&rho_stack)?;
-
-    let (nx, ny, nz) = shape;
-    let n_grid = nx * ny * nz;
-    let k_slice = kernel.as_slice()?;
-    if k_slice.len() != n_grid {
+    let shape = [shape.0, shape.1, shape.2];
+    let n_grid = shape.iter().product::<usize>();
+    if kernel.as_slice()?.len() != n_grid {
         return Err(pyo3::exceptions::PyValueError::new_err(
             "kernel size does not match shape",
         ));
     }
-    let p_count = rho_stack.shape()[0];
-    let rho_cols = rho_stack.shape()[1];
-    if rho_cols != n_grid {
+    if rho_stack.shape()[1] != n_grid {
         return Err(pyo3::exceptions::PyValueError::new_err(
             "rho_stack columns do not match shape product",
         ));
     }
-
+    let p_count = rho_stack.shape()[0];
     let ctx = mandacaru_core::Context::new(None, 64 << 20).map_err(error)?;
-    let mut fft = Fft3::new(&ctx, [nx, ny, nz]).map_err(error)?;
-
-    let rho_slice = rho_stack.as_slice()?;
-    let mut out = Vec::with_capacity(p_count * n_grid);
-    let mut buf = vec![C64::new(0.0, 0.0); n_grid];
-
-    for p in 0..p_count {
-        let rho_p = &rho_slice[p * n_grid..(p + 1) * n_grid];
-        for i in 0..n_grid {
-            buf[i] = C64::new(rho_p[i], 0.0);
-        }
-        fft.transform(&mut buf, false).map_err(error)?;
-        for i in 0..n_grid {
-            buf[i] = buf[i] * k_slice[i];
-        }
-        fft.transform(&mut buf, true).map_err(error)?;
-        for i in 0..n_grid {
-            out.push(buf[i].re * dv);
-        }
-    }
-
+    let out = mandacaru_core::periodic::finite_size::mpc::poisson_solve_stack(
+        &ctx,
+        kernel.as_slice()?,
+        shape,
+        rho_stack.as_slice()?,
+        dv,
+    )
+    .map_err(error)?;
     array(py, &[p_count, n_grid], out)
 }
 
@@ -718,21 +520,7 @@ pub fn wigner_seitz_metrics<'py>(
     dv: f64,
 ) -> PyResult<(f64, f64)> {
     layout(&kernel)?;
-    let slice = kernel.as_slice()?;
-    let mut count = 0usize;
-    let mut max_inv = 0.0_f64;
-    for &v in slice {
-        if v != 0.0 {
-            count += 1;
-        }
-        if v > 0.0 {
-            let inv = 1.0 / v;
-            if inv > max_inv {
-                max_inv = inv;
-            }
-        }
-    }
-    Ok((count as f64 * dv, max_inv))
+    Ok(mandacaru_core::periodic::finite_size::mpc::wigner_seitz_metrics(kernel.as_slice()?, dv))
 }
 
 #[pyfunction]
@@ -769,34 +557,14 @@ pub fn mpc_hole_energies<'py>(
         ));
     }
 
-    let p_slice = eri_periodic.as_slice()?;
-    let t_slice = eri_truncated.as_slice()?;
-    let g_slice = gamma.as_slice()?;
-    let d_slice = d.as_slice()?;
-
-    let mut periodic = 0.0_f64;
-    let mut truncated = 0.0_f64;
-
-    for p in 0..m {
-        for q in 0..m {
-            for r in 0..m {
-                let d_pr = d_slice[p * m + r];
-                for s in 0..m {
-                    let idx = ((p * m + q) * m + r) * m + s;
-                    let hole = g_slice[idx] - d_pr * d_slice[q * m + s];
-                    periodic += p_slice[idx] * hole;
-                    truncated += t_slice[idx] * hole;
-                }
-            }
-        }
-    }
-
-    let mut n_electrons = 0.0_f64;
-    for i in 0..m {
-        n_electrons += d_slice[i * m + i];
-    }
-
-    Ok((0.5 * periodic, 0.5 * truncated, n_electrons))
+    mandacaru_core::periodic::finite_size::mpc::hole_energies(
+        eri_periodic.as_slice()?,
+        eri_truncated.as_slice()?,
+        d.as_slice()?,
+        gamma.as_slice()?,
+        m,
+    )
+    .map_err(error)
 }
 
 #[pyfunction]
@@ -817,51 +585,24 @@ pub fn spatial_rdms<'py>(
             g_shape
         )));
     }
-    let g_slice = gamma.as_slice()?;
-    let mut d = vec![0.0_f64; m * m];
-    for p in 0..m {
-        for q in 0..m {
-            d[p * m + q] = g_slice[p * (2 * m) + q] + g_slice[(p + m) * (2 * m) + (q + m)];
-        }
-    }
-    let d_arr = array(py, &[m, m], d)?;
-
-    let g_arr = if let Some(g2) = gamma2 {
-        layout(&g2)?;
-        let g2_shape = g2.shape();
-        if g2_shape != [2 * m, 2 * m, 2 * m, 2 * m] {
+    if let Some(g2) = &gamma2 {
+        layout(g2)?;
+        if g2.shape() != [2 * m, 2 * m, 2 * m, 2 * m] {
             return Err(pyo3::exceptions::PyValueError::new_err(format!(
                 "expected a (2M, 2M, 2M, 2M) two-body RDM, got {:?}",
-                g2_shape
+                g2.shape()
             )));
         }
-        let g2_slice = g2.as_slice()?;
-        let dim = 2 * m;
-        let mut g = vec![0.0_f64; m * m * m * m];
-        for p in 0..m {
-            for q in 0..m {
-                for r in 0..m {
-                    for s in 0..m {
-                        let idx_m = ((p * m + q) * m + r) * m + s;
-                        let val_aaaa =
-                            g2_slice[((p * dim + q) * dim + r) * dim + s];
-                        let val_abab =
-                            g2_slice[((p * dim + (q + m)) * dim + r) * dim + (s + m)];
-                        let val_baba =
-                            g2_slice[(((p + m) * dim + q) * dim + (r + m)) * dim + s];
-                        let val_bbbb =
-                            g2_slice[(((p + m) * dim + (q + m)) * dim + (r + m)) * dim + (s + m)];
-                        g[idx_m] = val_aaaa + val_abab + val_baba + val_bbbb;
-                    }
-                }
-            }
-        }
-        Some(array(py, &[m, m, m, m], g)?)
-    } else {
-        None
-    };
-
-    Ok((d_arr, g_arr))
+    }
+    let g2 = gamma2.as_ref().map(|g| g.as_slice()).transpose()?;
+    let (d, g) = mandacaru_core::periodic::finite_size::two_body::spatial_rdms(
+        gamma.as_slice()?,
+        g2,
+        m,
+    )
+    .map_err(error)?;
+    let g = g.map(|g| array(py, &[m, m, m, m], g)).transpose()?;
+    Ok((array(py, &[m, m], d)?, g))
 }
 
 #[pyfunction]
@@ -870,21 +611,10 @@ pub fn compute_pair_densities<'py>(
     psi: PyReadonlyArray2<'py, f64>,
 ) -> PyResult<Array<'py, f64>> {
     layout(&psi)?;
-    let m = psi.shape()[0];
-    let ngrid = psi.shape()[1];
-    let slice = psi.as_slice()?;
-    let mut rho_stack = vec![0.0_f64; m * m * ngrid];
-    for b in 0..m {
-        let psi_b = &slice[b * ngrid..(b + 1) * ngrid];
-        for d in 0..m {
-            let psi_d = &slice[d * ngrid..(d + 1) * ngrid];
-            let row = &mut rho_stack[(b * m + d) * ngrid..(b * m + d + 1) * ngrid];
-            for g in 0..ngrid {
-                row[g] = psi_b[g] * psi_d[g];
-            }
-        }
-    }
-    array(py, &[m * m, ngrid], rho_stack)
+    let (m, points) = (psi.shape()[0], psi.shape()[1]);
+    let out =
+        mandacaru_core::periodic::finite_size::two_body::pair_densities(psi.as_slice()?, m, points);
+    array(py, &[m * m, points], out)
 }
 
 fn optional_real(a: Option<PyReadonlyArray2<'_, f64>>) -> PyResult<Option<Vec<f64>>> {
@@ -986,8 +716,6 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(ccmh_shells, m)?)?;
     m.add_function(wrap_pyfunction!(ccmh_reciprocal_vectors, m)?)?;
     m.add_function(wrap_pyfunction!(compute_structure_factor, m)?)?;
-
-    m.add_function(wrap_pyfunction!(mpc_correction, m)?)?;
     m.add_function(wrap_pyfunction!(voxel_self_potential, m)?)?;
     m.add_function(wrap_pyfunction!(wigner_seitz_kernel, m)?)?;
     m.add_function(wrap_pyfunction!(periodic_poisson_kernel, m)?)?;

@@ -8,6 +8,7 @@ pub mod excitations;
 mod exchange_pieces;
 pub mod forces;
 pub mod frame;
+mod growing_rows;
 pub mod hubbard;
 pub mod integrals;
 pub mod local_correlation;

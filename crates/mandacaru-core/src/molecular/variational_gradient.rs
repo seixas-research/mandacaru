@@ -21,6 +21,9 @@ pub struct FixedDensities {
     pub weighted: DMatrix<f64>,
     pub frame: DMatrix<f64>,
     pub two: Vec<(f64, DMatrix<f64>)>,
+    /// The explicit derivative (three per atom) of the deterministic frame of exactly degenerate
+    /// clusters a model cuts: the motion of its lab-frame operators (`frame::frame_response`).
+    pub cluster_frame: Option<Vec<f64>>,
 }
 
 /// The spin-summed density matrices over `T = frozen + active` (the `frozen` doubly occupied
@@ -512,12 +515,20 @@ pub fn relaxed_densities(
         add_density_response(&mut g, o, &frame.fock(&diagonal), 1.);
         lambda += diagonal;
     }
-    // The canonical occupied-occupied and virtual-virtual rotations.
+    // The canonical occupied-occupied and virtual-virtual rotations; inside an exactly degenerate
+    // cluster, the parallel-transport gauge of the displaced frames (`cluster`, through
+    // `lowdin_gauge` below).
     let antisymmetric = &g - g.transpose();
     let mut omega = DMatrix::<f64>::zeros(m, m);
+    let mut cluster = DMatrix::<f64>::zeros(m, m);
     for p in 0..m {
         for q in 0..m {
-            if p != q && (p < o) == (q < o) && (eps[p] - eps[q]).abs() >= DEGENERACY_TOLERANCE {
+            if p == q || (p < o) != (q < o) {
+                continue;
+            }
+            if (eps[p] - eps[q]).abs() < DEGENERACY_TOLERANCE {
+                cluster[(p, q)] = antisymmetric[(p, q)];
+            } else {
                 omega[(p, q)] = if p > q {
                     antisymmetric[(p, q)] / (eps[p] - eps[q])
                 } else {
@@ -584,9 +595,10 @@ pub fn relaxed_densities(
     let a = &integrals.lowdin * &c;
     let densities = FixedDensities {
         one: &a * sym(&gamma_a) * a.transpose(),
-        weighted: -(&a * sym(&sigma) * a.transpose()),
+        weighted: -(&a * sym(&sigma) * a.transpose() + lowdin_gauge(integrals, &c, &cluster)?),
         frame: a,
         two: two_body_forms(&two_a, m)?,
+        cluster_frame: None,
     };
     Ok(VariationalDensities {
         densities,
@@ -819,6 +831,13 @@ fn unrestricted(
     }
     let g_phi = &fock * 2.;
     let antisymmetric = &g_phi - g_phi.transpose();
+    // The deterministic frame of a cut cluster: its orbitals follow the lab-frame operators, which
+    // couple them to the off-cluster rotations (added to A here) and move with the geometry.
+    let cluster_frame = super::frame::frame_response(integrals, reference, &v, &antisymmetric)?;
+    let antisymmetric = match &cluster_frame {
+        Some(response) => &antisymmetric + &response.antisymmetric,
+        None => antisymmetric,
+    };
     // Off a degenerate cluster: K_pq = -(S_pq (n_p + n_q) / 2 + dP_pq) / (n_p - n_q).
     let mut omega = DMatrix::<f64>::zeros(m, m);
     let mut cluster = DMatrix::<f64>::zeros(m, m);
@@ -938,12 +957,18 @@ fn unrestricted(
         sigma_ao += &a * sym(&sigma_spin[s]) * a.transpose();
     }
     sigma_ao += lowdin_gauge(integrals, &v, &cluster)?;
+    if let Some(response) = &cluster_frame {
+        // The added off-cluster rotations are orthonormal-frame ones: their Lowdin part.
+        sigma_ao -= lowdin_gauge(integrals, &v, &response.antisymmetric)?;
+        sigma_ao += &response.overlap;
+    }
     let _ = &mut sigma_phi;
     let densities = FixedDensities {
         one: &phi * sym(&gamma_phi) * phi.transpose(),
         weighted: -sigma_ao,
         frame: phi,
         two: two_body_forms(&two, m)?,
+        cluster_frame: cluster_frame.map(|response| response.explicit),
     };
     Ok(VariationalDensities {
         densities,

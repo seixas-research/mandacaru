@@ -228,7 +228,7 @@ pub(super) fn run<M: MatrixSource + Sync>(
         ])?)
         .ok_or(crate::Error::Overflow)?;
     ctx.check_lanes(Level::Bands, b_lanes, lane_bytes)?;
-    ctx.check_lanes(
+    let k_lanes = ctx.fit_lanes(
         Level::Kpts,
         k_lanes,
         crate::product(&[4 * c.m + c.m * c.m, n, 16])?
@@ -258,13 +258,12 @@ pub(super) fn run<M: MatrixSource + Sync>(
                     du: motion.map(|mo| slopes(c, mo, k)).transpose()?,
                 };
                 let mut adds = Vec::new();
-                for (q, source) in occupied.iter().enumerate() {
+                for source in &occupied {
                     if !source.wavefunctions.is_empty() {
                         sweep.source(
                             lanes,
                             &target,
-                            s * nk + q,
-                            q,
+                            s * nk + source.point,
                             source,
                             screening,
                             exxdiv,
@@ -289,15 +288,13 @@ impl Sweep<'_> {
         lanes: &mut [StateLane],
         t: &Target,
         z_source: usize,
-        q: usize,
         source: &OccupiedStates,
         screening: Screening,
         exxdiv: ExxDivTreatment,
         adds: &mut Vec<Add>,
     ) -> Result<()> {
         let c = self.c;
-        let point = &c.points[q];
-        let k_diff = std::array::from_fn(|a| point.k[a] - t.point.k[a]);
+        let k_diff = std::array::from_fn(|a| source.k[a] - t.point.k[a]);
         let kernel = kernel_weights(c, k_diff, source.weight, screening.omega, exxdiv)?;
         let shapes = self.aug.pair_shapes(c, k_diff)?;
         let dshapes = [
@@ -305,7 +302,14 @@ impl Sweep<'_> {
             self.aug.pair_shape_slopes(c, k_diff, 1)?,
             self.aug.pair_shape_slopes(c, k_diff, 2)?,
         ];
-        let du_source = self.motion.map(|mo| slopes(c, mo, q)).transpose()?;
+        // The functions of a time-reversal partner are the conjugates of the listed point's, and
+        // so are their center derivatives.
+        let mut du_source = self.motion.map(|mo| slopes(c, mo, source.point)).transpose()?;
+        if source.partner {
+            for slope in du_source.iter_mut().flatten() {
+                slope.as_mut_slice().iter_mut().for_each(|v| *v = v.conj());
+            }
+        }
         let states = source.wavefunctions.len();
         let window = lanes.len().max(1);
         for first in (0..states).step_by(window) {
@@ -399,7 +403,7 @@ impl Sweep<'_> {
             v: v.as_slice(),
             psi,
         };
-        self.compensation(&args, &moments, &mut adds);
+        self.compensation(&args, &moments, &mut adds)?;
         if let Some(du_source) = du_source {
             self.functions(fft, pair, &args, du_source, &mut adds)?;
         }
@@ -408,7 +412,7 @@ impl Sweep<'_> {
 
     /// The phase of the shapes and the response `Z` of the projections. The rows of `moments` and
     /// of `V` run over `(component, mu)`; `Z` sums the components.
-    fn compensation(&self, a: &State, moments: &Matrix, adds: &mut Vec<Add>) {
+    fn compensation(&self, a: &State, moments: &Matrix, adds: &mut Vec<Add>) -> Result<()> {
         let (c, t) = (self.c, a.t);
         let (m, p, channels) = (c.m, c.p, self.channel_owner.len());
         let rows = moments.nrows();
@@ -462,12 +466,29 @@ impl Sweep<'_> {
                 }
             }
             // The source part of both components lands in the same `p x m` matrix: every entry
-            // once per state, as one addition of the whole matrix.
+            // once per state, as one addition of the whole matrix. A partner's projections are
+            // `a'_t = sign sum_nu C(q)[nu, s] c'_nu` (`(t, s, sign)` the reversal of the
+            // projectors, `c'` its coefficients over the conjugated functions): linear in `C(q)`,
+            // not in its conjugate.
             let mut source = Matrix::zeros(p, m);
-            for nu in 0..m {
-                let coefficient = coefficients[component * m + nu];
-                for (pp, g) in gamma.iter().enumerate() {
-                    source[(pp, nu)] = (coefficient * g).conj() * scale;
+            if a.source.partner {
+                let map = self.aug.reversal().ok_or_else(|| {
+                    crate::periodic::invalid(
+                        "a time-reversal partner needs the time reversal of the projectors",
+                    )
+                })?;
+                for nu in 0..m {
+                    let coefficient = coefficients[component * m + nu];
+                    for &(target, from, sign) in map {
+                        source[(from, nu)] = gamma[target] * coefficient * (sign * t.scale);
+                    }
+                }
+            } else {
+                for nu in 0..m {
+                    let coefficient = coefficients[component * m + nu];
+                    for (pp, g) in gamma.iter().enumerate() {
+                        source[(pp, nu)] = (coefficient * g).conj() * scale;
+                    }
                 }
             }
             adds.push(Add::Compensation {
@@ -476,6 +497,7 @@ impl Sweep<'_> {
                 matrix: source,
             });
         }
+        Ok(())
     }
 
     /// The basis functions of the grid pair moving with their atoms: the bra functions (rows of

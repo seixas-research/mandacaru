@@ -76,7 +76,8 @@ fn signed_paw_corrections_stay_separate_from_positive_coulomb_cholesky() {
             }),
             charges: vec![1., 1.],
             electrons: 2,
-            core_supported: true,
+            core_refusal: None,
+            hybrid_core_supported: true,
             hubbard: None,
             projections: None,
             electrostatic: None,
@@ -176,7 +177,6 @@ fn molecular_paw_species_from_dataset_file() {
         "species": [
             {
                 "file": h_path.to_str().unwrap(),
-                "allow_heavy_dft": false,
             }
         ],
         "basis": [

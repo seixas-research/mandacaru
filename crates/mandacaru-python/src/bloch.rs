@@ -13,7 +13,6 @@ use mandacaru_core::molecular::periodic::{bloch_spectral, mean_field_bands};
 use mandacaru_core::molecular::MolecularIntegrals;
 use mandacaru_core::periodic::tetrahedron::TetrahedronMesh;
 use mandacaru_core::quantum::spectral::Poles;
-use nalgebra::Matrix3;
 use numpy::{
     Complex64, PyReadonlyArray1, PyReadonlyArray2, PyReadonlyArray3, PyReadonlyArray4,
     PyUntypedArrayMethods,
@@ -49,6 +48,44 @@ pub fn supercell_integrals(
                 cholesky_tolerance,
                 precision,
             )
+        })
+        .map_err(error)?;
+    Ok(PyIntegrals {
+        inner: Arc::new(inner),
+    })
+}
+
+/// The PAW-LCAO supercell integrals of the Gamma-centered `mesh` of the crystal of a setup request
+/// (the request `Context.periodic_problem_from_request` takes, with its dataset files). The crystal
+/// is only the source of the supercell's blocks: it is set up at Gamma, with one spin channel, no
+/// mesh reduction and no charge (a charged supercell is refused by the Hamiltonian).
+#[pyfunction]
+#[pyo3(signature=(context, request_json, dataset_paths, mesh, *, cholesky_tolerance=None))]
+pub fn paw_supercell_integrals(
+    py: Python<'_>,
+    context: &PyContext,
+    request_json: &str,
+    dataset_paths: Vec<String>,
+    mesh: [usize; 3],
+    cholesky_tolerance: Option<f64>,
+) -> PyResult<PyIntegrals> {
+    let mut request: serde_json::Value =
+        serde_json::from_str(request_json).map_err(|e| PyValueError::new_err(e.to_string()))?;
+    let fields = request
+        .as_object_mut()
+        .ok_or_else(|| PyValueError::new_err("a setup request is a JSON object"))?;
+    fields.insert("mesh".into(), serde_json::json!({"size": [1, 1, 1], "gamma": true}));
+    fields.insert("spin".into(), serde_json::json!(false));
+    fields.insert("symmetry".into(), serde_json::json!(false));
+    fields.insert("charge".into(), serde_json::json!(0.0));
+    let setup = Arc::new(crate::context::setup_from_request(
+        &context.inner,
+        &request,
+        &dataset_paths,
+    )?);
+    let inner = py
+        .detach(|| {
+            MolecularIntegrals::paw_supercell(&context.inner, setup, mesh, cholesky_tolerance)
         })
         .map_err(error)?;
     Ok(PyIntegrals {
@@ -405,13 +442,10 @@ pub fn tetrahedron_dos<'py>(
         }
         None => None,
     };
-    // The reciprocal vectors (without `2 pi`) are the columns of the inverse of the cell rows.
-    let lattice = Matrix3::from_row_slice(&rows)
-        .try_inverse()
-        .ok_or_else(|| PyValueError::new_err("the cell is singular"))?;
+    let rows: [f64; 9] = rows[..].try_into().expect("a (3, 3) cell");
     let result = py
         .detach(|| {
-            TetrahedronMesh::new(shape, &lattice)?.spin_summed(
+            TetrahedronMesh::from_cell_rows(shape, &rows)?.spin_summed(
                 &kpoints,
                 &levels,
                 spins,

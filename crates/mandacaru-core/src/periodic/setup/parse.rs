@@ -38,9 +38,10 @@ pub struct SetupInput {
     pub kpoints_frac: Vec<[f64; 3]>,
     pub weights: Vec<f64>,
     /// A Monkhorst-Pack mesh `(size, gamma)` the setup reduces itself (by the operations that keep
-    /// it, then time reversal; whole for a magnetic crystal with `symmetry` off, a non-time-reversal spinor crystal and
-    /// a hybrid, whose exact exchange sums over the listed k-points). When
-    /// set, `kpoints_frac` and `weights` are its output and must be empty on input.
+    /// it, then time reversal; whole for a magnetic crystal with `symmetry` off and a
+    /// non-time-reversal spinor crystal; a hybrid by time reversal alone, the half its exact
+    /// exchange unfolds). When set, `kpoints_frac` and `weights` are its output and must be empty
+    /// on input.
     pub mesh: Option<([usize; 3], bool)>,
     pub functional: String,
     pub precision: String,
@@ -383,7 +384,8 @@ pub fn create_setup(
             symmetry = Some(kept);
             reduced
         } else {
-            let whole = magnetic || (input.spinor && input.spin) || hybrid;
+            // A hybrid (never given a point group, above) is halved by time reversal alone.
+            let whole = magnetic || (input.spinor && input.spin);
             crate::periodic::spectrum::mesh(ctx, size, gamma, &[], !whole)?
         };
         input.kpoints_frac = reduced.points.clone();

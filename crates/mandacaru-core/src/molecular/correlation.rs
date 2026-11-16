@@ -27,16 +27,31 @@ fn real(values: &[C64]) -> Result<()> {
 fn eigen(matrix: DMatrix<f64>) -> Result<(Vec<f64>, DMatrix<f64>)> {
     crate::math::linalg::real_eigen((&matrix + matrix.transpose()) * 0.5)
 }
+/// The levels of MP-type denominators: `energies` with `occupied_shift` added to the first
+/// `occupied` (the exchange Madelung term `v_M` of a periodic Hamiltonian,
+/// [`super::MolecularIntegrals::exchange_madelung`]; zero for a molecule, which leaves the levels
+/// bit for bit).
+pub fn denominator_levels(energies: &[f64], occupied: usize, occupied_shift: f64) -> Vec<f64> {
+    energies
+        .iter()
+        .enumerate()
+        .map(|(p, e)| if p < occupied { e + occupied_shift } else { *e })
+        .collect()
+}
+/// Closed-shell MP2 natural orbitals of the spatial integrals `one`, `two` with `occupied`
+/// doubly occupied orbitals: the Fock is rebuilt from the integrals, and `occupied_shift`
+/// (Hartree) is added to its occupied levels in the denominators only ([`denominator_levels`]).
 pub fn natural_orbitals(
     ctx: &Context,
     m: usize,
     one: &[C64],
     two: &[C64],
     occupied: usize,
+    occupied_shift: f64,
 ) -> Result<Mp2Result> {
     ctx.run(|| {
-        if occupied==0 || occupied>=m || one.len()!=product(&[m,m])? || two.len()!=product(&[m,m,m,m])? {
-            return Err(invalid("MP2 needs matching spatial integrals and at least one occupied and one virtual orbital"));
+        if occupied==0 || occupied>=m || one.len()!=product(&[m,m])? || two.len()!=product(&[m,m,m,m])? || !occupied_shift.is_finite() {
+            return Err(invalid("MP2 needs matching spatial integrals, at least one occupied and one virtual orbital, and a finite occupied shift"));
         }
         real(one)?; real(two)?;
         let _workspace=ctx.reserve(product(&[m,m,8,16])?)?;
@@ -84,6 +99,7 @@ pub fn natural_orbitals(
             current=Some(next);
         }
         let block=current.unwrap();
+        let energies=denominator_levels(&energies,occupied,occupied_shift);
         from_block_inner(ctx,block.as_slice(),&energies,occupied,&canonical)
     })
 }
@@ -259,6 +275,7 @@ pub fn open_shell_natural_orbitals(
     if model.iter().any(|v| v.im.abs() > 1e-10) {
         return Err(invalid("open-shell MP2 requires real reference orbitals"));
     }
+    let shift = integrals.exchange_madelung()?;
     ctx.run(|| {
         let _workspace = ctx.reserve(product(&[m, m, 8, 32])?)?;
         let eri = integrals.eri()?;
@@ -289,6 +306,7 @@ pub fn open_shell_natural_orbitals(
                     }
                 }
             }
+            let energies = denominator_levels(&energies, n, shift);
             let occupied = rotation.columns(0, n).into_owned();
             let virtuals = rotation.columns(n, m - n).into_owned();
             let f_ov = occupied.transpose() * &fock * &virtuals;

@@ -1,9 +1,13 @@
-//! The Born-von Karman supercell as the box of a fragment's Coulomb interaction: its grid, its
-//! reciprocal vectors and the Coulomb kernel truncated at a radius (Spencer and Alavi 2008).
+//! The Born-von Karman supercell as the box of a Coulomb interaction: its grid, its reciprocal
+//! vectors and the two kernels the box carries ([`Kernel`]).
 //!
-//! The kernel `v_c(G) = 4 pi / G^2 (1 - cos(|G| R_c))` is the Fourier series of `theta(R_c - r) / r`
-//! on the supercell, so a charge that fits inside a sphere of radius `R_c` does not interact with
-//! the periodic images of its partner; its `G = 0` limit is `2 pi R_c^2`. Atomic units.
+//! The truncated kernel `v_c(G) = 4 pi / G^2 (1 - cos(|G| R_c))` is the Fourier series of
+//! `theta(R_c - r) / r` on the supercell (Spencer and Alavi 2008), so a charge that fits inside a
+//! sphere of radius `R_c` does not interact with the periodic images of its partner; its `G = 0`
+//! limit is `2 pi R_c^2`. The periodic kernel `4 pi / G^2` with `G = 0` dropped is the Coulomb
+//! interaction of the infinite crystal the supercell repeats, against a uniform background: the
+//! two-body integrals of the PAW-LCAO supercell Hamiltonian (`molecular::periodic::paw`). Atomic
+//! units.
 use crate::{
     math::fft::frequency,
     periodic::{invalid, wannier::sampling},
@@ -18,6 +22,26 @@ pub fn truncated(g2: f64, radius: f64) -> f64 {
         4. * PI / g2 * (1. - (g2.sqrt() * radius).cos())
     } else {
         2. * PI * radius * radius
+    }
+}
+
+/// The Coulomb kernel of the supercell's Fourier sum.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Kernel {
+    /// Truncated at the radius `R_c` (Bohr): the interaction of a fragment without its images.
+    Truncated(f64),
+    /// `4 pi / G^2`, `G = 0` dropped: the periodic interaction of the crystal.
+    Periodic,
+}
+
+impl Kernel {
+    /// The kernel at `G^2` (Bohr^-2).
+    pub fn value(&self, g2: f64) -> f64 {
+        match *self {
+            Self::Truncated(radius) => truncated(g2, radius),
+            Self::Periodic if g2 > 0. => 4. * PI / g2,
+            Self::Periodic => 0.,
+        }
     }
 }
 
@@ -165,5 +189,8 @@ mod tests {
         assert!((value - 4. * PI / (g * g) * (1. - (g * r).cos())).abs() < 1e-13);
         // continuity of the limit: 4 pi (1 - cos(g R)) / g^2 -> 2 pi R^2 as g -> 0
         assert!((truncated(1e-6, r) - 2. * PI * r * r).abs() < 1e-3);
+        assert_eq!(Kernel::Truncated(r).value(g * g), value);
+        assert_eq!(Kernel::Periodic.value(0.), 0.);
+        assert!((Kernel::Periodic.value(g * g) - 4. * PI / (g * g)).abs() < 1e-14);
     }
 }

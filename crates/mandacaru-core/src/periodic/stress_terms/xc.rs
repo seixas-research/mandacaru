@@ -9,10 +9,14 @@
 //!   zeroed Nyquist planes are pinned), so `dE = -dv sum_i sum_s flux^s_b(i) (partial_a n_s)(i)`
 //!   with `flux^s_c = d f / d (partial_c n_s)` the arrays the divergence of the potential is
 //!   built from. Both rotated spin channels are summed even for a restricted run
-//!   (`n_up = n_dn = rho/2 + core/2`).
+//!   (`n_up = n_dn = rho/2 + core/2`). A spinor meta-GGA's frame gradients are the projections
+//!   `(grad n +- u . grad m) / 2` of the Pauli channels' (`models::noncollinear::rotate_gradients`):
+//!   the strain moves each Pauli gradient as `-delta_cb partial_a` and the rotation is linear at
+//!   the fixed frame, so the same contraction holds for the frame's arrays.
 //! * X-4: the partial core, `dE = dv sum_i vbar_i d rho_core,i`, `vbar = (v_up + v_dn)/2` the
 //!   spin-averaged xc potential (the core is spin-unpolarized: it sees the average, never `v_up`
-//!   alone), `d rho_core / d eps_ab = sum rho_c'(|d|) d_a d_b / |d|` from the analytic slope of
+//!   alone; a spinor meta-GGA's is the frame's before the unrotation, `fields::CoreSources`, not
+//!   the Pauli charge channel, which also carries the frame's turn), `d rho_core / d eps_ab = sum rho_c'(|d|) d_a d_b / |d|` from the analytic slope of
 //!   the cubic the placement samples.
 //! * X-5: a meta-GGA's partial-core kinetic density (the von Weizsaecker `tau` of the same smooth
 //!   core), `dE = dv sum_i vbar_tau,i d tau_core,i` with the spin-averaged `v_tau`, placed and

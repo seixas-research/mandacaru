@@ -355,6 +355,24 @@ pub(super) fn grid_density_gradients(
     }
     Ok(field)
 }
+/// The paramagnetic current `j_s = sum_ab Im(D_ba) phi_a grad phi_b` of both spin channels
+/// (`[spin][axis][point]`), from the orbitals' own gradients: half the product-rule gradient of
+/// [`grid_density_gradients`] of the real matrices `Im(D)^T`, so the two share one contraction.
+pub(super) fn grid_currents(
+    integrals: &MolecularIntegrals,
+    d: &[Matrix],
+    gradients: &RealSamples,
+) -> Result<Buffer<f64>> {
+    let flipped: Vec<Matrix> = d
+        .iter()
+        .map(|matrix| matrix.transpose().map(|z| C64::new(z.im, 0.)))
+        .collect();
+    let mut current = grid_density_gradients(integrals, &flipped, gradients)?;
+    for value in current.as_mut_slice() {
+        *value *= 0.5;
+    }
+    Ok(current)
+}
 fn evaluate(
     integrals: &MolecularIntegrals,
     h: &Matrix,
@@ -440,8 +458,10 @@ fn evaluate_with(
     screened: Option<&Screening>,
     retain: bool,
     scratch: Option<(&mut [C64], &mut [C64])>,
-    // +U on the complex occupations (real-time propagation); the SCF keeps the real path.
-    complex_hubbard: bool,
+    // The real-time path reads Im D: +U on the complex occupations and, for a meta-GGA, the
+    // paramagnetic current of the gauge-invariant kinetic density; the SCF and the response keep
+    // the real path bit for bit.
+    complex_density: bool,
 ) -> Result<Evaluation> {
     let ctx = &integrals.context;
     let m = integrals.m();
@@ -502,7 +522,28 @@ fn evaluate_with(
             }
         }
     }
-    let terms = xc::evaluate_fields_relativistic(
+    // The gauge-invariant kinetic density of complex orbitals (TDDFT_PLAN.md 13.6.1): the
+    // paramagnetic current j_s = sum_ab Im(D_ba) phi_a grad phi_b (the partial core carries none)
+    // and tau~_s = tau_s - |j_s|^2 / (2 n_s), n_s with the core; clamped after, as tau is.
+    let current = match (complex_density, gradient.as_ref(), orbital_gradients) {
+        (true, Some(_), Some(orbital)) => Some(grid_currents(integrals, d, orbital)?),
+        _ => None,
+    };
+    if let (Some(current), Some(tau)) = (current.as_ref(), kinetic.as_mut()) {
+        for s in 0..2 {
+            for k in 0..n {
+                let density = rho.as_slice()[s * n + k];
+                if density > 0. {
+                    let j2: f64 = (0..3)
+                        .map(|axis| current.as_slice()[(s * 3 + axis) * n + k].powi(2))
+                        .sum();
+                    let value = &mut tau.as_mut_slice()[s * n + k];
+                    *value = (*value - 0.5 * j2 / density).max(0.);
+                }
+            }
+        }
+    }
+    let mut terms = xc::evaluate_fields_relativistic(
         ctx,
         &integrals.grid,
         rho.as_slice(),
@@ -512,6 +553,34 @@ fn evaluate_with(
         paw.is_some_and(|p| p.relativistic_exchange)
             && matches!(crate::models::functional(name)?.semilocal, "lda" | "pbe"),
     )?;
+    // The current's share of the Fock matrix (vera fixes 2 and 3): at fixed tau and j,
+    // d tau~ / d n_s = |j_s|^2 / (2 n_s^2) adds v_tau |j|^2 / (2 n^2) to the local potential, and
+    // d tau~ / d D_ba through j gives the imaginary-antisymmetric
+    // F^j_ab = (i / 2) int (v_tau / n) j . (phi_a grad phi_b - phi_b grad phi_a), assembled below
+    // from `weights = (v_tau / 2 n) j`.
+    let weights = match (current.as_ref(), terms.tau_potentials.as_ref()) {
+        (Some(current), Some(v_tau)) => {
+            let mut weights = ctx.allocate::<f64>(product(&[6, n])?)?;
+            for s in 0..2 {
+                for k in 0..n {
+                    let density = rho.as_slice()[s * n + k];
+                    if density <= 0. {
+                        continue;
+                    }
+                    let v = v_tau.as_slice()[s * n + k];
+                    let mut j2 = 0.;
+                    for axis in 0..3 {
+                        let j = current.as_slice()[(s * 3 + axis) * n + k];
+                        j2 += j * j;
+                        weights.as_mut_slice()[(s * 3 + axis) * n + k] = 0.5 * v / density * j;
+                    }
+                    terms.potentials.as_mut_slice()[s * n + k] += 0.5 * v * j2 / (density * density);
+                }
+            }
+            Some(weights)
+        }
+        _ => None,
+    };
     let mut eh = 0.5
         * total_slice
             .iter()
@@ -548,6 +617,7 @@ fn evaluate_with(
     // The local matrix elements accumulate over point blocks widened to
     // float64; each (a, b) sum runs over the points in ascending order.
     let mut sums = vec![DMatrix::<f64>::zeros(m, m); d.len()];
+    let mut currents = vec![DMatrix::<f64>::zeros(m, m); if weights.is_some() { d.len() } else { 0 }];
     {
         let mut orbitals = SampleBlocks::new(ctx, &integrals.orthonormal_samples, m, n)?;
         let mut slopes = orbital_gradients
@@ -629,6 +699,26 @@ fn evaluate_with(
                         }
                     }
                 }
+                if let (Some(gradient), Some(weights)) = (gradient, weights.as_ref()) {
+                    for (s, sum) in currents.iter_mut().enumerate() {
+                        for a in 0..m {
+                            for b in 0..a {
+                                let mut value = 0.;
+                                for i in 0..count {
+                                    let k = start + i;
+                                    for axis in 0..3 {
+                                        value += weights.as_slice()[(s * 3 + axis) * n + k]
+                                            * (phi[a * w + i] * gradient[(axis * m + b) * w + i]
+                                                - phi[b * w + i]
+                                                    * gradient[(axis * m + a) * w + i]);
+                                    }
+                                }
+                                sum[(a, b)] += value;
+                                sum[(b, a)] -= value;
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -648,15 +738,20 @@ fn evaluate_with(
         .as_ref()
         .and_then(|c| c.hubbard.as_ref());
     let hubbard_eval = match hubbard {
-        Some(hubbard) if !complex_hubbard => Some(hubbard.evaluate(ctx, d)?),
+        Some(hubbard) if !complex_density => Some(hubbard.evaluate(ctx, d)?),
         _ => None,
     };
     let hubbard_complex = match hubbard {
-        Some(hubbard) if complex_hubbard => Some(hubbard.evaluate_complex(ctx, d)?),
+        Some(hubbard) if complex_density => Some(hubbard.evaluate_complex(ctx, d)?),
         _ => None,
     };
     for s in 0..d.len() {
-        let v = Matrix::from_fn(m, m, |a, b| C64::new(sums[s][(a, b)] * dv, 0.));
+        let v = Matrix::from_fn(m, m, |a, b| {
+            C64::new(
+                sums[s][(a, b)] * dv,
+                currents.get(s).map_or(0., |c| c[(a, b)] * dv),
+            )
+        });
         let mut fock = h + v + &augmentation;
         if let Some((_, delta_focks, _)) = &hubbard_eval {
             fock += Matrix::from_fn(m, m, |a, b| C64::new(delta_focks[s][(a, b)], 0.));
@@ -747,14 +842,16 @@ impl MolecularIntegrals {
         let Some((omega, fraction)) = crate::models::functional(name)?.screened_exchange else {
             return Ok(None);
         };
-        // A hybrid's exact exchange includes the valence's exchange with the frozen core, which
-        // a PAW species beyond an empty core or a closed 1s shell does not have (owner decision
-        // 2026-11-12: refused until the core-valence exchange of stored core states lands).
-        if self.corrections.as_ref().is_some_and(|c| !c.core_supported) {
+        // A hybrid's exact exchange includes the valence's exchange with the frozen core. The
+        // screened one-center terms carry none of their own and the Hartree-Fock operator
+        // `paw::core_exchange` is bare, not screened, so a hybrid keeps the rule it has always had:
+        // an empty core or a single closed 1s shell (not measured for a core of several shells).
+        if self.corrections.as_ref().is_some_and(|c| !c.hybrid_core_supported) {
             return Err(invalid(format!(
-                "{name} takes {fraction} of exact exchange, and native PAW frozen-core exchange \
-                 currently requires an empty core or a single closed 1s shell: a hybrid functional \
-                 of this molecule is not available; a semilocal functional runs on every element"
+                "{name} takes {fraction} of exact exchange, and its screened core-valence exchange \
+                 is available for an empty core or a single closed 1s shell only: a hybrid \
+                 functional of this molecule is not available; a semilocal functional runs on \
+                 every element"
             )));
         }
         let (ctx, m) = (&self.context, self.m());
@@ -1146,12 +1243,13 @@ impl MolecularIntegrals {
                 Vec<Vec<f64>>,
             );
             // Converged and aufbau, then converged, then the lower free energy (what the SCF
-            // minimizes).
+            // minimizes); among unconverged candidates the smaller final residual
+            // (`Candidate::beats_at_equal_standing`).
             let healthy = |c: &Candidate| c.converged && c.aufbau_inversion.is_none();
             let better = |c: &Candidate, b: &Candidate| {
                 let rank = |c: &Candidate| (c.converged, healthy(c));
                 rank(c) > rank(b)
-                    || (rank(c) == rank(b) && c.energy + c.entropy < b.energy + b.entropy - 1e-12)
+                    || (rank(c) == rank(b) && c.beats_at_equal_standing(b, options.tolerance))
             };
             // Every start at one width; the best candidate, with the levels of its columns.
             let solve = |starts: Vec<(Vec<Matrix>, Vec<Vec<f64>>)>,
@@ -1342,7 +1440,8 @@ mod tests {
                 potential: DMatrix::zeros(m, m),
                 charges: vec![1., 1.],
                 electrons: 2,
-                core_supported: true,
+                core_refusal: None,
+                hybrid_core_supported: true,
                 hubbard: None,
                 projections: None,
                 electrostatic: None,

@@ -40,7 +40,7 @@ def two_body_text(driver, result=None):
         return None
     report = _native.integrals_report(driver.integrals)
     unit = "Ha" if driver._atomic_units else "eV"
-    tolerance = _native.convert_energy(float(driver._two_body_tolerance_ev), "eV", unit)
+    tolerance = _native.energy_from_hartree(float(report["cholesky_tolerance_ha"]), unit)
     head = f"Cholesky factors, tolerance {tolerance:.3e} {unit}"
     if report["cholesky_rank"] is None:
         text = f"{head}, not built"

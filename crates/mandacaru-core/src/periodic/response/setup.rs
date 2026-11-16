@@ -232,6 +232,20 @@ impl Setup {
     pub(in crate::periodic) fn overlap_correction(&self) -> &Matrix {
         &self.augmentation
     }
+    /// The basis shells, the cell (vectors as columns), the projectors and the atom of every
+    /// basis function: what the Bloch sums' derivatives are sampled from.
+    pub(in crate::periodic) fn shells(&self) -> &Shells {
+        &self.shells
+    }
+    pub(in crate::periodic) fn lattice(&self) -> &Matrix3<f64> {
+        &self.lattice
+    }
+    pub(in crate::periodic) fn projectors(&self) -> &[Projector] {
+        &self.projectors
+    }
+    pub(in crate::periodic) fn function_atoms(&self) -> &[usize] {
+        &self.owner
+    }
     pub(in crate::periodic) fn projector_labels(&self) -> Vec<(usize, i32, usize)> {
         self.projectors.iter().map(|q| (q.l, q.m, q.index)).collect()
     }

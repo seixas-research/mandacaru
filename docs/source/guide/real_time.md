@@ -300,7 +300,7 @@ raises `ValueError` and names the accepted ones.
 | `precision="float32"` | `ValueError`: the propagation runs in `float64` only |
 | An unconverged SCF | `ValueError` |
 | Fractional occupations ([Occupations](#dft-degenerate-shell)), or a state that is not aufbau | `NotImplementedError`; give the spin state explicitly instead |
-| `rhf` or `uhf` of a molecule whose PAW frozen core is beyond one closed 1s shell | `ValueError`: the Hartree-Fock exchange of that core is not available (Kohn-Sham runs on every element) |
+| `rhf` or `uhf` of a molecule whose PAW frozen core has no stored core states or a partially filled subshell | `ValueError`, naming the element: the Hartree-Fock exchange of that core is not available (Kohn-Sham runs on every element) |
 | `hubbard_u=` where the ground state refuses it (a screened hybrid, a spin-orbit dataset, `float32`; [DFT+U on molecules](#dft-u-molecules)) | The ground state's own error |
 | A reference that is not a fixed point of its Fock matrix | `ValueError` |
 | `kick="spin"` with `gauge="velocity"` | `ValueError` |

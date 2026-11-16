@@ -68,11 +68,36 @@ pub fn strings(sampler: &Sampler, lattice: &Lattice, direction: usize) -> Result
         ranges: lattice.ranges.clone(),
         minimum: f64::INFINITY,
     };
+    // The links of every string, one task per string and channel (P6: on the layout's lanes);
+    // the phases and centers below read them in the old order.
+    let start = |i: usize, j: usize| {
+        let mut at = [0; 3];
+        at[t0] = i;
+        at[t1] = j;
+        at
+    };
+    let mut links_of: Vec<Option<Vec<_>>> =
+        sampler
+            .crystal
+            .context
+            .map_independent(count * channels, |task| {
+                let (string, s) = (task / channels, task % channels);
+                if lattice.bands(s) == 0 {
+                    return Ok(None);
+                }
+                let at = start(string / size[t1], string % size[t1]);
+                (0..size[direction])
+                    .map(|n| {
+                        let mut point = at;
+                        point[direction] = n;
+                        sampler.link(lattice, s, lattice.mesh.index(point), direction)
+                    })
+                    .collect::<Result<Vec<_>>>()
+                    .map(Some)
+            })?;
     for i in 0..size[t0] {
         for j in 0..size[t1] {
-            let mut at = [0; 3];
-            at[t0] = i;
-            at[t1] = j;
+            let at = start(i, j);
             out.starts.push(lattice.mesh.fractional(at));
             for s in 0..channels {
                 if lattice.bands(s) == 0 {
@@ -81,13 +106,9 @@ pub fn strings(sampler: &Sampler, lattice: &Lattice, direction: usize) -> Result
                     out.connection[s].push(vec![]);
                     continue;
                 }
-                let links = (0..size[direction])
-                    .map(|n| {
-                        let mut point = at;
-                        point[direction] = n;
-                        sampler.link(lattice, s, lattice.mesh.index(point), direction)
-                    })
-                    .collect::<Result<Vec<_>>>()?;
+                let links = links_of[(i * size[t1] + j) * channels + s]
+                    .take()
+                    .expect("every string's links are formed once");
                 let (phase, smallest) = links::string_phase(&links, LINK_TOLERANCE)?;
                 let centers = links::wannier_centers(&links, LINK_TOLERANCE)?;
                 out.minimum = out.minimum.min(smallest);

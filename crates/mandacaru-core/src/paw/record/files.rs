@@ -364,6 +364,26 @@ fn verify(
 /// Measured: 3e-6 at most (He 1s, Fe 3d), 1e-7 for H, C, O, Na.
 pub const RELOAD_LEVEL_TOLERANCE: f64 = 1e-5;
 
+/// The largest change (Hartree) of any bound level (below zero in the generated dataset) between
+/// `before` and `after`, the quantity [`reload_errors`] compares with [`RELOAD_LEVEL_TOLERANCE`];
+/// a level that is not finite makes it NaN.
+pub fn reload_shift(before: &[(usize, Vec<f64>)], after: &[(usize, Vec<f64>)]) -> f64 {
+    let mut worst = 0f64;
+    for ((_, generated), (_, loaded)) in before.iter().zip(after) {
+        for (&b, &a) in generated.iter().zip(loaded) {
+            if b >= 0.0 {
+                continue;
+            }
+            let gap = (a - b).abs();
+            if gap.is_nan() {
+                return f64::NAN;
+            }
+            worst = worst.max(gap);
+        }
+    }
+    worst
+}
+
 /// `{l: shift}`: the channels whose bound levels (those below zero in the generated dataset)
 /// moved by more than [`RELOAD_LEVEL_TOLERANCE`] between the dataset as generated (`before`) and as
 /// read back (`after`); a level that is not finite counts as moved, and the worst shift of a channel

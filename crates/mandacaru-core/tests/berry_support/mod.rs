@@ -64,7 +64,16 @@ pub fn solve_in(cell: &Cell, projector_basis: &str) -> Solved {
 
 /// [`solve_in`] with the PAW-LCAO basis `size` (`"SZ"`, `"DZP"`, `"QZ2P"`, ...).
 pub fn solve_sized(cell: &Cell, projector_basis: &str, size: &str) -> Solved {
-    let ctx = Context::new(Some(2), 1 << 30).unwrap();
+    solve_on(
+        cell,
+        projector_basis,
+        size,
+        Context::new(Some(2), 1 << 30).unwrap(),
+    )
+}
+
+/// [`solve_sized`] on the context `ctx` (a parallel layout of its own).
+pub fn solve_on(cell: &Cell, projector_basis: &str, size: &str, ctx: Context) -> Solved {
     let mut species: Vec<&str> = vec![];
     for symbol in &cell.symbols {
         if !species.contains(symbol) {

@@ -1,4 +1,4 @@
-use super::{invalid, SpatialGrid};
+use super::{growing_rows::GrowingRows, invalid, SpatialGrid};
 use crate::basis::Basis;
 use crate::math::fft::{spectral_laplacian, Poisson};
 use crate::math::linalg::real_eigen;
@@ -43,7 +43,12 @@ pub struct MolecularCorrections {
     pub charges: Vec<f64>,
     pub electrons: usize,
     pub dft: Option<PawKohnSham>,
-    pub core_supported: bool,
+    /// Why Hartree-Fock has no frozen-core exchange for one of the molecule's species (it names
+    /// the element); `None` when every core is empty or has its core-valence exchange in `one`.
+    pub core_refusal: Option<String>,
+    /// Whether every species' core is one a screened hybrid supports (empty or a single closed 1s
+    /// shell).
+    pub hybrid_core_supported: bool,
     pub hubbard: Option<crate::molecular::hubbard::MolecularHubbard>,
     pub projections: Option<Vec<DMatrix<f64>>>,
     pub electrostatic: Option<DMatrix<f64>>,
@@ -78,6 +83,61 @@ pub enum Eri {
         residual: Option<f64>,
         pivots: Buffer<usize>,
     },
+    /// The Cholesky factors of a pair matrix the lattice translations of a supercell leave
+    /// invariant, stored once per translation orbit of pivots
+    /// ([`cholesky_by_translation_orbits`]): factor `(o, t)` is the stored vector `o` carried by
+    /// translation `t`, `L_pq = w_o[pair(t^-1 p, t^-1 q)]`, over the distinct translates of the
+    /// orbit's pivot (`columns`, in factor order).
+    Translated {
+        m: usize,
+        /// The stored vectors, pair-major `n x stored`.
+        stored: usize,
+        factors: Buffer<f64>,
+        translations: Arc<Translations>,
+        /// (stored vector, translation) of every factor.
+        columns: Vec<(usize, usize)>,
+        /// As for [`Eri::Cholesky`].
+        residual: Option<f64>,
+        /// The representative pivot of every orbit and how many eigenvalues of its block were
+        /// kept: the plan a fixed-pivot factorization replays.
+        pivots: Buffer<usize>,
+        kept: Vec<usize>,
+    },
+}
+/// The lattice translations of a Born-von Karman supercell as permutations of its orbitals:
+/// `orbital[t][p]` is the orbital translation `t` carries `p` to, `inverse[t]` its inverse;
+/// translation 0 is the identity.
+pub struct Translations {
+    pub orbital: Vec<Vec<usize>>,
+    pub inverse: Vec<Vec<usize>>,
+}
+impl Translations {
+    pub fn new(orbital: Vec<Vec<usize>>) -> Result<Self> {
+        let m = orbital.first().map_or(0, Vec::len);
+        let mut inverse = vec![vec![usize::MAX; m]; orbital.len()];
+        for (map, back) in orbital.iter().zip(&mut inverse) {
+            if map.len() != m {
+                return Err(invalid("every translation must permute the same orbitals"));
+            }
+            for (p, &q) in map.iter().enumerate() {
+                if q >= m || back[q] != usize::MAX {
+                    return Err(invalid("a translation must be a permutation of the orbitals"));
+                }
+                back[q] = p;
+            }
+        }
+        if orbital.first().is_some_and(|t| t.iter().enumerate().any(|(p, &q)| p != q)) {
+            return Err(invalid("translation 0 must be the identity"));
+        }
+        Ok(Self { orbital, inverse })
+    }
+    /// The identity alone: the plain pivoted Cholesky.
+    fn identity(m: usize) -> Self {
+        Self {
+            orbital: vec![(0..m).collect()],
+            inverse: vec![(0..m).collect()],
+        }
+    }
 }
 /// How a two-body factorization is stored, for a log: the representation, the
 /// rank of the augmentation correction when there is one, and for a Cholesky
@@ -109,18 +169,70 @@ impl Eri {
                 augmentation_rank: None,
                 cholesky: Some((*rank, *residual)),
             },
+            // The rank of the approximation: the directions kept, not the translates of an
+            // orbit whose block dropped eigenvalues.
+            Self::Translated { kept, residual, .. } => EriReport {
+                representation: "cholesky",
+                augmentation_rank: None,
+                cholesky: Some((kept.iter().sum(), *residual)),
+            },
         }
     }
     pub fn pivots(&self) -> Option<&[usize]> {
         match self {
             Self::Cholesky { rank, pivots, .. } => Some(&pivots.as_slice()[..*rank]),
+            Self::Translated { stored, pivots, .. } => Some(&pivots.as_slice()[..*stored]),
             Self::Augmented { base, .. } => base.pivots(),
             Self::Packed { .. } => None,
         }
     }
+    /// The eigenvalues kept per orbit of a factorization stored per translation orbit.
+    pub fn kept(&self) -> Option<&[usize]> {
+        match self {
+            Self::Translated { kept, .. } => Some(kept),
+            Self::Augmented { base, .. } => base.kept(),
+            Self::Cholesky { .. } | Self::Packed { .. } => None,
+        }
+    }
     pub fn m(&self) -> usize {
         match self {
-            Self::Packed { m, .. } | Self::Cholesky { m, .. } | Self::Augmented { m, .. } => *m,
+            Self::Packed { m, .. }
+            | Self::Cholesky { m, .. }
+            | Self::Translated { m, .. }
+            | Self::Augmented { m, .. } => *m,
+        }
+    }
+    /// How many Cholesky factors a factored base has (`None` for a packed table or an
+    /// augmentation, whose base and correction are read apart).
+    pub fn factor_count(&self) -> Option<usize> {
+        match self {
+            Self::Cholesky { rank, .. } => Some(*rank),
+            Self::Translated { columns, .. } => Some(columns.len()),
+            Self::Packed { .. } | Self::Augmented { .. } => None,
+        }
+    }
+    /// Cholesky factor `column` of a factored base as the symmetric `m x m` matrix `L_pq`
+    /// (`(pq|rs) = sum_P L^P_pq L^P_rs`); empty for any other representation.
+    pub fn factor(&self, column: usize) -> DMatrix<f64> {
+        match self {
+            Self::Cholesky {
+                m, rank, factors, ..
+            } => DMatrix::from_fn(*m, *m, |p, q| factors.as_slice()[pair(p, q) * rank + column]),
+            Self::Translated {
+                m,
+                stored,
+                factors,
+                translations,
+                columns,
+                ..
+            } => {
+                let (o, t) = columns[column];
+                let back = &translations.inverse[t];
+                DMatrix::from_fn(*m, *m, |p, q| {
+                    factors.as_slice()[pair(back[p], back[q]) * stored + o]
+                })
+            }
+            Self::Packed { .. } | Self::Augmented { .. } => DMatrix::zeros(0, 0),
         }
     }
     pub fn value(&self, p: usize, q: usize, r: usize, s: usize) -> f64 {
@@ -133,6 +245,20 @@ impl Eri {
             Self::Packed { values, .. } => values.as_slice()[pair(a, b)],
             Self::Cholesky { rank, factors, .. } => (0..*rank)
                 .map(|k| factors.as_slice()[a * rank + k] * factors.as_slice()[b * rank + k])
+                .sum(),
+            Self::Translated {
+                stored,
+                factors,
+                translations,
+                columns,
+                ..
+            } => columns
+                .iter()
+                .map(|&(o, t)| {
+                    let back = &translations.inverse[t];
+                    factors.as_slice()[pair(back[p], back[r]) * stored + o]
+                        * factors.as_slice()[pair(back[q], back[s]) * stored + o]
+                })
                 .sum(),
         }
     }
@@ -220,6 +346,9 @@ pub struct MolecularIntegrals {
     eri: Mutex<Option<Arc<Eri>>>,
     cholesky_tolerance: f64,
     fixed_pivots: Option<Buffer<usize>>,
+    /// The kept eigenvalue counts that go with `fixed_pivots` of a factorization stored per
+    /// translation orbit.
+    fixed_kept: Option<Vec<usize>>,
     pub nuclear: f64,
     pub kinetic_method: String,
     pub overlap_min: f64,
@@ -232,7 +361,307 @@ pub struct MolecularIntegrals {
     /// The Madelung term `1/2 N_e v_M` of a periodic cell, already included in `nuclear`;
     /// zero for a molecule.
     pub madelung: f64,
+    /// The PAW-LCAO supercell this Hamiltonian was built from (`molecular::periodic::paw`);
+    /// `None` for every other kind.
+    pub paw_supercell: Option<Arc<PawSupercellSource>>,
     _matrices: Reservation,
+}
+/// The Coulomb pair matrix `(pr|qs)` of `m` real orbitals, read one Cholesky column at a time
+/// (pairs packed as [`pair`], `p >= r`): the two-body source a Hamiltonian that has no orbital
+/// samples to integrate on its grid factors through [`cholesky_from_columns`].
+pub trait PairColumns: Send + Sync {
+    fn m(&self) -> usize;
+    /// `(pr|pr)` of every packed pair.
+    fn diagonal(&self) -> Result<Vec<f64>>;
+    /// `(pr|qs)` of the packed pair `pivot = pair(p, r)` against every packed pair `(q, s)`.
+    fn column(&self, pivot: usize) -> Result<Vec<f64>>;
+    /// The largest imaginary part and the largest departure from the pair symmetry the columns
+    /// read so far carried before they were made real and symmetric (Hartree).
+    fn departures(&self) -> (f64, f64);
+}
+
+/// The pivoted Cholesky of the pair matrix of `columns`: the largest residual diagonal is taken
+/// until it falls to `tolerance` (or exactly `fixed_pivots`, in that order, with no scan of the
+/// unused diagonal); each column is read once, when it is chosen.
+pub fn cholesky_from_columns(
+    ctx: &Context,
+    columns: &dyn PairColumns,
+    tolerance: f64,
+    fixed_pivots: Option<&[usize]>,
+) -> Result<Eri> {
+    let ones = fixed_pivots.map(|p| vec![1; p.len()]);
+    let fixed = fixed_pivots.zip(ones.as_deref());
+    let orbits = factor_orbits(ctx, columns, &Translations::identity(columns.m()), tolerance, fixed)?;
+    let mut pivots = ctx.allocate::<usize>(orbits.stored.max(1))?;
+    pivots.as_mut_slice()[..orbits.stored].copy_from_slice(&orbits.pivots);
+    Ok(Eri::Cholesky {
+        m: columns.m(),
+        rank: orbits.stored,
+        factors: orbits.factors,
+        residual: orbits.residual,
+        pivots,
+    })
+}
+
+/// The pivoted Cholesky of the pair matrix of `columns` when `translations` leave it invariant
+/// (a supercell's frame), stored once per translation orbit ([`Eri::Translated`]): at the
+/// largest residual diagonal the whole orbit of its pair is taken as one block, from the one
+/// column of the pair (a translate's column is the column carried by the translation). The
+/// block `A` of the orbit's residual is symmetric under the translations, so the vectors
+/// `C A^-1/2` of its columns `C` are translates of one another and the residual stays invariant;
+/// the eigenvalues of `A` at or below `tolerance` are dropped (they leave at most that on the
+/// orbit's diagonal). The memory and the columns read fall by the number of cells. `fixed`
+/// replays the representative pivots and kept eigenvalue counts of an earlier factorization
+/// ([`Eri::pivots`], [`Eri::kept`]) without a scan of the unused diagonal.
+pub fn cholesky_by_translation_orbits(
+    ctx: &Context,
+    columns: &dyn PairColumns,
+    translations: &Arc<Translations>,
+    tolerance: f64,
+    fixed: Option<(&[usize], &[usize])>,
+) -> Result<Eri> {
+    let orbits = factor_orbits(ctx, columns, translations, tolerance, fixed)?;
+    let mut pivots = ctx.allocate::<usize>(orbits.stored.max(1))?;
+    pivots.as_mut_slice()[..orbits.stored].copy_from_slice(&orbits.pivots);
+    Ok(Eri::Translated {
+        m: columns.m(),
+        stored: orbits.stored,
+        factors: orbits.factors,
+        translations: translations.clone(),
+        columns: orbits.columns,
+        residual: orbits.residual,
+        pivots,
+        kept: orbits.kept,
+    })
+}
+
+/// What [`factor_orbits`] gives: the stored vectors (pair-major `n x stored`), the
+/// representative pivot and kept eigenvalue count of each orbit, every factor as (stored vector,
+/// translation) and the largest unused diagonal (`None` for fixed pivots).
+struct Orbits {
+    stored: usize,
+    factors: Buffer<f64>,
+    pivots: Vec<usize>,
+    kept: Vec<usize>,
+    columns: Vec<(usize, usize)>,
+    residual: Option<f64>,
+}
+
+fn factor_orbits(
+    ctx: &Context,
+    columns: &dyn PairColumns,
+    translations: &Translations,
+    tolerance: f64,
+    fixed: Option<(&[usize], &[usize])>,
+) -> Result<Orbits> {
+    if !tolerance.is_finite() || tolerance <= 0. {
+        return Err(invalid("Cholesky tolerance must be finite and positive"));
+    }
+    let m = columns.m();
+    let n = packed_len(m)?;
+    if translations.orbital.first().map_or(true, |t| t.len() != m) {
+        return Err(invalid("the translations do not permute these orbitals"));
+    }
+    let diagonal = columns.diagonal()?;
+    if diagonal.len() != n {
+        return Err(invalid("the pair diagonal does not match the orbitals"));
+    }
+    let mut residual = ctx.allocate::<f64>(n)?;
+    residual.as_mut_slice().copy_from_slice(&diagonal);
+    if let Some((pivots, kept)) = fixed {
+        let mut seen = vec![false; n];
+        for &pivot in pivots {
+            if pivot >= n || std::mem::replace(&mut seen[pivot], true) {
+                return Err(invalid("fixed Coulomb pivots must be distinct orbital pairs"));
+            }
+        }
+        if kept.len() != pivots.len() {
+            return Err(invalid("fixed Coulomb pivots need one kept count each"));
+        }
+    }
+    // The translations on the packed pairs: `forward[t][a]` is pair `a` carried by `t`,
+    // `back[t][a]` by its inverse.
+    let cells = translations.orbital.len();
+    let on_pairs = |maps: &[Vec<usize>]| -> Vec<Vec<usize>> {
+        maps.iter()
+            .map(|map| {
+                (0..m)
+                    .flat_map(|p| (0..=p).map(move |r| (p, r)))
+                    .map(|(p, r)| pair(map[p], map[r]))
+                    .collect()
+            })
+            .collect()
+    };
+    let (forward, back) = if cells > 1 {
+        (on_pairs(&translations.orbital), on_pairs(&translations.inverse))
+    } else {
+        (Vec::new(), Vec::new())
+    };
+    let mut factors = GrowingRows::new(ctx, n)?;
+    let mut used = vec![false; n];
+    // Each stored vector's share of the `cells` translates the update sums over (orbit size
+    // over cells: a pair its stabilizer fixes is counted once).
+    let mut shares = Vec::new();
+    let (mut pivots, mut kept, mut factor_columns) = (Vec::new(), Vec::new(), Vec::new());
+    let mut previous = ctx.allocate::<f64>(n)?;
+    let mut value = ctx.allocate::<f64>(n)?;
+    let mut work = ctx.allocate::<f64>(if cells > 1 { n } else { 0 })?;
+    loop {
+        let index = factors.count();
+        let pivot = match fixed {
+            Some((fixed, _)) if index == fixed.len() => break,
+            Some((fixed, _)) => fixed[index],
+            None if used.iter().all(|&u| u) => break,
+            None => (0..n)
+                .max_by(|&a, &b| residual.as_slice()[a].total_cmp(&residual.as_slice()[b]))
+                .unwrap(),
+        };
+        let top = residual.as_slice()[pivot];
+        if fixed.is_none() && (top <= tolerance || used[pivot]) {
+            break;
+        }
+        if top <= 0. {
+            return Err(invalid(
+                "a Coulomb pivot has no positive residual diagonal: the pair matrix is not \
+                 positive definite there",
+            ));
+        }
+        // The orbit: the distinct translates of the pivot, the identity first.
+        let mut members = vec![(0, pivot)];
+        for t in 1..cells {
+            let q = forward[t][pivot];
+            if members.iter().all(|&(_, x)| x != q) {
+                members.push((t, q));
+            }
+        }
+        if members.iter().any(|&(_, q)| used[q]) {
+            return Err(invalid(
+                "fixed Coulomb pivots must lie in distinct translation orbits",
+            ));
+        }
+        let column = columns.column(pivot)?;
+        if column.len() != n {
+            return Err(invalid("a pair column does not match the orbitals"));
+        }
+        // `previous[a] = sum_P L^P_a L^P_pivot` over every factor so far.
+        if cells == 1 {
+            let pivot_row = factors.row(pivot).to_vec();
+            factors.apply(&pivot_row, previous.as_mut_slice());
+        } else {
+            previous.as_mut_slice().fill(0.);
+            for map in &back {
+                let weighted: Vec<f64> = factors
+                    .row(map[pivot])
+                    .iter()
+                    .zip(&shares)
+                    .map(|(v, c)| v * c)
+                    .collect();
+                factors.apply(&weighted, work.as_mut_slice());
+                for (slot, &a) in previous.as_mut_slice().iter_mut().zip(map) {
+                    *slot += work.as_slice()[a];
+                }
+            }
+        }
+        let s = members.len();
+        let count = if s == 1 {
+            let scale = 1. / top.sqrt();
+            for a in 0..n {
+                value.as_mut_slice()[a] = (column[a] - previous.as_slice()[a]) * scale;
+            }
+            1
+        } else {
+            // The residual column of the pivot, then the orbit's block from it:
+            // `R[p_i, t_j p] = R[t_j^-1 p_i, p]`.
+            for (slot, c) in previous.as_mut_slice().iter_mut().zip(&column) {
+                *slot = c - *slot;
+            }
+            let r = previous.as_slice();
+            let block = DMatrix::from_fn(s, s, |i, j| {
+                0.5 * (r[back[members[j].0][members[i].1]] + r[back[members[i].0][members[j].1]])
+            });
+            let (values, vectors) = real_eigen(block)?;
+            let count = match fixed {
+                Some((_, kept)) => kept[index],
+                None => values.iter().filter(|&&v| v > tolerance).count(),
+            };
+            if count == 0 || count > s || values[s - count] <= 0. {
+                return Err(invalid(
+                    "a translation orbit of Coulomb pivots has no positive block there",
+                ));
+            }
+            // Column 0 of `U_k L_k^-1/2 U_k^T`, the representative's weights on the members.
+            let weights: Vec<f64> = (0..s)
+                .map(|j| {
+                    (s - count..s)
+                        .map(|l| vectors[(j, l)] * vectors[(0, l)] / values[l].sqrt())
+                        .sum()
+                })
+                .collect();
+            for a in 0..n {
+                value.as_mut_slice()[a] = members
+                    .iter()
+                    .zip(&weights)
+                    .map(|(&(t, _), w)| w * r[back[t][a]])
+                    .sum();
+            }
+            count
+        };
+        let v = value.as_slice();
+        for (a, slot) in residual.as_mut_slice().iter_mut().enumerate() {
+            *slot -= if cells == 1 {
+                v[a] * v[a]
+            } else {
+                members.iter().map(|&(t, _)| v[back[t][a]] * v[back[t][a]]).sum::<f64>()
+            };
+        }
+        factors.push(v)?;
+        shares.push(s as f64 / cells as f64);
+        pivots.push(pivot);
+        kept.push(count);
+        for &(t, q) in &members {
+            factor_columns.push((index, t));
+            used[q] = true;
+        }
+    }
+    if residual.as_slice().iter().any(|d| *d < -1e-9) {
+        return Err(invalid(
+            "Coulomb pair matrix is not positive semidefinite at the requested accuracy",
+        ));
+    }
+    let stored = factors.count();
+    drop((previous, value, work));
+    let packed = if stored == 0 {
+        ctx.allocate::<f64>(n)?
+    } else {
+        factors.into_row_major()?
+    };
+    let error = residual.as_slice().iter().copied().fold(0f64, f64::max);
+    Ok(Orbits {
+        stored,
+        factors: packed,
+        pivots,
+        kept,
+        columns: factor_columns,
+        residual: fixed.is_none().then_some(error),
+    })
+}
+
+/// What a PAW-LCAO supercell Hamiltonian keeps of its build (`molecular::periodic::paw`): the
+/// recipe its geometry continuation rebuilds from, its valence electron count, and the column
+/// source of the two-body integrals of its Lowdin frame, which [`MolecularIntegrals::eri`] factors.
+pub struct PawSupercellSource {
+    pub setup: Arc<crate::periodic::setup::PeriodicSetup>,
+    pub mesh: [usize; 3],
+    pub electrons: usize,
+    pub columns: Box<dyn PairColumns>,
+    /// The part of the pair integrals the columns leave out (the one-center remainder, not
+    /// positive semidefinite), added to their Cholesky factors as an augmentation.
+    pub correction: Arc<PairCorrection>,
+    /// The largest departure of `<phi_p|S|phi_q>` (grid and projectors) from the identity.
+    pub metric_error: f64,
+    /// The supercell's lattice translations on its functions, which leave the pair matrix
+    /// invariant: its factors are stored per translation orbit.
+    pub translations: Arc<Translations>,
 }
 /// The lattice-summed electrostatics of a periodic cell, built by `molecular::periodic`.
 pub(super) struct PeriodicElectrostatics {
@@ -627,6 +1056,9 @@ impl MolecularIntegrals {
             ));
         }
         self.context.run(|| {
+            if let Some(source) = &self.paw_supercell {
+                return super::periodic::paw::continued(self, source, geometry);
+            }
             if let Some(setup) = &self.paw_setup {
                 return setup.at_geometry(
                     &self.context,
@@ -684,6 +1116,7 @@ impl MolecularIntegrals {
         let mut pivots = self.context.allocate::<usize>(plan.len())?;
         pivots.as_mut_slice().copy_from_slice(plan);
         rebuilt.fixed_pivots = Some(pivots);
+        rebuilt.fixed_kept = source.kept().map(<[usize]>::to_vec);
         Ok(rebuilt)
     }
     /// Refuse a Hartree-Fock Hamiltonian when a PAW species' frozen core has no exchange
@@ -695,13 +1128,13 @@ impl MolecularIntegrals {
     /// (and the MP2 natural orbitals and correlating partners an active space selects with),
     /// local MP2 and the analytic variational force.
     pub fn require_hartree_fock_core(&self) -> Result<()> {
-        if self.corrections.as_ref().is_some_and(|c| !c.core_supported) {
-            return Err(invalid(
-                "native PAW frozen-core exchange currently requires an empty core or a single \
-                 closed 1s shell: Hartree-Fock of this molecule, its excitations and every \
-                 Hamiltonian over its frozen core (the model or an active space, MP2, a quantum \
-                 method) are not available; Kohn-Sham DFT runs on every element",
-            ));
+        if let Some(reason) = self.corrections.as_ref().and_then(|c| c.core_refusal.as_ref()) {
+            return Err(invalid(format!(
+                "native PAW frozen-core exchange is not available: {reason}. Hartree-Fock of this \
+                 molecule, its excitations and every Hamiltonian over its frozen core (the model \
+                 or an active space, MP2, a quantum method) are refused; Kohn-Sham DFT runs on \
+                 every element"
+            )));
         }
         Ok(())
     }
@@ -711,6 +1144,31 @@ impl MolecularIntegrals {
         let mut cache = self.eri.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(value) = cache.as_ref() {
             return Ok(value.clone());
+        }
+        if let Some(source) = &self.paw_supercell {
+            let fixed = match (&self.fixed_pivots, &self.fixed_kept) {
+                (Some(pivots), Some(kept)) => Some((pivots.as_slice(), kept.as_slice())),
+                (None, _) => None,
+                (Some(_), None) => {
+                    return Err(invalid(
+                        "fixed Coulomb pivots of a supercell need the kept counts of their orbits",
+                    ))
+                }
+            };
+            let base = Arc::new(cholesky_by_translation_orbits(
+                &self.context,
+                source.columns.as_ref(),
+                &source.translations,
+                self.cholesky_tolerance,
+                fixed,
+            )?);
+            let factors = Arc::new(Eri::Augmented {
+                m: self.m(),
+                base,
+                correction: source.correction.clone(),
+            });
+            *cache = Some(factors.clone());
+            return Ok(factors);
         }
         let mut solver = if self.grid.periodic {
             Poisson::periodic(&self.context, &self.grid)?
@@ -762,20 +1220,11 @@ impl MolecularIntegrals {
         if !moment.is_finite() {
             return Err(invalid("initial magnetic moment must be finite"));
         }
-        let total = electrons.map(|n| n as i128).unwrap_or_else(|| {
-            self.corrections.as_ref().map_or_else(
-                || {
-                    self.geometry
-                        .numbers()
-                        .iter()
-                        .map(|&z| z as i128)
-                        .sum::<i128>()
-                },
-                |c| c.electrons as i128,
-            ) - charge as i128
-        });
+        let neutral = self.neutral_electrons() as i128;
+        let total = electrons
+            .map(|n| n as i128)
+            .unwrap_or_else(|| neutral - charge as i128);
         if self.supercell.is_some() {
-            let neutral: i128 = self.geometry.numbers().iter().map(|&z| z as i128).sum();
             if total != neutral {
                 return Err(invalid(
                     "a periodic cell must be neutral: the periodic Coulomb kernel drops G = 0 against a uniform background, and a charged supercell needs a background correction that is not implemented",
@@ -801,6 +1250,113 @@ impl MolecularIntegrals {
             return Err(invalid("spin occupation does not fit the spatial basis"));
         }
         Ok(particles)
+    }
+    /// The electrons of the neutral system the Hamiltonian describes: the valence electrons of
+    /// a PAW one (molecule or supercell), every electron of an all-electron one.
+    pub fn neutral_electrons(&self) -> usize {
+        if let Some(source) = &self.paw_supercell {
+            return source.electrons;
+        }
+        self.corrections.as_ref().map_or_else(
+            || self.geometry.numbers().iter().map(|&z| z as usize).sum(),
+            |c| c.electrons,
+        )
+    }
+    /// `v_M` (Hartree): the exchange's dropped `G = 0` term of a periodic Hamiltonian (an HAO or
+    /// PAW-LCAO supercell), the Madelung constant of its own lattice; zero for a molecule. The
+    /// supercell's occupied levels lie `-v_M` above the isolated system's (the virtual ones do
+    /// not move), so MP-type denominators add `v_M` to the occupied levels
+    /// ([`super::correlation::natural_orbitals`]); the stored levels, the Fock and every orbital
+    /// Hessian (A + B, CPHF, z-vector) keep it, where it cancels against the `+v_M` of `(ab|ij)`.
+    pub fn exchange_madelung(&self) -> Result<f64> {
+        use super::periodic::paw::HamiltonianKind;
+        match self.kind() {
+            HamiltonianKind::Hao | HamiltonianKind::PawSupercell => {
+                super::periodic::madelung_constant(&self.context, self.geometry.cell())
+            }
+            HamiltonianKind::PawMolecule | HamiltonianKind::AllElectronMolecule => Ok(0.),
+        }
+    }
+    /// Where this Hamiltonian comes from: the one seam the routes that differ by kind dispatch on.
+    pub fn kind(&self) -> super::periodic::paw::HamiltonianKind {
+        use super::periodic::paw::HamiltonianKind;
+        match (&self.paw_supercell, &self.supercell, &self.paw_setup) {
+            (Some(_), _, _) => HamiltonianKind::PawSupercell,
+            (None, Some(_), _) => HamiltonianKind::Hao,
+            (None, None, Some(_)) => HamiltonianKind::PawMolecule,
+            (None, None, None) => HamiltonianKind::AllElectronMolecule,
+        }
+    }
+    /// The PAW-LCAO supercell Hamiltonian from its assembled parts (`molecular::periodic::paw`):
+    /// the raw overlap `S`, the raw bare one-body operator split as `fixed` (kinetic, short-range
+    /// local and one-center: stored as `kinetic`) and the field of the Gaussian ions (stored as
+    /// `potential`), the Lowdin frame, the smooth samples of the raw and orthonormal functions on
+    /// the supercell grid, and the constants.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn from_paw_supercell(
+        ctx: &Context,
+        geometry: Geometry,
+        grid: SpatialGrid,
+        basis: Basis,
+        (samples, orthonormal_samples): (RealSamples, RealSamples),
+        (overlap, fixed, field): (&DMatrix<f64>, &DMatrix<f64>, &DMatrix<f64>),
+        (lowdin, overlap_min): (DMatrix<f64>, f64),
+        (ions, madelung): (f64, f64),
+        cholesky: Option<f64>,
+        supercell: Arc<super::periodic::Supercell>,
+        source: PawSupercellSource,
+    ) -> Result<Self> {
+        let m = lowdin.nrows();
+        if basis.orbitals.len() != m || overlap.shape() != (m, m) || fixed.shape() != (m, m) {
+            return Err(invalid("the PAW supercell parts disagree with its basis"));
+        }
+        let matrices = ctx.reserve(product(&[m, m, 8, 12])?)?;
+        let buffer = |matrix: &DMatrix<f64>| -> Result<Buffer<f64>> {
+            let mut out = ctx.allocate::<f64>(m * m)?;
+            for a in 0..m {
+                for b in 0..m {
+                    out.as_mut_slice()[a * m + b] = matrix[(a, b)];
+                }
+            }
+            Ok(out)
+        };
+        let h = lowdin.transpose() * (fixed + field) * &lowdin;
+        let h = (&h + h.transpose()) * 0.5;
+        let cholesky_tolerance = cholesky.unwrap_or(1e-10);
+        if !cholesky_tolerance.is_finite() || cholesky_tolerance <= 0. {
+            return Err(invalid("Cholesky tolerance must be finite and positive"));
+        }
+        Ok(Self {
+            context: ctx.clone(),
+            geometry,
+            grid,
+            basis,
+            samples,
+            orthonormal_samples,
+            overlap: buffer(overlap)?,
+            kinetic: buffer(fixed)?,
+            potential: buffer(field)?,
+            lowdin,
+            one: buffer(&h)?,
+            eri: Mutex::new(None),
+            cholesky_tolerance,
+            fixed_pivots: None,
+            fixed_kept: None,
+            nuclear: ions + madelung,
+            kinetic_method: "spectral".into(),
+            overlap_min,
+            resolution_ratios: Vec::new(),
+            corrections: None,
+            paw_setup: None,
+            supercell: Some(supercell),
+            madelung,
+            paw_supercell: Some(Arc::new(source)),
+            _matrices: matrices,
+        })
+    }
+    /// The Cholesky tolerance this Hamiltonian factors its integrals with.
+    pub fn cholesky_tolerance(&self) -> f64 {
+        self.cholesky_tolerance
     }
     /// The precision is fixed at construction: the orbital stacks are built
     /// directly in it and never exist in float64 beside it.
@@ -1124,6 +1680,7 @@ impl MolecularIntegrals {
             eri: Mutex::new(None),
             cholesky_tolerance,
             fixed_pivots: None,
+            fixed_kept: None,
             nuclear,
             kinetic_method: kinetic.into(),
             overlap_min,
@@ -1132,6 +1689,7 @@ impl MolecularIntegrals {
             paw_setup: None,
             supercell,
             madelung,
+            paw_supercell: None,
             _matrices: matrices,
         })
     }

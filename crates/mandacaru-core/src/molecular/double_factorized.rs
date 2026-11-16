@@ -349,15 +349,9 @@ fn phase(n: i32) -> C64 {
 /// Every first-factorization leaf of `eri` rotated into `c` (`m x n`), with its sign.
 fn visit(eri: &Eri, c: &DMatrix<f64>, push: &mut dyn FnMut(DMatrix<f64>, f64)) -> Result<()> {
     match eri {
-        Eri::Cholesky {
-            m, rank, factors, ..
-        } => {
-            let m = *m;
-            for column in 0..*rank {
-                let b = DMatrix::from_fn(m, m, |p, q| {
-                    factors.as_slice()[super::integrals::pair(p, q) * rank + column]
-                });
-                push(c.transpose() * b * c, 1.);
+        Eri::Cholesky { .. } | Eri::Translated { .. } => {
+            for column in 0..eri.factor_count().unwrap_or(0) {
+                push(c.transpose() * eri.factor(column) * c, 1.);
             }
             Ok(())
         }

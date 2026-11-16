@@ -277,6 +277,7 @@ pub fn finish(
     for i in 0..n {
         ionic.as_mut_slice()[i] = v_loc[i] - v_hartree.as_slice()[i] - v_xc[i];
     }
+    super::ionic_tail::enforce(r, ionic.as_mut_slice(), shells.charge, r_local);
     let screening_integrand = (0..n)
         .map(|i| v_hartree.as_slice()[i] * shape(r[i], r_g) * 4. * PI * r[i] * r[i])
         .collect::<Vec<_>>();

@@ -23,7 +23,8 @@
 //! than `mandacaru-pseudopotential`, a version above 3, a family other than
 //! `paw-lcao` / `upaw-lcao`, a bare-matrix (first-order) spin-orbit entry,
 //! spin-orbit projectors off the dataset's radial grid, a missing norm
-//! correction (there is no recovery), an unknown or missing key. The only
+//! correction (there is no recovery), a version-3 record whose core density holds charge but
+//! lists no core state, an unknown or missing key. The only
 //! defaults are the two the shipped library needs; the record lists them in
 //! [`PawDataset::defaults_applied`].
 
@@ -41,7 +42,7 @@ use crate::paw::invalid;
 use crate::{Buffer, Context, Reservation, Result};
 
 pub use files::{
-    reload_errors, tree_cost, Parts, WriteSpec, RELOAD_LEVEL_TOLERANCE, TREE_BYTES_PER_MEMBER,
+    reload_errors, reload_shift, tree_cost, Parts, WriteSpec, RELOAD_LEVEL_TOLERANCE, TREE_BYTES_PER_MEMBER,
     TREE_BYTES_PER_VALUE,
 };
 pub use values::LocalPotential;

@@ -254,11 +254,13 @@ def test_dft_plus_u_forces_and_stress_semilocal():
 
 
 def test_a_hybrid_with_symmetry_on_keeps_the_whole_mesh_and_differentiates_the_same_crystal():
-    """A hybrid sums its exchange over the listed k-points, so the setup keeps the whole mesh for it
-    whatever ``symmetry`` says (MG-F3 part 1, owner decision Q11): ``symmetry=True`` reduces
-    nothing, and the forces and the stress are those of ``symmetry=False``. (The engines still
-    refuse a hybrid crystal that does list a reduced mesh, from another source:
-    ``periodic_response_refusals.rs``.) H2 in a cubic box at Gamma; measured about 14 s."""
+    """A hybrid sums its exchange over the listed k-points (each point without its -k standing
+    for both), so the setup never reduces its mesh by the space group, whatever ``symmetry``
+    says (MG-F3 part 1, owner decision Q11; only time reversal halves it, Q11/SH-5):
+    ``symmetry=True`` reduces nothing, and the forces and the stress are those of
+    ``symmetry=False``. (The engines still refuse a hybrid crystal that does list a space-group
+    reduction, from another source: ``periodic_response_refusals.rs``.) H2 in a cubic box at
+    Gamma; measured about 14 s."""
 
     def hydrogen(symmetry):
         atoms = Atoms("H2", positions=[[3.0, 3.0, 2.63], [3.0, 3.0, 3.37]], cell=[6.0] * 3, pbc=True)

@@ -36,6 +36,9 @@ from mandacaru.pseudopotentials.record import record_of
 
 #: An empty channel's lowest level is a bound state below this (Hartree).
 BOUND_LEVEL = -1e-3
+#: The former binding evaluator on the ``TestShells`` cases (``test/migration/reference``).
+FROZEN_SAMPLES = json.loads((Path(__file__).resolve().parents[1] / "migration" / "reference"
+                             / "radial_orbital_samples.json").read_text())["cases"]
 
 
 # Views of the native routines these tests pin (the Python wrappers are gone): the lowest
@@ -201,8 +204,10 @@ class TestFrozenPythonOutputs:
 
 class TestShells:
     """A zeta, polarization or diffuse shell evaluated by the native table
-    routines, against ``_native.radial_orbital_evaluate`` (the
-    engine's orbital evaluator): values, slopes and the sampled kind."""
+    routines, against the samples frozen from the binding's former orbital
+    evaluator (``reference/radial_orbital_samples.json``, a duplicate of
+    ``basis::table::evaluate`` deleted 2026-11-14): values, slopes and the
+    sampled kind."""
 
     @pytest.mark.parametrize("l", [0, 1, 2])
     @pytest.mark.parametrize("start", [0.0, 0.02])
@@ -213,11 +218,9 @@ class TestShells:
         shell = PseudoShell(table, -l, center=[0.0, 0.0, 0.0], real=True)
         nodes = np.concatenate([np.linspace(0.0, r[-1] - 1e-9, 300),
                                 [r[-1] + 1.0]])
-        # The orbital evaluator of the engine (confined at the end of the table).
+        # The former orbital evaluator of the binding (confined at the end of the table).
         for slope, tol in ((False, 1e-12), (True, 1e-11)):
-            old = _native.radial_orbital_evaluate(
-                np.ascontiguousarray(r), np.ascontiguousarray(table.values),
-                np.ascontiguousarray(nodes), l, float(r[-1]), slope)
+            old = np.asarray(FROZEN_SAMPLES[f"l={l} start={start} slope={slope}"])
             close(shell.radial_slope(nodes) if slope else shell.radial(nodes), old, tol)
         assert shell.r_c == float(r[-1])
         assert (shell.kind, shell.zeta, shell.state) == ("polarization", 2, (l + 1, l, -l))

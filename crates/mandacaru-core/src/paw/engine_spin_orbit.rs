@@ -1,227 +1,222 @@
-//! The `j` splitting of the isolated atom through the engine's own spin-orbit operator (gate G13).
+//! The `j` splitting of the isolated atom through the engine itself (gate G13).
 //!
 //! A Dirac PAW-LCAO dataset is the scalar (`j`-averaged) construction plus an `L.S` coupling on the
-//! `j` branches' own projectors. The engine's atom in the DZP basis of the same dataset is, for a
-//! channel `l`,
+//! `j` branches' own projectors. The engine hands those projectors the scalar smooth waves of its
+//! LCAO basis, whose inner shape is the scalar partial wave's, so a heavy `p` shell loses
+//! 10-15 percent of the splitting the record's all-electron Dirac levels carry (bismuth 6p: 1.60 eV
+//! from the engine against 1.836 eV in the record, the complete radial basis 1.79 eV). The loss is
+//! a limit of the basis shape and of the self-consistent response of the atom, so it is measured
+//! where it happens: in the engine's own isolated-atom spinor SCF ([`super::atom_scf`]).
 //!
-//! ```text
-//! H_j = T + v~ + sum |p~_a> D_ab <p~_b|  +  (L.S)_j  sum |p~so_a> coupling_ab <p~so_b|,
-//! S   = 1 + sum |p~_a> q_ab <p~_b|,
-//! ```
-//!
-//! on the radial basis functions the engine builds for `l` (`basis_recipe::species`): the scalar
-//! `D` and `q` on the scalar projectors, the spin-orbit term on the union of the branches' projectors,
-//! the metric spin free (`models::spin_orbit`, `periodic/setup/parse.rs`). This module diagonalizes
-//! that one-center problem in the basis, in the dataset's screened local potential and without a
-//! self-consistency loop (the frozen reference density; the engine's SCF atom agrees with it to a
-//! few percent), for `j = l - 1/2` and `j = l + 1/2`, and returns the splitting next to the
-//! all-electron Dirac one of the record. Everything is Rust: the generator uses it to calibrate and to
-//! gate, and the diagnostics report it.
-//!
-//! The restriction to the engine's basis is the point: the inner shape of a basis function is that
-//! of the scalar partial wave, so the `j` projectors see a wave they were not built for, and a heavy
-//! `p` shell loses 10-15 percent of its splitting (bismuth 6p: 1.60 eV from the engine against the
-//! record's 1.836). A complete radial basis would not show it (1.79 eV for the same record).
+//! For every angular momentum `l` with a spin-orbit entry, every bound occupied reference (the
+//! valence shell and a semicore shell of the same `l` alike) is compared: the splitting of the
+//! engine's `j = l - 1/2` and `j = l + 1/2` multiplets (`2l` and `2l + 2` degenerate spinor states,
+//! in the engine's energy zero, so only their difference means anything; a multiplet the box splits
+//! is taken at its centroid) against the difference of the record's Dirac reference energies. The
+//! pairs of multiplets with the right degeneracies whose lower member holds electrons, in ascending
+//! energy, are the occupied references in ascending energy. The generator closes the difference by
+//! scaling the stored coupling ([`super::generate::spin_orbit_scale`]) and the gate G13 holds the
+//! result to [`RELATIVE`] or [`ABSOLUTE`].
 use super::{
-    basis_recipe::{species, Recipe as BasisRecipe},
-    diagnose::view::Smooth,
+    atom_scf::{clusters, levels, Cluster, Controls, Levels},
     invalid,
     record::PawDataset,
 };
 use crate::{Context, Result};
-use nalgebra::{DMatrix, SymmetricEigen};
 
-/// A splitting within this fraction of the Dirac one, or within [`ABSOLUTE`], passes the native
-/// gate G13. The model has a frozen reference density: the engine's SCF atom (the jj occupation of
-/// the open shell) lowers the heavy `p` splittings a further 4-8 percent (Bi 1.679 eV frozen against
-/// 1.607 SCF, Pb 1.258 against 1.168, Tl 0.928 against 0.867), so this gate is a 10 percent screen of
-/// the operator and the basis. The 2 percent gate G13 proper is on the engine's own SCF atom
-/// (`PAW_REGENERATION_PLAN.md`, `soatom/so_engine.py`), which is what the calibration table is
-/// measured on.
-pub const RELATIVE: f64 = 0.10;
-/// 10 meV in Hartree (the absolute floor of both gates).
+/// A splitting within this fraction of the Dirac one, or within [`ABSOLUTE`], passes G13.
+pub const RELATIVE: f64 = 0.02;
+/// 10 meV in Hartree (the absolute floor of the gate).
 pub const ABSOLUTE: f64 = 0.010 / 27.211_386_245_988;
-/// Overlap eigenvalues below this (relative to the largest) are dropped as linear dependence.
-const DEPENDENCE: f64 = 1e-9;
+/// Two spinor levels closer than this (6 meV, Hartree) are one `j` multiplet.
+pub const MULTIPLET: f64 = 0.006 / 27.211_386_245_988;
+/// An engine splitting outside this range of the Dirac one is a pair of levels that is not the
+/// shell's, or a shell whose multiplets the jj filling of an open shell does not leave a spin-orbit
+/// splitting (cobalt 3d: 0.36 eV against 0.19, the exchange of the fractionally filled d5/2): the
+/// calibration of a shell the atom cannot measure would move the coupling the wrong way, so it
+/// refuses.
+const WRONG_PAIR: (f64, f64) = (0.6, 1.6);
+/// The widest gap (0.4 eV, Hartree) between the groups of one `j` multiplet that the cubic box has split.
+const SPAN: f64 = 0.4 / 27.211_386_245_988;
+/// A multiplet occupied by less than this per state (the tail of the Fermi-Dirac smearing above
+/// the Fermi level) does not hold the shell's electrons.
+const OCCUPIED: f64 = 0.02;
 
-/// One channel's splitting in the engine's basis and in the all-electron Dirac atom.
+/// One channel's splitting in the engine's atom and in the all-electron Dirac atom.
 #[derive(Debug, Clone, Copy)]
 pub struct Splitting {
     pub l: usize,
-    /// `E(j = l + 1/2) - E(j = l - 1/2)` of the engine's operator in its basis (Hartree).
-    pub engine: f64,
-    /// The same difference of the Dirac branch reference energies of the record (Hartree).
-    pub dirac: f64,
-    /// Which bound reference of the channel the level is (0 = the lowest).
+    /// Which reference of the channel the level is (its index among the references).
     pub state: usize,
+    /// `E(j = l + 1/2) - E(j = l - 1/2)` of the engine's atom (Hartree); `None` when no pair of
+    /// multiplets with the degeneracies `2l` and `2l + 2` holds electrons.
+    pub engine: Option<f64>,
+    /// The same difference of the Dirac reference energies of the record (Hartree).
+    pub dirac: f64,
+    /// Fermi-Dirac width (eV) of the SCF the engine splitting comes from.
+    pub width: f64,
+    /// A multiplet of the pair is fractionally filled (between [`OCCUPIED`] and one minus it).
+    /// For a `d` or `f` shell the exchange of such a filling is part of the splitting the atom
+    /// shows, which is then not the spin-orbit one ([`Splitting::unreliable`]).
+    pub fractional: bool,
 }
 
 impl Splitting {
+    /// An open `d` or `f` shell whose multiplets are fractionally filled: the engine's atom
+    /// cannot tell its spin-orbit splitting from the exchange of the filling (cobalt 3d reads 1.86
+    /// times the Dirac splitting; the 5d and 4f of the open-4f lanthanides 1.5 times). The
+    /// calibration scales such a shell as far as it closes and gives it up when it does not; the
+    /// gate reports it instead of refusing the file.
+    pub fn unreliable(&self) -> bool {
+        self.l >= 2 && self.fractional
+    }
+
     /// Whether the engine splitting is within [`RELATIVE`] or [`ABSOLUTE`] of the Dirac one.
     pub fn passes(&self) -> bool {
-        (self.engine - self.dirac).abs() <= (RELATIVE * self.dirac.abs()).max(ABSOLUTE)
+        self.engine
+            .is_some_and(|e| (e - self.dirac).abs() <= (RELATIVE * self.dirac.abs()).max(ABSOLUTE))
     }
 }
 
-fn trapezoid(h: f64, values: impl Iterator<Item = f64>) -> f64 {
-    values.sum::<f64>() * h
-}
-
-/// Radial integrals on the uniform table `r` of the basis functions `chi` (`R(r)`), for the
-/// angular momentum `l`: overlap, kinetic energy plus the local potential, and the projections on
-/// each projector table (`p(r)`, the factor `r^2` included in the measure).
-struct Basis {
-    overlap: DMatrix<f64>,
-    hamiltonian: DMatrix<f64>,
-    projections: Vec<DMatrix<f64>>,
-}
-
-fn integrals(
-    r: &[f64],
-    l: usize,
-    v: &[f64],
-    chi: &[&[f64]],
-    projector_sets: &[&[&[f64]]],
-) -> Basis {
-    let n = r.len();
-    let h = r[1] - r[0];
-    let centrifugal = (l * (l + 1)) as f64;
-    let slope = |f: &[f64], i: usize| -> f64 {
-        let (a, b) = (i.saturating_sub(1), (i + 1).min(n - 1));
-        (f[b] - f[a]) / (r[b] - r[a])
-    };
-    let m = chi.len();
-    let mut overlap = DMatrix::zeros(m, m);
-    let mut hamiltonian = DMatrix::zeros(m, m);
-    for i in 0..m {
-        for j in i..m {
-            let s = trapezoid(h, (0..n).map(|k| chi[i][k] * chi[j][k] * r[k] * r[k]));
-            let t = trapezoid(
-                h,
-                (0..n).map(|k| {
-                    0.5 * (slope(chi[i], k) * slope(chi[j], k)
-                        + centrifugal * chi[i][k] * chi[j][k] / (r[k] * r[k]))
-                        * r[k]
-                        * r[k]
-                }),
-            );
-            let p = trapezoid(
-                h,
-                (0..n).map(|k| v[k] * chi[i][k] * chi[j][k] * r[k] * r[k]),
-            );
-            overlap[(i, j)] = s;
-            overlap[(j, i)] = s;
-            hamiltonian[(i, j)] = t + p;
-            hamiltonian[(j, i)] = t + p;
-        }
-    }
-    let projections = projector_sets
-        .iter()
-        .map(|set| {
-            DMatrix::from_fn(m, set.len(), |i, a| {
-                trapezoid(h, (0..n).map(|k| set[a][k] * chi[i][k] * r[k] * r[k]))
-            })
-        })
-        .collect();
-    Basis {
-        overlap,
-        hamiltonian,
-        projections,
-    }
-}
-
-/// The `state`-th eigenvalue of `H c = E S c`, linear dependence removed.
-fn level(h: &DMatrix<f64>, s: &DMatrix<f64>, state: usize) -> Result<f64> {
-    let eigen = SymmetricEigen::new(s.clone());
-    let top = eigen.eigenvalues.iter().cloned().fold(0., f64::max);
-    let keep: Vec<usize> = (0..eigen.eigenvalues.len())
-        .filter(|&i| eigen.eigenvalues[i] > DEPENDENCE * top)
-        .collect();
-    let mut x = DMatrix::zeros(s.nrows(), keep.len());
-    for (c, &i) in keep.iter().enumerate() {
-        let scale = 1. / eigen.eigenvalues[i].sqrt();
-        for r in 0..s.nrows() {
-            x[(r, c)] = eigen.eigenvectors[(r, i)] * scale;
-        }
-    }
-    let reduced = x.transpose() * h * &x;
-    let mut values: Vec<f64> = SymmetricEigen::new(reduced)
-        .eigenvalues
-        .iter()
-        .copied()
-        .collect();
-    values.sort_by(|a, b| a.total_cmp(b));
-    values
-        .get(state)
-        .copied()
-        .ok_or_else(|| invalid("the basis has fewer levels than the bound state asks for"))
-}
-
-/// The engine and the Dirac splitting of every channel `l >= 1` with a spin-orbit entry and a
-/// bound occupied reference (its valence-most one), for the record as stored.
-pub fn splittings(ctx: &Context, ds: &PawDataset) -> Result<Vec<Splitting>> {
-    let smooth = Smooth::scalar(ctx, ds)?;
-    let (shells, _) = species(ctx, ds, &BasisRecipe::new(2, 1, None))?;
-    let r = ds.r.as_slice();
+/// Every bound occupied reference of every channel with a spin-orbit entry whose Dirac splitting
+/// is at least [`ABSOLUTE`], `(l, state, Dirac splitting)`, ascending in `l` and in `state`.
+fn shells(ds: &PawDataset) -> Result<Vec<(usize, usize, f64)>> {
     let mut out = Vec::new();
     for (&l, so) in &ds.spin_orbit {
-        let l = l as usize;
-        let channel = smooth
-            .channel(l)
+        let channel = ds
+            .channels
+            .get(&l)
             .ok_or_else(|| invalid(format!("the record has no scalar channel l={l}")))?;
-        let Some(state) = channel.bound_occupied_energies().len().checked_sub(1) else {
-            continue;
-        };
-        let chi: Vec<&[f64]> = shells
-            .iter()
-            .filter(|s| s.l == l && !s.diffuse && s.r.len() == r.len())
-            .map(|s| s.values.as_slice())
-            .collect();
-        if chi.is_empty() {
-            continue;
+        let energies = channel.reference_energies.data();
+        let occupations = channel.occupations.data();
+        let branch = so.reference_energies.data();
+        let count = branch.len() / 2;
+        for state in 0..energies.len() {
+            if !(occupations.get(state).is_some_and(|&o| o > 0.) && energies[state] < 0.) {
+                continue;
+            }
+            if so.reference_energies.shape() != [2, count] || state >= count {
+                return Err(invalid(format!(
+                    "the spin-orbit entry l={l} has no branch reference {state}"
+                )));
+            }
+            let dirac = branch[count + state] - branch[state];
+            // A Dirac splitting under the absolute floor is inside the gate whatever the engine
+            // gives, and the box splits a multiplet by about as much (boron 2p: 2 meV), so the
+            // two multiplets cannot be told apart: the shell is not measured.
+            if dirac.abs() >= ABSOLUTE {
+                out.push((l as usize, state, dirac));
+            }
         }
-        let scalar: Vec<&[f64]> = (0..channel.rank)
-            .map(|a| &channel.projectors.as_slice()[a * r.len()..(a + 1) * r.len()])
-            .collect();
-        let branch: Vec<&[f64]> = so.projectors.iter().map(|t| t.as_slice()).collect();
-        let basis = integrals(
-            r,
-            l,
-            ds.v_local_screened.as_slice(),
-            &chi,
-            &[scalar.as_slice(), branch.as_slice()],
-        );
-        let (ps, pso) = (&basis.projections[0], &basis.projections[1]);
-        let (rank, nso) = (channel.rank, so.projectors.len());
-        let d = DMatrix::from_row_slice(rank, rank, &channel.coupling);
-        let q = DMatrix::from_row_slice(rank, rank, &channel.overlap);
-        let ls = DMatrix::from_fn(nso, nso, |i, j| {
-            so.coupling.data()[i * nso + j]
-                + so.overlap_coupling.data()[i * nso + j] * ds.hartree_screening
-        });
-        let metric = &basis.overlap + ps * q * ps.transpose();
-        let scalar_part = &basis.hamiltonian + ps * d * ps.transpose();
-        let mut levels = [0.; 2];
-        for (slot, factor) in [-(l as f64 + 1.) / 2., l as f64 / 2.]
-            .into_iter()
-            .enumerate()
-        {
-            let h = &scalar_part + pso * (&ls * factor) * pso.transpose();
-            levels[slot] = level(&h, &metric, state)?;
-        }
-        let energies = so.reference_energies.data();
-        let count = energies.len() / 2;
-        if so.reference_energies.shape() != [2, count] || state >= count {
-            return Err(invalid(format!(
-                "the spin-orbit entry l={l} has no branch reference {state}"
-            )));
-        }
-        out.push(Splitting {
-            l,
-            engine: levels[1] - levels[0],
-            dirac: energies[count + state] - energies[state],
-            state,
-        });
     }
     Ok(out)
+}
+
+/// The `want` spinor states of consecutive groups from `start` on, which are one `j` multiplet:
+/// its centroid (count weighted, Hartree), its mean occupation and the index after it. The cubic
+/// box splits `d5/2` into `4 + 2` and `f` multiplets into `4 + 2 (+ 2)`, so a multiplet is the run
+/// of groups whose counts add up to `2j + 1`, each within [`SPAN`] of the one before.
+fn multiplet(groups: &[Cluster], start: usize, want: usize) -> Option<(f64, f64, usize)> {
+    let (mut count, mut weighted, mut occupied) = (0, 0., 0.);
+    let mut next = start;
+    while count < want {
+        let group = groups.get(next)?;
+        if next > start && group.energy - groups[next - 1].energy > SPAN {
+            return None;
+        }
+        count += group.count;
+        weighted += group.energy * group.count as f64;
+        occupied += group.occupation * group.count as f64;
+        next += 1;
+    }
+    (count == want).then(|| (weighted / want as f64, occupied / want as f64, next))
+}
+
+/// The engine's splitting of each shell of one `l`, `diracs` being the Dirac splittings of its
+/// bound occupied references, lowest first. A pair is an occupied lower multiplet (`2l` states)
+/// and an upper one (`2l + 2`) somewhere above it; the shells take the lower multiplets in
+/// ascending order, and of the uppers a lower multiplet has the one whose splitting is nearest the
+/// shell's Dirac one within [`WRONG_PAIR`] (an s level followed by a four-fold group,
+/// or the next shell's pair, looks like a p or d pair: the splitting that is not within a factor
+/// of [`WRONG_PAIR`] of the Dirac one is not the shell's; transition-metal `s` and `d` levels sit between
+/// the multiplets of an `f` shell, so the upper multiplet is searched for, not assumed to be the
+/// next one). A shell no pair fits gets `None`.
+pub fn assign(groups: &[Cluster], l: usize, diracs: &[f64]) -> Vec<Option<(f64, bool)>> {
+    let fractional = |occupation: f64| occupation > OCCUPIED && occupation < 1. - OCCUPIED;
+    let lowers: Vec<(usize, f64, bool)> = (0..groups.len())
+        .filter_map(|a| {
+            let (centroid, occupation, next) = multiplet(groups, a, 2 * l)?;
+            (occupation > OCCUPIED).then_some((next, centroid, fractional(occupation)))
+        })
+        .collect();
+    let mut taken = 0;
+    diracs
+        .iter()
+        .map(|&dirac| {
+            for (i, &(next, lower, lower_open)) in lowers.iter().enumerate().skip(taken) {
+                let best = (next..groups.len())
+                    .filter_map(|j| {
+                        multiplet(groups, j, 2 * l + 2)
+                            .map(|u| (u.0 - lower, lower_open || fractional(u.1)))
+                    })
+                    .filter(|(splitting, _)| {
+                        (WRONG_PAIR.0..WRONG_PAIR.1).contains(&(splitting / dirac))
+                    })
+                    .min_by(|x, y| (x.0 / dirac).ln().abs().total_cmp(&(y.0 / dirac).ln().abs()));
+                if best.is_some() {
+                    taken = i + 1;
+                    return best;
+                }
+            }
+            None
+        })
+        .collect()
+}
+
+/// The splittings of the levels `atom` an SCF gave for `ds`, one per shell of [`shells`]
+/// ([`assign`] per `l`).
+pub fn from_levels(ds: &PawDataset, atom: &Levels) -> Result<Vec<Splitting>> {
+    let groups = clusters(&atom.levels, MULTIPLET);
+    let all = shells(ds)?;
+    let mut out = Vec::with_capacity(all.len());
+    let mut l = 0;
+    while l <= all.iter().map(|s| s.0).max().unwrap_or(0) {
+        let of_l: Vec<&(usize, usize, f64)> = all.iter().filter(|s| s.0 == l).collect();
+        if !of_l.is_empty() {
+            let diracs: Vec<f64> = of_l.iter().map(|s| s.2).collect();
+            for (shell, engine) in of_l.iter().zip(assign(&groups, l, &diracs)) {
+                out.push(Splitting {
+                    l,
+                    state: shell.1,
+                    engine: engine.map(|e| e.0),
+                    dirac: shell.2,
+                    width: atom.width,
+                    fractional: engine.is_some_and(|e| e.1),
+                });
+            }
+        }
+        l += 1;
+    }
+    Ok(out)
+}
+
+/// The engine and the Dirac splitting of every bound occupied reference of every channel with a
+/// spin-orbit entry, for the record as stored: one isolated-atom
+/// SCF through the engine. A scalar record has no entry and returns an empty list.
+pub fn splittings(ctx: &Context, ds: &PawDataset) -> Result<Vec<Splitting>> {
+    splittings_from(ctx, ds, None)
+}
+
+/// [`splittings`] at the one Fermi-Dirac width `only_width` (eV) when it is given: the rounds of
+/// one calibration measure at the width of the first, so the occupations of an open shell do not
+/// change from one round to the next.
+pub fn splittings_from(ctx: &Context, ds: &PawDataset, only_width: Option<f64>) -> Result<Vec<Splitting>> {
+    if shells(ds)?.is_empty() {
+        return Ok(Vec::new());
+    }
+    let controls = Controls {
+        only_width,
+        ..Controls::default()
+    };
+    from_levels(ds, &levels(ctx, ds, &controls)?)
 }

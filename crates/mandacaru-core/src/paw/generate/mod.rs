@@ -33,6 +33,7 @@ pub mod build;
 pub mod core;
 pub mod core_states;
 pub mod energies;
+pub mod ionic_tail;
 mod finish;
 pub mod ranking;
 pub mod recipe;
@@ -41,10 +42,10 @@ pub mod request;
 pub mod search;
 pub mod shells;
 pub mod spin_orbit;
+pub mod spin_orbit_scale;
 pub mod tables_cutoffs;
 pub mod tables_elements;
 pub mod tables_repairs;
-pub mod tables_spin_orbit;
 pub mod tables_upaw;
 pub mod waves;
 
@@ -223,17 +224,6 @@ pub fn generate_with_atom(
                 hartree_screening: dataset.hartree_screening,
             },
         )?;
-        // The engine hands the scalar smooth waves to the `j` projectors, which loses part of the
-        // splitting of a heavy shell: the stored coupling carries the measured calibration that
-        // makes the engine's isolated-atom splitting the Dirac one (tables_spin_orbit, gate G13).
-        for (&l, entry) in dataset.spin_orbit.iter_mut() {
-            let scale = tables_spin_orbit::scale(&recipe.symbol, &recipe.functional, l as usize);
-            if scale != 1. {
-                for value in entry.coupling.data.as_mut_slice() {
-                    *value *= scale;
-                }
-            }
-        }
     }
     Ok(Generated {
         dataset,

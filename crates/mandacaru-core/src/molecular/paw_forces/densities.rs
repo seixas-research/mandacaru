@@ -33,10 +33,47 @@ fn pseudo(matrix: &DMatrix<f64>, energy_role: bool) -> Result<Vec<Occupied>> {
 }
 
 impl MolecularIntegrals {
+    /// `sum D_ab d<chi_a|v|chi_b>/dR` from the motion of the basis functions through the fixed
+    /// grid function `v` (Hartree per Bohr, three per atom): the basis-motion derivative of a
+    /// one-body grid operator, the same contraction as the external potential's.
+    pub(crate) fn grid_operator_gradient(&self, d: &DMatrix<f64>, v: &[f64]) -> Result<Vec<f64>> {
+        let n = self.grid.index.points();
+        if d.shape() != (self.m(), self.m()) || v.len() != n {
+            return Err(invalid(
+                "a grid operator gradient needs a basis density and a grid function",
+            ));
+        }
+        self.context.run(|| {
+            let occupied = pseudo(d, false)?;
+            let psi = self.on_grid(&occupied)?;
+            let zeros = self.context.allocate::<f64>(n)?;
+            let points = grid::points(self)?;
+            Ok(grid::contract_combined(
+                self,
+                &occupied,
+                points.as_slice(),
+                grid::CombinedInputs {
+                    psi: psi.as_slice(),
+                    external: v,
+                    hartree: zeros.as_slice(),
+                    xc: None,
+                    coulomb: zeros.as_slice(),
+                    kinetic: None,
+                    xc_gradient: None,
+                    xc_tau: None,
+                },
+            )
+            .external)
+        })
+    }
+
     /// `d/dR [sum P h + 1/2 sum_k lambda_k B(X_k, X_k) - (W . S)] + d E_nn / dR` at fixed raw-AO
     /// densities, Hartree per Bohr: the explicit derivative of the PAW-LCAO Hartree-Fock model's
     /// energy of these densities, the overlap term `-tr[W dS]` included.
     pub fn fixed_density_gradient(&self, densities: &FixedDensities) -> Result<Gradient> {
+        if self.kind() == crate::molecular::periodic::paw::HamiltonianKind::PawSupercell {
+            return crate::molecular::periodic::paw::fixed_density_gradient(self, densities);
+        }
         let setup = self.paw_setup.as_ref().ok_or_else(|| {
             invalid("the analytic variational force needs a PAW-LCAO setup; the all-electron basis has none")
         })?;
@@ -217,6 +254,9 @@ impl MolecularIntegrals {
                 terms.push((part.name, part.gradient));
             }
             terms.push(("nuclear/ion_ion", nuclear_gradient(self, corrections)));
+            if let Some(values) = &densities.cluster_frame {
+                terms.push(("frame/cluster", values.clone()));
+            }
             let mut total = ctx.allocate::<f64>(3 * atoms)?;
             let mut named = Vec::new();
             for (name, values) in terms {

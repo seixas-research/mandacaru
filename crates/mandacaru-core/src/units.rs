@@ -80,6 +80,8 @@ pub enum Quantity {
     Volume,
     /// 1/Bohr to 1/Angstrom (a wavenumber: a kick strength, a momentum with `hbar = 1`).
     Wavenumber,
+    /// e/(Bohr^2 atomic time) to e/(Angstrom^2 fs) (a macroscopic current density).
+    CurrentDensity,
 }
 
 impl Quantity {
@@ -97,11 +99,12 @@ impl Quantity {
             "time" => Self::Time,
             "volume" => Self::Volume,
             "wavenumber" => Self::Wavenumber,
+            "current_density" => Self::CurrentDensity,
             _ => {
                 return Err(Error::Invalid(
                     "quantity must be 'energy', 'length', 'force', 'gradient_to_force', 'stress', \
-                     'area', 'inverse_energy', 'polarization', 'conductivity', 'time', 'volume' \
-                     or 'wavenumber'"
+                     'area', 'inverse_energy', 'polarization', 'conductivity', 'time', 'volume', \
+                     'wavenumber' or 'current_density'"
                         .into(),
                 ))
             }
@@ -131,6 +134,7 @@ impl Quantity {
             Self::Time => ATOMIC_TIME_FS,
             Self::Volume => BOHR_TO_ANGSTROM.powi(3),
             Self::Wavenumber => 1. / BOHR_TO_ANGSTROM,
+            Self::CurrentDensity => 1. / (BOHR_TO_ANGSTROM * BOHR_TO_ANGSTROM * ATOMIC_TIME_FS),
         }
     }
 }

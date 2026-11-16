@@ -91,6 +91,61 @@ fn the_multipole_gradient_is_the_gradient_of_the_potential_times_the_harmonic() 
     assert!(worst < 1e-7, "{worst:.2e}");
 }
 #[test]
+fn the_p_multipole_gradient_on_its_center_is_the_limit_from_every_side() {
+    let radius = 1.1;
+    for m in -1..=1 {
+        let on = multipole_gradient(radius, 1, m, [0.; 3]);
+        let scale = on.iter().fold(0f64, |a, v| a.max(v.abs()));
+        assert!(scale > 0.1, "the linear part of a p potential: {on:?}");
+        for axis in 0..3 {
+            for sign in [1., -1.] {
+                let mut delta = [0.; 3];
+                delta[axis] = sign * 1e-6;
+                let off = multipole_gradient(radius, 1, m, delta);
+                for k in 0..3 {
+                    assert!(
+                        (on[k] - off[k]).abs() < 1e-5 * scale,
+                        "m {m} from {sign} on axis {axis}: {on:?} against {off:?}"
+                    );
+                }
+            }
+        }
+    }
+    for (l, m) in [(0, 0), (2, 0), (2, 1), (3, -2)] {
+        let on = multipole_gradient(radius, l, m, [0.; 3]);
+        assert!(on.iter().all(|v| *v == 0.), "l {l} m {m}: {on:?}");
+    }
+}
+/// A grid node that is a center only up to rounding (an offset of a few 1e-15 Bohr with no
+/// direction of its own) takes the center's gradient, as the basis functions do
+/// (`basis::Orbital`): for every `l` and `m` through 3, at offsets of 1e-15 to 4e-13 Bohr along
+/// skew directions, to 1e-9 of the scale of the p gradient.
+#[test]
+fn a_node_on_the_center_up_to_rounding_takes_the_center_gradient() {
+    let radius = 1.1;
+    let scale = (-1..=1)
+        .flat_map(|m| multipole_gradient(radius, 1, m, [0.; 3]))
+        .fold(0f64, |a, v| a.max(v.abs()));
+    let mut worst = 0f64;
+    for l in 0..=3usize {
+        for m in -(l as i32)..=l as i32 {
+            let on = multipole_gradient(radius, l, m, [0.; 3]);
+            for size in [1e-15, 3e-15, 4e-13] {
+                for direction in [[1., -2., 3.], [-0.3, 0.9, 0.1], [2., 2., -1f64]] {
+                    let length = direction.iter().map(|v| v * v).sum::<f64>().sqrt();
+                    let delta = direction.map(|v| size * v / length);
+                    let off = multipole_gradient(radius, l, m, delta);
+                    for k in 0..3 {
+                        worst = worst.max((on[k] - off[k]).abs());
+                    }
+                }
+            }
+        }
+    }
+    println!("worst gradient gap at a rounding offset {worst:.3e} against the p scale {scale:.3e}");
+    assert!(worst < 1e-9 * scale, "{worst:e}");
+}
+#[test]
 fn the_long_range_ionic_slope_is_the_derivative_of_the_error_function_potential() {
     let (charge, sigma) = (3., 0.35);
     let long_range = |r: f64| -charge * libm::erf(r / (2f64.sqrt() * sigma)) / r;

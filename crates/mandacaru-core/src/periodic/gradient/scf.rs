@@ -208,8 +208,13 @@ pub struct OutputFields {
     /// `v_xc` alone, spin-averaged (`(v_up + v_dn) / 2` of a polarized run): the potential the
     /// partial core is differentiated against. The core is split in halves between the spin
     /// densities, so `dE_xc / d core = 1/2 (v_up + v_dn)`; `v_up` alone would be wrong by the
-    /// half difference of the two potentials.
+    /// half difference of the two potentials. A spinor meta-GGA's is the frame's, before the
+    /// unrotation ([`CoreSources`](super::super::fields::CoreSources)).
     pub xc: Buffer<f64>,
+    /// A meta-GGA's `dE_xc / d tau_core`, the spin average `(v_tau,up + v_tau,dn) / 2` of the
+    /// frame's kinetic potentials (the core tau is split in halves between the spins, as the core
+    /// density is); `None` for every other functional.
+    pub core_kinetic: Option<Buffer<f64>>,
     /// `K rho^* / V`, the reciprocal weights of the hats and ions.
     pub weights: Buffer<C64>,
     /// A meta-GGA's `v_tau = dE_xc / d tau`, one block of `n` per spin channel, evaluated on the
@@ -231,20 +236,38 @@ pub fn output_fields(c: &Crystal, densities: &[StoredMatrix], q: &[C64]) -> Resu
     };
     let potential = solver::local_potential(c, &mut fft, rho.as_slice(), q, tau.as_ref().map(|t| t.as_slice()))?;
     let terms = solver::exchange_correlation(c, &mut fft, rho.as_slice(), tau.as_ref().map(|t| t.as_slice()))?;
-    // One block of `n` per field channel. For a spinor the first block is the charge channel,
-    // `0.5 (v_up + v_dn)` of the collinear functional in the local eigenframe (a time-reversal
-    // crystal has that block only): the potential the unpolarized partial core is differentiated
-    // against. The magnetization blocks never reach it.
+    // One block of `n` per field channel. The unpolarized partial core is differentiated against
+    // the spin average of the frame's potentials. For a spinor meta-GGA that is `terms.core` (the
+    // Pauli charge channel also carries the turn of the frame, which the core does not move); for
+    // every other functional it is the first `c.spins` blocks: the spin average of a collinear
+    // run, `0.5 (v_up + v_dn)` of the eigenframe for a spinor (a time-reversal crystal has that
+    // block only). The magnetization blocks never reach it.
     if terms.potential.as_slice().len() != c.field_channels() * n {
         return Err(invalid("one xc potential block per field channel"));
     }
-    let mut xc = c.context.allocate::<f64>(n)?;
-    for (k, to) in xc.as_mut_slice().iter_mut().enumerate() {
-        *to = (0..c.spins)
-            .map(|s| terms.potential.as_slice()[s * n + k])
-            .sum::<f64>()
-            / c.spins as f64;
-    }
+    let (xc, core_kinetic) = match terms.core {
+        Some(core) => (core.potential, Some(core.kinetic)),
+        None => {
+            let mut xc = c.context.allocate::<f64>(n)?;
+            for (k, to) in xc.as_mut_slice().iter_mut().enumerate() {
+                *to = (0..c.spins)
+                    .map(|s| terms.potential.as_slice()[s * n + k])
+                    .sum::<f64>()
+                    / c.spins as f64;
+            }
+            let average = match terms.kinetic_potential.as_ref() {
+                Some(v) => {
+                    let mut average = c.context.allocate::<f64>(n)?;
+                    for (k, to) in average.as_mut_slice().iter_mut().enumerate() {
+                        *to = (0..c.spins).map(|s| v.as_slice()[s * n + k]).sum::<f64>() / c.spins as f64;
+                    }
+                    Some(average)
+                }
+                None => None,
+            };
+            (xc, average)
+        }
+    };
     let mut total = c.context.allocate::<f64>(n)?;
     for (k, to) in total.as_mut_slice().iter_mut().enumerate() {
         *to = (0..c.spins).map(|s| rho.as_slice()[s * n + k]).sum();
@@ -258,6 +281,7 @@ pub fn output_fields(c: &Crystal, densities: &[StoredMatrix], q: &[C64]) -> Resu
         local: potential.local,
         moments: potential.moments,
         xc,
+        core_kinetic,
         weights,
         kinetic: terms.kinetic_potential,
     })

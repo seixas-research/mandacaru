@@ -1,4 +1,5 @@
 //! Projector augmented-wave datasets, potentials and projector construction.
+pub mod atom_scf;
 pub mod augmentation;
 pub mod basis_recipe;
 pub mod basis_blocks;
@@ -32,6 +33,7 @@ pub mod shell;
 pub mod smooth;
 pub mod species_tables;
 pub mod spectrum;
+pub mod validate;
 
 fn invalid(message: impl Into<String>) -> crate::Error {
     crate::Error::Invalid(message.into())

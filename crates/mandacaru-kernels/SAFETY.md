@@ -131,3 +131,26 @@ called concurrently with allocation and deallocation (the allocator
 synchronizes them). Any other platform compiles a function that does nothing
 and reports `false`. The unit test in the same file keeps a large live vector
 across the call and checks it afterwards.
+
+## Reading the installed memory
+
+`mandacaru-kernels/src/heap.rs::installed_memory_bytes` declares `sysctlbyname` on macOS and
+calls it once for `hw.memsize`, a 64-bit integer: the name is a NUL-terminated C string literal,
+`oldp` points at a local `u64` and `oldlenp` at its size (both valid for writes of 8 bytes for
+the duration of the call), and `newp` is null with `newlen` zero, so nothing is set. The result
+is used only when the call returns 0 and reports 8 bytes written. Linux reads `MemTotal` from
+`/proc/meminfo` in safe code. The unit test in the same file checks that a supported platform
+reports at least 256 MiB.
+
+## Asking whether a process exists
+
+`mandacaru-kernels/src/process.rs::is_alive` declares `kill` on unix and calls it with signal 0,
+which delivers nothing: it only reports whether the process exists and may be signaled. The pid
+is passed only when it is a positive `pid_t` (zero and negative values, which name process
+groups, are never asked; such a pid is reported alive). The call takes no pointer; `errno` is
+read through `std::io::Error::last_os_error` immediately after it, on the same thread. Only
+`ESRCH` ("no such process") reports a process dead; success and every other error (`EPERM`, a
+process of another user) report it alive, so the scratch sweep never removes the folder of a
+running process. Other platforms compile a function that reports every process alive. The unit
+test in the same file checks the current process (alive) and a reaped child (not).
+

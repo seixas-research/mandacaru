@@ -378,8 +378,9 @@ basis (`HAO`) and on a Hartree-Fock state, the kernel has no PAW pieces and
 
 A semilocal response works for every element the ground state supports. Hartree-Fock
 (CIS, TDHF) needs the factored Coulomb integrals, and so it has the same limit as the
-Hartree-Fock ground state on a PAW-LCAO basis: a core beyond one closed 1s shell is
-refused ([not yet available](#not-yet-available)).
+Hartree-Fock ground state on a PAW-LCAO basis: a frozen core whose dataset has no stored
+core states, or a partially filled core subshell, is refused by name
+([not yet available](#not-yet-available)).
 
 (excited-states-limits)=
 ## Limits of the method and of the basis

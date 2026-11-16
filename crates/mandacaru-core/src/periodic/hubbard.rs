@@ -218,6 +218,11 @@ impl Report {
     pub fn occupation(&self, spin: usize, shell: usize) -> &[C64] {
         &self.occupations[spin * self.shells + shell]
     }
+    /// The trace of the occupation matrix of `shell` (`p x p`, row-major) in `spin`.
+    pub fn occupation_trace(&self, spin: usize, shell: usize, p: usize) -> f64 {
+        let n = self.occupation(spin, shell);
+        (0..p).map(|a| n[a * p + a].re).sum::<f64>()
+    }
 }
 
 impl Spec {

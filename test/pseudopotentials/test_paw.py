@@ -303,6 +303,8 @@ def _total(integrals, n_electrons) -> float:
 # --------------------------------------------------------------------------- #
 
 CHANNELS = [("H", 0), ("C", 0), ("O", 0), ("O", 1)]
+#: Aluminum's s and p radii (Bohr) before the 2026-11-12 sphere-against-bond table entry.
+OLD_AL_RADII = {0: 2.68, 1: 3.43}
 
 
 class TestAtomic:
@@ -476,8 +478,10 @@ class TestAtomic:
         local radius: r_cl follows the larger cutoff, the s projectors extend
         past their own r_cut to it, and the channel is still dual, symmetric
         and ghost-free (at the old repair's 5 Ha; the repair now shortens
-        aluminum's local radius below its s cutoff instead)."""
-        pp = generate_paw("Al", ghosts="keep", norm_deficit=0.0,
+        aluminum's local radius below its s cutoff instead).  The radii are given:
+        the library's are 2.35/2.35 Bohr since the sphere-against-bond decision
+        (PAW_REGENERATION_PLAN.md, 2026-11-12), where r_cl lies inside both."""
+        pp = generate_paw("Al", ghosts="keep", norm_deficit=0.0, r_cut=OLD_AL_RADII,
                           local_shift=5.0, relativity="none")
         s, p = pp.channels[0], pp.channels[1]
         assert pp.r_cut_local > s.r_cut
@@ -501,7 +505,7 @@ class TestAtomic:
         errors = diagnose(repaired)["unprojected"]
         assert set(errors) == {2}
         assert errors[2] < 0.2                      # the generator's acceptance
-        raised = generate_paw("Al", ghosts="keep", norm_deficit=0.0,
+        raised = generate_paw("Al", ghosts="keep", norm_deficit=0.0, r_cut=OLD_AL_RADII,
                               local_shift=5.0, relativity="none")
         assert diagnose(raised)["unprojected"][2] > 0.4
 
@@ -797,10 +801,6 @@ class TestLibrary:
             assert np.all(signs == signs[0])
 
     @pytest.mark.slow
-    @pytest.mark.xfail(strict=True, raises=ValueError, reason=(
-        "the native molecular RHF refuses a core other than empty or a closed 1s "
-        "('native PAW frozen-core exchange currently requires ...'): a Cu molecule is not "
-        "reachable (PAW_MIGRATION_LOG.md, A7 / S2; open item of the molecular route)"))
     def test_copper_binds_hydrogen(self):
         """The PBE copper built at deficit 0.1 collapsed CuH as the hydrogen
         entered its sphere: -1555 eV at 1.30 Angstrom, 108 eV below 1.60 (RHF

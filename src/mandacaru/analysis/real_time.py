@@ -1,15 +1,21 @@
-"""Unit-aware view over a native real-time propagation (``molecular::realtime``)."""
+"""Unit-aware view over a native real-time propagation (``molecular::realtime`` for a molecule,
+``periodic::optics::realtime`` for a crystal)."""
 
 import numpy as np
 from .. import _native
 
 
 class RealTime:
-    """The trace of a molecule propagated in real time after a delta kick.
+    """The trace of a molecule or a crystal propagated in real time after a kick.
 
     Returned by :meth:`Mandacaru.get_real_time`. Every number comes from Rust
-    (``molecular::realtime`` and ``models::time_spectrum``); the view converts
-    units through the native conversions and holds no arithmetic of its own.
+    (``molecular::realtime``, ``periodic::optics::realtime`` and
+    ``models::time_spectrum``); the view converts units through the native
+    conversions and holds no arithmetic of its own. A molecule fills ``dipole``,
+    ``along`` and ``momentum`` and has ``strength_function`` and
+    ``polarizability``; a crystal (``periodic`` true) fills ``current``,
+    ``along`` (the current along the field), ``corrected`` and the diamagnetic
+    record, and has ``dielectric_function``. The other attributes are ``None``.
 
     Attributes
     ----------
@@ -49,7 +55,8 @@ class RealTime:
         The request: ``"etrs"``, ``"aetrs"`` or ``"midpoint"``; ``"density"`` or
         ``"spin"``; ``"length"`` or ``"velocity"``.
     direction : tuple of float
-        The unit kick direction.
+        The unit kick direction; for a crystal run with ``direction="all"`` the flattened
+        3 x 3 identity (one run along each axis).
     strength : float
         The kick strength, 1/Angstrom (1/Bohr).
     time_step : float
@@ -62,6 +69,36 @@ class RealTime:
         strength over the default, because the induced density scales with the kick.
     max_energy_drift : float or None
         The largest energy drift the run accepted, in kick energies (``None``: not checked).
+    periodic : bool
+        Whether the run propagated a crystal.
+    current : ndarray or None
+        Crystal: ``(nt, 3)`` the macroscopic current density
+        ``j = -(1 / Omega) sum_k w_k tr[D (P + A)]``, e / (Angstrom^2 fs) (atomic units).
+    corrected : ndarray or None
+        Crystal: ``(nt,)`` the current along the field without the basis's static deficit,
+        ``j + A (N - N_dia) / Omega``: the signal of ``dielectric_function``, which returns the
+        complex ``epsilon(E + i damping)`` along the field. With ``direction="all"`` the
+        ``(nt, 3, 3)`` tensor ``[t, a, b]`` (the current along ``a`` of the run along ``b``),
+        ``current`` is ``(nt, 3, 3)`` too, ``along``, ``energy`` and ``norm_error`` are
+        ``(nt, 3)``, and ``dielectric_function`` returns the ``(n, 3, 3)`` tensor.
+    electrons : float or None
+        Crystal: the valence electrons ``N`` of the cell.
+    diamagnetic, deficit : list of float or None
+        Crystal: per run (one, or three for ``direction="all"``) the static paramagnetic
+        response ``N_dia`` of the finite basis along the field and ``N - N_dia``.
+    diamagnetic_source : str or None
+        Crystal: ``"band sum"`` (read from the ground-state bands, exact for a density-only
+        kernel) or ``"static field"`` (DFT+U and meta-GGAs, whose kernels respond to the
+        current: measured before the run by self-consistency at a static field of the kick's
+        strength, both signs).
+    momentum_residual : float or None
+        Crystal: the largest anti-Hermitian part of the momentum matrix before it was
+        Hermitized, relative to its largest element.
+    kernel : str or None
+        Crystal: ``"adiabatic"`` (the functional's own Hamiltonian) or ``"independent"`` (frozen
+        at the ground state).
+    mesh : tuple of int or None
+        Crystal: the whole Gamma-anchored propagation mesh; ``kpoints`` its point count.
     """
 
     def __init__(self, data, *, atomic_units, context):
@@ -73,47 +110,39 @@ class RealTime:
         self.energy_unit = "Ha" if atomic_units else "eV"
         self.length_unit = "Bohr" if atomic_units else "Angstrom"
         self.time_unit = "au" if atomic_units else "fs"
-        self.times = self._convert(data["times_au"], "time")
-        self.dipole = self._convert(data["dipole_au"], "length")
-        self.along = self._convert(data["along_au"], "length")
-        self.momentum = self._convert(data["momentum_au"], "wavenumber")
-        self.energy = self._convert(data["energy_ha"], "energy")
+        self.periodic = "current_au" in data
+        # The record as the binding returned it (counts, ratios, names; None where the other
+        # kind of system has the field).
+        for name in ("energy_drift", "step_width", "step_width_bound", "aliased_weight",
+                     "worst_norm_error", "builds", "corrector_iterations", "propagator", "kick",
+                     "gauge", "steps", "corrector_tolerance", "effective_corrector_tolerance",
+                     "max_energy_drift", "electrons", "diamagnetic", "deficit",
+                     "momentum_residual", "kernel", "mesh", "kpoints", "diamagnetic_source"):
+            setattr(self, name, data.get(name))
+        # The quantities with a unit, from the binding's atomic-unit keys.
+        along = "current_density" if self.periodic else "length"
+        for name, key, quantity in (
+                ("times", "times_au", "time"), ("current", "current_au", "current_density"),
+                ("corrected", "corrected_au", "current_density"), ("along", "along_au", along),
+                ("dipole", "dipole_au", "length"), ("momentum", "momentum_au", "wavenumber"),
+                ("energy", "energy_ha", "energy"), ("ground_energy", "ground_energy_ha", "energy"),
+                ("kick_energy", "kick_energy_ha", "energy"), ("width", "width_ha", "energy"),
+                ("strength", "strength_au", "wavenumber"), ("time_step", "time_step_au", "time")):
+            setattr(self, name, self._convert(data[key], quantity) if key in data else None)
         self.norm_error = np.asarray(data["norm_error"])
-        self.ground_energy = self._convert(data["ground_energy_ha"], "energy")
-        self.kick_energy = self._convert(data["kick_energy_ha"], "energy")
-        self.energy_drift = data["energy_drift"]
-        self.width = self._convert(data["width_ha"], "energy")
-        self.step_width = data["step_width"]
-        self.step_width_bound = data["step_width_bound"]
-        self.aliased_weight = data["aliased_weight"]
-        self.worst_norm_error = data["worst_norm_error"]
-        self.builds = data["builds"]
-        self.corrector_iterations = data["corrector_iterations"]
-        self.propagator = data["propagator"]
-        self.kick = data["kick"]
-        self.gauge = data["gauge"]
         self.direction = tuple(data["direction"])
-        self.strength = self._convert(data["strength_au"], "wavenumber")
-        self.time_step = self._convert(data["time_step_au"], "time")
-        self.steps = data["steps"]
-        self.corrector_tolerance = data["corrector_tolerance"]
-        self.effective_corrector_tolerance = data["effective_corrector_tolerance"]
-        self.max_energy_drift = data["max_energy_drift"]
 
     def _convert(self, values, quantity):
-        if np.ndim(values) == 0:
-            return _native.to_user_units(float(values), quantity,
-                                         atomic_units=self._atomic_units)
-        return _native.to_user_units(np.ascontiguousarray(values, dtype=float), quantity,
-                                     atomic_units=self._atomic_units)
+        return _native.to_user_units(values, quantity, atomic_units=self._atomic_units)
 
     def _spectrum(self, energies, damping, window, kind):
+        signal = self._data["corrected_au" if self.periodic else "along_au"]
         values, _ = _native.time_spectrum(
-            self._context, np.ascontiguousarray(self._data["along_au"], dtype=float),
+            self._context, np.ascontiguousarray(signal, dtype=float),
             np.ascontiguousarray(energies, dtype=float),
             time_step=float(self._data["time_step_au"]),
             strength=float(self._data["strength_au"]), damping=float(damping),
-            window=window, kind=kind, atomic_units=self._atomic_units)
+            window=window, kind=kind, atomic_units=self._atomic_units, current=self.periodic)
         return np.asarray(values)
 
     def strength_function(self, energies, damping=0.1, window="exponential"):
@@ -129,3 +158,66 @@ class RealTime:
         (Bohr^3); with the exponential window it is ``alpha(E + i damping)``. Computed in
         Rust."""
         return self._spectrum(energies, damping, window, "polarizability")
+
+    def dielectric_function(self, energies, damping=0.1, window="exponential"):
+        """Crystal: the complex macroscopic dielectric function along the field on ``energies``
+        (the view's energy unit), ``epsilon(z) = 1 - 4 pi i j(z) / (z A_0)`` at
+        ``z = E + i damping``, from ``corrected``: the total-field ``epsilon_M`` with the local
+        fields of the functional's adiabatic kernel. Only ``window="exponential"`` gives the
+        response at a complex frequency; another window raises ``ValueError``, and so does a
+        molecule. Computed in Rust."""
+        return self._spectrum(energies, damping, window, "dielectric")
+
+
+class DielectricFunction:
+    """The macroscopic dielectric function of a crystal at ``q -> 0`` in the frequency domain.
+
+    Returned by :meth:`Mandacaru.get_dielectric_function`. Every number comes from Rust
+    (``periodic::optics::dielectric``) in the user's units; the view holds no arithmetic.
+
+    Attributes
+    ----------
+    energies : ndarray
+        ``(n,)`` the real part ``E`` of the complex frequency ``E + i damping``, eV (Ha).
+    tensor : ndarray
+        ``(n, 3, 3)`` complex ``epsilon_ab(E + i damping)``, Cartesian.
+    epsilon : ndarray
+        ``(n,)`` complex ``e . epsilon . e`` along ``direction``, or the isotropic average (the
+        trace over three) when ``direction`` is ``None``.
+    loss : ndarray
+        ``(n,)`` the loss function ``-Im 1 / epsilon``.
+    absorption : ndarray
+        ``(n,)`` the absorption coefficient ``2 E Im sqrt(epsilon) / (hbar c)``, 1/Angstrom
+        (1/Bohr).
+    static_tensor : ndarray
+        ``(3, 3)`` ``epsilon_ab(0)`` without damping: the electronic static dielectric tensor.
+    sum_rule : ndarray
+        ``(3, 3)`` ``N_ab``, with ``epsilon -> 1 - 4 pi N / (Omega z^2)`` at large ``z``: the
+        diamagnetic band sum of the basis (with the scissor's factor ``D / (e_c - e_v)`` per
+        transition), which a frozen-core PAW basis puts above the valence count.
+    damping, scissor, onset : float
+        The imaginary part of the frequency, the scissor and the smallest transition energy of
+        the mesh (the onset of the continuum), eV (Ha).
+    cutoff : float or None
+        ``kernel="hartree"``: the largest ``|G|`` of the local fields, 1/Angstrom (1/Bohr).
+    kernel : str
+        ``"hartree"`` (RPA with local fields) or ``"independent"``.
+    direction : list of float or None
+        The direction of ``epsilon``; ``None`` the isotropic average.
+    mesh, kpoints : tuple of int, int
+        The whole Gamma-anchored mesh and its point count.
+    bands : list of tuple
+        ``(valence, conduction)`` bands per spin channel.
+    transitions, vectors : int
+        The valence-to-conduction transitions and the local-field vectors.
+    electrons, momentum_residual : float
+        The valence electrons of the cell and the largest anti-Hermitian part of the momentum
+        matrix before it was Hermitized (relative).
+    functional, energy_unit : str
+        The reference's functional and ``"eV"`` or ``"Ha"``.
+    record : list of tuple
+        The ``[DIELECTRIC FUNCTION]`` run-log record, ``(name, text)`` pairs.
+    """
+
+    def __init__(self, data):
+        self.__dict__.update(data)

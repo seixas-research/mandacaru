@@ -28,6 +28,7 @@ use crate::periodic::stress_terms::Directions;
 use crate::{
     math::{fft::Fft3, storage::MatrixSource},
     periodic::{
+        input::has_partner,
         invalid,
         screened_augmentation::Augmentation,
         screened_exchange::{
@@ -129,6 +130,26 @@ pub(super) fn run<M: MatrixSource + Sync>(
         }
         tangent.push(per_pair);
     }
+    // On a time-reversal-halved mesh the partner at `-k` of a listed point moves with the
+    // conjugates of its tangents.
+    let reversed: Vec<Option<Vec<Buffer<C64>>>> = (0..nk)
+        .map(|k| {
+            if has_partner(&c.points, k) {
+                return Ok(None);
+            }
+            tangent[k]
+                .iter()
+                .map(|u| {
+                    let mut out = c.context.allocate::<C64>(u.as_slice().len())?;
+                    for (o, v) in out.as_mut_slice().iter_mut().zip(u.as_slice()) {
+                        *o = v.conj();
+                    }
+                    Ok(out)
+                })
+                .collect::<Result<Vec<_>>>()
+                .map(Some)
+        })
+        .collect::<Result<_>>()?;
     // A restricted scalar crystal carries half of the density per spin and counts it twice; a
     // spinor (one channel, occupation 1 per state) and an unrestricted crystal do neither.
     let (spin_scale, mult) = if c.spins == 1 && !c.spinor {
@@ -150,7 +171,7 @@ pub(super) fn run<M: MatrixSource + Sync>(
         ])?)
         .ok_or(crate::Error::Overflow)?;
     ctx.check_lanes(Level::Bands, b_lanes, lane_bytes)?;
-    ctx.check_lanes(
+    let k_lanes = ctx.fit_lanes(
         Level::Kpts,
         k_lanes,
         product(&[m, n, 16])?
@@ -171,11 +192,11 @@ pub(super) fn run<M: MatrixSource + Sync>(
             periodic_part(c, point.k, &point.psi.read(&c.context)?, u.as_mut_slice());
             let scale = -0.5 * screening.fraction * mult * point.weight;
             let mut shares = Vec::new();
-            for (q, source) in occupied.iter().enumerate() {
+            for source in &occupied {
                 if source.wavefunctions.is_empty() {
                     continue;
                 }
-                let k_diff = std::array::from_fn(|a| c.points[q].k[a] - point.k[a]);
+                let k_diff = std::array::from_fn(|a| source.k[a] - point.k[a]);
                 let root = kernel_weights(c, k_diff, source.weight, screening.omega, exxdiv)?;
                 let kw: Vec<f64> = root.as_slice().iter().map(|x| x * x).collect();
                 let shapes = aug.pair_shapes(c, k_diff)?;
@@ -222,7 +243,13 @@ pub(super) fn run<M: MatrixSource + Sync>(
                     prefactor: source.weight * dv / n as f64,
                     source,
                     bra_tangents: &tangent[k],
-                    ket_tangents: &tangent[q],
+                    ket_tangents: if source.partner {
+                        reversed[source.point]
+                            .as_ref()
+                            .ok_or_else(|| invalid("a partner of a point with its own -k"))?
+                    } else {
+                        &tangent[source.point]
+                    },
                     directions: dirs,
                 };
                 let states = source.wavefunctions.len();

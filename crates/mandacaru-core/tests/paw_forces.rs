@@ -223,6 +223,80 @@ fn the_net_force_is_the_egg_box_ripple_the_fixed_grid_energy_has_under_a_rigid_t
     }
     assert_eq!(ctx.memory_used(), 0);
 }
+/// H2 at `z = +-1`: the grid is centered on the centroid with a node there and one every
+/// `grid_spacing` (0.5 Bohr), so both atoms sit exactly on grid nodes.
+const ON_NODES: [[f64; 3]; 2] = [[0., 0., -1.], [0., 0., 1.]];
+
+/// On its own center a p function is the smooth linear `g(0) r Y_1m`, so its gradient there is
+/// the same from every side; the cusp of an s function has no gradient on the center, and the
+/// convention is the mean of its two sides (zero), which is what a central difference of the
+/// energy in the atom's position yields.
+#[test]
+fn the_gradient_of_a_p_function_on_its_own_center_is_the_limit_from_every_side() {
+    let ctx = Context::new(Some(2), 512 << 20).unwrap();
+    {
+        let base = integrals(&ctx, &ON_NODES, "lda");
+        for orbital in &base.basis.orbitals {
+            let on = orbital.gradient(orbital.center);
+            if orbital.l == 0 {
+                assert!(on.iter().all(|v| *v == 0.), "the cusp of an s function: {on:?}");
+                continue;
+            }
+            assert!(on.iter().any(|v| v.abs() > 0.1), "a p function's slope: {on:?}");
+            for axis in 0..3 {
+                for sign in [1., -1.] {
+                    let mut point = orbital.center;
+                    point[axis] += sign * 1e-7;
+                    let off = orbital.gradient(point);
+                    for k in 0..3 {
+                        assert!(
+                            (on[k] - off[k]).abs() < 1e-5,
+                            "l {} m {} from {sign} on axis {axis}: {on:?} against {off:?}",
+                            orbital.l,
+                            orbital.m
+                        );
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(ctx.memory_used(), 0);
+}
+/// The energy has a kink in the position of an atom on a grid node (the s cusp), and the central
+/// difference of independently converged energies is its smooth part; the analytic force of such
+/// an atom must be that limit, not the force of one side (linear H4 at `z = +-0.8, +-2.5`, with
+/// the outer atoms on nodes, once missed the breathing derivative by 0.13 Ha/Bohr, 3.3 eV/A per
+/// atom). The energy there also has a `delta |delta|` part (the `z r` term of a p function), so a
+/// central difference carries an error linear in the step (4e-3 eV/A at `h = 1e-3` here, which
+/// the usual Richardson combination of two steps does not remove): the reference is the linear
+/// extrapolation `2 c(h/2) - c(h)`, which does.
+#[test]
+fn the_force_of_an_atom_on_a_grid_node_is_the_derivative_of_the_smooth_energy() {
+    let ctx = Context::new(Some(2), 512 << 20).unwrap();
+    {
+        let base = integrals(&ctx, &ON_NODES, "lda");
+        let state = solve(&base, Method::Hf("rhf"), [1, 1]);
+        let gradient = base.gradient(&state).unwrap();
+        let to_ev = HARTREE_PER_BOHR_TO_EV_PER_ANGSTROM;
+        let mut worst = 0f64;
+        for (atom, axis) in [(0, 2), (1, 2), (0, 0)] {
+            let central = |h: f64| {
+                let energy = |delta: f64| {
+                    let moved = displaced(&base, atom, axis, delta);
+                    solve(&moved, Method::Hf("rhf"), [1, 1]).free_energy() + moved.nuclear
+                };
+                (energy(h) - energy(-h)) / (2. * h)
+            };
+            let reference = 2. * central(5e-4) - central(1e-3);
+            let analytic = gradient.total.as_slice()[3 * atom + axis];
+            println!("atom {atom} axis {axis}: analytic {analytic:.10e}, smooth energy {reference:.10e}");
+            worst = worst.max((analytic - reference).abs() * to_ev);
+        }
+        println!("on grid nodes: max |F - F_smooth| = {worst:.3e} eV/A");
+        assert!(worst < 1e-4, "{worst:.3e} eV/A");
+    }
+    assert_eq!(ctx.memory_used(), 0);
+}
 #[test]
 fn bond_force_does_not_depend_on_the_cartesian_axis_of_the_bond() {
     let ctx = Context::new(Some(2), 512 << 20).unwrap();

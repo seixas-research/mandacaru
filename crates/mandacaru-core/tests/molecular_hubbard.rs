@@ -347,7 +347,7 @@ fn copper_hydride(
     let electrons = copper.valence_charge.round() as usize + 1;
     let copper = dataset::species(ctx, &mut arrays, &copper);
     let hydrogen = dataset::species(ctx, &mut arrays, &dataset::read(ctx, "lda-sr", "H"));
-    let mut extra = vec![("allow_heavy_dft", serde_json::Value::Bool(true))];
+    let mut extra = Vec::new();
     if let Some((form, u, j)) = hubbard {
         let request = format!(r#"{{"Cu": {{"l": "d", "U": {u}, "J": {j}, "form": "{form}"}}}}"#);
         extra.push(("hubbard", serde_json::Value::String(request)));

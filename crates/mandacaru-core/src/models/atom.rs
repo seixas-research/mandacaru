@@ -36,6 +36,8 @@ pub struct AtomModel {
     pub functional: String,
     pub relativity: Treatment,
     pub polish: usize,
+    /// How an open subshell is divided between its two `j` (a Dirac atom).
+    pub j_shares: configuration::JShares,
 }
 
 impl AtomModel {
@@ -44,6 +46,7 @@ impl AtomModel {
             functional: functional.to_string(),
             relativity: Treatment::None,
             polish: 0,
+            j_shares: configuration::JShares::LowerFirst,
         }
     }
 }
@@ -290,10 +293,14 @@ pub fn solve_model_with(
     }
 
     let occupations_j = if dirac {
-        configuration::split_configuration(&occupations)
+        configuration::split_configuration(&occupations, model.j_shares)
     } else {
         Vec::new()
     };
+    // A PAW reference atom (`JShares::Proportional`) has the density of its scalar partial waves,
+    // the (2j+1)-weighted average amplitude of the two `j` of each subshell squared, so the
+    // potential it hands the dataset is that of the density the dataset reproduces.
+    let scalar_density = dirac && model.j_shares == configuration::JShares::Proportional;
     let mut solver = Solver {
         ctx,
         r: &r,
@@ -325,13 +332,16 @@ pub fn solve_model_with(
             // Each j is its own radial equation; the (n, l) entries are the (2j+1) average.
             for (index, &(nn, l, kappa, share)) in occupations_j.iter().enumerate() {
                 let (u, eps) = solver.state(nn, l, Some(kappa), &walled, terms.as_ref())?;
-                if share > 0. {
+                if share > 0. && !scalar_density {
                     for i in 0..n {
                         next[i] += share * u[i] * u[i] / shell[i];
                     }
                 }
                 orbitals_j[index] = u;
                 eigenvalues_j[index] = eps;
+            }
+            if scalar_density {
+                next = averaged_density(&orbitals_j, &occupations_j, &occupations, &shell, h);
             }
         } else {
             for (index, &(nn, l, q)) in occupations.iter().enumerate() {
@@ -401,11 +411,14 @@ pub fn solve_model_with(
                         eigenvalues[index] = eps;
                     }
                 }
-                if !valence_only {
+                if !valence_only && !scalar_density {
                     for i in 0..n {
                         next[i] += q * (orbitals[index][i] * orbitals[index][i]) / shell[i];
                     }
                 }
+            }
+            if !valence_only && scalar_density {
+                next = averaged_density(orbitals, &occupations_j, &occupations, &shell, h);
             }
             Ok(next)
         };
@@ -516,4 +529,41 @@ pub fn solve_model_with(
         iterations,
         _memory: memory,
     })
+}
+
+/// The density of a Dirac atom's scalar reference: for each subshell `(n, l)` of occupation `q`,
+/// `q` times the square of the `(2j+1)`-weighted average of the amplitudes of its `j` states,
+/// normalized to one electron (`shell` is the radial volume element, `h` the grid step).
+fn averaged_density(
+    orbitals_j: &[Vec<f64>],
+    occupations_j: &[(usize, usize, i32, f64)],
+    occupations: &[(usize, usize, f64)],
+    shell: &[f64],
+    h: f64,
+) -> Vec<f64> {
+    let n = shell.len();
+    let mut density = vec![0.; n];
+    for &(nn, l, q) in occupations {
+        if q <= 0. {
+            continue;
+        }
+        let mut averaged = vec![0.; n];
+        let mut total = 0.;
+        for (index, s) in occupations_j.iter().enumerate() {
+            if (s.0, s.1) != (nn, l) {
+                continue;
+            }
+            let w = relativity::degeneracy(s.2) as f64;
+            total += w;
+            for i in 0..n {
+                averaged[i] += w * orbitals_j[index][i];
+            }
+        }
+        let norm = integrate((0..n).map(|i| averaged[i] * averaged[i] / (total * total)), n, h).sqrt();
+        for i in 0..n {
+            let amplitude = averaged[i] / (total * norm.max(1e-300));
+            density[i] += q * amplitude * amplitude / shell[i];
+        }
+    }
+    density
 }

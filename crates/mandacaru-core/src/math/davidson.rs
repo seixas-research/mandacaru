@@ -12,6 +12,10 @@
 //! result depends only on the operator's values. A subspace that reaches the whole space gives
 //! the exact roots; a request for as many roots as the dimension starts there.
 //!
+//! [`lowest_root`] is the lowest root of an operator whose spectrum is split into symmetry blocks
+//! the diagonal does not reveal (an orbital Hessian): dense below a size cutoff, otherwise
+//! Davidson from a start with weight on every component, and an unconverged solve said so.
+//!
 //! [`linalg::davidson`](super::linalg::davidson) is a different routine: the dense refinement of
 //! a full eigenbasis that the periodic eigensolver uses.
 use super::{invalid, linalg::real_eigen};
@@ -184,6 +188,180 @@ fn initial_count(options: &Options, n: usize) -> usize {
 
 /// The lowest `options.roots` eigenpairs of the symmetric operator `op`.
 pub fn lowest(op: &impl Symmetric, options: &Options) -> Result<Roots> {
+    search(op, options, None)
+}
+
+/// [`lowest`] with the columns of `seeds` added to the unit-vector start. A start of unit
+/// vectors only reaches the blocks of the operator its components belong to; a seed with
+/// weight on every component reaches every block. A stalled search is returned with
+/// `converged` false instead of an error.
+pub fn lowest_seeded(
+    op: &impl Symmetric,
+    options: &Options,
+    seeds: &DMatrix<f64>,
+) -> Result<Roots> {
+    if seeds.nrows() != op.dimension() {
+        return Err(invalid("the Davidson seeds must match the operator"));
+    }
+    search(op, options, Some(seeds))
+}
+
+/// A start vector with weight on every component: `1 / (1 + d_k - d_min)` with a fixed
+/// pseudo-random sign per component (the low diagonal entries weigh most, no component is
+/// zero, and no symmetry of the operator's blocks is shared by the signs).
+pub fn spread_seed(diagonal: &[f64]) -> DVector<f64> {
+    let low = diagonal.iter().copied().fold(f64::INFINITY, f64::min);
+    let mut state = 0x2545_f491_4f6c_dd1du64;
+    DVector::from_iterator(
+        diagonal.len(),
+        diagonal.iter().map(|d| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            let sign = if state & 1 == 0 { 1. } else { -1. };
+            sign / (1. + d - low)
+        }),
+    )
+}
+
+/// The lowest root of [`lowest_root`], its unit vector, and whether the solve is shown converged.
+#[derive(Clone, Debug)]
+pub struct LowestRoot {
+    pub value: f64,
+    pub vector: DVector<f64>,
+    /// False when Davidson stopped at its iteration limit or stalled: the value is then an
+    /// upper bound of the lowest root, not the root.
+    pub converged: bool,
+    /// True when the operator was built densely (`apply` on the identity).
+    pub dense: bool,
+    pub applications: usize,
+}
+
+/// The lowest root of `op`. Up to `dense_limit` dimensions the operator is built by `apply` on
+/// the identity and diagonalized exactly (every block seen); above it, Davidson for
+/// `min(3, n)` roots to `tolerance` from the unit vectors of the lowest diagonal entries and
+/// [`spread_seed`].
+pub fn lowest_root(
+    op: &impl Symmetric,
+    dense_limit: usize,
+    tolerance: f64,
+) -> Result<Option<LowestRoot>> {
+    let n = op.dimension();
+    if n == 0 {
+        return Ok(None);
+    }
+    if n <= dense_limit {
+        let full = op.apply(&DMatrix::identity(n, n))?;
+        if full.shape() != (n, n) {
+            return Err(invalid("the operator returned a block of the wrong shape"));
+        }
+        let (values, vectors) = real_eigen(symmetric_part(full))?;
+        let mut vector = vectors.column(0).into_owned();
+        fix_sign(&mut vector);
+        return Ok(Some(LowestRoot {
+            value: values[0],
+            vector,
+            converged: true,
+            dense: true,
+            applications: n,
+        }));
+    }
+    let diagonal = op.diagonal();
+    if diagonal.len() != n || diagonal.iter().any(|v| !v.is_finite()) {
+        return Err(invalid(
+            "the Davidson diagonal must be finite and match the operator",
+        ));
+    }
+    let seeds = DMatrix::from_columns(&[spread_seed(&diagonal)]);
+    let roots = lowest_seeded(
+        op,
+        &Options {
+            tolerance,
+            ..Options::new(3.min(n))
+        },
+        &seeds,
+    )?;
+    Ok(Some(LowestRoot {
+        value: roots.values[0],
+        vector: roots.vectors.column(0).into_owned(),
+        converged: roots.converged,
+        dense: false,
+        applications: roots.applications,
+    }))
+}
+
+/// The outcome of [`solve_shifted`].
+#[derive(Clone, Debug)]
+pub struct Shifted {
+    /// The last iterate (zero when the right-hand side already met the tolerance).
+    pub x: DVector<f64>,
+    /// Whether the residual met the tolerance.
+    pub converged: bool,
+    /// Whether every search direction had positive curvature: `false` means `A + shift` is not
+    /// positive definite (a lower root of `A` than the one the shift was set from), and `x` is
+    /// the iterate before that direction.
+    pub positive: bool,
+}
+
+/// The solution of `(A + shift) x = rhs` for a symmetric `op` with `A + shift` positive definite,
+/// by conjugate gradients preconditioned with the diagonal (each entry held at least `1e-3`
+/// above zero), to a residual of `tolerance |rhs|` or `max_iterations` applications. A search
+/// direction of non-positive curvature ends the solve not converged (never an error): the caller
+/// learns that the shift does not make the operator positive.
+pub fn solve_shifted(
+    op: &impl Symmetric,
+    shift: f64,
+    rhs: &DVector<f64>,
+    tolerance: f64,
+    max_iterations: usize,
+) -> Result<Shifted> {
+    let n = op.dimension();
+    if rhs.len() != n || !shift.is_finite() || !(tolerance > 0.) {
+        return Err(invalid("a shifted solve needs a right-hand side of the operator's size, a finite shift and a positive tolerance"));
+    }
+    let inverse: Vec<f64> = op
+        .diagonal()
+        .iter()
+        .map(|d| 1. / (d + shift).max(1e-3))
+        .collect();
+    let target = tolerance * rhs.norm();
+    let mut x = DVector::zeros(n);
+    let mut r = rhs.clone();
+    let done = |x: DVector<f64>, converged: bool, positive: bool| Shifted {
+        x,
+        converged,
+        positive,
+    };
+    if r.norm() <= target {
+        return Ok(done(x, true, true));
+    }
+    let mut z = r.component_mul(&DVector::from_vec(inverse.clone()));
+    let mut p = z.clone();
+    let mut rz = r.dot(&z);
+    for _ in 0..max_iterations {
+        let ap = op
+            .apply(&DMatrix::from_column_slice(n, 1, p.as_slice()))?
+            .column(0)
+            + &p * shift;
+        let curvature = p.dot(&ap);
+        if !(curvature > 0.) {
+            return Ok(done(x, false, false));
+        }
+        let alpha = rz / curvature;
+        x += &p * alpha;
+        r -= &ap * alpha;
+        if r.norm() <= target {
+            return Ok(done(x, true, true));
+        }
+        z = r.component_mul(&DVector::from_vec(inverse.clone()));
+        let next = r.dot(&z);
+        p = &z + &p * (next / rz);
+        rz = next;
+    }
+    Ok(done(x, false, true))
+}
+
+fn search(op: &impl Symmetric, options: &Options, seeds: Option<&DMatrix<f64>>) -> Result<Roots> {
     let n = op.dimension();
     check(options, n)?;
     let k = options.roots;
@@ -195,6 +373,10 @@ pub fn lowest(op: &impl Symmetric, options: &Options) -> Result<Roots> {
     }
     let limit = options.max_subspace.max(2 * k + 2).min(n);
     let mut v = start(&diagonal, initial_count(options, n));
+    if let Some(seeds) = seeds {
+        let columns: Vec<DVector<f64>> = seeds.column_iter().map(|c| c.into_owned()).collect();
+        v = extend(&v, &columns);
+    }
     let mut av = op.apply(&v)?;
     let mut applications = v.ncols();
     let mut iterations = 0;
@@ -245,6 +427,22 @@ pub fn lowest(op: &impl Symmetric, options: &Options) -> Result<Roots> {
         }
         let grown = extend(&v, &corrections);
         if grown.ncols() == v.ncols() {
+            if seeds.is_some() {
+                let mut vectors = x;
+                for mut column in vectors.column_iter_mut() {
+                    let mut owned = column.clone_owned();
+                    fix_sign(&mut owned);
+                    column.copy_from(&owned);
+                }
+                return Ok(Roots {
+                    values: theta[..k].to_vec(),
+                    vectors,
+                    residuals,
+                    iterations,
+                    converged: false,
+                    applications,
+                });
+            }
             return Err(invalid(
                 "Davidson stalled: its corrections are inside the subspace before the residuals \
                  reached the tolerance",

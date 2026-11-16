@@ -17,9 +17,21 @@
 //! the discrete kernel is not exactly symmetric. For a closed `s` core (`q_c = 2`, `l_c = 0`) only
 //! `L = l` survives, with `(l l 0; 0 0 0)^2 = 1 / (2l + 1)`: the term the PAW Hartree-Fock
 //! Hamiltonian has used since it existed for a single closed 1s shell.
-use super::{invalid, onecenter_radial::three_j_squared, pair_tables::coulomb};
-use crate::Result;
+//!
+//! [`FrozenCore`] is the core of a record's stored states, one owner for the molecule and the
+//! PAW-LCAO supercell (`paw::molecular::data::Species`): it refuses, by reason, a core with no
+//! operator (a subshell that is not closed, states that do not hold the core's electrons or do
+//! not reproduce the stored core density). The operator enters the one-center coupling in the raw
+//! projector basis as `V^-1 X V^-T`.
+use super::{
+    generate::core_states::{CHARGE_TOLERANCE, DENSITY_TOLERANCE},
+    invalid,
+    onecenter_radial::three_j_squared,
+    pair_tables::coulomb,
+};
+use crate::{math::radial::integrate, Result};
 use nalgebra::DMatrix;
+use std::f64::consts::PI;
 
 /// One frozen core subshell on the radial grid.
 pub struct CoreShell<'a> {
@@ -79,4 +91,115 @@ pub fn core_valence_exchange(
         }
     }
     Ok(out)
+}
+
+/// One core subshell as a record stores it: `orbital` is `u = r R(r)` on the record's radial grid
+/// (the function its core density sums, `PawDataset::core_states`).
+pub struct StoredShell<'a> {
+    pub n: u32,
+    pub l: u32,
+    pub occupation: f64,
+    pub orbital: &'a [f64],
+}
+
+/// The frozen core of a species as the core-valence exchange needs it: its closed subshells as
+/// `R = u / r` on the record's grid and the first `extent` points of the grid that hold them (the
+/// trapezoid charge of the stored core density reaches `1 - 1e-14` of its total, plus two).
+pub struct FrozenCore {
+    shells: Vec<(usize, f64, Vec<f64>)>,
+    extent: usize,
+}
+
+impl FrozenCore {
+    /// The core of `symbol` from its stored subshells, or the reason the Hartree-Fock exchange of
+    /// this core has no operator: a subshell that is not closed (a spherical average of an open
+    /// shell is not the exchange of any state), states that do not hold the `electrons` of the
+    /// core, or states that do not reproduce the stored core `density` to
+    /// [`DENSITY_TOLERANCE`] of its peak at every point (a corrupted or mismatched file).
+    pub fn from_states(
+        symbol: &str,
+        r: &[f64],
+        density: &[f64],
+        electrons: f64,
+        states: &[StoredShell<'_>],
+    ) -> std::result::Result<Self, String> {
+        if states.is_empty() {
+            return Err(format!("{symbol}: the dataset lists no core states"));
+        }
+        let mut held = 0.;
+        let mut rebuilt = vec![0.; r.len()];
+        let mut shells = Vec::with_capacity(states.len());
+        for s in states {
+            let capacity = (2 * (2 * s.l + 1)) as f64;
+            if (s.occupation - capacity).abs() > 1e-9 {
+                return Err(format!(
+                    "{symbol}: the core subshell ({}, {}) holds {} of {capacity} electrons; the \
+                     core-valence exchange of a partially filled core has no operator",
+                    s.n, s.l, s.occupation
+                ));
+            }
+            if s.orbital.len() != r.len() {
+                return Err(format!(
+                    "{symbol}: the core state ({}, {}) has {} points on a grid of {}",
+                    s.n,
+                    s.l,
+                    s.orbital.len(),
+                    r.len()
+                ));
+            }
+            held += s.occupation;
+            let radial: Vec<f64> = s.orbital.iter().zip(r).map(|(u, x)| u / x).collect();
+            for (rho, f) in rebuilt.iter_mut().zip(&radial) {
+                *rho += s.occupation * f * f / (4. * PI);
+            }
+            shells.push((s.l as usize, s.occupation, radial));
+        }
+        if (held - electrons).abs() > CHARGE_TOLERANCE {
+            return Err(format!(
+                "{symbol}: the core states hold {held} electrons, the dataset's core {electrons}"
+            ));
+        }
+        let peak = density.iter().fold(0f64, |m, v| m.max(v.abs()));
+        let deviation = rebuilt
+            .iter()
+            .zip(density)
+            .fold(0f64, |m, (a, b)| m.max((a - b).abs()))
+            / peak;
+        if !(deviation <= DENSITY_TOLERANCE) {
+            return Err(format!(
+                "{symbol}: the core states differ from the stored core density by {deviation:.2e} of \
+                 its peak (tolerance {DENSITY_TOLERANCE:e})"
+            ));
+        }
+        let total = integrate(
+            r,
+            &r.iter().zip(density).map(|(r, n)| 4. * PI * r * r * n).collect::<Vec<_>>(),
+        )
+        .map_err(|e| format!("{symbol}: {e}"))?;
+        let mut integrated = 0.;
+        let mut extent = r.len();
+        for i in 1..r.len() {
+            integrated += 0.5
+                * (r[i] - r[i - 1])
+                * 4.
+                * PI
+                * (r[i - 1] * r[i - 1] * density[i - 1] + r[i] * r[i] * density[i]);
+            if integrated >= (1. - 1e-14) * total {
+                extent = (i + 2).min(r.len());
+                break;
+            }
+        }
+        Ok(Self { shells, extent })
+    }
+
+    /// The core-valence exchange `X` of the partial waves `waves` (on the record's grid) of the
+    /// channel `l` ([`core_valence_exchange`]).
+    pub fn exchange(&self, r: &[f64], l: usize, waves: &[Vec<f64>]) -> Result<DMatrix<f64>> {
+        let shells: Vec<CoreShell<'_>> = self
+            .shells
+            .iter()
+            .map(|(l, occupation, radial)| CoreShell { l: *l, occupation: *occupation, radial })
+            .collect();
+        core_valence_exchange(r, l, waves, &shells, self.extent)
+    }
 }

@@ -7,7 +7,7 @@ use super::compare::{
 };
 use super::{arrays, counterpart, Decimated};
 use crate::paw_assemble_support::Frozen;
-use mandacaru_core::paw::generate::Generated;
+use mandacaru_core::paw::generate::{ionic_tail, Generated};
 use serde_json::Value;
 
 pub fn compare_dataset(
@@ -55,13 +55,25 @@ pub fn compare_dataset_with(
                 .zip(&ours["smooth_core_density"])
                 .map(|(a, b)| a + b)
                 .collect::<Vec<_>>();
+            // The generator makes the ionic potential exactly `-Zv/r` beyond the local radius
+            // (`paw::generate::ionic_tail`, the 2026-11 regeneration); the freeze predates it, so
+            // the frozen potential is compared with that same pointwise step applied to it, at the
+            // freeze's own charge and local radius.
+            let scalars = &f.doc["scalars"];
+            let (r, zv, r_local) = (
+                &ours["r"],
+                number(&scalars["valence_charge"]),
+                number(&scalars["r_cut_local"]),
+            );
             let worst = frozen
                 .values
                 .iter()
                 .enumerate()
-                .map(|(k, b)| {
+                .map(|(k, &b)| {
                     let at = (k + 1) * frozen.stride - 1;
-                    (mine[at] - b).abs()
+                    let mut stepped = [b];
+                    ionic_tail::enforce(&r[at..=at], &mut stepped, zv, r_local);
+                    (mine[at] - stepped[0]).abs()
                         / tail_allowance(scheme, pbe, rho[at], frozen.scale, v_local_gate)
                 })
                 .fold(0., nan_max);

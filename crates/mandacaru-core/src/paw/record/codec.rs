@@ -230,6 +230,9 @@ fn core_entries(value: Value) -> Result<Vec<CoreEntry>> {
 /// Slack of the bound `sum occupation <= Z` (roundoff of the declared occupations).
 const CORE_CHARGE_TOLERANCE: f64 = 1e-8;
 
+/// The core charge (electrons) above which a record has a core, as the molecular species reads it.
+const CORE_FREE_CHARGE: f64 = 1e-6;
+
 // ---------------------------------------------------------------------------
 // The record.
 // ---------------------------------------------------------------------------
@@ -438,6 +441,29 @@ pub(crate) fn assemble(
             return Err(fail(
                 "radial_tables",
                 format!("{name} has {} rows, r has {points}", values.len()),
+            ));
+        }
+    }
+    // A version-3 record that lists its core states lists every one: a cored record with an empty
+    // list (a version-2 view saved as version 3, say) is refused, not read as a core-free species.
+    // Summed in place (trapezoid of `4 pi r^2 n_c`): nothing is allocated outside the reservation.
+    if dataset.core_states.as_ref().is_some_and(Vec::is_empty) {
+        let (grid, density) = (dataset.r.as_slice(), dataset.core_density.as_slice());
+        let core_electrons: f64 = (1..grid.len())
+            .map(|i| {
+                0.5 * (grid[i] - grid[i - 1])
+                    * 4.
+                    * std::f64::consts::PI
+                    * (grid[i - 1] * grid[i - 1] * density[i - 1] + grid[i] * grid[i] * density[i])
+            })
+            .sum();
+        if core_electrons > CORE_FREE_CHARGE {
+            return Err(fail(
+                "core_states",
+                format!(
+                    "the core density holds {core_electrons:.4} electrons but the record lists no \
+                     core state"
+                ),
             ));
         }
     }

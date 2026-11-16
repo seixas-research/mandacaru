@@ -328,3 +328,78 @@ fn the_sphere_polarization_kernel_is_the_derivative_of_its_fock() {
         "an equal change of both spins keeps P at zero"
     );
 }
+
+#[test]
+fn the_sphere_polarization_second_change_is_the_derivative_of_its_kernel() {
+    // The third derivative of the spheres' polarization along a change
+    // (`SpinTerms::polarization_second_change`, the HSE06 excited-state gradient's third-order
+    // term of the spheres) against a central difference of the kernel's action, at a polarized
+    // point and at a closed shell along a magnetizing change.
+    use mandacaru_core::{models::HSE06_OMEGA, quantum::C64};
+    use nalgebra::DMatrix;
+    let ctx = Context::new(Some(1), 512 << 20).unwrap();
+    let base = integrals(&ctx, &H2, "raw");
+    let state = base
+        .kohn_sham(
+            "lda",
+            [1, 1],
+            false,
+            &ScfOptions {
+                tolerance: 1e-10,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let screened = base
+        .paw_setup
+        .as_ref()
+        .unwrap()
+        .screened_exchange(&base, HSE06_OMEGA)
+        .unwrap();
+    let d = state.densities[0].map(|z: C64| z.re);
+    let m = d.nrows();
+    let c = DMatrix::from_fn(m, m, |i, j| ((i * 7 + j * 3) as f64 * 0.37).sin());
+    let product = |a: usize, b: usize| {
+        let x = c.column(a) * c.column(b).transpose();
+        (&x + x.transpose()) * 0.5
+    };
+    let polarize = product(0, 1) * 0.05;
+    let (d_up, d_down) = (
+        product(1, 2) * 0.3 + product(0, 0) * 0.1,
+        product(2, 3) * -0.2,
+    );
+    let check = |up: &DMatrix<f64>, down: &DMatrix<f64>, du: &DMatrix<f64>, dd: &DMatrix<f64>| {
+        let [su, sd] = screened.spin.polarization_second_change(up, down, du, dd).unwrap();
+        // The kernel's action at t = +-h is K1 +- 2 h K2.
+        let action = |h: f64| {
+            screened
+                .spin
+                .polarization_kernel(&ctx, &(up + du * h), &(down + dd * h))
+                .unwrap()
+                .apply(du, dd)
+                .unwrap()
+        };
+        let difference = |h: f64| {
+            let (p, q) = (action(h), action(-h));
+            [(&p[0] - &q[0]) / (4. * h), (&p[1] - &q[1]) / (4. * h)]
+        };
+        let (coarse, fine) = (difference(2e-4), difference(1e-4));
+        let estimate = [
+            (&fine[0] * 4. - &coarse[0]) / 3.,
+            (&fine[1] * 4. - &coarse[1]) / 3.,
+        ];
+        let scale = su.amax().max(sd.amax());
+        let error = (&su - &estimate[0]).amax().max((&sd - &estimate[1]).amax());
+        println!("polarization second change: {error:.3e} of {scale:.3e}");
+        (scale, error)
+    };
+    let (up, down) = (&d + &polarize, &d - &polarize);
+    let (scale, error) = check(&up, &down, &d_up, &d_down);
+    assert!(scale > 1e-6, "the second change vanishes: {scale:e}");
+    assert!(error < 1e-6 * scale, "polarized point: {error:e} of {scale:e}");
+    let (scale, error) = check(&d, &d, &d_up, &(-&d_up));
+    assert!(
+        scale > 1e-6 && error < 1e-6 * scale,
+        "closed shell, opposite spins: {error:e} of {scale:e}"
+    );
+}

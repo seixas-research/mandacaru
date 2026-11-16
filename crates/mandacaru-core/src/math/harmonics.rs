@@ -177,3 +177,98 @@ pub fn harmonic_gradient(
         (0.0, [0.0; 3], value, grad)
     }
 }
+
+/// The harmonic of degree `l` and order `m` at every `(theta, phi)`: real `S_lm` or complex
+/// `Y_l^m` values, one per point.
+pub enum Samples {
+    Real(Vec<f64>),
+    Complex(Vec<Complex64>),
+}
+
+/// [`harmonic`] at every point of `theta` and `phi` (equal lengths).
+pub fn harmonic_samples(
+    l: usize,
+    m: i32,
+    theta: &[f64],
+    phi: &[f64],
+    real: bool,
+) -> crate::Result<Samples> {
+    if theta.len() != phi.len() {
+        return Err(crate::Error::Invalid(
+            "theta and phi must have the same length".into(),
+        ));
+    }
+    let points = theta.iter().zip(phi);
+    Ok(if real {
+        Samples::Real(points.map(|(t, p)| harmonic(l, m, *t, *p, true).0).collect())
+    } else {
+        Samples::Complex(points.map(|(t, p)| harmonic(l, m, *t, *p, false).1).collect())
+    })
+}
+
+/// Values and Cartesian gradients of the harmonic at every offset `(x, y, z)`.
+pub enum GradientSamples {
+    Real(Vec<f64>, [Vec<f64>; 3]),
+    Complex(Vec<Complex64>, [Vec<Complex64>; 3]),
+}
+
+/// [`harmonic_gradient`] at every offset of `x`, `y` and `z` (equal lengths).
+pub fn harmonic_gradient_samples(
+    l: usize,
+    m: i32,
+    x: &[f64],
+    y: &[f64],
+    z: &[f64],
+    real: bool,
+) -> crate::Result<GradientSamples> {
+    let n = x.len();
+    if y.len() != n || z.len() != n {
+        return Err(crate::Error::Invalid(
+            "x, y, z must have the same length".into(),
+        ));
+    }
+    if real {
+        let (mut values, mut gradient) = (Vec::with_capacity(n), [vec![], vec![], vec![]]);
+        for i in 0..n {
+            let (v, g, _, _) = harmonic_gradient(l, m, x[i], y[i], z[i], true);
+            values.push(v);
+            for a in 0..3 {
+                gradient[a].push(g[a]);
+            }
+        }
+        Ok(GradientSamples::Real(values, gradient))
+    } else {
+        let (mut values, mut gradient) = (Vec::with_capacity(n), [vec![], vec![], vec![]]);
+        for i in 0..n {
+            let (_, _, v, g) = harmonic_gradient(l, m, x[i], y[i], z[i], false);
+            values.push(v);
+            for a in 0..3 {
+                gradient[a].push(g[a]);
+            }
+        }
+        Ok(GradientSamples::Complex(values, gradient))
+    }
+}
+
+/// The unitary `U` (`(2l + 1)^2`, row-major, rows and columns `m = -l..=l`) of the real
+/// harmonics in terms of the complex ones: `S_lm = sum_m' U_{m m'} Y_l^{m'}`, Condon-Shortley
+/// phases.
+pub fn real_transform(l: usize) -> Vec<Complex64> {
+    let dim = 2 * l + 1;
+    let mut u = vec![Complex64::default(); dim * dim];
+    let l_i = l as i32;
+    u[l * dim + l] = Complex64::new(1.0, 0.0);
+    let root = 1.0 / 2.0_f64.sqrt();
+    for m in 1..=l as i32 {
+        let sign = if m % 2 == 0 { 1.0 } else { -1.0 };
+        let row_p = (l_i + m) as usize;
+        let row_m = (l_i - m) as usize;
+        let col_p = (l_i + m) as usize;
+        let col_m = (l_i - m) as usize;
+        u[row_p * dim + col_p] = Complex64::new(sign * root, 0.0);
+        u[row_p * dim + col_m] = Complex64::new(root, 0.0);
+        u[row_m * dim + col_m] = Complex64::new(0.0, root);
+        u[row_m * dim + col_p] = Complex64::new(0.0, -sign * root);
+    }
+    u
+}

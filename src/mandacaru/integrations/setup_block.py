@@ -8,6 +8,9 @@ symmetry, k-point reduction, matrices, PAW spheres) is built in Rust.
 
 from __future__ import annotations
 
+import json
+from time import perf_counter
+
 import numpy as np
 
 from .. import _native
@@ -43,11 +46,19 @@ def spin_orbit_symbols(atoms, options: dict | None = None, family: str = "paw-lc
 
 def native_setup(driver, atoms, family, options, moments, spinor, start):
     """Set the crystal up with the Rust builder (``Context.periodic_problem_from_request``)."""
+    request, dataset_paths = setup_request(driver, atoms, family, options, moments, spinor)
+    driver.periodic_problem = driver.context.periodic_problem_from_request(
+        json.dumps(request), dataset_paths
+    )
+    driver._orbital_groups = driver.periodic_problem.orbital_groups
+    driver._geometry_seconds = perf_counter() - start
+
+
+def setup_request(driver, atoms, family, options, moments, spinor):
+    """The request of the Rust crystal setup and its dataset files, from the calculator's options."""
     if options.get("diffuse"):
         from ..pseudopotentials.diffuse import refuse_crystal
         refuse_crystal(options.get("diffuse"))
-    import json
-    from time import perf_counter
     from ..units import to_bohr
     from ..integrals import Grid
     from ..models.setup import monkhorst_pack_kpts
@@ -116,19 +127,8 @@ def native_setup(driver, atoms, family, options, moments, spinor, start):
                           for symbol in unique_species}
     if cutoff is not None:
         request["filter_cutoff"] = float(cutoff)
-    width = ion_width(g)
-    if width is not None:
+    if (width := ion_width(g)) is not None:
         request["sigma"] = float(width)
-    if getattr(driver, "_hubbard_u", None) is not None:
-        request["hubbard_u"] = (
-            json.loads(driver._hubbard_u)
-            if isinstance(driver._hubbard_u, str)
-            else driver._hubbard_u
-        )
-
-    driver.periodic_problem = driver.context.periodic_problem_from_request(
-        json.dumps(request), dataset_paths
-    )
-    driver._orbital_groups = driver.periodic_problem.orbital_groups
-    driver._geometry_seconds = perf_counter() - start
-
+    if (hubbard_u := getattr(driver, "_hubbard_u", None)) is not None:
+        request["hubbard_u"] = json.loads(hubbard_u) if isinstance(hubbard_u, str) else hubbard_u
+    return request, dataset_paths

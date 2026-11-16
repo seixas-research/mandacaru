@@ -1,0 +1,1476 @@
+{
+ "recipes": {
+  "3-21++G": {
+   "core": [
+    3
+   ],
+   "description": "Pople split-valence: 3-primitive core, valence 2+1, diffuse sp on heavy atoms and s on H",
+   "diffuse": [
+    0,
+    1
+   ],
+   "diffuse_h": [
+    0
+   ],
+   "diffuse_l_max": 99,
+   "diffuse_present": false,
+   "family": "pople",
+   "name": "3-21++G",
+   "polarization": [],
+   "polarization_h": [],
+   "polarization_min_z": 11,
+   "tight": [],
+   "valence": [
+    2,
+    1
+   ]
+  },
+  "3-21++G*": {
+   "core": [
+    3
+   ],
+   "description": "Pople split-valence: 3-primitive core, valence 2+1, diffuse sp on heavy atoms and s on H",
+   "diffuse": [
+    0,
+    1
+   ],
+   "diffuse_h": [
+    0
+   ],
+   "diffuse_l_max": 99,
+   "diffuse_present": false,
+   "family": "pople",
+   "name": "3-21++G*",
+   "polarization": [
+    [
+     2,
+     1
+    ]
+   ],
+   "polarization_h": [],
+   "polarization_min_z": 11,
+   "tight": [],
+   "valence": [
+    2,
+    1
+   ]
+  },
+  "3-21+G": {
+   "core": [
+    3
+   ],
+   "description": "Pople split-valence: 3-primitive core, valence 2+1, diffuse sp on heavy atoms",
+   "diffuse": [
+    0,
+    1
+   ],
+   "diffuse_h": [],
+   "diffuse_l_max": 99,
+   "diffuse_present": false,
+   "family": "pople",
+   "name": "3-21+G",
+   "polarization": [],
+   "polarization_h": [],
+   "polarization_min_z": 11,
+   "tight": [],
+   "valence": [
+    2,
+    1
+   ]
+  },
+  "3-21+G*": {
+   "core": [
+    3
+   ],
+   "description": "Pople split-valence: 3-primitive core, valence 2+1, diffuse sp on heavy atoms",
+   "diffuse": [
+    0,
+    1
+   ],
+   "diffuse_h": [],
+   "diffuse_l_max": 99,
+   "diffuse_present": false,
+   "family": "pople",
+   "name": "3-21+G*",
+   "polarization": [
+    [
+     2,
+     1
+    ]
+   ],
+   "polarization_h": [],
+   "polarization_min_z": 11,
+   "tight": [],
+   "valence": [
+    2,
+    1
+   ]
+  },
+  "3-21+G**": {
+   "core": [
+    3
+   ],
+   "description": "Pople split-valence: 3-primitive core, valence 2+1, diffuse sp on heavy atoms",
+   "diffuse": [
+    0,
+    1
+   ],
+   "diffuse_h": [],
+   "diffuse_l_max": 99,
+   "diffuse_present": false,
+   "family": "pople",
+   "name": "3-21+G**",
+   "polarization": [
+    [
+     2,
+     1
+    ]
+   ],
+   "polarization_h": [
+    [
+     1,
+     1
+    ]
+   ],
+   "polarization_min_z": 11,
+   "tight": [],
+   "valence": [
+    2,
+    1
+   ]
+  },
+  "3-21G": {
+   "core": [
+    3
+   ],
+   "description": "Pople split-valence: 3-primitive core, valence 2+1",
+   "diffuse": [],
+   "diffuse_h": [],
+   "diffuse_l_max": 99,
+   "diffuse_present": false,
+   "family": "pople",
+   "name": "3-21G",
+   "polarization": [],
+   "polarization_h": [],
+   "polarization_min_z": 11,
+   "tight": [],
+   "valence": [
+    2,
+    1
+   ]
+  },
+  "3-21G*": {
+   "core": [
+    3
+   ],
+   "description": "Pople split-valence: 3-primitive core, valence 2+1",
+   "diffuse": [],
+   "diffuse_h": [],
+   "diffuse_l_max": 99,
+   "diffuse_present": false,
+   "family": "pople",
+   "name": "3-21G*",
+   "polarization": [
+    [
+     2,
+     1
+    ]
+   ],
+   "polarization_h": [],
+   "polarization_min_z": 11,
+   "tight": [],
+   "valence": [
+    2,
+    1
+   ]
+  },
+  "3-21G**": {
+   "core": [
+    3
+   ],
+   "description": "Pople split-valence: 3-primitive core, valence 2+1",
+   "diffuse": [],
+   "diffuse_h": [],
+   "diffuse_l_max": 99,
+   "diffuse_present": false,
+   "family": "pople",
+   "name": "3-21G**",
+   "polarization": [
+    [
+     2,
+     1
+    ]
+   ],
+   "polarization_h": [
+    [
+     1,
+     1
+    ]
+   ],
+   "polarization_min_z": 11,
+   "tight": [],
+   "valence": [
+    2,
+    1
+   ]
+  },
+  "4-21G": {
+   "core": [
+    4
+   ],
+   "description": "Pople split-valence: 4-primitive core, valence 2+1",
+   "diffuse": [],
+   "diffuse_h": [],
+   "diffuse_l_max": 99,
+   "diffuse_present": false,
+   "family": "pople",
+   "name": "4-21G",
+   "polarization": [],
+   "polarization_h": [],
+   "polarization_min_z": 3,
+   "tight": [],
+   "valence": [
+    2,
+    1
+   ]
+  },
+  "4-31G": {
+   "core": [
+    4
+   ],
+   "description": "Pople split-valence: 4-primitive core, valence 3+1",
+   "diffuse": [],
+   "diffuse_h": [],
+   "diffuse_l_max": 99,
+   "diffuse_present": false,
+   "family": "pople",
+   "name": "4-31G",
+   "polarization": [],
+   "polarization_h": [],
+   "polarization_min_z": 3,
+   "tight": [],
+   "valence": [
+    3,
+    1
+   ]
+  },
+  "6-21G": {
+   "core": [
+    6
+   ],
+   "description": "Pople split-valence: 6-primitive core, valence 2+1",
+   "diffuse": [],
+   "diffuse_h": [],
+   "diffuse_l_max": 99,
+   "diffuse_present": false,
+   "family": "pople",
+   "name": "6-21G",
+   "polarization": [],
+   "polarization_h": [],
+   "polarization_min_z": 3,
+   "tight": [],
+   "valence": [
+    2,
+    1
+   ]
+  },
+  "6-31++G": {
+   "core": [
+    6
+   ],
+   "description": "Pople split-valence: 6-primitive core, valence 3+1, diffuse sp on heavy atoms and s on H",
+   "diffuse": [
+    0,
+    1
+   ],
+   "diffuse_h": [
+    0
+   ],
+   "diffuse_l_max": 99,
+   "diffuse_present": false,
+   "family": "pople",
+   "name": "6-31++G",
+   "polarization": [],
+   "polarization_h": [],
+   "polarization_min_z": 3,
+   "tight": [],
+   "valence": [
+    3,
+    1
+   ]
+  },
+  "6-31++G**": {
+   "core": [
+    6
+   ],
+   "description": "Pople split-valence: 6-primitive core, valence 3+1, diffuse sp on heavy atoms and s on H",
+   "diffuse": [
+    0,
+    1
+   ],
+   "diffuse_h": [
+    0
+   ],
+   "diffuse_l_max": 99,
+   "diffuse_present": false,
+   "family": "pople",
+   "name": "6-31++G**",
+   "polarization": [
+    [
+     2,
+     1
+    ]
+   ],
+   "polarization_h": [
+    [
+     1,
+     1
+    ]
+   ],
+   "polarization_min_z": 3,
+   "tight": [],
+   "valence": [
+    3,
+    1
+   ]
+  },
+  "6-31+G": {
+   "core": [
+    6
+   ],
+   "description": "Pople split-valence: 6-primitive core, valence 3+1, diffuse sp on heavy atoms",
+   "diffuse": [
+    0,
+    1
+   ],
+   "diffuse_h": [],
+   "diffuse_l_max": 99,
+   "diffuse_present": false,
+   "family": "pople",
+   "name": "6-31+G",
+   "polarization": [],
+   "polarization_h": [],
+   "polarization_min_z": 3,
+   "tight": [],
+   "valence": [
+    3,
+    1
+   ]
+  },
+  "6-31+G*": {
+   "core": [
+    6
+   ],
+   "description": "Pople split-valence: 6-primitive core, valence 3+1, diffuse sp on heavy atoms",
+   "diffuse": [
+    0,
+    1
+   ],
+   "diffuse_h": [],
+   "diffuse_l_max": 99,
+   "diffuse_present": false,
+   "family": "pople",
+   "name": "6-31+G*",
+   "polarization": [
+    [
+     2,
+     1
+    ]
+   ],
+   "polarization_h": [],
+   "polarization_min_z": 3,
+   "tight": [],
+   "valence": [
+    3,
+    1
+   ]
+  },
+  "6-311++G(2df,2p)": {
+   "core": [
+    6
+   ],
+   "description": "Pople split-valence: 6-primitive core, valence 3+1+1, diffuse sp on heavy atoms and s on H",
+   "diffuse": [
+    0,
+    1
+   ],
+   "diffuse_h": [
+    0
+   ],
+   "diffuse_l_max": 99,
+   "diffuse_present": false,
+   "family": "pople",
+   "name": "6-311++G(2df,2p)",
+   "polarization": [
+    [
+     2,
+     2
+    ],
+    [
+     3,
+     1
+    ]
+   ],
+   "polarization_h": [
+    [
+     1,
+     2
+    ]
+   ],
+   "polarization_min_z": 3,
+   "tight": [],
+   "valence": [
+    3,
+    1,
+    1
+   ]
+  },
+  "6-311+G(12d)": {
+   "core": [
+    6
+   ],
+   "description": "Pople split-valence: 6-primitive core, valence 3+1+1, diffuse sp on heavy atoms",
+   "diffuse": [
+    0,
+    1
+   ],
+   "diffuse_h": [],
+   "diffuse_l_max": 99,
+   "diffuse_present": false,
+   "family": "pople",
+   "name": "6-311+G(12d)",
+   "polarization": [
+    [
+     2,
+     12
+    ]
+   ],
+   "polarization_h": [],
+   "polarization_min_z": 3,
+   "tight": [],
+   "valence": [
+    3,
+    1,
+    1
+   ]
+  },
+  "6-311+G(2df,2p)": {
+   "core": [
+    6
+   ],
+   "description": "Pople split-valence: 6-primitive core, valence 3+1+1, diffuse sp on heavy atoms",
+   "diffuse": [
+    0,
+    1
+   ],
+   "diffuse_h": [],
+   "diffuse_l_max": 99,
+   "diffuse_present": false,
+   "family": "pople",
+   "name": "6-311+G(2df,2p)",
+   "polarization": [
+    [
+     2,
+     2
+    ],
+    [
+     3,
+     1
+    ]
+   ],
+   "polarization_h": [
+    [
+     1,
+     2
+    ]
+   ],
+   "polarization_min_z": 3,
+   "tight": [],
+   "valence": [
+    3,
+    1,
+    1
+   ]
+  },
+  "6-311+G*": {
+   "core": [
+    6
+   ],
+   "description": "Pople split-valence: 6-primitive core, valence 3+1+1, diffuse sp on heavy atoms",
+   "diffuse": [
+    0,
+    1
+   ],
+   "diffuse_h": [],
+   "diffuse_l_max": 99,
+   "diffuse_present": false,
+   "family": "pople",
+   "name": "6-311+G*",
+   "polarization": [
+    [
+     2,
+     1
+    ]
+   ],
+   "polarization_h": [],
+   "polarization_min_z": 3,
+   "tight": [],
+   "valence": [
+    3,
+    1,
+    1
+   ]
+  },
+  "6-311G": {
+   "core": [
+    6
+   ],
+   "description": "Pople split-valence: 6-primitive core, valence 3+1+1",
+   "diffuse": [],
+   "diffuse_h": [],
+   "diffuse_l_max": 99,
+   "diffuse_present": false,
+   "family": "pople",
+   "name": "6-311G",
+   "polarization": [],
+   "polarization_h": [],
+   "polarization_min_z": 3,
+   "tight": [],
+   "valence": [
+    3,
+    1,
+    1
+   ]
+  },
+  "6-311G(3df,3pd)": {
+   "core": [
+    6
+   ],
+   "description": "Pople split-valence: 6-primitive core, valence 3+1+1",
+   "diffuse": [],
+   "diffuse_h": [],
+   "diffuse_l_max": 99,
+   "diffuse_present": false,
+   "family": "pople",
+   "name": "6-311G(3df,3pd)",
+   "polarization": [
+    [
+     2,
+     3
+    ],
+    [
+     3,
+     1
+    ]
+   ],
+   "polarization_h": [
+    [
+     1,
+     3
+    ],
+    [
+     2,
+     1
+    ]
+   ],
+   "polarization_min_z": 3,
+   "tight": [],
+   "valence": [
+    3,
+    1,
+    1
+   ]
+  },
+  "6-311G*": {
+   "core": [
+    6
+   ],
+   "description": "Pople split-valence: 6-primitive core, valence 3+1+1",
+   "diffuse": [],
+   "diffuse_h": [],
+   "diffuse_l_max": 99,
+   "diffuse_present": false,
+   "family": "pople",
+   "name": "6-311G*",
+   "polarization": [
+    [
+     2,
+     1
+    ]
+   ],
+   "polarization_h": [],
+   "polarization_min_z": 3,
+   "tight": [],
+   "valence": [
+    3,
+    1,
+    1
+   ]
+  },
+  "6-31G": {
+   "core": [
+    6
+   ],
+   "description": "Pople split-valence: 6-primitive core, valence 3+1",
+   "diffuse": [],
+   "diffuse_h": [],
+   "diffuse_l_max": 99,
+   "diffuse_present": false,
+   "family": "pople",
+   "name": "6-31G",
+   "polarization": [],
+   "polarization_h": [],
+   "polarization_min_z": 3,
+   "tight": [],
+   "valence": [
+    3,
+    1
+   ]
+  },
+  "6-31G()": {
+   "error": "ValueError",
+   "message": "unknown Gaussian basis set '6-31G()'; expected STO-nG, a Pople name such as '6-31+G*' or '6-311G(2df,2p)', a Dunning name such as 'aug-cc-pVTZ' / 'cc-pCVDZ', or a Karlsruhe name such as 'def2-TZVP'"
+  },
+  "6-31G(,p)": {
+   "core": [
+    6
+   ],
+   "description": "Pople split-valence: 6-primitive core, valence 3+1",
+   "diffuse": [],
+   "diffuse_h": [],
+   "diffuse_l_max": 99,
+   "diffuse_present": false,
+   "family": "pople",
+   "name": "6-31G(,p)",
+   "polarization": [],
+   "polarization_h": [
+    [
+     1,
+     1
+    ]
+   ],
+   "polarization_min_z": 3,
+   "tight": [],
+   "valence": [
+    3,
+    1
+   ]
+  },
+  "6-31G(3df,3pd)": {
+   "core": [
+    6
+   ],
+   "description": "Pople split-valence: 6-primitive core, valence 3+1",
+   "diffuse": [],
+   "diffuse_h": [],
+   "diffuse_l_max": 99,
+   "diffuse_present": false,
+   "family": "pople",
+   "name": "6-31G(3df,3pd)",
+   "polarization": [
+    [
+     2,
+     3
+    ],
+    [
+     3,
+     1
+    ]
+   ],
+   "polarization_h": [
+    [
+     1,
+     3
+    ],
+    [
+     2,
+     1
+    ]
+   ],
+   "polarization_min_z": 3,
+   "tight": [],
+   "valence": [
+    3,
+    1
+   ]
+  },
+  "6-31G(D,P)": {
+   "core": [
+    6
+   ],
+   "description": "Pople split-valence: 6-primitive core, valence 3+1",
+   "diffuse": [],
+   "diffuse_h": [],
+   "diffuse_l_max": 99,
+   "diffuse_present": false,
+   "family": "pople",
+   "name": "6-31G(D,P)",
+   "polarization": [
+    [
+     2,
+     1
+    ]
+   ],
+   "polarization_h": [
+    [
+     1,
+     1
+    ]
+   ],
+   "polarization_min_z": 3,
+   "tight": [],
+   "valence": [
+    3,
+    1
+   ]
+  },
+  "6-31G(d)": {
+   "core": [
+    6
+   ],
+   "description": "Pople split-valence: 6-primitive core, valence 3+1",
+   "diffuse": [],
+   "diffuse_h": [],
+   "diffuse_l_max": 99,
+   "diffuse_present": false,
+   "family": "pople",
+   "name": "6-31G(d)",
+   "polarization": [
+    [
+     2,
+     1
+    ]
+   ],
+   "polarization_h": [],
+   "polarization_min_z": 3,
+   "tight": [],
+   "valence": [
+    3,
+    1
+   ]
+  },
+  "6-31G(d,)": {
+   "core": [
+    6
+   ],
+   "description": "Pople split-valence: 6-primitive core, valence 3+1",
+   "diffuse": [],
+   "diffuse_h": [],
+   "diffuse_l_max": 99,
+   "diffuse_present": false,
+   "family": "pople",
+   "name": "6-31G(d,)",
+   "polarization": [
+    [
+     2,
+     1
+    ]
+   ],
+   "polarization_h": [],
+   "polarization_min_z": 3,
+   "tight": [],
+   "valence": [
+    3,
+    1
+   ]
+  },
+  "6-31G(d,p)": {
+   "core": [
+    6
+   ],
+   "description": "Pople split-valence: 6-primitive core, valence 3+1",
+   "diffuse": [],
+   "diffuse_h": [],
+   "diffuse_l_max": 99,
+   "diffuse_present": false,
+   "family": "pople",
+   "name": "6-31G(d,p)",
+   "polarization": [
+    [
+     2,
+     1
+    ]
+   ],
+   "polarization_h": [
+    [
+     1,
+     1
+    ]
+   ],
+   "polarization_min_z": 3,
+   "tight": [],
+   "valence": [
+    3,
+    1
+   ]
+  },
+  "6-31G(xyz)": {
+   "error": "ValueError",
+   "message": "cannot read the polarization spec 'xyz'"
+  },
+  "6-31G*": {
+   "core": [
+    6
+   ],
+   "description": "Pople split-valence: 6-primitive core, valence 3+1",
+   "diffuse": [],
+   "diffuse_h": [],
+   "diffuse_l_max": 99,
+   "diffuse_present": false,
+   "family": "pople",
+   "name": "6-31G*",
+   "polarization": [
+    [
+     2,
+     1
+    ]
+   ],
+   "polarization_h": [],
+   "polarization_min_z": 3,
+   "tight": [],
+   "valence": [
+    3,
+    1
+   ]
+  },
+  "6-31G**": {
+   "core": [
+    6
+   ],
+   "description": "Pople split-valence: 6-primitive core, valence 3+1",
+   "diffuse": [],
+   "diffuse_h": [],
+   "diffuse_l_max": 99,
+   "diffuse_present": false,
+   "family": "pople",
+   "name": "6-31G**",
+   "polarization": [
+    [
+     2,
+     1
+    ]
+   ],
+   "polarization_h": [
+    [
+     1,
+     1
+    ]
+   ],
+   "polarization_min_z": 3,
+   "tight": [],
+   "valence": [
+    3,
+    1
+   ]
+  },
+  "6-31g(2DF, 2PD)": {
+   "core": [
+    6
+   ],
+   "description": "Pople split-valence: 6-primitive core, valence 3+1",
+   "diffuse": [],
+   "diffuse_h": [],
+   "diffuse_l_max": 99,
+   "diffuse_present": false,
+   "family": "pople",
+   "name": "6-31G(2DF, 2PD)",
+   "polarization": [
+    [
+     2,
+     2
+    ],
+    [
+     3,
+     1
+    ]
+   ],
+   "polarization_h": [
+    [
+     1,
+     2
+    ],
+    [
+     2,
+     1
+    ]
+   ],
+   "polarization_min_z": 3,
+   "tight": [],
+   "valence": [
+    3,
+    1
+   ]
+  },
+  "DEF2-SV(P)": {
+   "core": [
+    5
+   ],
+   "description": "Karlsruhe def2, double-zeta valence with polarization",
+   "diffuse": [],
+   "diffuse_h": [],
+   "diffuse_l_max": 2,
+   "diffuse_present": false,
+   "family": "karlsruhe",
+   "name": "def2-SV(P)",
+   "polarization": [
+    [
+     2,
+     1
+    ]
+   ],
+   "polarization_h": [],
+   "polarization_min_z": 3,
+   "tight": [],
+   "valence": [
+    3,
+    1
+   ]
+  },
+  "def2-QZVP": {
+   "core": [
+    7,
+    1,
+    1
+   ],
+   "description": "Karlsruhe def2, quadruple-zeta valence with polarization",
+   "diffuse": [],
+   "diffuse_h": [],
+   "diffuse_l_max": 2,
+   "diffuse_present": false,
+   "family": "karlsruhe",
+   "name": "def2-QZVP",
+   "polarization": [
+    [
+     2,
+     3
+    ],
+    [
+     3,
+     2
+    ],
+    [
+     4,
+     1
+    ]
+   ],
+   "polarization_h": [
+    [
+     1,
+     3
+    ],
+    [
+     2,
+     2
+    ]
+   ],
+   "polarization_min_z": 3,
+   "tight": [],
+   "valence": [
+    3,
+    1,
+    1,
+    1
+   ]
+  },
+  "def2-QZVPD": {
+   "core": [
+    7,
+    1,
+    1
+   ],
+   "description": "Karlsruhe def2, quadruple-zeta valence with polarization, diffuse-augmented (D)",
+   "diffuse": [],
+   "diffuse_h": [],
+   "diffuse_l_max": 2,
+   "diffuse_present": true,
+   "family": "karlsruhe",
+   "name": "def2-QZVPD",
+   "polarization": [
+    [
+     2,
+     3
+    ],
+    [
+     3,
+     2
+    ],
+    [
+     4,
+     1
+    ]
+   ],
+   "polarization_h": [
+    [
+     1,
+     3
+    ],
+    [
+     2,
+     2
+    ]
+   ],
+   "polarization_min_z": 3,
+   "tight": [],
+   "valence": [
+    3,
+    1,
+    1,
+    1
+   ]
+  },
+  "def2-QZVPP": {
+   "core": [
+    7,
+    1,
+    1
+   ],
+   "description": "Karlsruhe def2, quadruple-zeta valence with polarization",
+   "diffuse": [],
+   "diffuse_h": [],
+   "diffuse_l_max": 2,
+   "diffuse_present": false,
+   "family": "karlsruhe",
+   "name": "def2-QZVPP",
+   "polarization": [
+    [
+     2,
+     3
+    ],
+    [
+     3,
+     2
+    ],
+    [
+     4,
+     1
+    ]
+   ],
+   "polarization_h": [
+    [
+     1,
+     3
+    ],
+    [
+     2,
+     2
+    ],
+    [
+     3,
+     1
+    ]
+   ],
+   "polarization_min_z": 3,
+   "tight": [],
+   "valence": [
+    3,
+    1,
+    1,
+    1
+   ]
+  },
+  "def2-QZVPPD": {
+   "core": [
+    7,
+    1,
+    1
+   ],
+   "description": "Karlsruhe def2, quadruple-zeta valence with polarization, diffuse-augmented (D)",
+   "diffuse": [],
+   "diffuse_h": [],
+   "diffuse_l_max": 2,
+   "diffuse_present": true,
+   "family": "karlsruhe",
+   "name": "def2-QZVPPD",
+   "polarization": [
+    [
+     2,
+     3
+    ],
+    [
+     3,
+     2
+    ],
+    [
+     4,
+     1
+    ]
+   ],
+   "polarization_h": [
+    [
+     1,
+     3
+    ],
+    [
+     2,
+     2
+    ],
+    [
+     3,
+     1
+    ]
+   ],
+   "polarization_min_z": 3,
+   "tight": [],
+   "valence": [
+    3,
+    1,
+    1,
+    1
+   ]
+  },
+  "def2-SV(P)": {
+   "core": [
+    5
+   ],
+   "description": "Karlsruhe def2, double-zeta valence with polarization",
+   "diffuse": [],
+   "diffuse_h": [],
+   "diffuse_l_max": 2,
+   "diffuse_present": false,
+   "family": "karlsruhe",
+   "name": "def2-SV(P)",
+   "polarization": [
+    [
+     2,
+     1
+    ]
+   ],
+   "polarization_h": [],
+   "polarization_min_z": 3,
+   "tight": [],
+   "valence": [
+    3,
+    1
+   ]
+  },
+  "def2-SVP": {
+   "core": [
+    5
+   ],
+   "description": "Karlsruhe def2, double-zeta valence with polarization",
+   "diffuse": [],
+   "diffuse_h": [],
+   "diffuse_l_max": 2,
+   "diffuse_present": false,
+   "family": "karlsruhe",
+   "name": "def2-SVP",
+   "polarization": [
+    [
+     2,
+     1
+    ]
+   ],
+   "polarization_h": [
+    [
+     1,
+     1
+    ]
+   ],
+   "polarization_min_z": 3,
+   "tight": [],
+   "valence": [
+    3,
+    1
+   ]
+  },
+  "def2-SVPD": {
+   "core": [
+    5
+   ],
+   "description": "Karlsruhe def2, double-zeta valence with polarization, diffuse-augmented (D)",
+   "diffuse": [],
+   "diffuse_h": [],
+   "diffuse_l_max": 2,
+   "diffuse_present": true,
+   "family": "karlsruhe",
+   "name": "def2-SVPD",
+   "polarization": [
+    [
+     2,
+     1
+    ]
+   ],
+   "polarization_h": [
+    [
+     1,
+     1
+    ]
+   ],
+   "polarization_min_z": 3,
+   "tight": [],
+   "valence": [
+    3,
+    1
+   ]
+  },
+  "def2-TZDP": {
+   "core": [
+    6,
+    1
+   ],
+   "description": "Karlsruhe def2, triple-zeta valence with polarization (accepted as a spelling of def2-TZVP)",
+   "diffuse": [],
+   "diffuse_h": [],
+   "diffuse_l_max": 2,
+   "diffuse_present": false,
+   "family": "karlsruhe",
+   "name": "def2-TZDP",
+   "polarization": [
+    [
+     2,
+     2
+    ],
+    [
+     3,
+     1
+    ]
+   ],
+   "polarization_h": [
+    [
+     1,
+     1
+    ]
+   ],
+   "polarization_min_z": 3,
+   "tight": [],
+   "valence": [
+    3,
+    1,
+    1
+   ]
+  },
+  "def2-TZVP": {
+   "core": [
+    6,
+    1
+   ],
+   "description": "Karlsruhe def2, triple-zeta valence with polarization",
+   "diffuse": [],
+   "diffuse_h": [],
+   "diffuse_l_max": 2,
+   "diffuse_present": false,
+   "family": "karlsruhe",
+   "name": "def2-TZVP",
+   "polarization": [
+    [
+     2,
+     2
+    ],
+    [
+     3,
+     1
+    ]
+   ],
+   "polarization_h": [
+    [
+     1,
+     1
+    ]
+   ],
+   "polarization_min_z": 3,
+   "tight": [],
+   "valence": [
+    3,
+    1,
+    1
+   ]
+  },
+  "def2-TZVPD": {
+   "core": [
+    6,
+    1
+   ],
+   "description": "Karlsruhe def2, triple-zeta valence with polarization, diffuse-augmented (D)",
+   "diffuse": [],
+   "diffuse_h": [],
+   "diffuse_l_max": 2,
+   "diffuse_present": true,
+   "family": "karlsruhe",
+   "name": "def2-TZVPD",
+   "polarization": [
+    [
+     2,
+     2
+    ],
+    [
+     3,
+     1
+    ]
+   ],
+   "polarization_h": [
+    [
+     1,
+     1
+    ]
+   ],
+   "polarization_min_z": 3,
+   "tight": [],
+   "valence": [
+    3,
+    1,
+    1
+   ]
+  },
+  "def2-TZVPP": {
+   "core": [
+    6,
+    1
+   ],
+   "description": "Karlsruhe def2, triple-zeta valence with polarization",
+   "diffuse": [],
+   "diffuse_h": [],
+   "diffuse_l_max": 2,
+   "diffuse_present": false,
+   "family": "karlsruhe",
+   "name": "def2-TZVPP",
+   "polarization": [
+    [
+     2,
+     2
+    ],
+    [
+     3,
+     1
+    ]
+   ],
+   "polarization_h": [
+    [
+     1,
+     2
+    ],
+    [
+     2,
+     1
+    ]
+   ],
+   "polarization_min_z": 3,
+   "tight": [],
+   "valence": [
+    3,
+    1,
+    1
+   ]
+  },
+  "def2-TZVPPD": {
+   "core": [
+    6,
+    1
+   ],
+   "description": "Karlsruhe def2, triple-zeta valence with polarization, diffuse-augmented (D)",
+   "diffuse": [],
+   "diffuse_h": [],
+   "diffuse_l_max": 2,
+   "diffuse_present": true,
+   "family": "karlsruhe",
+   "name": "def2-TZVPPD",
+   "polarization": [
+    [
+     2,
+     2
+    ],
+    [
+     3,
+     1
+    ]
+   ],
+   "polarization_h": [
+    [
+     1,
+     2
+    ],
+    [
+     2,
+     1
+    ]
+   ],
+   "polarization_min_z": 3,
+   "tight": [],
+   "valence": [
+    3,
+    1,
+    1
+   ]
+  },
+  "def2-qzvppd": {
+   "core": [
+    7,
+    1,
+    1
+   ],
+   "description": "Karlsruhe def2, quadruple-zeta valence with polarization, diffuse-augmented (D)",
+   "diffuse": [],
+   "diffuse_h": [],
+   "diffuse_l_max": 2,
+   "diffuse_present": true,
+   "family": "karlsruhe",
+   "name": "def2-QZVPPD",
+   "polarization": [
+    [
+     2,
+     3
+    ],
+    [
+     3,
+     2
+    ],
+    [
+     4,
+     1
+    ]
+   ],
+   "polarization_h": [
+    [
+     1,
+     3
+    ],
+    [
+     2,
+     2
+    ],
+    [
+     3,
+     1
+    ]
+   ],
+   "polarization_min_z": 3,
+   "tight": [],
+   "valence": [
+    3,
+    1,
+    1,
+    1
+   ]
+  },
+  "def2-svpd": {
+   "core": [
+    5
+   ],
+   "description": "Karlsruhe def2, double-zeta valence with polarization, diffuse-augmented (D)",
+   "diffuse": [],
+   "diffuse_h": [],
+   "diffuse_l_max": 2,
+   "diffuse_present": true,
+   "family": "karlsruhe",
+   "name": "def2-SVPD",
+   "polarization": [
+    [
+     2,
+     1
+    ]
+   ],
+   "polarization_h": [
+    [
+     1,
+     1
+    ]
+   ],
+   "polarization_min_z": 3,
+   "tight": [],
+   "valence": [
+    3,
+    1
+   ]
+  }
+ },
+ "source": "models/basis.py::parse_basis_name before the Pople and def2 rules moved to basis::ladders (2026-11-14), every named Pople and def2 spelling plus edge spellings"
+}

@@ -77,12 +77,12 @@ impl Scalar for f64 {
         (self * self).exp() * libm::erfc(self)
     }
 }
-impl Scalar for Jet<f64> {
+impl<S: Scalar> Scalar for Jet<S> {
     fn constant(v: f64) -> Self {
         Self::c(v)
     }
     fn re(self) -> f64 {
-        self.v
+        self.v.re()
     }
     fn powf(self, p: f64) -> Self {
         self.pow(p)
@@ -106,7 +106,7 @@ impl Scalar for Jet<f64> {
         self.pow(0.5)
     }
     fn asinh(self) -> Self {
-        self.unary(self.v.asinh(), 1. / (1. + self.v * self.v).sqrt())
+        self.unary(self.v.asinh(), (S::constant(1.) + self.v * self.v).sqrt().recip())
     }
     fn erfc(self) -> Self {
         Jet::erfc(self)
@@ -115,8 +115,125 @@ impl Scalar for Jet<f64> {
         Jet::tanh(self)
     }
     fn erfcx(self) -> Self {
-        let value = f64::erfcx(self.v);
-        self.unary(value, 2. * self.v * value - 2. / PI.sqrt())
+        let value = self.v.erfcx();
+        self.unary(value, S::constant(2.) * self.v * value - S::constant(2. / PI.sqrt()))
+    }
+}
+
+/// A value along a curve `x(t)` to second order: `c[0] + c[1] t + c[2] t^2`. Evaluating a
+/// functional's [`Jet`] on it gives its partials along the curve, so the `t^2` coefficient of the
+/// potential at `n + t dn` is half the third derivative of the energy contracted twice with `dn`
+/// (the excited-state gradient's third-order term), from the same expression as the potential.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Taylor2 {
+    pub(crate) c: [f64; 3],
+}
+impl Taylor2 {
+    pub(crate) fn new(c: [f64; 3]) -> Self {
+        Self { c }
+    }
+    /// `g(a(t))` from `g`, `g'` and `g''` at `a(0)`. A coefficient of `a` that is zero takes
+    /// no part, whatever the derivative it multiplies, as in a nested forward derivative: `t^p`
+    /// at `t = 0` along a curve that does not move has no change, not `0 * inf`.
+    fn unary(self, g0: f64, g1: f64, g2: f64) -> Self {
+        let [_, a1, a2] = self.c;
+        let times = |g: f64, a: f64| if a == 0. { 0. } else { g * a };
+        Self { c: [g0, times(g1, a1), times(g1, a2) + times(0.5 * g2 * a1, a1)] }
+    }
+}
+impl Add for Taylor2 {
+    type Output = Self;
+    fn add(self, b: Self) -> Self {
+        Self { c: std::array::from_fn(|i| self.c[i] + b.c[i]) }
+    }
+}
+impl Sub for Taylor2 {
+    type Output = Self;
+    fn sub(self, b: Self) -> Self {
+        Self { c: std::array::from_fn(|i| self.c[i] - b.c[i]) }
+    }
+}
+impl Neg for Taylor2 {
+    type Output = Self;
+    fn neg(self) -> Self {
+        Self { c: self.c.map(|v| -v) }
+    }
+}
+impl Mul for Taylor2 {
+    type Output = Self;
+    fn mul(self, b: Self) -> Self {
+        let (a, b) = (self.c, b.c);
+        Self { c: [a[0] * b[0], a[0] * b[1] + a[1] * b[0], a[0] * b[2] + a[1] * b[1] + a[2] * b[0]] }
+    }
+}
+impl Div for Taylor2 {
+    type Output = Self;
+    fn div(self, b: Self) -> Self {
+        let (a, b) = (self.c, b.c);
+        let q0 = a[0] / b[0];
+        let q1 = (a[1] - q0 * b[1]) / b[0];
+        let q2 = (a[2] - q0 * b[2] - q1 * b[1]) / b[0];
+        Self { c: [q0, q1, q2] }
+    }
+}
+impl Scalar for Taylor2 {
+    fn constant(v: f64) -> Self {
+        Self { c: [v, 0., 0.] }
+    }
+    fn re(self) -> f64 {
+        self.c[0]
+    }
+    fn powf(self, p: f64) -> Self {
+        let a = self.c[0];
+        self.unary(a.powf(p), p * a.powf(p - 1.), p * (p - 1.) * a.powf(p - 2.))
+    }
+    fn ln(self) -> Self {
+        let a = self.c[0];
+        self.unary(a.ln(), 1. / a, -1. / (a * a))
+    }
+    fn ln_1p(self) -> Self {
+        let a = self.c[0];
+        let b = 1. + a;
+        self.unary(a.ln_1p(), 1. / b, -1. / (b * b))
+    }
+    fn exp_m1(self) -> Self {
+        let a = self.c[0];
+        let e = a.exp();
+        self.unary(a.exp_m1(), e, e)
+    }
+    fn exp(self) -> Self {
+        let e = self.c[0].exp();
+        self.unary(e, e, e)
+    }
+    fn recip(self) -> Self {
+        let a = self.c[0];
+        self.unary(1. / a, -1. / (a * a), 2. / (a * a * a))
+    }
+    fn sqrt(self) -> Self {
+        let a = self.c[0];
+        let r = a.sqrt();
+        self.unary(r, 0.5 / r, -0.25 / (r * a))
+    }
+    fn asinh(self) -> Self {
+        let a = self.c[0];
+        let q = 1. + a * a;
+        self.unary(a.asinh(), 1. / q.sqrt(), -a / (q * q.sqrt()))
+    }
+    fn erfc(self) -> Self {
+        let a = self.c[0];
+        let g = (-a * a).exp() * 2. / PI.sqrt();
+        self.unary(libm::erfc(a), -g, 2. * a * g)
+    }
+    fn tanh(self) -> Self {
+        let t = self.c[0].tanh();
+        let d = 1. - t * t;
+        self.unary(t, d, -2. * t * d)
+    }
+    fn erfcx(self) -> Self {
+        let a = self.c[0];
+        let e = Scalar::erfcx(a);
+        let first = 2. * a * e - 2. / PI.sqrt();
+        self.unary(e, first, 2. * e + 2. * a * first)
     }
 }
 
@@ -389,6 +506,36 @@ pub fn point_hessian(
     }
     Ok((f.v.v, first, second))
 }
+/// The five partials of LDA, PBE or the HSE06 semilocal part along the curve `values(t)` (each variable a [`Taylor2`]),
+/// from the same expression as [`partials_relativistic`] with the same floors and branches (the
+/// branch the value at `t = 0` takes). Their `t` and `t^2` coefficients are the kernel and half
+/// the third derivative contracted with the curve.
+pub(crate) fn curve_partials(
+    name: &str,
+    values: [Taylor2; 5],
+    relativistic: bool,
+) -> Result<[Taylor2; 5]> {
+    check_semilocal(values.map(|v| v.c[0]))?;
+    let variables = std::array::from_fn(|i| Jet::variable(values[i], i));
+    let f = match name {
+        "lda" | "pbe" => semilocal(name, variables, relativistic),
+        "hse06" => hybrid(
+            variables,
+            relativistic,
+            super::HSE06_OMEGA,
+            super::HSE06_EXACT_FRACTION,
+        )?,
+        _ => {
+            return Err(invalid(
+                "the third-order XC kernel is defined for lda, pbe and hse06",
+            ))
+        }
+    };
+    if f.d.iter().take(5).flat_map(|d| d.c).any(|v| !v.is_finite()) {
+        return Err(invalid("nonfinite third-order XC evaluation"));
+    }
+    Ok(std::array::from_fn(|i| f.d[i]))
+}
 /// Unpolarized LDA split into its parts at total density `rho` (floored at 1e-30):
 /// `(e_x, v_x, e_c, v_c)`, the Slater exchange and Perdew-Zunger correlation energies per
 /// electron and potentials (Hartree). The same `pz` as the grid kernels, differentiated once.
@@ -511,6 +658,24 @@ pub fn point_hessian_meta(values: [f64; 7]) -> Result<(f64, [f64; 7], [[f64; 7];
         return Err(invalid("nonfinite meta-GGA kernel evaluation"));
     }
     Ok((f.v.v, first, second))
+}
+
+/// The seven partials of r2SCAN along the curve `values(t)` in `(up, down, uu, ud, dd, tau_up,
+/// tau_down)` (each a [`Taylor2`]), from the same expression as [`point_partials`] with the same
+/// floors and branches (the branch the value at `t = 0` takes): their `t` and `t^2` coefficients
+/// are the meta-GGA kernel and half its third derivative contracted with the curve.
+pub(crate) fn curve_partials_meta(values: [Taylor2; 7]) -> Result<[Taylor2; 7]> {
+    let start = values.map(|v| v.c[0]);
+    if start.iter().any(|v| !v.is_finite()) || [0, 1, 2, 4, 5, 6].iter().any(|&i| start[i] < 0.) {
+        return Err(invalid(
+            "point XC requires finite physical densities, diagonal contractions and kinetic densities",
+        ));
+    }
+    let f = meta(std::array::from_fn(|i| Jet::variable(values[i], i)))?;
+    if f.d.iter().flat_map(|d| d.c).any(|v| !v.is_finite()) {
+        return Err(invalid("nonfinite third-order meta-GGA evaluation"));
+    }
+    Ok(f.d)
 }
 
 /// The hole model's reduced-gradient parameters. Above `t = s^2 = 1` the reduced gradient is bent
@@ -797,6 +962,35 @@ pub fn exchange_hole_hessian_batch(
         }
         Ok(out)
     })
+}
+/// The partials `(e_rho, e_sigma)` of the full or short-range unpolarized exchange hole along the
+/// curve `(rho(t), sigma(t))` (each `[c0, c1, c2]`, the coefficients of `1, t, t^2`), as the same
+/// coefficients: their `t^2` terms are half the third derivative of the hole energy contracted
+/// twice with the curve (the spheres' polarization in the excited-state gradient). Zero at
+/// `rho <= 1e-12`, as in [`exchange_hole_batch`]; the same expression and quadrature panels.
+pub fn exchange_hole_curve(
+    rho: [f64; 3],
+    sigma: [f64; 3],
+    omega: f64,
+) -> Result<([f64; 3], [f64; 3])> {
+    if !omega.is_finite() || omega < 0. || rho.iter().chain(&sigma).any(|v| !v.is_finite()) {
+        return Err(invalid(
+            "exchange hole requires a finite curve and screening",
+        ));
+    }
+    if rho[0] <= 1e-12 {
+        return Ok(([0.; 3], [0.; 3]));
+    }
+    let e = hole_exchange(
+        Jet::variable(Taylor2::new(rho), 0),
+        Jet::variable(Taylor2::new(sigma), 1),
+        omega,
+    )?;
+    let (a, b) = (e.d[0].c, e.d[1].c);
+    if a.iter().chain(&b).any(|v| !v.is_finite()) {
+        return Err(invalid("nonfinite exchange hole curve"));
+    }
+    Ok((a, b))
 }
 /// Full or short-range unpolarized exchange hole: input (rho,sigma),
 /// output (energy density, d/drho, d/dsigma).

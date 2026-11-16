@@ -107,6 +107,29 @@ pub fn j_average(l: usize, values: impl Fn(i32) -> f64) -> f64 {
         / total
 }
 
+/// The exact Dirac energy of a one-electron ion with a point nucleus (Hartree, from the rest
+/// mass): `c^2 [(1 + (Z/c)^2 / (n - |kappa| + gamma)^2)^(-1/2) - 1]`, `gamma = sqrt(kappa^2 -
+/// (Z/c)^2)`, written with `ln_1p` and `exp_m1` so the nonrelativistic limit keeps its digits.
+pub fn hydrogenic_dirac_energy(atomic_number: f64, n: usize, kappa: i32, c: f64) -> Result<f64> {
+    let za = atomic_number / c;
+    let k = kappa;
+    if k.unsigned_abs() as usize > n {
+        return Err(invalid(format!("|kappa| = {} exceeds n = {}", k.abs(), n)));
+    }
+    if za >= k.abs() as f64 {
+        return Err(invalid(format!(
+            "Z/c = {:.4} reaches |kappa| = {}: the point-nucleus Dirac equation has no bound state there",
+            za,
+            k.abs()
+        )));
+    }
+    let gamma = ((k * k) as f64 - za * za).sqrt();
+    let denom = n as f64 - k.abs() as f64 + gamma;
+    let x = za * za / (denom * denom);
+    let exp_term = (-0.5 * x.ln_1p()).exp_m1();
+    Ok(c * c * exp_term)
+}
+
 /// Energy-independent derivatives of one potential, built once and shared by every state.
 ///
 /// `dv` is `V'`; `d_smooth` and `d2_smooth` are the first and second derivatives of the
@@ -143,8 +166,11 @@ impl PotentialTerms {
     /// `kappa M'/(M r) - M''/(2M)` with its `1/r^3` part cancelled exactly:
     /// `[-(1+kappa) Z/r^3 + V_s''/2 - kappa V_s'/r] / (2 c^2 M)`.
     pub fn darwin_spin_orbit(&self, r: &[f64], kappa: i32, mass: &[f64]) -> Vec<f64> {
+        self.darwin_spin_orbit_with(r, kappa, mass, SPEED_OF_LIGHT)
+    }
+    /// [`PotentialTerms::darwin_spin_orbit`] at the speed of light `c`.
+    pub fn darwin_spin_orbit_with(&self, r: &[f64], kappa: i32, mass: &[f64], c: f64) -> Vec<f64> {
         let k = kappa as f64;
-        let c = SPEED_OF_LIGHT;
         (0..r.len())
             .map(|i| {
                 let bracket = -(1.0 + k) * self.z / r[i].powi(3) + 0.5 * self.d2_smooth[i]
@@ -155,9 +181,111 @@ impl PotentialTerms {
     }
 }
 
+impl PotentialTerms {
+    /// `V''` with the `-Z/r` part in closed form: `-2 Z / r^3 + V_s''`.
+    pub fn second_derivative(&self, r: &[f64]) -> Vec<f64> {
+        (0..r.len())
+            .map(|i| -2.0 * self.z / (r[i].powi(3)) + self.d2_smooth[i])
+            .collect()
+    }
+}
+
+/// `(M, M', M'')` of `M = 1 + (eps - V)/(2 c^2)` (`M` floored at its floor; the derivatives are
+/// those of the unfloored form).
+pub fn mass_terms(
+    r: &[f64],
+    potential: &[f64],
+    energy: f64,
+    terms: &PotentialTerms,
+    c: f64,
+) -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+    let two_c2 = 2.0 * c * c;
+    let d2v = terms.second_derivative(r);
+    (
+        potential
+            .iter()
+            .map(|v| (1.0 + (energy - v) / two_c2).max(MASS_FLOOR))
+            .collect(),
+        terms.dv.iter().map(|d| -d / two_c2).collect(),
+        d2v.iter().map(|d| -d / two_c2).collect(),
+    )
+}
+
+/// The spin-orbit radial factor `xi(r) = V' / (2 c^2 r)`, divided by `M^2` when
+/// `mass_corrected` (`M` at `energy`, floored).
+pub fn spin_orbit_radial(
+    r: &[f64],
+    potential: &[f64],
+    terms: &PotentialTerms,
+    c: f64,
+    mass_corrected: bool,
+    energy: f64,
+) -> Vec<f64> {
+    let two_c2 = 2.0 * c * c;
+    (0..r.len())
+        .map(|i| {
+            let mut x = terms.dv[i] / (two_c2 * r[i]);
+            if mass_corrected {
+                let m = (1.0 + (energy - potential[i]) / two_c2).max(MASS_FLOOR);
+                x /= m * m;
+            }
+            x
+        })
+        .collect()
+}
+
+/// The large component `P = W sqrt(M)` of a scalar-relativistic solution `W`.
+pub fn large_component(w: &[f64], mass: &[f64]) -> Result<Vec<f64>> {
+    if w.len() != mass.len() {
+        return Err(invalid("w and M must have the same length"));
+    }
+    Ok(w.iter().zip(mass).map(|(w, m)| w * m.sqrt()).collect())
+}
+
+/// The small component `Q = (P' + kappa P / r) / (2 c M)`, `P'` by three-point differences on
+/// the nonuniform grid (one-sided at the two ends).
+pub fn small_component(r: &[f64], p: &[f64], kappa: i32, mass: &[f64], c: f64) -> Result<Vec<f64>> {
+    let n = r.len();
+    if p.len() != n || mass.len() != n || n < 3 {
+        return Err(invalid("r, P, and M must have matching length >= 3"));
+    }
+    let mut dp = vec![0.0; n];
+    let h1_0 = r[1] - r[0];
+    let h2_0 = r[2] - r[1];
+    dp[0] = -(2.0 * h1_0 + h2_0) / (h1_0 * (h1_0 + h2_0)) * p[0]
+        + (h1_0 + h2_0) / (h1_0 * h2_0) * p[1]
+        - h1_0 / (h2_0 * (h1_0 + h2_0)) * p[2];
+    for i in 1..(n - 1) {
+        let h1 = r[i] - r[i - 1];
+        let h2 = r[i + 1] - r[i];
+        dp[i] = (h1 * h1 * p[i + 1] + (h2 * h2 - h1 * h1) * p[i] - h2 * h2 * p[i - 1])
+            / (h1 * h2 * (h1 + h2));
+    }
+    let h1_n = r[n - 1] - r[n - 2];
+    let h2_n = r[n - 2] - r[n - 3];
+    dp[n - 1] = (2.0 * h1_n + h2_n) / (h1_n * (h1_n + h2_n)) * p[n - 1]
+        - (h1_n + h2_n) / (h1_n * h2_n) * p[n - 2]
+        + h1_n / (h2_n * (h1_n + h2_n)) * p[n - 3];
+    let two_c = 2.0 * c;
+    let k = kappa as f64;
+    Ok((0..n)
+        .map(|i| (dp[i] + k * p[i] / r[i]) / (two_c * mass[i]))
+        .collect())
+}
+
 /// `(M, M')` of `M = 1 + (eps - V)/(2 c^2)`, with `M` floored.
 pub fn mass_factor(potential: &[f64], energy: f64, terms: &PotentialTerms) -> (Vec<f64>, Vec<f64>) {
-    let two_c2 = 2.0 * SPEED_OF_LIGHT * SPEED_OF_LIGHT;
+    mass_factor_with(potential, energy, terms, SPEED_OF_LIGHT)
+}
+
+/// [`mass_factor`] at the speed of light `c`.
+pub fn mass_factor_with(
+    potential: &[f64],
+    energy: f64,
+    terms: &PotentialTerms,
+    c: f64,
+) -> (Vec<f64>, Vec<f64>) {
+    let two_c2 = 2.0 * c * c;
     (
         potential
             .iter()
@@ -178,6 +306,21 @@ pub fn relativistic_f(
     terms: &PotentialTerms,
     treatment: Treatment,
 ) -> Vec<f64> {
+    relativistic_f_with(r, potential, l, kappa, energy, terms, treatment, SPEED_OF_LIGHT)
+}
+
+/// [`relativistic_f`] at the speed of light `c`.
+#[allow(clippy::too_many_arguments)]
+pub fn relativistic_f_with(
+    r: &[f64],
+    potential: &[f64],
+    l: usize,
+    kappa: i32,
+    energy: f64,
+    terms: &PotentialTerms,
+    treatment: Treatment,
+    c: f64,
+) -> Vec<f64> {
     let ll = (l * (l + 1)) as f64;
     if treatment == Treatment::None {
         return (0..r.len())
@@ -189,8 +332,8 @@ pub fn relativistic_f(
     } else {
         kappa
     };
-    let (mass, dm) = mass_factor(potential, energy, terms);
-    let darwin = terms.darwin_spin_orbit(r, k, &mass);
+    let (mass, dm) = mass_factor_with(potential, energy, terms, c);
+    let darwin = terms.darwin_spin_orbit_with(r, k, &mass, c);
     (0..r.len())
         .map(|i| {
             ll / (r[i] * r[i])

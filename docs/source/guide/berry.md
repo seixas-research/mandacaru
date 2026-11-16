@@ -471,7 +471,7 @@ inside the states that are diagonalized again at each k-point. No functional nee
 own Berry code. `lda`, `pbe`, `r2scan`, `pbe+rvv10` and `hse06` run, with `vdw="ts"`
 (a dispersion energy that does not change the states, so the Berry quantities are the
 same) and with `hubbard_u=`. What the crystal SCF itself refuses stays refused: a
-hybrid or a spin-orbit run needs the whole k mesh, and DFT+U with a hybrid or on a spinor
+hybrid or a spin-orbit run is never reduced by the space group, and DFT+U with a hybrid or on a spinor
 crystal does not run ([DFT](dft.md), [DFT+U](dft_u.md)).
 
 (berry-refusals)=

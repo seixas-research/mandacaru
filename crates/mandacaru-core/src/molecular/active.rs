@@ -150,7 +150,7 @@ impl MeanField {
         let mut frozen = match &spec["frozen"] {
             Value::Null => vec![],
             Value::String(s) if s == "auto" => {
-                let n = if integrals.corrections.is_some() {
+                let n = if integrals.corrections.is_some() || integrals.paw_supercell.is_some() {
                     0
                 } else {
                     integrals
@@ -237,7 +237,7 @@ impl MeanField {
                 correlation::from_block(
                     ctx,
                     real.as_slice(),
-                    &self.energies[0],
+                    &correlation::denominator_levels(&self.energies[0], occupied, integrals.exchange_madelung()?),
                     occupied,
                     &canonical,
                 )?
@@ -469,6 +469,7 @@ impl MeanField {
         };
         model.orbital_indices = active;
         model.frozen_indices = frozen;
+        model.exchange_madelung = integrals.exchange_madelung()?;
         model.orbital_symmetry_sets = symmetry_sets;
         if let Some(energy) = correlation_energy {
             model.orbital_rotation = Some(Arc::new(transform::OrbitalRotation {

@@ -72,7 +72,9 @@ class Excitations:
         the nonlocal potential).
     transition_dipoles : ndarray
         ``(n, 3)`` length-gauge transition moments ``<0|r|n>`` in e Angstrom
-        (e Bohr with ``atomic_units=True``). The sign of each root is a convention.
+        (e Bohr with ``atomic_units=True``). The sign of each root is a convention;
+        on a spinor reference (``spin == "spinor"``) they are complex and the phase
+        of each state is.
     spin_squared : ndarray or None
         On an unrestricted reference: ``<S^2>`` of each root, as the singles
         combination of the reference's determinants with the root's ``X``
@@ -92,8 +94,7 @@ class Excitations:
         self._native = native
         self._context = context
         self._atomic_units = atomic_units
-        self.energy_unit = "Ha" if atomic_units else "eV"
-        self.length_unit = "Bohr" if atomic_units else "Angstrom"
+        self.energy_unit, self.length_unit = ("Ha", "Bohr") if atomic_units else ("eV", "Angstrom")
         self.approximation = values["approximation"]
         self.spin = values["spin"]
         self.kernel = values["kernel"]
@@ -120,10 +121,8 @@ class Excitations:
         self.residuals = tuple(values["residuals"])
         self.iterations = values["iterations"]
         self.applications = values["applications"]
-        self._transitions = values["transitions"]
-        self._nto_weights = values["nto_weights"]
-        self._plus = values["plus"]
-        self._minus = values["minus"]
+        self._transitions, self._nto_weights, self._plus, self._minus = (
+            values[key] for key in ("transitions", "nto_weights", "plus", "minus"))
 
     def _energy(self, value_ha):
         if np.ndim(value_ha) == 0:
@@ -180,3 +179,52 @@ class Excitations:
             self._context, np.ascontiguousarray(self.energies, dtype=float),
             np.ascontiguousarray(self.oscillator_strengths, dtype=float),
             np.ascontiguousarray(energies, dtype=float), width=float(width), shape=shape))
+
+
+class CrystalExcitations:
+    """The Bethe-Salpeter excitons of a converged insulating crystal (Tamm-Dancoff).
+
+    Returned by :meth:`Mandacaru.get_excitations` on a crystal. Every number comes from Rust
+    (``periodic::optics::bse``), already in user units; the view holds no arithmetic.
+
+    Attributes
+    ----------
+    energies : ndarray
+        Exciton energies ``E_l``, ascending, eV (Ha with ``atomic_units=True``).
+    binding : ndarray
+        ``onset - E_l``: positive for an exciton bound below the interband continuum of the mesh.
+    onset : float
+        The smallest transition energy ``e_ck - e_vk + scissor`` of the mesh.
+    weights : ndarray
+        ``(n, 3)`` the area of each exciton's line in ``Im epsilon`` along x, y and z,
+        ``4 pi^2 s |sum_t h_t A_t|^2`` (eV; Ha), with ``s = g / (N_k Omega)`` and ``h`` the
+        k . p dipoles; zero for triplets.
+    participation : ndarray
+        ``1 / sum_t |A_t|^4``: the number of transitions an exciton spreads over (of
+        ``transitions``).
+    kpoint_weights : ndarray
+        ``(n, kpoints)`` ``sum_vc |A_vck|^2`` per mesh point (mesh order, C order of ``mesh``).
+    dominant : list of tuple
+        Per exciton ``(k, valence, conduction, weight)``: its largest transition (band indices
+        of the crystal, 0-based).
+    spin, kernel : str
+        ``"singlet"`` or ``"triplet"``; ``"bse"``, ``"hartree"`` (exchange only) or
+        ``"independent"``.
+    static_tensor : ndarray
+        ``(3, 3)`` the static ``eps_M`` with local fields that screens the head of ``W``.
+    screened_head : float
+        The ``G = G' = 0`` element of ``W(q = 0)``, averaged over the mesh's mini-zone
+        (Hartree Bohr^3).
+    mesh, kpoints, bands, transitions : tuple, int, tuple, int
+        The whole Gamma-anchored mesh, its point count, ``(valence, conduction)`` and the
+        dimension of the operator.
+    hermiticity, residuals, converged, solver :
+        ``max |H - H^dagger| / max |H|`` before the Hermitization, each root's residual, whether
+        every root converged, and ``"dense"`` or ``"davidson"``.
+    record : list of tuple
+        The ``[EXCITED STATES]`` run-log record, ``(name, text)`` pairs.
+    """
+
+    def __init__(self, data):
+        self.__dict__.update(data)
+

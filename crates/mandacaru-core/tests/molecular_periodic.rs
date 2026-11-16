@@ -141,6 +141,10 @@ fn a_two_cell_mesh_is_the_one_cell_problem_of_the_doubled_cell() {
     .unwrap();
     let single = supercell(&ctx, &doubled, [1, 1, 1], 0.25);
     assert_eq!(mesh.grid.index.shape(), single.grid.index.shape());
+    // The MP2 shift is v_M of the supercell's lattice: the doubled cell's, as the energy's constant.
+    let v = mesh.exchange_madelung().unwrap();
+    assert!((v - single.exchange_madelung().unwrap()).abs() < 1e-12);
+    assert!((v - 2. * mesh.madelung / mesh.neutral_electrons() as f64).abs() < 1e-12, "{v}");
     let options = ScfOptions::default();
     let a = mesh.mean_field("rhf", [1, 1], &options).unwrap();
     let b = single.mean_field("rhf", [1, 1], &options).unwrap();
@@ -367,4 +371,179 @@ fn a_band_limited_orbital_peaks_at_its_center() {
         .sum::<f64>()
         .sqrt();
     assert!(distance < 0.2 / BOHR, "peak {point:?} vs center {center:?}");
+}
+
+/// `a + c / L + b / L^3` by least squares on `(L, y)` rows: `(a, c, b)`.
+fn inverse_power_fit(rows: &[(f64, f64)]) -> (f64, f64, f64) {
+    let design = DMatrix::from_fn(rows.len(), 3, |i, j| rows[i].0.powi(-[0, 1, 3][j]));
+    let values = nalgebra::DVector::from_iterator(rows.len(), rows.iter().map(|r| r.1));
+    let normal = design.transpose() * &design;
+    let x = normal.lu().solve(&(design.transpose() * values)).unwrap();
+    (x[0], x[1], x[2])
+}
+
+/// The HAO supercell's MP2 denominators take the exchange Madelung shift (vera's ruling
+/// 2026-11-15, 2e; self-referenced: the isolated HAO Hamiltonian on the same grid is another
+/// Hamiltonian at finite grid_spacing, band-limited orbitals and a Fourier ion potential against
+/// sampled cusps, so it is not the supercell's limit). H2 in cubic periodic boxes of side
+/// `n x grid_spacing` (0.3 A, `n` even from 24 to 60, ten boxes, one offset), mesh 1, L in Bohr:
+/// (1) the premise: the raw RHF HOMO fitted to `a + c / L + b / L^3` carries `c = -v_M L =
+/// 2.837297` (the Madelung term of the exchange's dropped `G = 0`) to 3 %; (2) the
+/// implementation: the 1/L coefficient of the HOMO's MP2 natural occupation with the shift
+/// (`natural_orbitals` with `exchange_madelung()`) is below 10 % of the unshifted one's (no
+/// shift: 100 %, half the shift about 50 %, a shift on the virtuals too: 100 %); (3) the
+/// supercell is unchanged under a rigid shift of half a grid step, to 1e-7 Ha.
+#[test]
+#[ignore = "slow: about two minutes; run: cargo test --profile release-test -p mandacaru-core --test molecular_periodic -- --ignored the_hao_supercell_mp2 --nocapture"]
+fn the_hao_supercell_mp2_denominators_take_the_exchange_madelung_shift() {
+    use mandacaru_core::molecular::correlation::natural_orbitals;
+    let ctx = Context::new(Some(4), 1800 << 20).unwrap();
+    let spacing = 0.3;
+    let options = ScfOptions { tolerance: 1e-11, ..ScfOptions::default() };
+    let h2 = |side: f64, offset: f64| {
+        let cell = [[side, 0., 0.], [0., side, 0.], [0., 0., side]];
+        let center = side / 2. + offset;
+        let positions = vec![[center - 0.37, center, center], [center + 0.37, center, center]];
+        Geometry::new(vec![1, 1], positions, cell, [true; 3], LengthUnit::Angstrom).unwrap()
+    };
+    let (mut levels, mut raw, mut shifted) = (Vec::new(), Vec::new(), Vec::new());
+    for nodes in (24..=60).step_by(4) {
+        let side = nodes as f64 * spacing;
+        let crystal = supercell(&ctx, &h2(side, 0.), [1, 1, 1], spacing);
+        assert_eq!(crystal.grid.index.shape(), [nodes; 3], "the box is n x grid_spacing");
+        let rhf = crystal.mean_field("rhf", [1, 1], &options).unwrap();
+        assert!(rhf.converged);
+        let model = rhf.model(&crystal).unwrap();
+        let v = crystal.exchange_madelung().unwrap();
+        let occupation = |shift: f64| {
+            natural_orbitals(&ctx, model.m, model.one.as_slice(), model.two.as_slice(), 1, shift).unwrap().occupied_occupations.as_slice()[0]
+        };
+        let (o0, o1) = (occupation(0.), occupation(v));
+        let l = side / BOHR;
+        println!("H2 HAO n {nodes} (L {side:.1} A): v_M {v:.6} Ha (-2.837297 / L {:.6}); HOMO {:.8} Ha; HOMO occupation no shift {o0:.8}, shifted {o1:.8}", -2.837297479 / l, rhf.energies[0][0]);
+        levels.push((l, rhf.energies[0][0]));
+        raw.push((l, o0));
+        shifted.push((l, o1));
+    }
+    let (_, c_level, b_level) = inverse_power_fit(&levels);
+    let (_, c_raw, _) = inverse_power_fit(&raw);
+    let (_, c_shifted, _) = inverse_power_fit(&shifted);
+    println!(
+        "H2 HAO: HOMO 1/L coefficient {c_level:.4} (2.837297, {:+.2} %), L^-3 {b_level:.3} Ha Bohr^3; occupation 1/L coefficient no shift {c_raw:.4e}, shifted {c_shifted:.4e} ({:.1} % of it)",
+        100. * (c_level / 2.837297479 - 1.),
+        100. * (c_shifted / c_raw).abs()
+    );
+    // The rigid half-step shift of the smallest box.
+    let side = 24. * spacing;
+    let energy = |offset: f64| {
+        let crystal = supercell(&ctx, &h2(side, offset), [1, 1, 1], spacing);
+        let rhf = crystal.mean_field("rhf", [1, 1], &options).unwrap();
+        assert!(rhf.converged);
+        rhf.electronic_energy + crystal.nuclear
+    };
+    let moved = (energy(0.5 * spacing) - energy(0.)).abs();
+    println!("H2 HAO: RHF energy change under a half-step rigid shift {moved:.2e} Ha");
+    assert!((c_level - 2.837297479).abs() < 0.03 * 2.837297479, "{c_level}");
+    assert!(c_shifted.abs() < 0.1 * c_raw.abs(), "{c_shifted:e} {c_raw:e}");
+    assert!(moved < 1e-7, "{moved:e}");
+}
+
+/// MG-REST item 9 (measurement): the box scatter of the HAO supercell's one-body integrals. H2 in
+/// cubic boxes of side `n x grid_spacing` (`n` from 24 to 60 step 4, at 0.3 and 0.2 A, one offset):
+/// the 1s kinetic and overlap diagonals, which an isolated molecule's box leaves constant once the
+/// tails fit, against their mean over the boxes of 12 A and more, and the RHF HOMO's residual from
+/// `a + c / L + b / L^3`. Alongside, the lattice sum the band limit performs on a model (a Slater
+/// 1s, `zeta = 1.2`, on the same boxes): `sum_G |phi(G)|^2 w(G)^2 / Omega` and its kinetic
+/// counterpart with the sharp cutoff `w = 1` below `k_c` (`molecular::periodic::sample_images`)
+/// and with cosine-squared tapers from `0.9`, `0.8`, `0.7` and `0.5 k_c`, each against its own limit (the
+/// radial integral). Measured 2026-11-15 (DECISIONS, MG-REST item 9): the kinetic diagonal
+/// departs from its mean by 3.1e-4 Ha at 0.3 A and 8.2e-5 at 0.2 A; on the model the sharp edge
+/// scatters the kinetic sum by 1.6e-3 and 4.3e-4, a taper from 0.9 k_c by 1.5e-4 and 1.7e-5 but
+/// lowers the kinetic limit by 2.1e-2 and 9.0e-3 Ha (from 0.7 k_c: 6.9e-5, 4.4e-6; 7.5e-2,
+/// 3.5e-2): the taper's bias exceeds the scatter it removes, so the basis keeps its sharp band
+/// limit. Gates the measured floor of the kinetic
+/// scatter (1e-3 and 2e-4 Ha).
+#[test]
+fn the_box_scatter_of_the_hao_supercell_is_measured_against_its_band_limit() {
+    let ctx = Context::new(Some(4), 1800 << 20).unwrap();
+    let options = ScfOptions { tolerance: 1e-11, ..ScfOptions::default() };
+    for spacing in [0.3, 0.2] {
+        let (mut kinetic, mut overlap, mut levels) = (Vec::new(), Vec::new(), Vec::new());
+        let nodes: Vec<usize> = if spacing > 0.25 { (24..=60).step_by(4).collect() } else { (36..=84).step_by(6).collect() };
+        for &n in &nodes {
+            let side = n as f64 * spacing;
+            let cell = [[side, 0., 0.], [0., side, 0.], [0., 0., side]];
+            let c = side / 2.;
+            let geometry = Geometry::new(vec![1, 1], vec![[c - 0.37, c, c], [c + 0.37, c, c]], cell, [true; 3], LengthUnit::Angstrom).unwrap();
+            let crystal = supercell(&ctx, &geometry, [1, 1, 1], spacing);
+            let m = crystal.m();
+            let rhf = crystal.mean_field("rhf", [1, 1], &options).unwrap();
+            assert!(rhf.converged);
+            let l = side / BOHR;
+            let (t, s) = (crystal.kinetic.as_slice()[0], crystal.overlap.as_slice()[0]);
+            println!("HAO H2 {spacing} A n {n} (L {side:.1} A): <1s|T|1s> {t:.9} <1s|1s> {s:.9} HOMO {:.8} Ha ({m} orbitals)", rhf.energies[0][0]);
+            kinetic.push((side, t));
+            overlap.push((side, s));
+            levels.push((l, rhf.energies[0][0]));
+        }
+        let spread = |rows: &[(f64, f64)]| {
+            let tail: Vec<f64> = rows.iter().filter(|r| r.0 >= 12.).map(|r| r.1).collect();
+            let mean = tail.iter().sum::<f64>() / tail.len() as f64;
+            tail.iter().fold(0f64, |w, v| w.max((v - mean).abs()))
+        };
+        let (a, c, b) = inverse_power_fit(&levels);
+        let residual = levels.iter().fold(0f64, |w, &(l, e)| w.max((e - a - c / l - b / l.powi(3)).abs()));
+        println!("HAO H2 {spacing} A: boxes of 12 A and more, largest departure from the mean: kinetic {:.2e} Ha, overlap {:.2e}; HOMO residual of a + c/L + b/L^3 {residual:.2e} Ha", spread(&kinetic), spread(&overlap));
+        assert!(spread(&kinetic) < if spacing > 0.25 { 1e-3 } else { 2e-4 }, "{spacing}: {:e}", spread(&kinetic));
+        // The model lattice sum on the same boxes.
+        let zeta: f64 = 1.2;
+        let phi2 = |k: f64| 64. * std::f64::consts::PI * zeta.powi(5) / (zeta * zeta + k * k).powi(4);
+        let grid_spacing = spacing / BOHR;
+        let cutoff = std::f64::consts::PI / (2. * grid_spacing);
+        for start in [1.0, 0.9, 0.8, 0.7, 0.5] {
+            let w = |k: f64| {
+                if k >= cutoff {
+                    0.
+                } else if k <= start * cutoff || start >= 1. {
+                    1.
+                } else {
+                    (0.5 * std::f64::consts::PI * (k / cutoff - start) / (1. - start)).cos().powi(2)
+                }
+            };
+            // The limit: (1 / 2 pi^2) int k^2 |phi|^2 w^2 dk (norm) and with k^2 / 2 (kinetic).
+            let steps = 200_000;
+            let dk = cutoff / steps as f64;
+            let (mut norm_limit, mut kinetic_limit) = (0., 0.);
+            for i in 0..steps {
+                let k = (i as f64 + 0.5) * dk;
+                let f = k * k * phi2(k) * w(k).powi(2) * dk / (2. * std::f64::consts::PI.powi(2));
+                norm_limit += f;
+                kinetic_limit += 0.5 * k * k * f;
+            }
+            let (mut norms, mut kinetics) = (Vec::new(), Vec::new());
+            for &n in &nodes {
+                let l = n as f64 * grid_spacing;
+                let g = 2. * std::f64::consts::PI / l;
+                let reach = (cutoff / g).ceil() as i64;
+                let (mut norm, mut kin) = (0., 0.);
+                for x in -reach..=reach {
+                    for y in -reach..=reach {
+                        for z in -reach..=reach {
+                            let k = g * ((x * x + y * y + z * z) as f64).sqrt();
+                            let weight = w(k).powi(2) * phi2(k) / l.powi(3);
+                            norm += weight;
+                            kin += 0.5 * k * k * weight;
+                        }
+                    }
+                }
+                norms.push((n as f64 * spacing, norm - norm_limit));
+                kinetics.push((n as f64 * spacing, kin - kinetic_limit));
+            }
+            let largest = |rows: &[(f64, f64)]| rows.iter().filter(|r| r.0 >= 12.).fold(0f64, |w, r| w.max(r.1.abs()));
+            println!(
+                "model 1s {spacing} A taper from {start} k_c: norm limit {norm_limit:.6} (sharp limit loses {:.2e}), kinetic limit {kinetic_limit:.6}; lattice sum minus limit on boxes of 12 A and more: norm {:.2e}, kinetic {:.2e} Ha",
+                1. - norm_limit, largest(&norms), largest(&kinetics)
+            );
+        }
+    }
 }

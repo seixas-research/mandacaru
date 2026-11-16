@@ -24,7 +24,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
-    source = Path(__file__).resolve().parents[2] / "crates/mandacaru-python/src/orbitals.rs"
+    source = Path(__file__).resolve().parents[2] / "crates/mandacaru-core/src/sto_fit.rs"
     report = {"format": "mandacaru-unit-slater-fits", "version": 1,
               "source_sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
               "numpy": numpy.__version__, "scipy": scipy.__version__,

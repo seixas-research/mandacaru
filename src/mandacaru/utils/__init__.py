@@ -18,7 +18,6 @@ _EXPORTS = {
     "reset_log": (".logging", "reset_log"),
     "Timings": (".profiling", "Timings"),
     "cpu_count": (".profiling", "cpu_count"),
-    "current_memory_mb": (".profiling", "current_memory_mb"),
     "peak_memory_mb": (".profiling", "peak_memory_mb"),
     "Camera": (".viewer", "Camera"),
     "Viewer3D": (".viewer", "Viewer3D"),

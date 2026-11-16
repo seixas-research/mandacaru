@@ -515,3 +515,75 @@ pub fn structure_factor(
 
     Ok(StructureFactorGrid { kvectors: kvectors_vec, values, magnitudes, n_electrons, overlap_error })
 }
+
+/// The shell means of a structure factor sampled at `magnitudes` (values `values`): the samples
+/// sorted by magnitude, grouped where consecutive magnitudes differ by more than `1e-8` of the
+/// largest (at least 1), each group's mean magnitude and mean value, the first `count` groups.
+pub fn shell_means(magnitudes: &[f64], values: &[f64], count: usize) -> (Vec<f64>, Vec<f64>) {
+    if magnitudes.is_empty() || count == 0 {
+        return (vec![], vec![]);
+    }
+    let mut pairs: Vec<(f64, f64)> = magnitudes
+        .iter()
+        .copied()
+        .zip(values.iter().copied())
+        .collect();
+    pairs.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+    let max_k = pairs.last().map(|p| p.0).unwrap_or(1.0);
+    let tol = 1e-8 * max_k.max(1.0);
+    let mut k_means = Vec::new();
+    let mut s_means = Vec::new();
+    let mut current_k_sum = pairs[0].0;
+    let mut current_s_sum = pairs[0].1;
+    let mut current_count = 1usize;
+    let mut prev_k = pairs[0].0;
+    for &(k, s) in &pairs[1..] {
+        if (k - prev_k) > tol {
+            k_means.push(current_k_sum / current_count as f64);
+            s_means.push(current_s_sum / current_count as f64);
+            if k_means.len() >= count {
+                break;
+            }
+            current_k_sum = 0.0;
+            current_s_sum = 0.0;
+            current_count = 0;
+        }
+        current_k_sum += k;
+        current_s_sum += s;
+        current_count += 1;
+        prev_k = k;
+    }
+    if current_count > 0 && k_means.len() < count {
+        k_means.push(current_k_sum / current_count as f64);
+        s_means.push(current_s_sum / current_count as f64);
+    }
+    (k_means, s_means)
+}
+
+/// The integer triples `(i, j, k)`, every component in `-limit..=limit` but the origin, and their
+/// wave vectors `m^T B` with `B = 2 pi (cell^-1)^T` of the cell rows `cell` (row-major).
+pub fn reciprocal_triples(cell: &[f64; 9], limit: i64) -> Result<(Vec<i64>, Vec<f64>)> {
+    let mat = nalgebra::Matrix3::from_row_slice(cell);
+    let inv_t = mat
+        .try_inverse()
+        .ok_or_else(|| invalid("singular cell matrix"))?
+        .transpose();
+    let b = inv_t * (2.0 * std::f64::consts::PI);
+    let mut triples = Vec::new();
+    let mut kvectors = Vec::new();
+    for i in -limit..=limit {
+        for j in -limit..=limit {
+            for k in -limit..=limit {
+                if i == 0 && j == 0 && k == 0 {
+                    continue;
+                }
+                triples.extend([i, j, k]);
+                let m = [i as f64, j as f64, k as f64];
+                for axis in 0..3 {
+                    kvectors.push(m[0] * b[(0, axis)] + m[1] * b[(1, axis)] + m[2] * b[(2, axis)]);
+                }
+            }
+        }
+    }
+    Ok((triples, kvectors))
+}

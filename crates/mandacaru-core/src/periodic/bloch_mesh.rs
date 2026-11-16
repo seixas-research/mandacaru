@@ -157,6 +157,24 @@ impl<'a> Sampler<'a> {
         bands: &[Vec<usize>],
         mut inspect: impl FnMut(usize, &Frame) -> Result<()>,
     ) -> Result<Vec<Vec<Frame>>> {
+        let mut out: Vec<Vec<Frame>> = (0..self.channels()).map(|_| vec![]).collect();
+        self.visit(mesh, bands, |s, frame| {
+            inspect(s, &frame)?;
+            out[s].push(frame);
+            Ok(())
+        })?;
+        Ok(out)
+    }
+
+    /// [`Self::frames`] without keeping them: each frame is handed to `visit(channel, frame)` in
+    /// mesh order (point, then channel) and dropped after it, so a mesh-wide sum holds one chunk
+    /// of points at a time whatever the mesh size.
+    pub fn visit(
+        &self,
+        mesh: &MeshIndex,
+        bands: &[Vec<usize>],
+        mut visit: impl FnMut(usize, Frame) -> Result<()>,
+    ) -> Result<()> {
         if bands.len() != self.channels() {
             return Err(invalid("a k mesh needs a band list for every spin channel"));
         }
@@ -172,7 +190,6 @@ impl<'a> Sampler<'a> {
         let free = ctx.memory_limit().saturating_sub(ctx.memory_used());
         let chunk = (free / 4 / per_point.max(1)).clamp(1, mesh.points().max(1));
         ctx.run(|| {
-            let mut out: Vec<Vec<Frame>> = (0..self.channels()).map(|_| vec![]).collect();
             for first in (0..mesh.points()).step_by(chunk) {
                 let last = (first + chunk).min(mesh.points());
                 let fractional: Vec<[f64; 3]> = (first..last).map(|i| mesh.point(i)).collect();
@@ -186,14 +203,14 @@ impl<'a> Sampler<'a> {
                         if selection.is_empty() {
                             continue;
                         }
-                        let frame =
-                            Frame::from_point(self.crystal, self.state, &point, s, selection)?;
-                        inspect(s, &frame)?;
-                        out[s].push(frame);
+                        visit(
+                            s,
+                            Frame::from_point(self.crystal, self.state, &point, s, selection)?,
+                        )?;
                     }
                 }
             }
-            Ok(out)
+            Ok(())
         })
     }
 

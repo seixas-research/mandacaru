@@ -35,13 +35,13 @@ options and hands the dataset and the basis recipe to it.
 | | |
 | --- | --- |
 | Methods | `rhf`, `uhf`, `dft` (`lda`, `pbe`, `r2scan` and the screened hybrid `hse06`), and the variational methods through an RHF or UHF reference |
-| Frozen-core exchange (Hartree–Fock, variational) | an empty core or a single closed 1s shell |
+| Frozen-core exchange (Hartree–Fock, variational) | an empty core or any core of closed subshells whose states the dataset stores (1s 2s 2p for Si and Cu, a closed 1s for Na); a screened hybrid (`hse06`) only for an empty core or a single closed 1s shell |
 | Forces | RHF, UHF and Kohn–Sham, `hse06` included ([Forces](forces_relaxation.md)) |
 | Spin-orbit datasets | a molecule on `lda-fr` or `pbe-fr` with `method="dft"` runs spinor (noncollinear, generalized) Kohn–Sham with the PAW spin-orbit projector term, for `lda`, `pbe`, `pbe+rvv10`, `r2scan` and `hse06`, with analytic forces; the reference state is a `ghf`-shaped spinor state carrying the functional (one set of 2m spinors) |
 | Geometry | molecules; a crystal reads its own datasets through the periodic setup |
 
 The following raise, or are not yet available ([open items](#not-yet-available)):
-multi-shell frozen-core exchange; any method other than `dft` on a
+a Hartree–Fock frozen core without stored core states or with a partially filled subshell (`ValueError`, naming the element); any method other than `dft` on a
 molecule with a spin-orbit dataset (`NotImplementedError`: "a molecule with a
 spin-orbit dataset needs method='dft' (spinor Kohn-Sham)"), and DFT+U there;
 molecular stress; `precision="float32"` forces of the quantum methods (the

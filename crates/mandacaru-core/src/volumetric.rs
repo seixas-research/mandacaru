@@ -239,3 +239,115 @@ pub fn bxsf(
         writeln!(out, "  END_BANDGRID_3D\nEND_BLOCK_BANDGRID_3D").map_err(io)
     })
 }
+
+/// The content of a `.bxsf` band grid: the energies on the periodic mesh (the closing planes of
+/// the file dropped), `shape = [bands, n1, n2, n3]`, row-major with `k3` innermost; the
+/// reciprocal vectors as rows, as written; the Fermi energy of the header.
+pub struct BandGrid {
+    pub shape: [usize; 4],
+    pub data: Vec<f64>,
+    pub cell: [[f64; 3]; 3],
+    pub fermi: f64,
+}
+
+/// Read a `.bxsf` file written by [`bxsf`] (or any writer of the same single-block layout: the
+/// values of a band may wrap at any column).
+pub fn read_bxsf(ctx: &Context, path: &Path) -> Result<BandGrid> {
+    let name = path.display();
+    let size = std::fs::metadata(path).map_err(io)?.len();
+    let _text = ctx.reserve(usize::try_from(size).map_err(|_| Error::Overflow)?)?;
+    let text = std::fs::read_to_string(path).map_err(io)?;
+    let lines: Vec<&str> = text.lines().map(str::trim).collect();
+    let line = |i: usize| -> Result<&str> {
+        lines
+            .get(i)
+            .copied()
+            .ok_or_else(|| Error::Invalid(format!("{name}: the band grid ends early")))
+    };
+    let unreadable = |i: usize| Error::Invalid(format!("{name}: cannot read line {}", i + 1));
+    let fermi = lines
+        .iter()
+        .find(|l| l.to_lowercase().starts_with("fermi energy:"))
+        .ok_or_else(|| Error::Invalid(format!("{name}: no 'Fermi Energy:' line in BEGIN_INFO")))?;
+    let fermi: f64 = fermi
+        .split_once(':')
+        .and_then(|(_, value)| value.trim().parse().ok())
+        .ok_or_else(|| Error::Invalid(format!("{name}: cannot read the Fermi energy")))?;
+    let start = lines
+        .iter()
+        .position(|l| l.to_uppercase().starts_with("BEGIN_BANDGRID_3D"))
+        .ok_or_else(|| Error::Invalid(format!("{name}: no BEGIN_BANDGRID_3D block")))?;
+    let bands: usize = line(start + 1)?
+        .parse()
+        .map_err(|_| unreadable(start + 1))?;
+    let closed: Vec<usize> = line(start + 2)?
+        .split_whitespace()
+        .map(str::parse)
+        .collect::<std::result::Result<_, _>>()
+        .map_err(|_| unreadable(start + 2))?;
+    let closed: [usize; 3] = closed.try_into().map_err(|_| unreadable(start + 2))?;
+    if closed.iter().any(|&n| n < 2) {
+        return Err(Error::Invalid(format!(
+            "{name}: a general band grid has at least two points per direction"
+        )));
+    }
+    let mut cell = [[0.0; 3]; 3];
+    for (a, row) in cell.iter_mut().enumerate() {
+        let values: Vec<f64> = line(start + 4 + a)?
+            .split_whitespace()
+            .map(str::parse)
+            .collect::<std::result::Result<_, _>>()
+            .map_err(|_| unreadable(start + 4 + a))?;
+        *row = values.try_into().map_err(|_| unreadable(start + 4 + a))?;
+    }
+    let count = product(&closed)?;
+    let [nx, ny, nz] = closed.map(|n| n - 1);
+    let shape = [bands, nx, ny, nz];
+    // The mesh and one band of the file, reserved before either is allocated: a header that
+    // names more points than the budget holds is a refusal, not an allocation failure.
+    let _data = ctx.reserve(product(&[
+        product(&shape)?.checked_add(count).ok_or(Error::Overflow)?,
+        8,
+    ])?)?;
+    let mut data = Vec::with_capacity(product(&shape)?);
+    let mut at = start + 7;
+    let mut values = Vec::with_capacity(count);
+    for band in 0..bands {
+        if !line(at)?.to_uppercase().starts_with("BAND:") {
+            return Err(Error::Invalid(format!(
+                "{name}: expected 'BAND:' at line {}",
+                at + 1
+            )));
+        }
+        at += 1;
+        values.clear();
+        while values.len() < count {
+            for word in line(at)?.split_whitespace() {
+                values.push(word.parse::<f64>().map_err(|_| unreadable(at))?);
+            }
+            at += 1;
+        }
+        if values.len() != count {
+            return Err(Error::Invalid(format!(
+                "{name}: band {} has {} values for a {}x{}x{} grid",
+                band + 1,
+                values.len(),
+                closed[0],
+                closed[1],
+                closed[2]
+            )));
+        }
+        for i in 0..nx {
+            for j in 0..ny {
+                let row = (i * closed[1] + j) * closed[2];
+                data.extend_from_slice(&values[row..row + nz]);
+            }
+        }
+    }
+    Ok(BandGrid {
+        shape,
+        data,
+        cell,
+        fermi,
+    })
+}

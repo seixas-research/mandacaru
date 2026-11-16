@@ -117,6 +117,7 @@ pub fn relaxed_configuration_with(
         functional: functional.to_string(),
         relativity,
         polish: atom::POLISH_ROUNDS,
+        j_shares: configuration::JShares::LowerFirst,
     };
     // A candidate the solver cannot follow is skipped; a refused option or an exhausted
     // budget is not a candidate failing, and propagates.

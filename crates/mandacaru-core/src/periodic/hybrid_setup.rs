@@ -49,6 +49,7 @@ pub struct Hybrid {
     lattice: Matrix3<f64>,
     shapes: Shapes,
     model: SphereModel,
+    reversal: Vec<(usize, usize, f64)>,
 }
 
 fn text<'a>(value: &'a Value, what: &str) -> Result<&'a str> {
@@ -56,6 +57,28 @@ fn text<'a>(value: &'a Value, what: &str) -> Result<&'a str> {
         .as_str()
         .filter(|s| !s.is_empty())
         .ok_or_else(|| invalid(format!("the sites block needs {what}")))
+}
+
+/// The time reversal of one atom's complex-harmonic projectors: `conj(p_{l m}) = (-1)^m p_{l -m}`,
+/// so `<p_{l -m} | psi_{-k}> = (-1)^m conj(<p_{l m} | psi_k>)`. Entries `(target, source, sign)`
+/// over the crystal's projector index (the atom's projectors start at `offset`).
+fn time_reversal_map(
+    layout: &[crate::paw::pair_tables::Projector],
+    offset: usize,
+) -> Result<Vec<(usize, usize, f64)>> {
+    layout
+        .iter()
+        .enumerate()
+        .map(|(j, a)| {
+            let i = layout
+                .iter()
+                .position(|b| {
+                    b.channel == a.channel && b.radial == a.radial && b.l == a.l && b.m == -a.m
+                })
+                .ok_or_else(|| invalid("a projector has no (l, -m) partner"))?;
+            Ok((offset + i, offset + j, if a.m % 2 == 0 { 1. } else { -1. }))
+        })
+        .collect()
 }
 
 impl Hybrid {
@@ -106,6 +129,7 @@ impl Hybrid {
             });
         }
         let mut species = Vec::new();
+        let mut layouts = Vec::new();
         let mut charges = Vec::new();
         let mut radii = Vec::new();
         for (file, digest) in files {
@@ -123,11 +147,13 @@ impl Hybrid {
                 screened(ctx, &view, &projectors, omega)?,
                 &projectors,
             ));
+            layouts.push(projectors);
             charges.push(record.valence_charge);
             radii.push(record.compensation_radius);
         }
         let mut atoms = Vec::new();
         let mut spheres = Vec::new();
+        let mut reversal = Vec::new();
         let mut offset = 0;
         for (center, &which) in centers.iter().zip(&kind) {
             let c = center
@@ -144,6 +170,7 @@ impl Hybrid {
                 offset,
                 species: which,
             });
+            reversal.extend(time_reversal_map(&layouts[which], offset)?);
             offset += species[which].projectors();
         }
         if offset != p {
@@ -183,6 +210,7 @@ impl Hybrid {
             shapes,
             model: SphereModel::new(species, spheres, p, fraction)?
                 .with_time_reversal(spinor && time_reversal),
+            reversal,
         })
     }
 
@@ -200,7 +228,9 @@ impl Hybrid {
             // The ion width is read by the lattice sums of the setup, not by the shape transforms.
             sigma: 1.0,
         };
-        Ok(Augmentation::new(c, sites, &self.shapes)?.with_one_center(&self.model))
+        Ok(Augmentation::new(c, sites, &self.shapes)?
+            .with_one_center(&self.model)
+            .with_time_reversal(&self.reversal))
     }
 }
 

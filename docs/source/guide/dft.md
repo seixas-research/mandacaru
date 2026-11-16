@@ -188,8 +188,8 @@ the heavy atom, and it has parts that are known: the grid resolution of the hard
 smooth $p$ pair densities, the one-center correction of the hole-model exchange
 (which the spheres do not carry), and the first-order linearization of the frozen
 term. A crystal HSE06 energy and gap are reported by the code but not pinned
-against a literature value: the whole-mesh requirement below limits a hybrid crystal
-to small $k$ meshes, and on them the two divergence treatments differ by more than
+against a literature value: the mesh requirement below (no space-group reduction) limits
+a hybrid crystal to small $k$ meshes, and on them the two divergence treatments differ by more than
 1 eV in the total energy of a two-atom silicon cell. A molecule in a periodic box at
 the $\Gamma$ point reproduces the molecular HSE06 for H and H₂ once the box is large
 enough, but not for water, which stays about 1 mHa apart; that difference is not yet
@@ -239,10 +239,12 @@ see [the crystal guide](bloch.md)). Screened hybrid calculations
 (`xc="hse06"`) evaluate the non-singular reciprocal screened exchange operator across the
 Brillouin zone in Rust (self-consistent crystal SCF, band structures, DOS/PDOS, and
 two-component spinor calculations with spin-orbit coupling). The exact exchange sums over
-the listed $k$-points, so a hybrid crystal always runs on the **whole** $k$ mesh: the setup
-neither reduces it by space-group symmetry (whatever `symmetry` says) nor halves it by time
-reversal, with or without spin-orbit coupling. A wedge costs fewer points, so a hybrid on a
-crystal with symmetry takes more k-points than the same semilocal run. The crystal
+the listed $k$-points, so the setup never reduces a hybrid crystal's mesh by space-group
+symmetry (whatever `symmetry` says). It halves it by time reversal, as it does any
+nonmagnetic mesh, with or without spin-orbit coupling: each listed point stands for itself
+and $-k$, whose states the exchange builds from those at $k$ (their complex conjugates, or
+the Kramers partners of a spinor). A wedge costs fewer points, so a hybrid on a crystal with
+symmetry takes more k-points than the same semilocal run. The crystal
 setup (PAW geometry and dataset assembly) is built in Rust. Forces and stress of crystals are computed via `atoms.get_forces()` and
 `atoms.get_stress()` as analytic Rust gradients of the converged Kohn–Sham state: forces for LDA,
 PBE, r2SCAN, rVV10 and HSE06, unpolarized, spin-polarized and with spin-orbit coupling, and stress

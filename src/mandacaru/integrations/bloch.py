@@ -1,44 +1,33 @@
 """The calculator side of the quantum methods on a crystal: option checks and native views.
 
 ``vqe``, ``adapt-vqe``, ``vasqa`` and ``valsqa`` on a structure with a periodic axis solve the
-Born-von Karman supercell of a Gamma-centered ``kpts`` mesh (Gamma alone by default); the Hamiltonian, the unfolded mean-field bands, the spectral function and the
-tetrahedron density of states are computed in Rust (``molecular::periodic``,
-``quantum::spectral``, ``periodic::tetrahedron``). This module validates options, hands arrays
+Born-von Karman supercell of a Gamma-centered ``kpts`` mesh (Gamma alone by default), on the
+hydrogen-like or Gaussian basis (``molecular::periodic``) or on PAW-LCAO, built from the crystal
+setup (``molecular::periodic::paw``); the Hamiltonian, the unfolded mean-field bands, the spectral
+function and the tetrahedron density of states are computed in Rust (``quantum::spectral``,
+``periodic::tetrahedron``). This module validates options, hands arrays
 across and wraps the results; it computes nothing.
 """
 
 from __future__ import annotations
+
+import json
 
 import numpy as np
 
 from .. import _native
 
 
-def _gamma_centered(spec):
-    size = tuple(spec.get("size", (1, 1, 1)))
-    return bool(spec.get("gamma", False)) or all(n % 2 == 1 for n in size)
-
-
 def _check_supercell_options(calculation):
-    if calculation._basis_spec is None:
-        raise NotImplementedError(
-            "a PAW-LCAO or UPAW-LCAO basis is not available for the periodic quantum methods "
-            "yet: the supercell Hamiltonian is all-electron; use basis='HAO' or a Gaussian recipe"
-        )
     if calculation._explicit_grid is not None:
-        raise ValueError(
-            "the periodic supercell builds its own grid, commensurate with the primitive cell: "
-            "set grid_spacing instead of grid"
-        )
+        raise ValueError("the periodic supercell builds its own grid, commensurate with the "
+                         "primitive cell: set grid_spacing instead of grid")
     if calculation._kinetic != "spectral":
-        raise ValueError(
-            "the periodic supercell Hamiltonian uses the spectral kinetic operator, which is "
-            "periodic on the cell: use kinetic='spectral'"
-        )
+        raise ValueError("the periodic supercell Hamiltonian uses the spectral kinetic operator, "
+                         "which is periodic on the cell: use kinetic='spectral'")
     if calculation._precision != "float64":
-        raise ValueError(
-            "the periodic supercell Hamiltonian is built in float64 only: use precision='float64'"
-        )
+        raise ValueError("the periodic supercell Hamiltonian is built in float64 only: use "
+                         "precision='float64'")
 
 
 def check_geometry(calculation, geometry):
@@ -56,7 +45,7 @@ def check_geometry(calculation, geometry):
         )
     _check_supercell_options(calculation)
     spec = calculation._kpts_spec
-    if not _gamma_centered(spec):
+    if not (spec.get("gamma") or all(n % 2 == 1 for n in spec.get("size", (1, 1, 1)))):
         raise ValueError(
             "a quantum method on a crystal solves the Born-von Karman supercell of a "
             "Gamma-centered mesh: pass kpts={'size': (n1, n2, n3), 'gamma': True}"
@@ -71,6 +60,34 @@ def check_geometry(calculation, geometry):
     return size
 
 
+def paw_supercell_integrals(calculation, geometry, size):
+    """The PAW-LCAO supercell Hamiltonian of the Gamma-centered mesh ``size``.
+
+    The crystal setup request is the one ``method='dft'`` builds (``setup_block.setup_request``);
+    the binding sets the crystal up at Gamma and the supercell forms its mesh itself
+    (``molecular::periodic::paw``). The datasets follow the molecular rule, ``lda-sr`` unless
+    ``paw_dataset`` names another set; a spin-orbit set is built as a spinor setup, which the
+    supercell refuses by name. UPAW-LCAO is refused until it is gated.
+    """
+    from ..models.setup import pseudopotential_family, resolve_basis
+    from ..pseudopotentials.environment import with_functional_set
+    from .ase import atoms_from_geometry
+    from .setup_block import setup_request, spin_orbit_symbols
+
+    atoms, (name, options) = atoms_from_geometry(geometry), resolve_basis(calculation._basis)
+    family = pseudopotential_family(name)
+    if family.name != "paw-lcao":
+        raise NotImplementedError(f"a {family.name.upper()} basis is not available for the "
+                                  "periodic quantum methods yet: use basis='PAW-LCAO' or 'HAO'")
+    options = with_functional_set(family.name, options, calculation.xc)
+    spinor = bool(spin_orbit_symbols(atoms, options, family.name))
+    request, paths = setup_request(calculation, atoms, family, options, [0.0] * len(atoms), spinor)
+    # The engine's default is the calculator's (1e-8 eV); only a requested tolerance is passed.
+    tolerance = calculation._cholesky_tolerance if calculation._two_body_requested else None
+    return _native.paw_supercell_integrals(calculation.context, json.dumps(request), paths, list(
+        size), cholesky_tolerance=tolerance)
+
+
 #: Central-difference step of the crystal forces, Bohr: the engine's.
 FORCE_STEP = _native.PERIODIC_FORCE_STEP
 
@@ -78,7 +95,9 @@ FORCE_STEP = _native.PERIODIC_FORCE_STEP
 def check_derivatives(calculation, properties):
     """Which derivatives of a quantum method on a crystal exist, refused before any work.
 
-    Forces are central finite differences of the supercell energy per cell. The energy is exactly
+    On a PAW-LCAO supercell the forces are analytic (Bloch-VQE stage 6a, the Rust gradient of the
+    energy per cell). On the HAO basis they are central finite differences of the supercell energy
+    per cell (owner Q2 keeps that route). The HAO energy is exactly
     invariant under a rigid translation of the crystal (band-limited orbitals and a G-space ion
     potential, ``molecular::periodic``: 1e-12 eV per cell), so the forces sum to zero, and a
     displacement only changes phases, so the energy is smooth in the positions. Stress is refused:
@@ -95,11 +114,10 @@ def check_derivatives(calculation, properties):
     if "forces" in properties:
         if calculation._execute_circuits:
             raise NotImplementedError(
-                "crystal forces are finite differences of state-vector energies; a circuit run "
-                "(shots, a device or execute_circuits=True) has no such energy to difference"
-            )
-        if calculation.method in ("vasqa", "valsqa") and calculation._constructor_options.get(
-                "seed") is None:
+                "crystal forces need the state vector (HAO differences its energies, PAW-LCAO "
+                "differentiates it); a circuit run (shots, a device, execute_circuits) has none")
+        if calculation._basis_spec is not None and calculation.method in (
+                "vasqa", "valsqa") and calculation._constructor_options.get("seed") is None:
             raise ValueError(
                 "crystal forces of an architecture search difference energies of separate "
                 "searches: pass seed= so every displaced search runs the same chain"
@@ -172,22 +190,17 @@ def supercell(calculation):
 
 
 def is_supercell(calculation):
-    integrals = getattr(calculation, "integrals", None)
-    if integrals is None or calculation.result is None or calculation.native_reference is None:
-        return False
     try:
-        _native.bloch_supercell(integrals)
-    except ValueError:
+        return calculation.native_reference is not None and bool(supercell(calculation))
+    except (AttributeError, RuntimeError):
         return False
-    return True
 
 
 def bands_at(calculation, fractional):
     """Unfolded mean-field eigenvalues (Hartree) and Lowdin weights at fractional k-points."""
     supercell(calculation)
-    raw = _native.bloch_bands(
-        calculation.native_reference, [list(map(float, k)) for k in fractional]
-    )
+    raw = _native.bloch_bands(calculation.native_reference,
+                              [list(map(float, k)) for k in fractional])
     return np.asarray(raw["eigenvalues"]), np.asarray(raw["weights"])
 
 

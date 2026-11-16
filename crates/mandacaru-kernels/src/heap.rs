@@ -37,6 +37,56 @@ mod system {
     }
 }
 
+#[cfg(target_os = "macos")]
+mod installed {
+    extern "C" {
+        fn sysctlbyname(
+            name: *const std::ffi::c_char,
+            oldp: *mut std::ffi::c_void,
+            oldlenp: *mut usize,
+            newp: *mut std::ffi::c_void,
+            newlen: usize,
+        ) -> i32;
+    }
+    pub fn bytes() -> Option<u64> {
+        let mut value: u64 = 0;
+        let mut size = std::mem::size_of::<u64>();
+        // SAFETY: `hw.memsize` is a 64-bit integer; `value` and `size` are valid for writes of
+        // that size, and no new value is set (null, zero).
+        let status = unsafe {
+            sysctlbyname(
+                c"hw.memsize".as_ptr(),
+                (&mut value as *mut u64).cast(),
+                &mut size,
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        (status == 0 && size == std::mem::size_of::<u64>() && value > 0).then_some(value)
+    }
+}
+#[cfg(target_os = "linux")]
+mod installed {
+    pub fn bytes() -> Option<u64> {
+        let text = std::fs::read_to_string("/proc/meminfo").ok()?;
+        let line = text.lines().find(|l| l.starts_with("MemTotal:"))?;
+        let kib: u64 = line.split_whitespace().nth(1)?.parse().ok()?;
+        kib.checked_mul(1024)
+    }
+}
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+mod installed {
+    pub fn bytes() -> Option<u64> {
+        None
+    }
+}
+
+/// The physical memory installed in the machine (`hw.memsize` on macOS, `MemTotal` of
+/// `/proc/meminfo` on Linux), `None` where the platform does not say.
+pub fn installed_memory_bytes() -> Option<u64> {
+    installed::bytes()
+}
+
 /// Returns the pages the allocator holds free to the operating system, where the platform has a
 /// call for it (macOS, glibc); `false` says it has none and nothing was done.
 pub fn release_freed_memory() -> bool {
@@ -45,7 +95,15 @@ pub fn release_freed_memory() -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::release_freed_memory;
+    use super::{installed_memory_bytes, release_freed_memory};
+
+    #[test]
+    fn the_installed_memory_is_known_on_the_supported_platforms() {
+        let bytes = installed_memory_bytes();
+        if cfg!(any(target_os = "macos", target_os = "linux")) {
+            assert!(bytes.is_some_and(|b| b >= 1 << 28), "{bytes:?}");
+        }
+    }
 
     #[test]
     fn releasing_freed_memory_leaves_live_data_and_later_allocations_intact() {

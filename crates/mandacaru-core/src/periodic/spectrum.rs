@@ -286,3 +286,30 @@ pub fn broaden(
     }
     Ok(out)
 }
+
+/// The occupations `degeneracy f((e - mu) / width)` of every eigenvalue and the entropy term
+/// `degeneracy sum_k w_k sum_n s((e_kn - mu) / width)` at the Fermi level `mu`.
+pub fn occupations_and_entropy(
+    eigenvalues: &[Vec<f64>],
+    weights: &[f64],
+    mu: f64,
+    method: Smearing,
+    width: f64,
+    degeneracy: f64,
+) -> (Vec<Vec<f64>>, f64) {
+    let occupations = eigenvalues
+        .iter()
+        .map(|e| {
+            e.iter()
+                .map(|e| degeneracy * method.occupation((e - mu) / width))
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    let entropy = degeneracy
+        * eigenvalues
+            .iter()
+            .zip(weights)
+            .map(|(e, w)| w * e.iter().map(|e| method.entropy((e - mu) / width)).sum::<f64>())
+            .sum::<f64>();
+    (occupations, entropy)
+}

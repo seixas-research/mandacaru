@@ -208,10 +208,12 @@ class TestASpinOrbitCrystal:
         assert np.allclose(gamma[0::2], gamma[1::2], atol=1e-8)
 
     @pytest.mark.slow
-    def test_spinor_hse06_keeps_a_mesh_with_non_trim_points_whole(self):
-        """HSE06 with spin-orbit coupling on 3x1x1 (k = 0, +-1/3): time reversal would merge
-        the +-1/3 points, which the exact exchange needs both of, so the mesh stays whole;
-        the force of the displaced cell is the analytic one (Rust). Measured 65 s."""
+    def test_spinor_hse06_halves_a_mesh_with_non_trim_points_by_time_reversal(self):
+        """HSE06 with spin-orbit coupling on 3x1x1 (k = 0, +-1/3): time reversal merges the +-1/3
+        points, and the exact exchange builds the states at -1/3 as the Kramers partners of those
+        at 1/3 (Q11/SH-5); the force of the displaced cell is the analytic one (Rust), equal to
+        the whole mesh's (gated in ``periodic_hybrid_halved_mesh.rs``). Measured 65 s on the
+        whole mesh."""
         from ase.build import bulk
 
         atoms = bulk("Si", "diamond", a=5.43)
@@ -223,7 +225,7 @@ class TestASpinOrbitCrystal:
                                parallelization={"threads": 1}, trace=False)
         forces = atoms.get_forces()
         weights = atoms.calc.periodic_problem.weights
-        assert len(weights) == 3 and np.allclose(weights, 1 / 3)
+        assert np.allclose(sorted(weights), [1 / 3, 2 / 3])
         # The displaced atom is pulled back. (The accuracy is gated in Rust; at this coarse grid
         # the egg-box term leaves a net force of 0.1-0.2 eV/A, as it does for PBE.)
         assert np.all(np.isfinite(forces))

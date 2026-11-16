@@ -18,7 +18,7 @@ import numpy as np
 import pytest
 from ase import Atoms
 
-from mandacaru import Mandacaru
+from mandacaru import Mandacaru, _native
 from mandacaru.units import HARTREE_TO_EV
 
 SLSQP = {"method": "SLSQP", "maxiter": 1000, "tol": 1e-12}
@@ -138,7 +138,7 @@ class TestTheOptionChecks:
         assert len(atoms.calc.kpoints) == 3
 
     @pytest.mark.parametrize("options, error, match", [
-        ({"basis": {"name": "PAW-LCAO", "size": "SZ"}}, NotImplementedError, "PAW-LCAO"),
+        ({"basis": {"name": "UPAW-LCAO", "size": "SZ"}}, NotImplementedError, "UPAW-LCAO"),
         ({"kinetic": "fd"}, ValueError, "spectral"),
         ({"precision": "float32"}, ValueError, "float64"),
     ])
@@ -356,3 +356,133 @@ class TestADegenerateGroupSplitByTheActiveSpace:
         assert forces[1, 0] == pytest.approx(2.9484749, abs=5e-5)
         assert abs(forces[1, 2]) < 1e-7
         assert "warning" not in parse_output(str(log))["active_space"]
+
+
+def paw_h2_chain(method="vqe", size=(2, 1, 1), **options):
+    """An H2 chain (bond 0.74 A along the axis, H off it by 0.05 A) of period 3 A on PAW-LCAO:
+    SZ, four supercell orbitals on two cells (8 qubits)."""
+    atoms = Atoms("H2", positions=[[0.0, 0.0, 0.0], [0.74, 0.05, 0.0]],
+                  cell=np.diag([3.0, 6.0, 6.0]), pbc=[True, False, False])
+    atoms.calc = Mandacaru(method=method, basis="PAW-LCAO", grid_spacing=0.2,
+                           mapping="jordan_wigner", kpts={"size": size, "gamma": True},
+                           optimizer=SLSQP, trace=False, **REAL, **options)
+    return atoms
+
+
+@functools.lru_cache(maxsize=None)
+def paw_solved(method="vqe"):
+    atoms = paw_h2_chain(method)
+    atoms.get_potential_energy()
+    return atoms
+
+
+class TestThePawLcaoSupercell:
+    """Stage 4c of the Bloch methods (``BLOCH_VQE_PLAN.md`` 4.7): the PAW-LCAO supercell built from
+    the crystal setup (``molecular::periodic::paw``) through the calculator. Its Rust gates (the
+    Born-von Karman identity S4-1, the unfolding S4-2, the molecular limit S4-3, the placement
+    S4-5) are in ``crates/mandacaru-core/tests/molecular_paw_supercell.rs``."""
+
+    @pytest.mark.parametrize("method, tolerance", [("adapt-vqe", 1e-7), ("vqe", 1e-5)])
+    def test_the_variational_energy_is_the_exact_ground_state_at_eight_qubits(self, method,
+                                                                               tolerance):
+        """S4-7: the solvers reach the exact ground state of the supercell's qubit Hamiltonian
+        (eV per cell); ADAPT to the optimizer's tolerance, the fixed UCCSD ansatz of ``vqe`` to its
+        own limit at four electrons in eight spin orbitals (2.0e-6 eV above, measured 2026-11-15)."""
+        calc = paw_solved(method).calc
+        assert calc.problem.num_qubits == 8
+        assert calc.results["energy"] == pytest.approx(exact_per_cell(calc, 4, 2),
+                                                       abs=tolerance)
+
+    def test_the_spectral_function_keeps_its_sum_rule(self):
+        """S4-7: the Lehmann spectral function of the correlated supercell state."""
+        spectral = paw_solved().calc.get_spectral_function(eta=0.1)
+        assert np.allclose(spectral.sum_rule, 1.0, atol=1e-12)
+        assert spectral.ground_energy == pytest.approx(
+            2 * paw_solved().calc.results["energy"], abs=1e-9)
+
+    def test_the_analytic_force_sums_to_the_egg_box_and_is_the_energy_derivative(self):
+        """S4-6 and Bloch-VQE stage 6b: the calculator's force on the PAW supercell is analytic
+        (the Rust gradient of the energy per cell, the Z-vector included). It sums to the slope of
+        the grid's egg box (the point-sampled basis moving against the grid: the central
+        differences it replaced measured 7.3e-5 eV/A on this cell at grid_spacing 0.2 A, F_x(H 0)
+        -5.897530 and F_x(H 1) 5.897603; the plan's 1e-6 eV/A is not reached) and equals the
+        Richardson extrapolation of independent central differences of ``get_potential_energy``
+        at 2 and 4 mA."""
+        atoms = paw_h2_chain()
+        forces = atoms.get_forces()
+        assert atoms.calc.result.force_details["scheme"] == "analytic"
+        for axis in range(3):
+            assert forces[0][axis] == pytest.approx(-forces[1][axis], abs=1e-4)
+        central = []
+        for step in (0.002, 0.004):
+            energies = []
+            for sign in (1.0, -1.0):
+                moved = atoms.copy()
+                moved.positions = [[x + (sign * step if (i, a) == (1, 0) else 0.0)
+                                    for a, x in enumerate(row)]
+                                   for i, row in enumerate(atoms.positions.tolist())]
+                moved.calc = paw_h2_chain().calc
+                energies.append(moved.get_potential_energy())
+            central.append((energies[1] - energies[0]) / (2 * step))
+        assert forces[1][0] == pytest.approx((4 * central[0] - central[1]) / 3, abs=2e-5)
+
+    def test_an_active_space_that_cuts_a_degenerate_pair_is_refused_for_forces(self):
+        """S4-7: the split-group guard on a +-k cut of the PAW supercell (LiH, three cells)."""
+        atoms = Atoms("LiH", positions=[[0.0, 0.0, 0.0], [1.6, 0.05, 0.0]],
+                      cell=np.diag([3.2, 6.0, 6.0]), pbc=[True, False, False])
+        atoms.calc = Mandacaru(method="vqe", basis="PAW-LCAO", grid_spacing=0.25,
+                               kpts={"size": (3, 1, 1), "gamma": True},
+                               active_space={"orbitals": 3, "frozen": [0, 1]},
+                               optimizer=SLSQP, trace=False, **REAL)
+        with pytest.raises(NotImplementedError, match="exactly degenerate orbital group"):
+            atoms.get_forces()
+
+    @pytest.mark.parametrize("case", ["LiH (3,1,1)", "Si 2x1x1 SZ"])
+    def test_the_supercell_run_streams_its_pair_densities(self, case):
+        """S4-8: every engine allocation is reserved through the calculation's context, and the
+        pair densities are streamed per Cholesky column. So the reserved peak of the supercell
+        run stays under the plan's 2 GB ceiling and under the crystal's own DFT run at Gamma plus
+        what one stored copy of the pair densities (``m^2 P 16`` bytes) would add. Measured
+        2026-11-15: 25.0 MB against 28.8 MB (LiH), 26.0 MB against 46.3 MB (Si)."""
+        from ase.build import bulk
+
+        if case.startswith("LiH"):
+            def cell():
+                return Atoms("LiH", positions=[[0.0, 0.0, 0.0], [1.6, 0.0, 0.0]],
+                             cell=np.diag([3.2, 6.0, 6.0]), pbc=[True, False, False])
+            size, active = (3, 1, 1), {"orbitals": 4, "frozen": [0, 1]}
+        else:
+            def cell():
+                return bulk("Si", "diamond", a=5.43)
+            size, active = (2, 1, 1), {"orbitals": 4, "frozen": [0, 1, 2, 3, 4, 5]}
+        common = dict(basis="PAW-LCAO", grid_spacing=0.25, trace=False)
+        crystal = cell()
+        crystal.calc = Mandacaru(method="dft", xc="lda", kpts={"size": (1, 1, 1), "gamma": True},
+                                 **common)
+        crystal.get_potential_energy()
+        supercell = cell()
+        supercell.calc = Mandacaru(method="vqe", kpts={"size": size, "gamma": True},
+                                   active_space=active, **common, **REAL)
+        supercell.get_potential_energy()
+        calc = supercell.calc
+        m = _native.integrals_report(calc.integrals)["n_orbitals"]
+        points = reduce(lambda a, b: a * b, calc.integrals.grid.shape)
+        peak = calc.context.memory_peak_bytes
+        stored = m * m * points * 16
+        print(f"{case}: m {m}, P {points}; reserved peak {peak / 1e6:.1f} MB, crystal DFT "
+              f"{crystal.calc.context.memory_peak_bytes / 1e6:.1f} MB, stored pairs "
+              f"{stored / 1e6:.1f} MB")
+        assert peak < 2 << 30
+        assert peak < crystal.calc.context.memory_peak_bytes + stored
+
+    def test_the_hao_supercell_orders_the_bond_force_the_same_way(self):
+        """S4-4, a report: PAW-LCAO (``lda-sr``) and HAO differ by dataset and basis, so only the
+        sign of the bond force of the H2 chain is gated; the two forces are printed."""
+        paw = paw_h2_chain().get_forces()
+        atoms = paw_h2_chain()
+        atoms.calc = Mandacaru(method="vqe", basis="HAO", grid_spacing=0.2,
+                               mapping="jordan_wigner", kpts=GAMMA2, optimizer=SLSQP,
+                               trace=False, **REAL)
+        hao = atoms.get_forces()
+        print(f"H2 chain bond force F_x(H 1): PAW-LCAO {paw[1][0]:+.6f}, HAO {hao[1][0]:+.6f} eV/A")
+        assert (paw[1][0] > 0) == (hao[1][0] > 0)

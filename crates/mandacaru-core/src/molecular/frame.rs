@@ -278,6 +278,230 @@ fn operators(u: [f64; 3]) -> [f64; 4] {
     ]
 }
 
+/// `grad_u` of operator `level` of [`operators`].
+fn operator_gradient(level: usize, u: [f64; 3]) -> [f64; 3] {
+    let [x, y, z] = u;
+    match level {
+        0 => [2. * x, 3.4 * y, 5.8 * z],
+        1 => [y + 1.9 * z, x + 1.3 * z, 1.3 * y + 1.9 * x],
+        2 => [3. * x * x, 4.2 * y * y, 6.3 * z * z],
+        _ => [
+            2. * x * y + 1.7 * z * z,
+            x * x + 2.6 * y * z,
+            1.3 * y * y + 3.4 * z * x,
+        ],
+    }
+}
+
+/// The nuclear charge centroid of the molecule and the weight `Z_A / Z` with which it moves with
+/// each atom.
+fn charge_centroid(integrals: &MolecularIntegrals) -> ([f64; 3], Vec<f64>) {
+    let numbers = integrals.geometry.numbers();
+    let charge: f64 = numbers.iter().map(|&z| f64::from(z)).sum();
+    let mut center = [0.; 3];
+    for (&z, r) in numbers.iter().zip(integrals.geometry.positions()) {
+        for axis in 0..3 {
+            center[axis] += f64::from(z) * r[axis] / charge;
+        }
+    }
+    (
+        center,
+        numbers.iter().map(|&z| f64::from(z) / charge).collect(),
+    )
+}
+
+/// `sum D_ab d W_ab / dR` (Hartree-free units of the operator, per Bohr, three per atom) of the
+/// raw atomic-orbital matrix `W_ab = sum_g chi_a chi_b w_level(r_g - c) dv` of a lab-frame
+/// operator: the basis functions moving through the fixed field, and the field moving with the
+/// nuclear charge centroid `c`.
+pub(super) fn moment_gradient(
+    integrals: &MolecularIntegrals,
+    level: usize,
+    d: &DMatrix<f64>,
+) -> Result<Vec<f64>> {
+    let ctx = &integrals.context;
+    let m = integrals.m();
+    let points = integrals.grid.index.points();
+    let dv = integrals.grid.index.dv();
+    let (center, shares) = charge_centroid(integrals);
+    let offset = |g: usize| {
+        let p = integrals.grid.point(g);
+        [p[0] - center[0], p[1] - center[1], p[2] - center[2]]
+    };
+    let field: Vec<f64> = (0..points).map(|g| operators(offset(g))[level]).collect();
+    let mut out = integrals.grid_operator_gradient(d, &field)?;
+    // The centroid: d w(r - c) / dR_A = -grad w . Z_A / Z, against rho_D = sum D_ab chi_a chi_b.
+    let mut blocks = SampleBlocks::new(ctx, &integrals.samples, m, points)?;
+    let stride = blocks.stride();
+    let _work = ctx.reserve(product(&[stride, m + 4, 8])?)?;
+    let mut pull = [0f64; 3];
+    for start in (0..points).step_by(stride) {
+        let count = blocks.load(start)?;
+        let samples = nalgebra::DMatrixView::from_slice_with_strides_generic(
+            blocks.values(),
+            nalgebra::Dyn(count),
+            nalgebra::Dyn(m),
+            nalgebra::Const::<1>,
+            nalgebra::Dyn(stride),
+        );
+        let weighted: DMatrix<f64> = &samples * d;
+        for i in 0..count {
+            let rho: f64 = (0..m).map(|a| weighted[(i, a)] * samples[(i, a)]).sum();
+            let grad = operator_gradient(level, offset(start + i));
+            for axis in 0..3 {
+                pull[axis] += rho * grad[axis] * dv;
+            }
+        }
+    }
+    for (atom, share) in shares.iter().enumerate() {
+        for axis in 0..3 {
+            out[3 * atom + axis] -= share * pull[axis];
+        }
+    }
+    Ok(out)
+}
+
+/// What the deterministic frame of the exactly degenerate clusters adds to an analytic force.
+pub(super) struct FrameResponse {
+    /// Added to the antisymmetric generalized-Fock matrix `A = G - G^T` of the frame `V` on the
+    /// pairs (outside a cluster, inside it): the cluster orbitals' rotation through the off-cluster
+    /// rotations.
+    pub antisymmetric: DMatrix<f64>,
+    /// `M` of a contribution `sum M_mn dS_mn` (raw atomic-orbital basis): the Lowdin frame's motion
+    /// inside the operators.
+    pub overlap: DMatrix<f64>,
+    /// The operators' own motion (three per atom).
+    pub explicit: Vec<f64>,
+}
+
+/// The response of the deterministic cluster frame ([`fix_cluster_gauge`]) of `reference` to a
+/// geometry step, for a model whose antisymmetric generalized Fock in the frame `v` (columns over
+/// the orthonormal frame) is `antisymmetric`. Inside a cluster the frame orbitals are eigenvectors
+/// of the lab-frame operator `Q = V^T W V` that separated them (`W` in the orthonormal frame), so a
+/// pair `(j, i)` of a cluster rotates by `kappa_ji = [dW_ji + sum_x (kappa_xj Q_xi + Q_jx kappa_xi)]
+/// / (w_i - w_j)`, `x` outside the cluster. Its energy `1/2 sum A_ji kappa_ji` is returned as
+/// three pieces: through the off-cluster rotations (`antisymmetric`), through the Lowdin frame of
+/// `W = X W_ao X` (`overlap`), and through `W_ao` itself (`explicit`). The parallel-transport
+/// part (a cluster's rotation at fixed orthonormal coefficients) is the caller's.
+pub(super) fn frame_response(
+    integrals: &MolecularIntegrals,
+    reference: &MeanField,
+    v: &DMatrix<f64>,
+    antisymmetric: &DMatrix<f64>,
+) -> Result<Option<FrameResponse>> {
+    let m = v.nrows();
+    if !reference.frame_covered(integrals) || v.ncols() != m || antisymmetric.shape() != (m, m) {
+        return Ok(None);
+    }
+    let (labels, domains) = reference.frame_labels()?;
+    let found = clusters(&labels, &domains)?;
+    if found.is_empty() {
+        return Ok(None);
+    }
+    let moments = lab_moments(integrals)(v, true)?;
+    let mut response = FrameResponse {
+        antisymmetric: DMatrix::zeros(m, m),
+        overlap: DMatrix::zeros(m, m),
+        explicit: vec![0.; 3 * integrals.geometry.numbers().len()],
+    };
+    // B_l: 1/2 A_ji / (w_i - w_j) on the pairs operator l separated (symmetric).
+    let mut b = vec![DMatrix::<f64>::zeros(m, m); moments.operators.len()];
+    let mut separated = false;
+    for cluster in &found {
+        let mut groups: Vec<Vec<usize>> = vec![cluster.clone()];
+        for (level, q) in moments.operators.iter().enumerate() {
+            let scale = cluster
+                .iter()
+                .flat_map(|&i| cluster.iter().map(move |&j| (i, j)))
+                .fold(1f64, |a, (i, j)| a.max(q[(i, j)].abs()));
+            let gap = moments.resolution * scale;
+            let mut next = Vec::new();
+            for group in groups {
+                if group.len() == 1 {
+                    next.push(group);
+                    continue;
+                }
+                let mut order = group.clone();
+                order.sort_by(|&i, &j| q[(i, i)].total_cmp(&q[(j, j)]));
+                let mut parts: Vec<Vec<usize>> = vec![vec![order[0]]];
+                for w in order.windows(2) {
+                    if q[(w[1], w[1])] - q[(w[0], w[0])] >= gap {
+                        parts.push(Vec::new());
+                    }
+                    parts.last_mut().expect("a part").push(w[1]);
+                }
+                for (pa, a) in parts.iter().enumerate() {
+                    for c in &parts[pa + 1..] {
+                        for &i in a {
+                            for &j in c {
+                                let value = 0.5 * antisymmetric[(j, i)] / (q[(i, i)] - q[(j, j)]);
+                                b[level][(j, i)] = value;
+                                b[level][(i, j)] = value;
+                                separated |= value != 0.;
+                            }
+                        }
+                    }
+                }
+                next.extend(parts);
+            }
+            groups = next;
+        }
+        if groups.iter().any(|g| g.len() > 1) {
+            return Err(crate::Error::Unsupported(
+                "an exactly degenerate cluster no lab-frame operator separates has no analytic frame response".into(),
+            ));
+        }
+    }
+    if !separated {
+        return Ok(None);
+    }
+    let in_cluster = |i: usize| found.iter().position(|c| c.contains(&i));
+    let s = DMatrix::from_row_slice(m, m, integrals.overlap.as_slice());
+    let (values, u) = real_eigen((&s + s.transpose()) * 0.5)?;
+    let root: Vec<f64> = values.iter().map(|x| x.sqrt()).collect();
+    let half = &u * DMatrix::from_diagonal(&DVector::from_vec(root.clone())) * u.transpose();
+    for (level, q) in moments.operators.iter().enumerate() {
+        let bl = &b[level];
+        if bl.iter().all(|x| *x == 0.) {
+            continue;
+        }
+        // Through the off-cluster rotations: 2 sum_{x,i} kappa_xi C_xi, C_xi = sum_j B_ij Q_xj.
+        for i in 0..m {
+            let Some(ci) = in_cluster(i) else { continue };
+            for x in 0..m {
+                if in_cluster(x) == Some(ci) {
+                    continue;
+                }
+                let c: f64 = (0..m).map(|j| bl[(i, j)] * q[(x, j)]).sum();
+                response.antisymmetric[(x, i)] += 2. * c;
+                response.antisymmetric[(i, x)] -= 2. * c;
+            }
+        }
+        // sum B_ji dW_ji = tr(B' dW), B' = V B V^T, W = X W_ao X (orthonormal frame).
+        let bp = v * bl * v.transpose();
+        let w = v * q * v.transpose();
+        // The Lowdin frame: 2 tr(B' W S^{1/2} dX), dX = d S^{-1/2}.
+        let f = u.transpose() * (&bp * &w * &half) * &u;
+        let mut prime = DMatrix::<f64>::zeros(m, m);
+        for i in 0..m {
+            for j in 0..m {
+                prime[(i, j)] = -2. * f[(j, i)] / (root[i] * root[j] * (root[i] + root[j]));
+            }
+        }
+        response.overlap += &u * ((&prime + prime.transpose()) * 0.5) * u.transpose();
+        // The operator itself: tr(X B' X dW_ao).
+        let d = &integrals.lowdin * &bp * integrals.lowdin.transpose();
+        for (t, g) in response.explicit.iter_mut().zip(moment_gradient(
+            integrals,
+            level,
+            &((&d + d.transpose()) * 0.5),
+        )?) {
+            *t += g;
+        }
+    }
+    Ok(Some(response))
+}
+
 /// Three fixed generic polynomials under a Gaussian envelope: linear functionals of an orbital
 /// function whose sign is the orbital's own (unlike the sign of a coefficient in some other
 /// frame). The next takes over when the one before vanishes by symmetry.
@@ -440,12 +664,10 @@ impl MeanField {
     /// An unrestricted frame has clusters that no symmetry protects: `P_a + P_b` has rank at
     /// most `n_a + n_b`, so the empty natural orbitals are one exact zero-occupation cluster (and
     /// the doubly occupied ones, of a spin-symmetric state, one cluster at two). Their frame is
-    /// deterministic here. Measured on linear H3 UHF (`tests/frame_force_gap.rs`), the production
-    /// energy surface of an active space cutting the zero-occupation cluster equals the
-    /// frame-independent polar-aligned oracle to 1e-3 meV/A, so this frame costs the force
-    /// nothing; the analytic force of that case differs from both by about 20 meV/A, a defect of
-    /// the force whose cause is open (pinned by that test). Symmetry-protected clusters under
-    /// symmetry-preserving steps are exact.
+    /// deterministic here. An active space that cuts such a cluster sees the frame orbitals
+    /// rotate with the geometry (they follow the lab-frame operators); the analytic force carries
+    /// that rotation ([`frame_response`]), gated on linear H3 UHF against the production finite
+    /// difference (`tests/frame_force_gap.rs`, under 0.1 meV/A; 20.1 meV/A without it).
     pub(super) fn fix_frame(&mut self, integrals: &MolecularIntegrals) -> Result<()> {
         if !self.frame_covered(integrals) {
             return Ok(());
@@ -469,7 +691,7 @@ impl MeanField {
     /// The labels of the model orbitals and their occupation domains, as [`Self::fix_frame`]
     /// clusters them: the orbital energies of a restricted frame (doubly occupied, empty), the
     /// natural occupations of an unrestricted one (doubly occupied, singly occupied, empty).
-    fn frame_labels(&self) -> Result<(Vec<f64>, Vec<Vec<usize>>)> {
+    pub(super) fn frame_labels(&self) -> Result<(Vec<f64>, Vec<Vec<usize>>)> {
         let m = self.model_orbitals.ncols();
         let (labels, domains): (Vec<f64>, Vec<Vec<usize>>) = if self.method == "rhf" {
             let n = self.particles[0].min(m);

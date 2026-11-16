@@ -622,6 +622,50 @@ fn lithium_hydride_hse06_force_follows_the_energy_with_a_closed_core() {
     println!("elapsed {:.0} s", started.elapsed().as_secs_f64());
 }
 
+/// Neutral lithium hydride (one valence electron per atom, `[1, 1]`) is the ground state the
+/// `[2, 2]` gate above is not (that is LiH2-). Measured 2026-11-15 (`pbe-sr`, 3 threads): the
+/// HSE06 SCF converges to 1e-12 in 11 iterations and to 1e-10 in 9, on this geometry and on
+/// every displacement of the excited-state gates, restricted and unrestricted. The iteration
+/// cap here is what a regression (stagnating DIIS, a hybrid Fock that is not the derivative of
+/// its energy) would hit, in a minute instead of the half hour of the 400-iteration budget of
+/// `options` (every start, its level-shifted retry and the annealing run that long).
+#[test]
+fn neutral_lithium_hydride_hse06_converges_in_a_few_iterations() {
+    let ctx = Context::new(Some(2), 768 << 20).unwrap();
+    {
+        let lih = build(&ctx, "pbe-sr", &["Li", "H"], &[3, 1], &LIH, &[0, 1]);
+        let capped = ScfOptions {
+            tolerance: 1e-12,
+            max_iterations: 30,
+            ..options()
+        };
+        let state = lih.kohn_sham("hse06", [1, 1], false, &capped).unwrap();
+        assert!(state.converged, "{} iterations", state.iterations.len());
+        assert!(state.aufbau_inversion.is_none());
+    }
+    assert_eq!(ctx.memory_used(), 0);
+}
+#[test]
+#[ignore = "slow: 62 s (measured 2026-11-15); run: cargo test --profile release-test -p mandacaru-core --test paw_forces_dataset -- --ignored neutral_lithium_hydride_hse06_force_follows_the_energy"]
+fn neutral_lithium_hydride_hse06_force_follows_the_energy() {
+    let started = std::time::Instant::now();
+    let ctx = Context::new(Some(2), 768 << 20).unwrap();
+    {
+        let lih = build(&ctx, "pbe-sr", &["Li", "H"], &[3, 1], &LIH, &[0, 1]);
+        check(
+            "LiH0 HSE06",
+            &lih,
+            Method::Ks("hse06"),
+            [1, 1],
+            &[(0, 2), (1, 0)],
+            &[(1, 2)],
+            2e-5,
+        );
+    }
+    assert_eq!(ctx.memory_used(), 0);
+    println!("elapsed {:.0} s", started.elapsed().as_secs_f64());
+}
+
 /// Multi-shell frozen cores (aluminum's 10-electron 1s2s2p, gold's 60), `pbe-sr`, PBE: every
 /// named term of the force against its own fixed-density oracle, and the total against the
 /// fixed-density difference. Measured 2026-11-08: AlH and Au-Be (UKS) agree to <= 3e-9 term by
@@ -643,10 +687,7 @@ fn multi_shell_core_terms() {
         for element in elements {
             let data = dataset::read(&ctx, "pbe-sr", element);
             valence += data.valence_charge;
-            let mut value = dataset::species(&ctx, &mut arrays, &data);
-            value["allow_heavy_dft"] = serde_json::json!(true);
-
-            species.push(value);
+            species.push(dataset::species(&ctx, &mut arrays, &data));
         }
         const ALH: [[f64; 3]; 2] = [[0.05, -0.04, 0.07], [0.11, 0.06, 3.10]];
         const AUBE: [[f64; 3]; 2] = [[0.07, -0.04, 0.05], [0.12, 0.09, 4.35]];

@@ -27,8 +27,10 @@
 //! * the spin-orbit term through [`SpinOrbit`](super::SpinOrbit), whose projections stay in the
 //!   scalar frame.
 //!
-//! The explicit terms (hats, ions, dense sums, constants, the partial core) read the charge
-//! channel only. Magnetization enters the energy through the grid xc alone (the augmentation
+//! The explicit terms (hats, ions, dense sums, constants) read the charge channel only; the
+//! partial core is differentiated against the frame's spin-averaged xc potential
+//! ([`crate::periodic::fields::CoreSources`] for a meta-GGA), which is not the Pauli charge
+//! channel where the frame turns. Magnetization enters the energy through the grid xc alone (the augmentation
 //! charge is built from the spin-summed density), so there is no on-site magnetization term to
 //! differentiate.
 use super::{invalid, Layout, Matrix};

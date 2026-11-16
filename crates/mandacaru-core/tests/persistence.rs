@@ -267,6 +267,60 @@ fn native_band_writer_repeats_planes_without_padded_tensor() {
     assert_eq!(ctx.memory_used(), 0);
 }
 
+#[test]
+fn a_band_grid_reads_back_on_the_periodic_mesh_and_refuses_a_short_or_long_band() {
+    let ctx = Context::new(Some(1), 1 << 20).unwrap();
+    let dir = Directory::new();
+    let path = dir.0.join("bands.bxsf");
+    let shape = [2, 3, 2, 4];
+    let data: Vec<f64> = (0..48).map(|i| i as f64 / 7.0 - 3.0).collect();
+    let cell = [[1.0, 0.2, 0.0], [0.0, 1.3, 0.1], [0.3, 0.0, 0.9]];
+    mandacaru_core::volumetric::bxsf(&ctx, &path, shape, &data, cell, 1.25, "round trip").unwrap();
+    let grid = mandacaru_core::volumetric::read_bxsf(&ctx, &path).unwrap();
+    assert_eq!(grid.shape, shape);
+    assert_eq!(grid.cell, cell);
+    assert_eq!(grid.fermi, 1.25);
+    // Six decimals in the file: each value back to half a unit of the last digit.
+    assert!(grid
+        .data
+        .iter()
+        .zip(&data)
+        .all(|(a, b)| (a - b).abs() <= 5e-7));
+    assert_eq!(ctx.memory_used(), 0);
+    let text = fs::read_to_string(&path).unwrap();
+    let mut lines: Vec<&str> = text.lines().collect();
+    let last = lines
+        .iter()
+        .rposition(|l| l.trim().starts_with("END_BANDGRID_3D"))
+        .unwrap();
+    let short = path.with_extension("short");
+    lines.remove(last - 1);
+    fs::write(&short, lines.join("\n")).unwrap();
+    assert!(mandacaru_core::volumetric::read_bxsf(&ctx, &short).is_err());
+    let long = path.with_extension("long");
+    fs::write(&long, text.replace("  BAND: 2\n", "  BAND: 2\n 9.0\n")).unwrap();
+    let message = mandacaru_core::volumetric::read_bxsf(&ctx, &long)
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(message.contains("band 2 has 61 values"), "{message}");
+    let missing = path.with_extension("missing");
+    fs::write(&missing, text.replace("Fermi Energy", "Fermi")).unwrap();
+    let message = mandacaru_core::volumetric::read_bxsf(&ctx, &missing)
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(message.contains("no 'Fermi Energy:' line"), "{message}");
+    // A header that names more points than the budget holds is refused before any allocation.
+    let huge = path.with_extension("huge");
+    fs::write(&huge, text.replace("  4 3 5\n", "  4000 3000 5000\n")).unwrap();
+    let refused = mandacaru_core::volumetric::read_bxsf(&ctx, &huge)
+        .err()
+        .unwrap();
+    assert!(matches!(refused, Error::Budget { .. }), "{refused}");
+    assert_eq!(ctx.memory_used(), 0);
+}
+
 /// Hamiltonians stored as Parquet: the document layer on top of
 /// `mandacaru_core::parquet` (the container itself is tested in `parquet.rs`,
 /// `parquet_interop.rs` and `parquet_errors.rs`).

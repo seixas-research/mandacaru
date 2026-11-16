@@ -71,7 +71,8 @@ class TestTheTwoBodyLine:
 
     def test_a_requested_factorization_states_tolerance_rank_and_residual(self, monkeypatch):
         monkeypatch.setattr(fields._native, "integrals_report", lambda _integrals: dict(
-            cholesky_rank=3, cholesky_residual=2.5e-7, n_orbitals=2))
+            cholesky_rank=3, cholesky_residual=2.5e-7, n_orbitals=2,
+            cholesky_tolerance_ha=1e-6 / HARTREE_TO_EV))
         text = fields.two_body_text(driver(_two_body_requested=True, _two_body_tolerance_ev=1e-6))
         residual_ev = 2.5e-7 * HARTREE_TO_EV
         assert text == ("Cholesky factors, tolerance 1.000e-06 eV, rank 3 (basis functions 2), "
@@ -83,7 +84,7 @@ class TestTheTwoBodyLine:
 
     def test_integrals_that_were_never_factored_say_so(self, monkeypatch):
         monkeypatch.setattr(fields._native, "integrals_report", lambda _integrals: dict(
-            cholesky_rank=None, cholesky_residual=None, n_orbitals=2))
+            cholesky_rank=None, cholesky_residual=None, n_orbitals=2, cholesky_tolerance_ha=1e-9))
         text = fields.two_body_text(driver(_two_body_requested=True))
         assert text.endswith("not built") and "rank" not in text
 
@@ -91,7 +92,8 @@ class TestTheTwoBodyLine:
     def test_the_double_factorized_representation_states_its_truncation_and_size(
             self, monkeypatch):
         monkeypatch.setattr(fields._native, "integrals_report", lambda _integrals: dict(
-            cholesky_rank=3, cholesky_residual=2.5e-7, n_orbitals=2))
+            cholesky_rank=3, cholesky_residual=2.5e-7, n_orbitals=2,
+            cholesky_tolerance_ha=1e-6 / HARTREE_TO_EV))
         factorized = driver(_two_body_requested=True, _two_body_tolerance_ev=1e-6,
                             _two_body_representation="double-factorized",
                             _two_body_truncation_ev=0.01)

@@ -114,9 +114,52 @@ fn dunning_ladder<'py>(py: Python<'py>, zeta: usize, core_correlating: bool) -> 
     Ok(out)
 }
 
+/// The shells of a Pople name with `core` primitives in the core, the valence contractions,
+/// `plus` diffuse and `stars` polarization marks or the parenthesized polarization `explicit`:
+/// `{"polarization", "polarization_h", "diffuse", "diffuse_h", "polarization_min_z"}`
+/// (`ladders::pople`).
+#[pyfunction]
+#[pyo3(signature = (core, valence, plus, stars, explicit=None))]
+fn pople_ladder<'py>(
+    py: Python<'py>,
+    core: usize,
+    valence: Vec<usize>,
+    plus: usize,
+    stars: usize,
+    explicit: Option<&str>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let shells = ladders::pople(core, &valence, plus, stars, explicit).map_err(error)?;
+    let out = PyDict::new(py);
+    out.set_item("polarization", shells.polarization)?;
+    out.set_item("polarization_h", shells.polarization_h)?;
+    out.set_item("diffuse", shells.diffuse)?;
+    out.set_item("diffuse_h", shells.diffuse_h)?;
+    out.set_item("polarization_min_z", shells.polarization_min_z)?;
+    Ok(out)
+}
+
+/// The shells of `def2-<key>`: `{"core", "valence", "polarization", "polarization_h",
+/// "diffuse_present", "diffuse_l_max"}` (`ladders::karlsruhe`).
+#[pyfunction]
+fn karlsruhe_ladder<'py>(py: Python<'py>, key: &str) -> PyResult<Bound<'py, PyDict>> {
+    let shells = ladders::karlsruhe(key).ok_or_else(|| {
+        pyo3::exceptions::PyValueError::new_err(format!("def2-{key} is not a Karlsruhe basis"))
+    })?;
+    let out = PyDict::new(py);
+    out.set_item("core", shells.core)?;
+    out.set_item("valence", shells.valence)?;
+    out.set_item("polarization", shells.polarization)?;
+    out.set_item("polarization_h", shells.polarization_h)?;
+    out.set_item("diffuse_present", shells.diffuse_present)?;
+    out.set_item("diffuse_l_max", shells.diffuse_l_max)?;
+    Ok(out)
+}
+
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(nao_ae_wall_radii, m)?)?;
     m.add_function(wrap_pyfunction!(dunning_ladder, m)?)?;
+    m.add_function(wrap_pyfunction!(pople_ladder, m)?)?;
+    m.add_function(wrap_pyfunction!(karlsruhe_ladder, m)?)?;
     m.add_function(wrap_pyfunction!(radial_orbital_sample, m)?)?;
     m.add_function(wrap_pyfunction!(radial_table_evaluate, m)?)?;
     m.add_function(wrap_pyfunction!(radial_table_coefficients, m)?)?;

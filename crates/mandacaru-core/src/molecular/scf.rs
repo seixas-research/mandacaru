@@ -122,14 +122,9 @@ pub(super) fn jk(eri: &super::integrals::Eri, m: usize, d: &Matrix) -> (Matrix, 
     }
     let mut j = Matrix::zeros(m, m);
     let mut k = Matrix::zeros(m, m);
-    if let super::integrals::Eri::Cholesky { rank, factors, .. } = eri {
-        for column in 0..*rank {
-            let b = Matrix::from_fn(m, m, |p, q| {
-                C64::new(
-                    factors.as_slice()[super::integrals::pair(p, q) * rank + column],
-                    0.,
-                )
-            });
+    if let Some(rank) = eri.factor_count() {
+        for column in 0..rank {
+            let b = eri.factor(column).map(|v| C64::new(v, 0.));
             let weight = (0..m)
                 .flat_map(|p| (0..m).map(move |q| (p, q)))
                 .map(|(p, q)| d[(p, q)] * b[(q, p)])
@@ -156,7 +151,7 @@ fn real_jk(
     m: usize,
     d: &DMatrix<f64>,
 ) -> (DMatrix<f64>, DMatrix<f64>) {
-    use super::integrals::{pair, Eri};
+    use super::integrals::Eri;
     if let Eri::Augmented {
         base, correction, ..
     } = eri
@@ -174,9 +169,9 @@ fn real_jk(
     }
     let mut j = DMatrix::zeros(m, m);
     let mut k = DMatrix::zeros(m, m);
-    if let Eri::Cholesky { rank, factors, .. } = eri {
-        for column in 0..*rank {
-            let b = DMatrix::from_fn(m, m, |p, q| factors.as_slice()[pair(p, q) * rank + column]);
+    if let Some(rank) = eri.factor_count() {
+        for column in 0..rank {
+            let b = eri.factor(column);
             let charge = (0..m)
                 .flat_map(|p| (0..m).map(move |q| (p, q)))
                 .map(|(p, q)| d[(p, q)] * b[(q, p)])
@@ -306,6 +301,42 @@ pub(super) struct Candidate {
     /// free energy is `energy + entropy`.
     pub(super) entropy: f64,
 }
+/// The density change below which two unconverged candidates are equally stationary, whatever
+/// the tolerance asked: the rounding of a last SCF step.
+const RESIDUAL_FLOOR: f64 = 1e-12;
+impl Candidate {
+    /// The largest density change of the last iteration: how far the run was from a fixed point
+    /// when it stopped (infinite for a run that made no iteration).
+    pub(super) fn final_residual(&self) -> f64 {
+        self.history.last().map_or(f64::INFINITY, |i| i.residual)
+    }
+    /// Whether this candidate beats `best` among candidates of the same standing (the callers
+    /// rank the standing first, converged above unconverged): converged ones by the lower free
+    /// energy, `energy + entropy`, with a 1e-12 margin; unconverged ones, whose energy is that
+    /// of an iterate still moving (one that oscillates can sit below a nearly stationary one),
+    /// by the smaller final residual, a residual below `tolerance` (and below
+    /// [`RESIDUAL_FLOOR`], the rounding of a last step) counting as that floor: two stationary
+    /// points are not told apart by it, and the lower energy decides between them.
+    pub(super) fn beats_at_equal_standing(&self, best: &Candidate, tolerance: f64) -> bool {
+        if self.converged {
+            self.energy + self.entropy < best.energy + best.entropy - 1e-12
+        } else {
+            let floor = tolerance.max(RESIDUAL_FLOOR);
+            let (own, other) = (
+                self.final_residual().max(floor),
+                best.final_residual().max(floor),
+            );
+            own < other
+                || (own == other && self.energy + self.entropy < best.energy + best.entropy - 1e-12)
+        }
+    }
+    /// Whether this candidate replaces `best`: a converged candidate beats an unconverged one,
+    /// then [`Self::beats_at_equal_standing`].
+    pub(super) fn beats(&self, best: &Candidate, tolerance: f64) -> bool {
+        (self.converged && !best.converged)
+            || (self.converged == best.converged && self.beats_at_equal_standing(best, tolerance))
+    }
+}
 /// The largest entry of the commutators `[F, D]` of each spin channel (orthonormal basis): the
 /// orbital gradient, zero exactly at a stationary point. A small step (energy change and density
 /// change) does not bound it, and an analytic force is first order in it, so convergence also
@@ -335,6 +366,8 @@ fn non_aufbau(f: &Matrix, c: &Matrix, occupied: usize) -> Option<(usize, usize)>
         .min_by(|a, b| a.1.total_cmp(&b.1))?;
     (high > low + AUFBAU_TOLERANCE).then_some((i, a))
 }
+/// The SCF from the orbitals `c`. The first `settle` iterations take the level-shifted Fock
+/// without DIIS ([`SETTLE_SHIFT`]; a restart off a saddle); DIIS then starts from an empty history.
 fn iterate(
     integrals: &MolecularIntegrals,
     method: &str,
@@ -342,6 +375,7 @@ fn iterate(
     particles: [usize; 2],
     mut c: Vec<Matrix>,
     options: &ScfOptions,
+    settle: usize,
 ) -> Result<Candidate> {
     let occupations = if method == "ghf" {
         vec![particles.iter().sum()]
@@ -366,11 +400,17 @@ fn iterate(
         if !current.is_finite() {
             return Err(crate::Error::Kernel("nonfinite SCF energy".into()));
         }
+        let settling = iteration <= settle;
+        if settling {
+            shift = SETTLE_SHIFT;
+        } else if iteration == settle + 1 {
+            shift = 0.;
+        }
         if previous.is_some_and(|e| current > e + 1e-10) && shift == 0. {
             shift = 0.5;
         }
         let gradient = stationarity(&f, &d);
-        let mut effective = if options.diis {
+        let mut effective = if options.diis && !settling {
             mixer.extrapolate(&f, &d)
         } else {
             f
@@ -440,6 +480,605 @@ fn iterate(
         entropy: 0.,
     })
 }
+/// Orbital-Hessian sizes (real rotation parameters) up to which the lowest root is found by a
+/// dense diagonalization of the operator (every symmetry block seen). Each column is one J/K
+/// build, the cost of one SCF iteration, so the dense build costs at most this many SCF
+/// iterations (measured, benzene PAW-LCAO SZ in an 8 A box, 225 rotations: 1.23 s, 5.5 ms a
+/// column, against 3.5 s for the SCF; seeded Davidson 0.25 s, 45 applications, the same root);
+/// above it, seeded Davidson ([`crate::math::davidson::lowest_root`]).
+pub const DENSE_HESSIAN_LIMIT: usize = 256;
+/// The residual norm a Davidson root of the orbital Hessian must reach.
+const HESSIAN_TOLERANCE: f64 = 1e-7;
+
+/// The orbital Hessian of a Hartree-Fock determinant (RHF, UHF or GHF) on its occupied-virtual
+/// rotations, at the semicanonical orbitals of its density (the occupied and the empty space of
+/// each channel's density, each diagonalizing the Fock there). A rotation `x_ai` of channel `s`
+/// acts as `(eps_a - eps_i) x_ai + (c_a^+ G_s[D1] c_i)`, `D1_s = c_v x c_o^+ + h.c.`, `G` the
+/// method's two-electron response (`2 J - K` for RHF, `J[D1_a + D1_b] - K[D1_s]` for UHF, the
+/// spinor `J - K` for GHF). Real orbitals rotate by real `x` (real to real); complex orbitals and
+/// GHF by complex `x`, whose real and imaginary parts are separate coordinates. A GHF determinant
+/// is invariant under global spin rotations: those exact zero modes are projected out, so they
+/// can be neither followed nor mistaken for a saddle. The energy's curvature along a unit mode is
+/// `4 root` (RHF) or `2 root` (UHF, GHF).
+pub struct OrbitalHessian {
+    eri: Arc<super::integrals::Eri>,
+    method: String,
+    /// Semicanonical orbitals (occupied first), their levels, the occupied count, per channel.
+    channels: Vec<(Matrix, Vec<f64>, usize)>,
+    complex: bool,
+    /// Orthonormal columns projected out of the operator.
+    zero_modes: DMatrix<f64>,
+    /// The occupied-virtual Fock blocks `c_a^+ F c_i` in rotation coordinates: the orbital
+    /// gradient (zero at a stationary point); the energy's change along a rotation `x` is
+    /// `4 g . x` (RHF) or `2 g . x` (UHF, GHF), so `H x = -g` is the Newton step.
+    gradient: DVector<f64>,
+}
+
+impl OrbitalHessian {
+    /// The Hessian of the determinant of `densities` (one per channel of `method`, orthonormal
+    /// frame) under the core operator `h`; `None` when it has no rotation.
+    fn new(
+        eri: Arc<super::integrals::Eri>,
+        h: &Matrix,
+        method: &str,
+        densities: &[Matrix],
+        particles: [usize; 2],
+    ) -> Result<Option<Self>> {
+        let filled: Vec<usize> = match method {
+            "rhf" => vec![particles[0]],
+            "uhf" => particles.to_vec(),
+            "ghf" => vec![particles.iter().sum()],
+            _ => {
+                return Err(invalid(
+                    "an orbital Hessian needs an RHF, UHF or GHF determinant",
+                ))
+            }
+        };
+        if densities.len() != filled.len() {
+            return Err(invalid("an orbital Hessian needs one density per channel"));
+        }
+        let f = fock(eri.as_ref(), h, densities, method);
+        let complex = method == "ghf"
+            || f.iter()
+                .chain(densities)
+                .any(|m| m.iter().any(|v| v.im != 0.));
+        let eigenpairs = |m: &Matrix| -> Result<(Vec<f64>, Matrix)> {
+            if m.nrows() == 0 {
+                // A channel with no occupied or no empty orbital has nothing to diagonalize there.
+                return Ok((Vec::new(), m.clone()));
+            }
+            if complex {
+                eigen(hermitian(m.clone()))
+            } else {
+                let (values, vectors) = crate::math::linalg::real_eigen(m.map(|v| v.re))?;
+                Ok((values, vectors.map(|v| C64::new(v, 0.))))
+            }
+        };
+        let mut channels = Vec::with_capacity(filled.len());
+        let mut blocks = Vec::with_capacity(filled.len());
+        for ((d, f), &n) in densities.iter().zip(&f).zip(&filled) {
+            let size = d.nrows();
+            // The density's occupied space: its eigenvectors of the n largest occupations.
+            let (_, natural) = eigenpairs(d)?;
+            let occupied = Matrix::from_fn(size, n, |p, i| natural[(p, size - 1 - i)]);
+            let empty = Matrix::from_fn(size, size - n, |p, a| natural[(p, size - 1 - n - a)]);
+            let (eps_o, u_o) = eigenpairs(&(occupied.adjoint() * f * &occupied))?;
+            let (eps_v, u_v) = eigenpairs(&(empty.adjoint() * f * &empty))?;
+            let (occupied, empty) = (occupied * u_o, empty * u_v);
+            let c = Matrix::from_fn(size, size, |p, q| {
+                if q < n {
+                    occupied[(p, q)]
+                } else {
+                    empty[(p, q - n)]
+                }
+            });
+            blocks.push(c.columns(n, size - n).adjoint() * f * c.columns(0, n));
+            channels.push((c, eps_o.into_iter().chain(eps_v).collect(), n));
+        }
+        let mut hessian = Self {
+            eri,
+            method: method.into(),
+            channels,
+            complex,
+            zero_modes: DMatrix::zeros(0, 0),
+            gradient: DVector::zeros(0),
+        };
+        hessian.gradient = hessian.pack(&blocks);
+        let dimension = hessian.size();
+        if dimension == 0 {
+            return Ok(None);
+        }
+        hessian.zero_modes = DMatrix::zeros(dimension, 0);
+        if method == "ghf" {
+            // The generators -i/2 Sigma_k of the global spin rotations, in the rotation coordinates.
+            let (c, _, n) = &hessian.channels[0];
+            let m = c.nrows() / 2;
+            let one = C64::new(1., 0.);
+            let i = C64::new(0., 1.);
+            let sigma = |k: usize| {
+                Matrix::from_fn(2 * m, 2 * m, |p, q| {
+                    let (sp, sq, same) = (p / m, q / m, p % m == q % m);
+                    if !same {
+                        return C64::default();
+                    }
+                    match (k, sp, sq) {
+                        (0, 0, 1) | (0, 1, 0) => one,
+                        (1, 0, 1) => -i,
+                        (1, 1, 0) => i,
+                        (2, 0, 0) => one,
+                        (2, 1, 1) => -one,
+                        _ => C64::default(),
+                    }
+                })
+            };
+            let candidates: Vec<DVector<f64>> = (0..3)
+                .map(|k| {
+                    let block = c.columns(*n, 2 * m - n).adjoint()
+                        * sigma(k)
+                        * c.columns(0, *n)
+                        * C64::new(0., -0.5);
+                    hessian.pack(&[block])
+                })
+                .collect();
+            let mut columns: Vec<DVector<f64>> = Vec::new();
+            for mut t in candidates {
+                for _ in 0..2 {
+                    for z in &columns {
+                        let overlap = z.dot(&t);
+                        t -= z * overlap;
+                    }
+                }
+                let norm = t.norm();
+                if norm > 1e-8 {
+                    columns.push(t / norm);
+                }
+            }
+            if !columns.is_empty() {
+                hessian.zero_modes = DMatrix::from_columns(&columns);
+            }
+        }
+        Ok(Some(hessian))
+    }
+    /// The number of real rotation coordinates.
+    fn size(&self) -> usize {
+        let factor = if self.complex { 2 } else { 1 };
+        self.channels
+            .iter()
+            .map(|(c, _, n)| factor * n * (c.ncols() - n))
+            .sum()
+    }
+    /// The occupied-virtual blocks `(m - n) x n` of each channel as rotation coordinates: per
+    /// channel the real parts row-major (`a * n + i`), then (complex) the imaginary parts.
+    fn pack(&self, blocks: &[Matrix]) -> DVector<f64> {
+        let mut out = Vec::with_capacity(self.size());
+        for block in blocks {
+            let rows = (0..block.nrows()).flat_map(|a| (0..block.ncols()).map(move |i| (a, i)));
+            out.extend(rows.clone().map(|(a, i)| block[(a, i)].re));
+            if self.complex {
+                out.extend(rows.map(|(a, i)| block[(a, i)].im));
+            }
+        }
+        DVector::from_vec(out)
+    }
+    fn unpack(&self, x: &[f64]) -> Vec<Matrix> {
+        let mut offset = 0;
+        self.channels
+            .iter()
+            .map(|(c, _, n)| {
+                let (n, v) = (*n, c.ncols() - n);
+                let block = Matrix::from_fn(v, n, |a, i| {
+                    let re = x[offset + a * n + i];
+                    let im = if self.complex {
+                        x[offset + v * n + a * n + i]
+                    } else {
+                        0.
+                    };
+                    C64::new(re, im)
+                });
+                offset += if self.complex { 2 * v * n } else { v * n };
+                block
+            })
+            .collect()
+    }
+    fn project(&self, block: DMatrix<f64>) -> DMatrix<f64> {
+        if self.zero_modes.ncols() == 0 {
+            return block;
+        }
+        let overlap = self.zero_modes.transpose() * &block;
+        block - &self.zero_modes * overlap
+    }
+    /// The method of the determinant.
+    pub fn method(&self) -> &str {
+        &self.method
+    }
+    /// Whether the rotations carry imaginary parts (complex orbitals or GHF).
+    pub fn is_complex(&self) -> bool {
+        self.complex
+    }
+    /// The number of exact zero modes projected out (GHF global spin rotations).
+    pub fn zero_modes(&self) -> usize {
+        self.zero_modes.ncols()
+    }
+    /// The orbitals of each channel rotated by `exp(angle K)`, `K` the anti-Hermitian generator
+    /// whose occupied-virtual block is the rotation `mode` (coordinates of this operator).
+    pub fn rotated(&self, mode: &DVector<f64>, angle: f64) -> Result<Vec<Matrix>> {
+        if mode.len() != self.size() || !angle.is_finite() {
+            return Err(invalid(
+                "a rotation needs a mode of the Hessian's size and a finite angle",
+            ));
+        }
+        self.unpack(mode.as_slice())
+            .into_iter()
+            .zip(&self.channels)
+            .map(|(x, (c, _, n))| {
+                let (m, n) = (c.ncols(), *n);
+                let mut k = Matrix::zeros(m, m);
+                for a in n..m {
+                    for i in 0..n {
+                        k[(a, i)] = x[(a - n, i)];
+                        k[(i, a)] = -x[(a - n, i)].conj();
+                    }
+                }
+                Ok(c * exponential(&k, angle, self.complex)?)
+            })
+            .collect()
+    }
+    /// The densities of [`Self::rotated`].
+    pub fn rotated_densities(&self, mode: &DVector<f64>, angle: f64) -> Result<Vec<Matrix>> {
+        Ok(self
+            .rotated(mode, angle)?
+            .iter()
+            .zip(&self.channels)
+            .map(|(c, (_, _, n))| density(c, *n))
+            .collect())
+    }
+}
+
+/// `exp(angle K)` of an anti-Hermitian `K`: real `K` from the eigenpairs `w^2, W` of `-K^2`,
+/// `W cos(angle w) W^T + K W (sin(angle w) / w) W^T` (real to rounding, no imaginary part made);
+/// complex `K` from the eigenpairs `w, V` of the Hermitian `i K`, `V exp(-i angle w) V^+`.
+fn exponential(k: &Matrix, angle: f64, complex: bool) -> Result<Matrix> {
+    let m = k.nrows();
+    if complex {
+        let (w, v) = eigen(hermitian(k * C64::new(0., 1.)))?;
+        let phases = DVector::from_iterator(m, w.iter().map(|w| C64::from_polar(1., -angle * w)));
+        return Ok(&v * Matrix::from_diagonal(&phases) * v.adjoint());
+    }
+    let k = k.map(|v| v.re);
+    let (squares, w) = crate::math::linalg::real_eigen(-(&k * &k))?;
+    let frequencies: Vec<f64> = squares.iter().map(|s| s.max(0.).sqrt()).collect();
+    let cos = DVector::from_iterator(m, frequencies.iter().map(|w| (angle * w).cos()));
+    let sinc = DVector::from_iterator(
+        m,
+        frequencies.iter().map(|&w| {
+            if w < 1e-12 {
+                angle
+            } else {
+                (angle * w).sin() / w
+            }
+        }),
+    );
+    let u = &w * DMatrix::from_diagonal(&cos) * w.transpose()
+        + &k * &w * DMatrix::from_diagonal(&sinc) * w.transpose();
+    Ok(u.map(|v| C64::new(v, 0.)))
+}
+
+impl crate::math::davidson::Symmetric for OrbitalHessian {
+    fn dimension(&self) -> usize {
+        self.size()
+    }
+    fn diagonal(&self) -> Vec<f64> {
+        let mut out = Vec::with_capacity(self.size());
+        for (_, eps, n) in &self.channels {
+            let n = *n;
+            let gaps = (n..eps.len()).flat_map(|a| (0..n).map(move |i| eps[a] - eps[i]));
+            out.extend(gaps.clone());
+            if self.complex {
+                out.extend(gaps);
+            }
+        }
+        out
+    }
+    fn apply(&self, block: &DMatrix<f64>) -> Result<DMatrix<f64>> {
+        let block = self.project(block.clone());
+        let mut out = DMatrix::<f64>::zeros(block.nrows(), block.ncols());
+        let size = self.channels[0].0.nrows();
+        let zero = Matrix::zeros(size, size);
+        for column in 0..block.ncols() {
+            let x = self.unpack(block.column(column).as_slice());
+            let d1: Vec<Matrix> = x
+                .iter()
+                .zip(&self.channels)
+                .map(|(x, (c, _, n))| {
+                    let half = c.columns(*n, c.ncols() - n) * x * c.columns(0, *n).adjoint();
+                    &half + half.adjoint()
+                })
+                .collect();
+            let response = fock(self.eri.as_ref(), &zero, &d1, &self.method);
+            let y: Vec<Matrix> = x
+                .iter()
+                .zip(&self.channels)
+                .zip(&response)
+                .map(|((x, (c, eps, n)), g)| {
+                    let n = *n;
+                    let coupled = c.columns(n, c.ncols() - n).adjoint() * g * c.columns(0, n);
+                    Matrix::from_fn(x.nrows(), n, |a, i| {
+                        x[(a, i)] * C64::new(eps[n + a] - eps[i], 0.) + coupled[(a, i)]
+                    })
+                })
+                .collect();
+            out.set_column(column, &self.pack(&y));
+        }
+        Ok(self.project(out))
+    }
+}
+
+/// The lowest root of the orbital Hessian of `densities`: `Ok(None)` without a rotation;
+/// `converged` false when the root solve is not shown converged (the state is then not shown
+/// stable).
+fn lowest_mode(
+    eri: Arc<super::integrals::Eri>,
+    h: &Matrix,
+    method: &str,
+    densities: &[Matrix],
+    particles: [usize; 2],
+) -> Result<Option<(OrbitalHessian, crate::math::davidson::LowestRoot)>> {
+    let Some(hessian) = OrbitalHessian::new(eri, h, method, densities, particles)? else {
+        return Ok(None);
+    };
+    let root =
+        crate::math::davidson::lowest_root(&hessian, DENSE_HESSIAN_LIMIT, HESSIAN_TOLERANCE)?;
+    Ok(root.map(|root| (hessian, root)))
+}
+
+/// A converged Hartree-Fock determinant whose orbital Hessian has a root below minus this
+/// (Hartree) is a saddle. Degenerate shells held in one determinant keep rotational modes the
+/// grid pins at 1e-5 to 3e-4 Ha of either sign; one below minus this is followed.
+pub const STABILITY_TOLERANCE: f64 = 1e-5;
+/// How many saddles one SCF follows downhill before it reports the state as not converged.
+const STABILITY_FOLLOWS: usize = 4;
+/// The rotation angles (radians, along the unit mode) of the line search off a saddle.
+const STABILITY_ANGLES: [f64; 6] = [0.05, 0.1, 0.2, 0.4, 0.8, 1.2];
+/// The first SCF iterations from a rotated determinant take the undamped Fock with the level
+/// shift on and no DIIS, so the restart descends from the line search's point instead of
+/// extrapolating back to the saddle; DIIS then starts with an empty history.
+const SETTLE_ITERATIONS: usize = 12;
+/// The level shift (Hartree) of those iterations.
+const SETTLE_SHIFT: f64 = 0.5;
+/// The most second-order steps of [`second_order_descent`].
+const NEWTON_STEPS: usize = 40;
+/// The longest second-order step (radians).
+const NEWTON_RADIUS: f64 = 0.2;
+/// The lowest eigenvalue (Hartree) of the shifted Hessian of a second-order step.
+const NEWTON_MARGIN: f64 = 0.02;
+
+/// Stability following of a converged Hartree-Fock candidate (RHF, UHF, GHF): an aufbau
+/// determinant can still be a saddle, which the SCF holds once it reaches it (N2 PAW-LCAO SZ in a
+/// box, root -0.32 Ha, 0.67 Ha above the minimum). While the lowest root of the orbital Hessian
+/// is below `-STABILITY_TOLERANCE`, the determinant is rotated along that mode to the lowest of
+/// [`STABILITY_ANGLES`] and the SCF restarts from it as a descent ([`SETTLE_ITERATIONS`]); if
+/// that restart does not end converged and lower, it restarts from the same point by
+/// [`second_order_descent`]. A lower restart is kept, converged or not as it is (an
+/// unconverged one ends the following, reported as not converged); a restart that is not lower,
+/// a root solve not shown converged, or a saddle left after [`STABILITY_FOLLOWS`] restarts makes
+/// the state not converged: a saddle is never returned as a converged state.
+fn follow_instabilities(
+    integrals: &MolecularIntegrals,
+    method: &str,
+    h: &Matrix,
+    particles: [usize; 2],
+    options: &ScfOptions,
+    mut best: Candidate,
+) -> Result<Candidate> {
+    for follow in 0..=STABILITY_FOLLOWS {
+        if !best.converged {
+            break;
+        }
+        let eri = integrals.eri()?;
+        let Some((hessian, root)) =
+            lowest_mode(eri.clone(), h, method, &best.densities, particles)?
+        else {
+            break;
+        };
+        if !root.converged {
+            best.converged = false;
+            break;
+        }
+        if root.value >= -STABILITY_TOLERANCE {
+            break;
+        }
+        if follow == STABILITY_FOLLOWS {
+            best.converged = false;
+            break;
+        }
+        let start = descent(eri.as_ref(), h, method, &hessian, &root.vector)?;
+        let below = |c: &Candidate| c.energy < best.energy - 1e-10;
+        let mut candidate = iterate(
+            integrals,
+            method,
+            h,
+            particles,
+            start.clone(),
+            options,
+            SETTLE_ITERATIONS,
+        )?;
+        if !(candidate.converged && below(&candidate)) {
+            let second = second_order_descent(integrals, method, h, particles, options, start)?;
+            if (second.converged && below(&second)) || second.energy < candidate.energy - 1e-10 {
+                candidate = second;
+            }
+        }
+        if below(&candidate) {
+            best = candidate;
+        } else {
+            best.converged = false;
+            break;
+        }
+    }
+    Ok(best)
+}
+
+/// Second-order steps of a restart off a saddle, used when the DIIS restart does not end lower:
+/// at the semicanonical orbitals of each point, the step `x = -(H + mu)^-1 g` with `mu` holding
+/// the shifted Hessian [`NEWTON_MARGIN`] above zero, at most [`NEWTON_RADIUS`] long, accepted
+/// only when the energy falls (otherwise halved), so every step is a descent, including along
+/// the soft valleys of degenerate shells that DIIS climbs out of; then the SCF from the last
+/// point.
+fn second_order_descent(
+    integrals: &MolecularIntegrals,
+    method: &str,
+    h: &Matrix,
+    particles: [usize; 2],
+    options: &ScfOptions,
+    start: Vec<Matrix>,
+) -> Result<Candidate> {
+    let eri = integrals.eri()?;
+    let filled: Vec<usize> = match method {
+        "rhf" => vec![particles[0]],
+        "uhf" => particles.to_vec(),
+        _ => vec![particles.iter().sum()],
+    };
+    let densities = |c: &[Matrix]| -> Vec<Matrix> {
+        c.iter().zip(&filled).map(|(c, &n)| density(c, n)).collect()
+    };
+    let mut c = start;
+    let mut d = densities(&c);
+    let mut value = energy(&d, &fock(eri.as_ref(), h, &d, method), h, method);
+    let mut radius = NEWTON_RADIUS;
+    let mut missed = false;
+    for _ in 0..NEWTON_STEPS {
+        let Some(hessian) = OrbitalHessian::new(eri.clone(), h, method, &d, particles)? else {
+            break;
+        };
+        if hessian.gradient.amax() < options.tolerance {
+            break;
+        }
+        let Some(root) =
+            crate::math::davidson::lowest_root(&hessian, DENSE_HESSIAN_LIMIT, HESSIAN_TOLERANCE)?
+        else {
+            break;
+        };
+        if !root.converged {
+            break;
+        }
+        let shift = (NEWTON_MARGIN - root.value).max(0.);
+        let solve =
+            crate::math::davidson::solve_shifted(&hessian, shift, &-&hessian.gradient, 1e-4, 200)?;
+        if !solve.positive {
+            // The shifted Hessian has a direction of non-positive curvature: the root search
+            // missed a lower root, so no point reached from here is shown to be a minimum.
+            missed = true;
+            break;
+        }
+        let mut x = solve.x;
+        if x.norm() > radius {
+            x *= radius / x.norm();
+        }
+        if root.value < 0. {
+            // Negative curvature: the trust region's step reaches its boundary along the mode,
+            // downhill to first order.
+            let sign = if root.vector.dot(&hessian.gradient) > 0. {
+                -1.
+            } else {
+                1.
+            };
+            let along = (radius * radius - x.norm_squared()).max(0.).sqrt();
+            x += &root.vector * (sign * along);
+        }
+        let mut accepted = false;
+        while x.norm() > 1e-7 {
+            let trial = hessian.rotated(&x, 1.)?;
+            let td = densities(&trial);
+            let trial_value = energy(&td, &fock(eri.as_ref(), h, &td, method), h, method);
+            if trial_value < value {
+                (c, d, value) = (trial, td, trial_value);
+                radius = (2. * radius).min(NEWTON_RADIUS);
+                accepted = true;
+                break;
+            }
+            x *= 0.5;
+            radius *= 0.5;
+        }
+        if !accepted {
+            break;
+        }
+    }
+    let mut out = iterate(integrals, method, h, particles, c, options, 0)?;
+    out.converged &= !missed;
+    Ok(out)
+}
+
+/// The orbitals of `hessian` rotated along the unit `mode` to the angle of [`STABILITY_ANGLES`]
+/// with the lowest energy.
+fn descent(
+    eri: &super::integrals::Eri,
+    h: &Matrix,
+    method: &str,
+    hessian: &OrbitalHessian,
+    mode: &DVector<f64>,
+) -> Result<Vec<Matrix>> {
+    let mut lowest = (f64::INFINITY, STABILITY_ANGLES[0]);
+    for angle in STABILITY_ANGLES {
+        let d = hessian.rotated_densities(mode, angle)?;
+        let value = energy(&d, &fock(eri, h, &d, method), h, method);
+        if value < lowest.0 {
+            lowest = (value, angle);
+        }
+    }
+    hessian.rotated(mode, lowest.1)
+}
+
+impl MolecularIntegrals {
+    /// The orbital Hessian ([`OrbitalHessian`]) of a Hartree-Fock `state` (RHF, UHF or GHF);
+    /// `None` for a Kohn-Sham state or a determinant without rotations.
+    pub fn orbital_hessian(&self, state: &MeanField) -> Result<Option<OrbitalHessian>> {
+        if !["rhf", "uhf", "ghf"].contains(&state.method.as_str()) || state.functional.is_some() {
+            return Ok(None);
+        }
+        OrbitalHessian::new(
+            self.eri()?,
+            &self.core_operator(&state.method),
+            &state.method,
+            &state.densities,
+            state.particles,
+        )
+    }
+    /// The lowest root (Hartree) of the orbital Hessian of a Hartree-Fock `state`: negative for a
+    /// saddle; `None` for a Kohn-Sham state or no rotation. Raises when the root solve is not
+    /// shown converged.
+    pub fn stability(&self, state: &MeanField) -> Result<Option<f64>> {
+        let Some(hessian) = self.orbital_hessian(state)? else {
+            return Ok(None);
+        };
+        let Some(root) =
+            crate::math::davidson::lowest_root(&hessian, DENSE_HESSIAN_LIMIT, HESSIAN_TOLERANCE)?
+        else {
+            return Ok(None);
+        };
+        if !root.converged {
+            return Err(crate::Error::Kernel(
+                "the lowest root of the orbital Hessian did not converge: the state's stability is not shown".into(),
+            ));
+        }
+        Ok(Some(root.value))
+    }
+    /// The core operator of `method` in the orthonormal frame (the spinor block diagonal for GHF).
+    fn core_operator(&self, method: &str) -> Matrix {
+        let m = self.m();
+        let spatial = Matrix::from_fn(m, m, |i, j| C64::new(self.one.as_slice()[i * m + j], 0.));
+        if method != "ghf" {
+            return spatial;
+        }
+        Matrix::from_fn(2 * m, 2 * m, |i, j| {
+            if i / m == j / m {
+                spatial[(i % m, j % m)]
+            } else {
+                C64::default()
+            }
+        })
+    }
+}
+
 /// `c` with columns `i` and `a` rotated into each other by `angle` (radians).
 fn rotated(c: &Matrix, i: usize, a: usize, angle: f64) -> Matrix {
     let mut out = c.clone();
@@ -509,14 +1148,28 @@ impl MolecularIntegrals {
                     .ok_or(crate::Error::Overflow)?,
             )?;
             let h = Matrix::from_fn(m, m, |i, j| C64::new(self.one.as_slice()[i * m + j], 0.));
-            let candidate = iterate(
+            let mut candidate = iterate(
                 self,
                 method,
                 &h,
                 previous.particles,
                 previous.coefficients.clone(),
                 options,
+                0,
             )?;
+            // The same state is followed, never left for another: a continuation that lands on a
+            // saddle, or whose stability is not shown, is reported not converged.
+            if candidate.converged {
+                let shown = lowest_mode(
+                    self.eri()?,
+                    &h,
+                    method,
+                    &candidate.densities,
+                    previous.particles,
+                )?
+                .is_none_or(|(_, root)| root.converged && root.value >= -STABILITY_TOLERANCE);
+                candidate.converged = shown;
+            }
             self.finish(
                 method,
                 previous.particles,
@@ -638,18 +1291,15 @@ impl MolecularIntegrals {
                 particles,
             )]);
         }
-        // A converged candidate beats an unconverged one; then the lower energy wins.
+        // A converged candidate beats an unconverged one; then the lower energy wins among the
+        // converged and the smaller final residual among the unconverged (`Candidate::beats`).
         let better = |candidate: &Candidate, best: Option<&Candidate>| {
-            best.is_none_or(|best| {
-                (candidate.converged && !best.converged)
-                    || (candidate.converged == best.converged
-                        && candidate.energy < best.energy - 1e-12)
-            })
+            best.is_none_or(|best| candidate.beats(best, options.tolerance))
         };
         let mut best: Option<Candidate> = None;
         let mut restarts = Vec::new();
         for start in starts {
-            let candidate = iterate(self, method, &h, particles, start, options)?;
+            let candidate = iterate(self, method, &h, particles, start, options, 0)?;
             // A non-aufbau RHF stationary point (held by the level shift) is a saddle: restart
             // once from it with the offending pair mixed, the same 0.3 rad the UHF start uses,
             // and the shift off. The selector keeps whichever is lower and converged.
@@ -661,12 +1311,12 @@ impl MolecularIntegrals {
             }
         }
         for start in restarts {
-            let candidate = iterate(self, method, &h, particles, start, options)?;
+            let candidate = iterate(self, method, &h, particles, start, options, 0)?;
             if better(&candidate, best.as_ref()) {
                 best = Some(candidate);
             }
         }
-        let best = best.unwrap();
+        let best = follow_instabilities(self, method, &h, particles, options, best.unwrap())?;
         self.finish(method, particles, options, best, workspace, None, None)
     }
     pub(super) fn finish(
@@ -917,7 +1567,7 @@ impl MeanField {
         } else {
             transform::four(ctx, &eri, [c; 4])?
         };
-        let model = Arc::new(Model::new(
+        let mut model = Model::new(
             ctx,
             m,
             self.particles,
@@ -925,8 +1575,139 @@ impl MeanField {
             two,
             integrals.nuclear,
             self.method == "ghf",
-        )?);
+        )?;
+        model.exchange_madelung = integrals.exchange_madelung()?;
+        let model = Arc::new(model);
         *cache = Some(model.clone());
         Ok(model)
+    }
+}
+
+impl MeanField {
+    /// The state vector of this reference in its model frame under `mapping`: the reference
+    /// determinant of a restricted state; for an unrestricted one, every determinant of the
+    /// `2m` model spin orbitals weighted by the product of the two spins' overlap determinants
+    /// with the occupied spin orbitals.
+    pub fn reference_state(
+        &self,
+        integrals: &MolecularIntegrals,
+        mapping: &str,
+    ) -> Result<crate::Buffer<C64>> {
+        let m = integrals.m();
+        let particles = self.particles;
+        let encoding = crate::quantum::Encoding::new(mapping, 2 * m, particles)?;
+        let mut state = integrals.context.allocate::<C64>(
+            1usize
+                .checked_shl(encoding.n_qubits() as u32)
+                .ok_or(crate::Error::Overflow)?,
+        )?;
+        if self.method != "uhf" {
+            state.as_mut_slice()[encoding.reference() as usize] = C64::new(1., 0.);
+            return Ok(state);
+        }
+        let occupation_encoding = crate::quantum::Encoding::new("jordan_wigner", 2 * m, particles)?;
+        let basis = crate::quantum::Basis::new(&integrals.context, &occupation_encoding, true)?;
+        let rotations: Vec<_> = self
+            .coefficients
+            .iter()
+            .map(|c| self.model_orbitals.adjoint() * c)
+            .collect();
+        for &occupation in basis.indices.as_slice() {
+            let mut amplitude = C64::new(1., 0.);
+            for spin in 0..2 {
+                let occupied: Vec<_> = (0..m)
+                    .filter(|&i| occupation & (1u64 << (2 * m - 1 - spin * m - i)) != 0)
+                    .collect();
+                let determinant =
+                    nalgebra::DMatrix::from_fn(particles[spin], particles[spin], |i, j| {
+                        rotations[spin][(occupied[i], j)]
+                    })
+                    .determinant();
+                amplitude *= determinant;
+            }
+            state.as_mut_slice()[encoding.encode(occupation) as usize] = amplitude;
+        }
+        Ok(state)
+    }
+
+    /// The one-body density of each spin in the model frame, `(2m, 2m)` row-major, spin-diagonal
+    /// blocks.
+    pub fn model_rdm(&self, integrals: &MolecularIntegrals) -> Result<crate::Buffer<C64>> {
+        let m = integrals.m();
+        let _work = integrals.context.reserve(crate::product(&[m, m, 16, 8])?)?;
+        let mut out = integrals
+            .context
+            .allocate::<C64>(crate::product(&[2 * m, 2 * m])?)?;
+        for spin in 0..2 {
+            let density = &self.densities[if self.densities.len() == 1 { 0 } else { spin }];
+            let transformed = self.model_orbitals.adjoint() * density * &self.model_orbitals;
+            for p in 0..m {
+                for q in 0..m {
+                    out.as_mut_slice()[(spin * m + p) * 2 * m + spin * m + q] = transformed[(p, q)];
+                }
+            }
+        }
+        Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A candidate that stopped with `residual`, at `energy`, converged or not; no orbitals (the
+    /// selection reads only these).
+    fn candidate(energy: f64, residual: Option<f64>, converged: bool) -> Candidate {
+        Candidate {
+            energy,
+            converged,
+            history: residual
+                .into_iter()
+                .map(|residual| Iteration {
+                    iteration: 1,
+                    energy,
+                    delta: None,
+                    residual,
+                })
+                .collect(),
+            coefficients: vec![],
+            densities: vec![],
+            energies: vec![],
+            unstable_pair: None,
+            occupations: None,
+            aufbau_inversion: None,
+            entropy: 0.,
+        }
+    }
+
+    /// The selection that the Hartree-Fock, Kohn-Sham and spinor Kohn-Sham multi-start SCFs share
+    /// (`Candidate::beats`): a converged candidate first, then the lower energy among converged
+    /// ones (1e-12 margin) and the smaller final residual among unconverged ones, residuals
+    /// below the tolerance counting as equal (then the lower energy).
+    #[test]
+    fn selection_prefers_converged_then_energy_then_residual() {
+        let tolerance = 1e-9;
+        let oscillating = candidate(-2.74, Some(5e-3), false);
+        let stationary = candidate(-2.70, Some(1e-12), false);
+        assert!(
+            stationary.beats(&oscillating, tolerance) && !oscillating.beats(&stationary, tolerance)
+        );
+        let converged = candidate(-2.60, Some(1e-13), true);
+        assert!(
+            converged.beats(&oscillating, tolerance) && !oscillating.beats(&converged, tolerance)
+        );
+        let lower = candidate(-2.65, Some(1e-14), true);
+        assert!(lower.beats(&converged, tolerance) && !converged.beats(&lower, tolerance));
+        let tied = candidate(-2.60 - 1e-13, Some(1e-14), true);
+        assert!(!tied.beats(&converged, tolerance) && !converged.beats(&tied, tolerance));
+        let none = candidate(-3., None, false);
+        assert!(oscillating.beats(&none, tolerance) && !none.beats(&oscillating, tolerance));
+        // Two stationary points below the tolerance: the rounding of the last step does not
+        // decide, the energy does (a symmetric saddle at 1e-16 against the minimum at 2e-15).
+        let saddle = candidate(-1.0355, Some(1.7e-16), false);
+        let minimum = candidate(-1.1136, Some(2.2e-15), false);
+        assert!(minimum.beats(&saddle, tolerance) && !saddle.beats(&minimum, tolerance));
+        // An unreachable tolerance does not make the rounding of the last step a criterion.
+        assert!(minimum.beats(&saddle, 1e-30) && !saddle.beats(&minimum, 1e-30));
     }
 }

@@ -136,3 +136,108 @@ pub fn projectability(
         hamiltonians,
     })
 }
+
+/// The bands of a converged crystal at fractional k-points off its mesh (P6): `eigenvalues`
+/// `(spins, n_k, bands)` in Hartree with the crystal's reference added, and `projections`
+/// `(spins, n_k, bands, bands)`, the `|y_ab|^2` of the eigenvectors in the orthogonalized basis.
+pub struct OffMeshBands {
+    pub eigenvalues: Vec<f64>,
+    pub projections: Vec<f64>,
+}
+
+/// Diagonalizes the converged potential of `result` at `fractional_k` (with the hybrid exchange
+/// at each point for a hybrid crystal). Each `(spin, k)` is one task in spin-major order, a serial
+/// computation whatever lane runs it, so the numbers do not depend on the layout. A semilocal
+/// crystal runs the tasks through [`crate::Context::map_independent`] (the layout's k-point lanes,
+/// or the calling thread's workers), at most one lane per task (one point under `kpts = 4` still
+/// runs); a hybrid crystal runs them in order on the calling thread, since its exchange opens its
+/// own band lanes and the fast tests cannot gate the nesting.
+pub fn bands_at(
+    c: &Crystal,
+    setup: &super::setup::PeriodicSetup,
+    result: &PeriodicResult,
+    fractional_k: &[[f64; 3]],
+) -> Result<OffMeshBands> {
+    let n_k = fractional_k.len();
+    if n_k == 0 {
+        return Err(invalid("fractional_k cannot be empty"));
+    }
+    let weights = vec![1.0 / n_k as f64; n_k];
+    let points = setup.matrices_at(&c.context, fractional_k, &weights)?;
+    bands_of_points(c, result, &points)
+}
+
+/// [`bands_at`] at k-points whose matrices are already assembled (`points`, in that order).
+pub fn bands_of_points(
+    c: &Crystal,
+    result: &PeriodicResult,
+    points: &[super::KPoint],
+) -> Result<OffMeshBands> {
+    let ctx = &c.context;
+    let n_k = points.len();
+    if n_k == 0 {
+        return Err(invalid("bands need a nonempty k-point list"));
+    }
+    let m = c.bands();
+    let _memory = ctx.reserve(product(&[
+        n_k,
+        c.spins,
+        m,
+        m.checked_add(c.p).ok_or(crate::Error::Overflow)?,
+        16,
+        16,
+    ])?)?;
+    let n = c.grid.index.points();
+    let is_hybrid = c.screened_exchange()?.is_some();
+    let tasks = product(&[c.spins, n_k])?;
+    let solve = |task: usize| -> Result<(Vec<f64>, Vec<f64>)> {
+        let (s, point) = (task / n_k, &points[task % n_k]);
+        let exchange = if is_hybrid {
+            Some(c.hybrid_exchange_at_k(
+                &result.matrices,
+                point,
+                s,
+                result.options.exxdiv_treatment,
+            )?)
+        } else {
+            None
+        };
+        let potential = result.potential.as_slice();
+        let (e, _, y) = super::solver::diagonalize_with_exchange(
+            c,
+            point,
+            if c.spinor {
+                potential
+            } else {
+                &potential[s * n..(s + 1) * n]
+            },
+            result.moment_potential.as_slice(),
+            result
+                .kinetic_potential
+                .as_ref()
+                .map(|v| &v.as_slice()[s * n..(s + 1) * n]),
+            result.hubbard.as_ref().map(|h| &h.operators[s]),
+            exchange.as_ref(),
+        )?;
+        let eigenvalues: Vec<f64> = e.iter().map(|e| e + c.reference).collect();
+        let projections: Vec<f64> = (0..m)
+            .flat_map(|a| (0..m).map(move |b| (a, b)))
+            .map(|(a, b)| y[(a, b)].norm_sqr())
+            .collect();
+        Ok((eigenvalues, projections))
+    };
+    let solved = if is_hybrid {
+        (0..tasks).map(solve).collect::<Result<Vec<_>>>()?
+    } else {
+        ctx.map_independent(tasks, solve)?
+    };
+    let mut out = OffMeshBands {
+        eigenvalues: Vec::with_capacity(tasks * m),
+        projections: Vec::with_capacity(tasks * m * m),
+    };
+    for (eigenvalues, projections) in solved {
+        out.eigenvalues.extend(eigenvalues);
+        out.projections.extend(projections);
+    }
+    Ok(out)
+}

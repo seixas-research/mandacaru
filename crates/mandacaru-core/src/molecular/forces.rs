@@ -25,6 +25,9 @@ impl MolecularIntegrals {
         if !state.converged {
             return Err(invalid("forces require a converged SCF state"));
         }
+        if self.kind() == super::periodic::paw::HamiltonianKind::PawSupercell {
+            return super::periodic::paw::mean_field_gradient(self, state);
+        }
         if state.method == "ghf" {
             // A spinor Kohn-Sham state (`spinor_kohn_sham`); spinor Hartree-Fock has no gradient.
             if state.functional.is_some() && self.corrections.is_some() {

@@ -24,6 +24,7 @@ use crate::{
         screening::{
             bloch::Bloch,
             dyson,
+            interaction::solve,
             medium::{within, Medium, Paw},
             transitions::{Augmentation, Engine, Remainders},
         },
@@ -34,7 +35,6 @@ use crate::{
     Error, Result,
 };
 use nalgebra::{DMatrix, Vector3};
-use rayon::prelude::*;
 use std::f64::consts::PI;
 
 /// Cutoff of the screened vectors when none is given (Bohr^-1).
@@ -238,10 +238,16 @@ impl<'a> Rest<'a> {
         let ctx = self.medium.ctx;
         let mut blocks = Vec::with_capacity(cell.cells);
         let mut origin: Option<(usize, usize)> = None;
-        for t in 0..cell.cells {
+        // The mesh points one after another through the shared loop of
+        // `periodic::screening::interaction`, which keeps the lanes out of the medium's pool.
+        let solved = solve(
+            ctx,
+            cell.cells,
+            |t| self.polarizability(cell.cell_vector(t)),
+            |_, solution, _, g| Ok((solution.correction, g)),
+        )?;
+        for (t, (correction, g)) in solved.into_iter().enumerate() {
             let q_cell = cell.cell_vector(t);
-            let (chi, vectors, g) = self.polarizability(q_cell)?;
-            let interaction = dyson(ctx, &chi, &vectors)?;
             if t == 0 {
                 let head = g
                     .iter()
@@ -253,7 +259,7 @@ impl<'a> Rest<'a> {
                 m: g.iter()
                     .map(|v| std::array::from_fn(|a| cell.size[a] as i64 * v[a] + q_cell[a]))
                     .collect(),
-                delta: interaction.correction.clone(),
+                delta: correction,
             });
         }
         let head = long_wavelength_head(
@@ -290,12 +296,12 @@ fn long_wavelength_head(
     let mesh = cell.cells;
     let spins = wannier.channels.len();
     let weights = vec![1. / mesh as f64; mesh];
-    let pool = ctx.pool().filter(|_| medium.workers() > 1);
+    let parallel = medium.workers() > 1;
     // The states at `k + q` of one axis: one call sets the matrices of every shifted point up
     // (a call has a fixed cost, 0.25 s for the H2 chain against 0.008 s per point, that chunks
-    // would multiply) and the eigensolves, one per point and spin, follow. The three axes are
-    // independent, and so is every point, so they run on the context's pool; each frame is
-    // computed alone, so nothing depends on the number of workers.
+    // would multiply) and the eigensolves, one per point and spin, follow. Every point is
+    // independent, so an axis's points run on the layout's lanes (P6); each frame is computed
+    // alone, so nothing depends on the number of workers.
     let shifted_frames = |axis: usize| -> Result<Vec<Vec<Frame>>> {
         let mut q = [0.; 3];
         q[axis] = HEAD_WAVEVECTOR;
@@ -314,11 +320,10 @@ fn long_wavelength_head(
                 .map(|spin| Frame::from_point(crystal, &wannier.state, point, spin, &wannier.bands))
                 .collect()
         };
-        let per_point: Vec<Vec<Frame>> = match pool {
-            Some(pool) => {
-                pool.install(|| kpoints.par_iter().map(one).collect::<Result<Vec<_>>>())?
-            }
-            None => kpoints.iter().map(one).collect::<Result<Vec<_>>>()?,
+        let per_point: Vec<Vec<Frame>> = if parallel {
+            ctx.map_independent(kpoints.len(), |k| one(&kpoints[k]))?
+        } else {
+            kpoints.iter().map(one).collect::<Result<Vec<_>>>()?
         };
         let mut shifted: Vec<Vec<Frame>> = (0..spins).map(|_| Vec::with_capacity(mesh)).collect();
         for frames in per_point {
@@ -328,15 +333,9 @@ fn long_wavelength_head(
         }
         Ok(shifted)
     };
-    let axes: Vec<Vec<Vec<Frame>>> = match pool {
-        Some(pool) => pool.install(|| {
-            (0..3usize)
-                .into_par_iter()
-                .map(shifted_frames)
-                .collect::<Result<Vec<_>>>()
-        })?,
-        None => (0..3).map(shifted_frames).collect::<Result<Vec<_>>>()?,
-    };
+    // The axes one after another (each sets its shifted matrices up through the setup, which may
+    // use the pool), the points of an axis on the lanes: one level of lanes, never nested.
+    let axes: Vec<Vec<Vec<Frame>>> = (0..3).map(shifted_frames).collect::<Result<Vec<_>>>()?;
     let mut total = 0.;
     for (axis, shifted) in axes.iter().enumerate() {
         let mut q = [0.; 3];

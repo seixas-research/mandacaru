@@ -16,8 +16,9 @@
 //! * LDA is identical to the atom-solver scheme everywhere the density is above the kernel's
 //!   exchange floor (2e-12), and differs by the uniform-gas continuation below it; PBE holds the
 //!   uniform-gas exchange at the floor density and so carries a constant `-1.874e-4 Ha` to
-//!   infinity, which the variational scheme does not (the production `v_local` of a PBE
-//!   dataset lost that offset);
+//!   infinity, which the variational scheme does not (its potential decays to zero there; a
+//!   dataset's `v_local` is `-Zv/r` beyond its local radius by construction on every path,
+//!   `paw::generate::ionic_tail`, checked per file by G14);
 //! * the atom is solved with the scheme it is asked for.
 use mandacaru_core::models::{
     radial_xc,
@@ -26,7 +27,6 @@ use mandacaru_core::models::{
     xc_scheme::{AtomSolver, Variational, XcSource},
 };
 use mandacaru_core::paw::generate::{
-    generate, generate_with,
     recipe::Recipe,
     reference::{solve_reference, solve_reference_with},
 };
@@ -358,37 +358,4 @@ fn the_atom_is_solved_with_the_scheme_it_is_asked_for() {
         (production.energy - seam.energy).abs()
     );
     assert!((5e-4..3e-3).contains(&shift), "{shift:e}");
-}
-
-/// The offset that came from the legacy atom scheme: the PBE `v_local` of the production path is
-/// `-Z_ion/r` at the edge of the box again (it carried `-1.874e-4 Ha` to infinity while the atom
-/// was solved with the atom-solver scheme and the unscreening used the variational one), exactly
-/// as the legacy seam, which is consistent, has it. The old production is the control: the
-/// atom-solver atom with the variational energies, built here from the pieces, is 1.87e-4 off.
-#[test]
-fn the_production_v_local_of_a_pbe_dataset_has_no_constant_offset() {
-    let ctx = context();
-    let recipe = Recipe::for_dataset("O", "pbe", Treatment::Scalar).unwrap();
-    let production = generate(&ctx, &recipe).unwrap().dataset;
-    let seam = generate_with(&ctx, &recipe, &AtomSolver).unwrap().dataset;
-    let tail_error = |d: &mandacaru_core::paw::record::PawDataset| {
-        let r = d.r.as_slice();
-        (0..r.len())
-            .filter(|&i| r[i] > 26.)
-            .map(|i| (d.v_local.as_slice()[i] + d.valence_charge / r[i]).abs())
-            .fold(0., worst)
-    };
-    let (new, consistent) = (tail_error(&production), tail_error(&seam));
-    // The inconsistent old production: the legacy atom unscreened with the variational scheme.
-    let atom = solve_reference_with(&ctx, &recipe, &AtomSolver).unwrap();
-    let old = mandacaru_core::paw::generate::generate_with_atom(&ctx, &recipe, &atom, &Variational)
-        .unwrap()
-        .dataset;
-    let before = tail_error(&old);
-    eprintln!("O pbe v_local + Z_ion/r beyond 26 Bohr: production {new:.2e}, legacy seam {consistent:.2e}, old production {before:.2e}");
-    assert!(new <= 2e-6 && consistent <= 2e-6, "{new:e} {consistent:e}");
-    assert!(
-        before / 2e-6 > 50.0 && (1.8e-4..1.95e-4).contains(&before),
-        "{before:e}"
-    );
 }

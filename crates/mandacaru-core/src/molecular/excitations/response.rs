@@ -13,9 +13,12 @@
 //! - Hartree-Fock: the Coulomb and exchange terms of the SCF's own pair factors (`eri()`, the
 //!   one-center `DeltaW` included), transformed to the canonical orbitals once.
 //!
-//! [`Response::difference`] is `(A - B) y`: the orbital-energy differences plus the exchange and
-//! +U parts, the only pieces of these kernels that see the antisymmetric part of `dD` (the
-//! meta-GGA kinetic density depends on its symmetric part only).
+//! [`Response::difference`] is `(A - B) y`: the orbital-energy differences plus the exchange, +U
+//! and meta-GGA current parts, the only pieces of these kernels that see the antisymmetric part
+//! of `dD`. A meta-GGA's plain kinetic density depends on the symmetric part only, but the
+//! gauge-invariant `tau~ = tau - |j|^2 / (2 n)` the propagation uses (owner decision Q19a) adds
+//! `-2 int (v_tau / n) j^{ia} . j^{jb}` per spin (`super::meta::current_elements`), so its
+//! `A - B` is not the gap and its Casida roots come from the paired solver.
 //! The grid passes run on the calculator's lanes, one trial vector per task, each serial and in
 //! a fixed order, so the result is the same for every thread count.
 use super::{invalid, Coupling, Spin};
@@ -35,6 +38,41 @@ use nalgebra::{Const, DMatrix, DMatrixView, Dyn};
 
 /// Points per block of the grid passes.
 const BLOCK: usize = 2048;
+
+/// Every pair factor `(w_P, L^P)` of `eri` (`(pq|rs) = sum_P w_P L^P_pq L^P_rs`, `m x m`, the
+/// frame of the integrals), the one-center corrections included.
+pub(super) fn each_factor(
+    eri: &Eri,
+    m: usize,
+    mut visit: impl FnMut(f64, &DMatrix<f64>),
+) -> Result<()> {
+    let mut stack = vec![eri];
+    while let Some(eri) = stack.pop() {
+        match eri {
+            Eri::Augmented {
+                base, correction, ..
+            } => {
+                for (factor, &w) in correction.factors.iter().zip(&correction.weights) {
+                    visit(w, factor);
+                }
+                stack.push(base);
+            }
+            Eri::Cholesky { .. } | Eri::Translated { .. } => {
+                for column in 0..eri.factor_count().unwrap_or(0) {
+                    let b = eri.factor(column);
+                    debug_assert_eq!(b.nrows(), m);
+                    visit(1., &b);
+                }
+            }
+            Eri::Packed { .. } => {
+                return Err(crate::Error::Unsupported(
+                    "linear response needs factored Coulomb integrals, not a packed table".into(),
+                ))
+            }
+        }
+    }
+    Ok(())
+}
 
 /// Pair factors `(pq|rs) = sum_P w_P L^P_pq L^P_rs` in the canonical orbitals.
 pub(super) struct Factors {
@@ -59,42 +97,14 @@ impl Factors {
             oo: vec![],
             vv: vec![],
         };
-        let mut push = |weight: f64, factor: &DMatrix<f64>| {
+        each_factor(eri, m, |weight, factor| {
             out.weights.push(weight);
             out.ov.push(co.transpose() * factor * cv);
             if exchange {
                 out.oo.push(co.transpose() * factor * co);
                 out.vv.push(cv.transpose() * factor * cv);
             }
-        };
-        let mut stack = vec![eri];
-        while let Some(eri) = stack.pop() {
-            match eri {
-                Eri::Augmented {
-                    base, correction, ..
-                } => {
-                    for (factor, &w) in correction.factors.iter().zip(&correction.weights) {
-                        push(w, factor);
-                    }
-                    stack.push(base);
-                }
-                Eri::Cholesky { rank, factors, .. } => {
-                    for column in 0..*rank {
-                        let b = DMatrix::from_fn(m, m, |p, q| {
-                            factors.as_slice()
-                                [crate::molecular::integrals::pair(p, q) * rank + column]
-                        });
-                        push(1., &b);
-                    }
-                }
-                Eri::Packed { .. } => {
-                    return Err(crate::Error::Unsupported(
-                        "linear response needs factored Coulomb integrals, not a packed table"
-                            .into(),
-                    ))
-                }
-            }
-        }
+        })?;
         Ok(out)
     }
     /// `sum_P w_P (L^P . y) L^P` over the occupied-virtual blocks: `sum_jb (ia|jb) y_jb`.
@@ -159,28 +169,31 @@ pub struct Response<'a> {
     /// A screened hybrid's spheres and the ground-state density, for the spin-polarizing
     /// (triplet) part of their semilocal short-range exchange.
     polarization: Option<crate::paw::molecular::SphereKernels>,
-    /// The r2SCAN kernel and the gradients of the canonical orbitals (`[axis][orbital][point]`).
-    meta: Option<(xc_kernel::MetaKernel, Buffer<f64>)>,
+    /// The r2SCAN kernel, the gradients of the canonical orbitals (`[axis][orbital][point]`) and
+    /// the weights `v_tau / n` of the current-density term of `A - B` (`[spin][point]`).
+    meta: Option<(xc_kernel::MetaKernel, Buffer<f64>, Buffer<f64>)>,
     /// The +U kernel.
     hubbard: Option<super::hubbard::HubbardKernel>,
 }
 
-/// What a reference needs to be for this module, or the reason it is refused.
+/// What a collinear reference needs to be for this module, or the reason it is refused.
 pub(super) fn check_reference(integrals: &MolecularIntegrals, reference: &MeanField) -> Result<()> {
-    let unsupported = |what: String| Err(crate::Error::Unsupported(what));
     if reference.method == "ghf" {
-        if reference.functional.is_some() {
-            return unsupported(
-                "linear response of spinor Kohn-Sham (a spin-orbit dataset) is not implemented \
-                 yet; a scalar-relativistic dataset runs restricted Kohn-Sham"
-                    .into(),
-            );
-        }
-        return Err(invalid(
-            "linear response needs a restricted (rhf or dft) reference; method='ghf' gives a \
-             two-component state it does not take",
-        ));
+        return Err(invalid(if reference.functional.is_some() {
+            "a spinor Kohn-Sham reference takes the two-component response (`excitations` routes \
+             it), not the collinear operators"
+        } else {
+            "two-component Hartree-Fock (method='ghf') has no linear response; spinor Kohn-Sham \
+             (method='dft' on a spin-orbit dataset) has"
+        }));
     }
+    check_common(integrals, reference)
+}
+
+/// What every reference of this module needs to be (collinear or spinor), or the reason it is
+/// refused.
+pub(super) fn check_common(integrals: &MolecularIntegrals, reference: &MeanField) -> Result<()> {
+    let unsupported = |what: String| Err(crate::Error::Unsupported(what));
     if integrals.grid.periodic || integrals.supercell.is_some() {
         return Err(invalid(
             "molecular linear response needs an isolated molecule, not a periodic supercell",
@@ -349,7 +362,13 @@ impl<'a> Response<'a> {
                         fields.valence.as_slice(),
                     )?;
                     let gradients = super::meta::gradient_samples(integrals, &response.orbitals)?;
-                    response.meta = Some((kernel, gradients));
+                    let weights = super::meta::current_weights(
+                        integrals,
+                        name,
+                        std::slice::from_ref(density),
+                        fields.valence.as_slice(),
+                    )?;
+                    response.meta = Some((kernel, gradients, weights));
                 }
                 if coupling == Coupling::Adiabatic && !requires_tau {
                     let semilocal = crate::models::functional(name)?.semilocal;
@@ -537,6 +556,27 @@ impl<'a> Response<'a> {
                 out.set_column(c, &total);
             }
         }
+        // The current-density term of tau~ (same spin only, so the singlet and the triplet carry
+        // the same one).
+        if let (Some((_, gradients, weights)), Some(samples)) = (&self.meta, &self.samples) {
+            let n = self.integrals.grid.index.points();
+            for c in 0..block.ncols() {
+                let y = self.matrix(block.column(c).as_slice());
+                let k = super::meta::current_elements(
+                    samples.as_slice(),
+                    gradients.as_slice(),
+                    n,
+                    self.o + self.v,
+                    self.o,
+                    &y,
+                    &weights.as_slice()[..n],
+                    self.integrals.grid.index.dv(),
+                )?;
+                let column = nalgebra::DVector::from_vec(self.flat(&k));
+                let total = out.column(c) + column;
+                out.set_column(c, &total);
+            }
+        }
         Ok(out)
     }
     fn hubbard_mode(&self) -> super::hubbard::Mode {
@@ -633,7 +673,7 @@ impl<'a> Response<'a> {
         let n = grid.index.points();
         let m = self.o + self.v;
         let singlet = self.spin == Spin::Singlet;
-        let (kernel, gradients) = self
+        let (kernel, gradients, _) = self
             .meta
             .as_ref()
             .ok_or_else(|| invalid("this response has no meta-GGA kernel"))?;

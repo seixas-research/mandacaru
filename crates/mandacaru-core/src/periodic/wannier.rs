@@ -95,6 +95,15 @@ pub struct Spread {
     pub diagonal: f64,
 }
 impl Spread {
+    /// Each function's spread `<r^2> - <r>^2`.
+    pub fn spreads(&self) -> Vec<f64> {
+        self.second_moments
+            .as_slice()
+            .iter()
+            .zip(self.centers.as_slice())
+            .map(|(second, r)| second - r.iter().map(|v| v * v).sum::<f64>())
+            .collect()
+    }
     pub fn total(&self) -> f64 {
         self.invariant + self.off_diagonal + self.diagonal
     }

@@ -14,7 +14,8 @@ the report. Unsupported options raise explicitly. This development module is not
 installed console entry point.
 
 A dataset is written to ``--output`` (default: the current folder, one
-subfolder per family) at the library stride.  ``--install`` writes into
+subfolder per family) at the coarsest library stride (4, 2, then 1) whose file reads
+back with the generated levels (``paw::generate::build::build_at_library_stride``).  ``--install`` writes into
 Mandacaru's own library for the family instead -- the set's folder
 (``lda-sr/``, ``lda-fr/``, ...) of the checkout its environment variable
 names (``MANDACARU_PAW_PATH``, ``MANDACARU_UPAW_PATH``) -- and so replaces the dataset
@@ -28,8 +29,10 @@ read back.
 What is released is the file, not the object in memory: it is written beside
 its final name, read back, and moved into place only when every channel's
 lowest levels are those of the generated dataset to
-:data:`RELOAD_LEVEL_TOLERANCE`.  The report's checks are those of the file read
-back.  Generation, writing, reading back and every check run in Rust
+:data:`RELOAD_LEVEL_TOLERANCE` and the file passes every per-file gate of the
+regeneration plan (G1-G11, G13 and G14, ``paw::validate``): a file that fails one is
+refused, its failing rows are printed, and nothing is written.  The report's
+checks are those of the file read back; this module only prints the gate rows.  Generation, writing, reading back and every check run in Rust
 (``_native.paw_build``, ``paw::generate::build``), so the record never crosses
 into Python on its way to the file and keeps everything it carries (the core
 states of dataset format 3 included); this module parses the options and
@@ -138,7 +141,7 @@ def build_one(family: str, symbol: str, options: dict, paw_dataset: str,
     The generator's observations (a cutoff past where a channel is trustworthy, say) are listed
     in the report as warnings.
     """
-    from .io import STRIDE, library_file
+    from .io import library_file
     from .native_context import context
     from .record import dataset_from_record
 
@@ -147,7 +150,7 @@ def build_one(family: str, symbol: str, options: dict, paw_dataset: str,
         os.makedirs(paw_dataset, exist_ok=True)
         answer = _native.paw_build(context(), symbol, {"family": family, **options},
                                    library_file(symbol, paw_dataset, fmt), format=fmt,
-                                   stride=STRIDE, check=check)
+                                   stride=None, check=check)
     except Exception as error:                          # noqa: BLE001
         answer = {"refusal": f"{type(error).__name__}: {error}"}
     if "refusal" in answer:
@@ -167,8 +170,9 @@ def build_one(family: str, symbol: str, options: dict, paw_dataset: str,
         if c["phase"] is not None:
             line += f"  phase {c['phase'][0]:.3f}/{c['phase'][1]:.3f} rad"
         lines.append(line)
-    for l, depth in answer["unprojected_ghosts"].items():
-        lines.append(f"    l={l}  no projectors  local potential binds {depth:+.1e} Ha below the atom  GHOST")
+    lines += ["    gates: " + ", ".join(f"{g} {v['status']}" for g, v in answer["gates"]["gates"].items()),
+              *(f"    {r['gate']} {r['check']}: {r['status']}  {r['detail']}"
+                for r in answer["gates"]["rows"] if r["status"] in ("reported", "waived"))]
     lines.append(f"    local potential: r_cl={pp.r_cut_local:.3f} Bohr, "
                  f"shift {pp.local_shift:+.1f} Ha")
     lines += [f"    warning: {note}" for note in answer["notes"]]
@@ -197,8 +201,7 @@ def main(argv=None) -> int:
             parser.error(f"unknown element(s): {', '.join(unknown)}")
     else:
         parser.error("give --element SYMBOL ... or --all")
-    ghosts = args.ghosts or "repair"
-    options = {"xc": args.xc, "relativity": relativity, "ghosts": ghosts}
+    options = {"xc": args.xc, "relativity": relativity, "ghosts": args.ghosts or "repair"}
     try:
         paw_dataset = _paw_dataset(family, args.output, args.install, args.xc,
                                args.relativity or "scalar")
@@ -207,7 +210,7 @@ def main(argv=None) -> int:
         return 2
 
     print(f"mandacaru-build: {family}, {args.xc.upper()}, "
-          f"relativity={relativity}, ghosts={ghosts}, "
+          f"relativity={relativity}, ghosts={options['ghosts']}, "
           f"{len(symbols)} element(s), {args.workers} worker(s)")
     print("generator: packaged Rust engine")
     print(f"writing to {paw_dataset}\n", flush=True)

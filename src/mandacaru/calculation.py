@@ -75,6 +75,7 @@ _METHOD_SCOPED_OPTIONS = {
         ),
         ("dft",),
     ),
+    "excited_state": ("dft", "rhf", "uhf"),
     "taper": ("vqe", "adapt-vqe", "subspace-vqe", "subspace-adapt-vqe"),
     "measurement_scheme": ("vqe", "adapt-vqe"),
     "quenching": ("vqe", "adapt-vqe"),
@@ -453,8 +454,12 @@ class Mandacaru(ASEProperties, Calculator):
         and outside the k-point tasks (the setup, the grid fields) every
         kernel runs on all of them. Results are the same, bit for bit, on
         every layout and every processor count. Omitted, the calculation runs
-        on ``{"threads": n}``, ``n`` being ``MANDACARU_NUM_THREADS``, then
-        ``OMP_NUM_THREADS``, then the hardware's threads. An unknown key or a
+        the ``auto`` layout on ``n`` processors, ``n`` being
+        ``MANDACARU_NUM_THREADS``, then ``OMP_NUM_THREADS``, then the
+        hardware's threads: each k-point region of a crystal takes as many
+        lanes as it has tasks, up to ``n``, with an equal share of the
+        processors each, and fewer lanes when the memory budget holds fewer
+        (never an error that one lane would not raise). An unknown key or a
         non-integer raises ``TypeError``, a value below 1 or above 1024
         processors in all ``ValueError``. ``kpts`` or ``bands`` above 1 with
         a method other than ``"dft"``, or on a structure with no periodic
@@ -487,8 +492,9 @@ class Mandacaru(ASEProperties, Calculator):
         chooses the default PAW-LCAO dataset folder (``pbe-sr`` for PBE, HSE06
         and r2SCAN, ``lda-sr`` otherwise); a dataset generated with another
         functional triggers a warning. A crystal supports every one of them;
-        ``"hse06"`` runs on the whole k mesh (see ``symmetry``), with or
-        without spin-orbit coupling; its forces and stress are analytic (Rust).
+        ``"hse06"`` runs on the k mesh halved by time reversal alone (see
+        ``symmetry``), with or without spin-orbit coupling; its forces and
+        stress are analytic (Rust).
         ``"r2scan"`` and ``"rvv10"`` crystals have analytic forces and stress,
         unpolarized, spin-polarized and with spin-orbit coupling. With
         ``load_crystal`` a different ``xc`` raises ``ValueError``.
@@ -1033,9 +1039,10 @@ class Mandacaru(ASEProperties, Calculator):
         operations that map every atom onto an atom of the same element and
         the same initial moment (an operation that would send a moment to its
         opposite is not kept); with ``symmetry=False`` nonzero initial
-        magnetic moments keep the full mesh. A hybrid functional (``xc="hse06"``) always keeps the
-        whole mesh, neither reduced by the space group nor halved by time
-        reversal, because its exact exchange sums over the listed k-points.
+        magnetic moments keep the full mesh. A hybrid functional (``xc="hse06"``) is never reduced
+        by the space group, because its exact exchange sums over the listed
+        k-points; time reversal halves its mesh as it does any other (the
+        exchange builds the states at a missing ``-k`` from those at ``k``).
         A non-boolean raises ``TypeError``. Ignored for molecules.
     hubbard_u : dict, optional
         The on-site DFT+U correction (fully localized double counting) of a
@@ -1102,6 +1109,36 @@ class Mandacaru(ASEProperties, Calculator):
         it together with an ``exxdiv_treatment`` that says otherwise raises
         ``ValueError``, a non-boolean raises ``TypeError``, and it is refused
         wherever ``exxdiv_treatment`` is. Used by ``method="dft"`` only.
+    excited_state : dict, optional
+        Make the calculation one excited state of a molecule:
+        ``get_potential_energy`` returns ``E_0 + omega`` (the ground state's
+        energy plus the excitation energy of the root) and ``get_forces`` its
+        analytic gradient (the relaxed, Z-vector Lagrangian), so an ASE
+        optimizer or dynamics runs on the excited-state surface. Keys:
+        ``root`` (0-based among the roots of ``spin``, the index of
+        ``get_excitations(...).energies``; default 0), ``spin`` (``"singlet"``,
+        the default of a closed shell, or ``"triplet"``; unset for a
+        spin-polarized reference, whose roots are spin-conserving), ``approximation`` (``"tda"``, the
+        default, or ``"casida"``) and ``track``: ``"index"`` (the default)
+        takes the root of that index at every geometry, ``"overlap"`` follows
+        the state into each new geometry of a scan by the largest overlap of
+        its transition density with the previous geometry's, so the state
+        keeps its character where two roots cross (its index may then change;
+        the run log's ``[SCF SUMMARY]`` states the root and the overlap). The
+        reference is closed-shell or spin-polarized (collinear) Kohn-Sham
+        PAW-LCAO with ``xc="lda"``, ``"pbe"``, ``"r2scan"`` or ``"hse06"``,
+        with or without ``hubbard_u``, Hartree-Fock PAW-LCAO (``method="rhf"`` or
+        ``"uhf"``: CIS for ``"tda"``, TDHF for ``"casida"``), or spinor Kohn-Sham
+        (a spin-orbit dataset or noncollinear initial moments) with ``xc="lda"`` or
+        ``"pbe"`` (``spin`` unset; the forces need a closed shell or, without a
+        spin-orbit dataset, a magnetized reference); other references
+        raise ``NotImplementedError`` by name, a crystal included, as does a
+        root within 1e-6 Ha of another (a multiplet has no single gradient),
+        except on a spinor reference, where such a group takes the mean of its
+        roots and their gradients (the state-averaged energy and forces).
+        With ``vdw="ts"`` the dispersion of the ground state is added
+        unchanged. ``get_excitations`` still returns the excitations of the
+        ground state. Used by ``method="dft"``, ``"rhf"`` and ``"uhf"``.
 
     Notes
     -----
@@ -1203,6 +1240,7 @@ class Mandacaru(ASEProperties, Calculator):
         save_crystal=None,
         exxdiv_treatment=None,
         gygi_baldereschi=None,
+        excited_state=None,
     ):
         super().__init__()
         # Every constructor option: the finite-difference forces of a crystal rebuild the same
@@ -1429,7 +1467,7 @@ class Mandacaru(ASEProperties, Calculator):
         self._unrestricted = spin or unrestricted
         self._charge = charge
         self._n_electrons = n_electrons
-        self._scf_options = dict(scf_options or {})
+        self._scf_options = dict(scf_options or {}, **_native.excited_state_options(excited_state))
         self._mapping = mapping or "jordan_wigner"
         self._active_spec = active_space
         self._grid_spacing = float(grid_spacing)
@@ -2092,11 +2130,6 @@ class Mandacaru(ASEProperties, Calculator):
                 self.native_reference = self.integrals.mean_field(
                     kind, particles, **self._scf_options
                 )
-        dispersion = (
-            self.context.tkatchenko_scheffler(geometry.native(), self.xc)
-            if self._vdw == "ts"
-            else None
-        )
         return CalculationResult(
             method=self.method,
             context=self.context,
@@ -2106,8 +2139,12 @@ class Mandacaru(ASEProperties, Calculator):
             active_space=self._active_spec,
             two_body=(self._two_body_representation, self._two_body_truncation_ha),
             atomic_units=self._atomic_units,
-            dispersion=dispersion,
+            dispersion=self._dispersion(geometry),
         )
+
+    def _dispersion(self, geometry):
+        """The Tkatchenko-Scheffler dispersion of ``geometry`` (``vdw="ts"``), else ``None``."""
+        return self.context.tkatchenko_scheffler(geometry.native(), self.xc) if self._vdw == "ts" else None
 
     def _molecular_integrals(self, geometry):
         if (self._basis_spec is None and self.integrals is not None
@@ -2454,6 +2491,8 @@ class Mandacaru(ASEProperties, Calculator):
             raise NotImplementedError(
                 "periodic geometry calculations currently provide native DFT"
             )
+        if "excited_state" in self._scf_options:
+            raise NotImplementedError("excited_state follows one excited state of a molecule; a crystal's excitations are get_excitations()")
         if self.xc not in ("lda", "pbe", "r2scan", "pbe+rvv10", "r2scan+rvv10", "hse06"):
             raise NotImplementedError(f"periodic calculation does not support functional {self.xc!r}")
         if self._load_crystal is not None:
@@ -2487,11 +2526,6 @@ class Mandacaru(ASEProperties, Calculator):
         # The setup's freed arrays go back to the system before the SCF takes its own.
         self.context.release_freed_memory()
         periodic = self.periodic_problem.solve(**self._periodic_options)
-        dispersion = (
-            self.context.tkatchenko_scheffler(geometry.native(), self.xc)
-            if self._vdw == "ts"
-            else None
-        )
         return CalculationResult(
             method="dft",
             context=self.context,
@@ -2499,7 +2533,7 @@ class Mandacaru(ASEProperties, Calculator):
             periodic=periodic,
             crystal=self.periodic_problem,
             atomic_units=self._atomic_units,
-            dispersion=dispersion,
+            dispersion=self._dispersion(geometry),
         )
 
     def _periodic_quantum(self, geometry, initial_parameters, callback=None):
@@ -2509,7 +2543,7 @@ class Mandacaru(ASEProperties, Calculator):
         electrostatics, image-summed basis, commensurate periodic grid); the energy is
         reported per primitive cell by ``run()``.
         """
-        from .integrations.bloch import check_geometry
+        from .integrations.bloch import check_geometry, paw_supercell_integrals
 
         size = check_geometry(self, geometry)
         from .structure import Geometry
@@ -2526,10 +2560,9 @@ class Mandacaru(ASEProperties, Calculator):
             tuple(numbers), positions, cell, tuple(native.pbc), magnetic_moments=moments)
 
         with self._stage("integration: periodic supercell integrals"):
-            self.integrals = _native.supercell_integrals(
-                self.context,
-                geometry.native(),
-                list(size),
+            self.integrals = paw_supercell_integrals(self, geometry, size) if (
+                self._basis_spec is None) else _native.supercell_integrals(
+                self.context, geometry.native(), list(size),
                 basis_spec=json.dumps(self._basis_spec),
                 spacing_bohr=_native.length_to_bohr(float(self._grid_spacing), "angstrom"),
                 cholesky_tolerance=self._cholesky_tolerance,
@@ -2690,8 +2723,7 @@ class Mandacaru(ASEProperties, Calculator):
             cells = n_cells if is_periodic_quantum else 1
             self.results = {
                 "energy": _native.to_user_units(float(result.energy_hartree), "energy", cells=cells),
-                "free_energy": _native.to_user_units(
-                    float(result.free_energy_hartree), "energy", cells=cells),
+                "free_energy": _native.to_user_units(float(result.free_energy_hartree), "energy", cells=cells),
             }
             if self.method == "dft":
                 if result.periodic is not None:
@@ -2827,13 +2859,13 @@ class Mandacaru(ASEProperties, Calculator):
                         self.results["forces"] = result.forces()
                     from .integrations.reporting import write_forces
                     write_forces(self, result, geometry, internal=False, translated=False)
-                elif periodic_geometry and self.capabilities.quantum:
-                    from .integrations.bloch import finite_difference_forces
+                elif periodic_geometry and self.capabilities.quantum and self._basis_spec is not None:
+                    from .integrations.bloch import finite_difference_forces  # HAO (owner Q2)
 
                     with self._stage("nuclear gradient (forces)"):
                         self.results["forces"] = finite_difference_forces(self, geometry, result)
                 else:
-                    project = self._project_translation is not False and len(geometry.numbers) > 1
+                    project = self._project_translation is not False and len(geometry.numbers) > 1 and not periodic_geometry
                     internal = project and self.capabilities.quantum and self._basis_spec is None
                     with self._stage("nuclear gradient (forces)"):
                         self.results["forces"] = result.forces(

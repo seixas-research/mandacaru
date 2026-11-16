@@ -1169,9 +1169,11 @@ class TestHybrid:
         assert snapshot["converged"] and old_stop < len(residuals) - 1
         assert residuals[old_stop] >= 1e-8 > residuals[-1]
 
-    def test_a_hybrid_on_a_mesh_with_a_non_trim_point_is_not_halved(self):
-        """A 3x1x1 mesh would be halved by time reversal (its +-1/3 points merge); a hybrid
-        keeps all three points, nonmagnetic or not."""
+    def test_a_hybrid_mesh_is_halved_by_time_reversal_unless_magnetic(self):
+        """A 3x1x1 mesh is halved by time reversal (its +-1/3 points merge): a nonmagnetic hybrid
+        lists Gamma and 1/3 at weights 1/3 and 2/3, its exchange building the states at -1/3 from
+        those at 1/3 (Q11/SH-5); initial moments keep all three points, as they do for a
+        semilocal functional."""
         from ase.build import bulk
 
         def hybrid(moments):
@@ -1186,9 +1188,9 @@ class TestHybrid:
             assert np.isfinite(atoms.get_potential_energy())
             return atoms.calc.periodic_problem.weights
 
-        for moments in ([0.0, 0.0], [0.3, -0.3]):
-            weights = hybrid(moments)
-            assert len(weights) == 3 and np.allclose(weights, 1 / 3)
+        assert np.allclose(sorted(hybrid([0.0, 0.0])), [1 / 3, 2 / 3])
+        weights = hybrid([0.3, -0.3])
+        assert len(weights) == 3 and np.allclose(weights, 1 / 3)
 
     @pytest.mark.parametrize("options", [
         dict(xc="pbe", exxdiv_treatment="gygi-baldereschi"),

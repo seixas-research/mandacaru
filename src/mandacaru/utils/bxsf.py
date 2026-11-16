@@ -32,11 +32,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from ..core.atomic import atomic_path
 from ..resources import native_context
-
-#: Values per line in a band block.
-BXSF_VALUES_PER_LINE = 6
 
 
 @dataclass
@@ -66,39 +62,11 @@ def write_bxsf(path, energies, reciprocal_cell, fermi_level: float, comment: str
     return str(path)
 
 
-def read_bxsf(path) -> BandGrid:
+def read_bxsf(path, *, resources=None) -> BandGrid:
     """Read a ``.bxsf`` file written by :func:`write_bxsf` (or any writer of
-    the same single-block layout) back into a :class:`BandGrid`."""
-    with open(path, encoding="utf-8") as handle:
-        tokens = [line.strip() for line in handle]
-    fermi = None
-    for line in tokens:
-        if line.lower().startswith("fermi energy:"):
-            fermi = float(line.split(":", 1)[1])
-            break
-    if fermi is None:
-        raise ValueError(f"{path}: no 'Fermi Energy:' line in BEGIN_INFO")
-    start = next(i for i, line in enumerate(tokens)
-                 if line.upper().startswith("BEGIN_BANDGRID_3D"))
-    n_bands = int(tokens[start + 1])
-    shape = tuple(int(n) for n in tokens[start + 2].split())
-    cell = np.array([[float(x) for x in tokens[start + 4 + i].split()]
-                     for i in range(3)])
-    count = 1
-    for n in shape:
-        count *= n
-    bands = []
-    line = start + 7
-    for _band in range(n_bands):
-        if not tokens[line].upper().startswith("BAND:"):
-            raise ValueError(f"{path}: expected 'BAND:' at line {line + 1}")
-        line += 1
-        values: list[float] = []
-        while len(values) < count:
-            values.extend(float(x) for x in tokens[line].split())
-            line += 1
-        bands.append(np.asarray(values).reshape(shape))
-    # Drop the closing planes: the periodic mesh is what was computed.
-    energies = np.asarray(bands)[:, :-1, :-1, :-1]
-    return BandGrid(energies=energies, reciprocal_cell=cell,
-                    fermi_level=fermi)
+    the same single-block layout) back into a :class:`BandGrid`; the file is
+    parsed in Rust (``volumetric::read_bxsf``)."""
+    raw = native_context(resources).read_bands(str(path))
+    return BandGrid(energies=raw["energies"],
+                    reciprocal_cell=np.asarray(raw["reciprocal_cell"], dtype=float),
+                    fermi_level=float(raw["fermi_level"]))

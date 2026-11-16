@@ -208,3 +208,33 @@ pub fn local_derivatives(
         })
         .collect())
 }
+
+/// `points` nodes `i r_max / (points + 1)`, `i = 1..=points`: a uniform grid that excludes both
+/// the origin and `r_max`.
+pub fn uniform_grid(points: usize, r_max: f64) -> Vec<f64> {
+    let step = r_max / (points as f64 + 1.0);
+    (1..=points).map(|i| i as f64 * step).collect()
+}
+
+/// `v_i r_i^2 dr_i` with the trapezoid weights `dr_i` of the radial grid `r` (half intervals at
+/// the ends): the integrand of a radial transform.
+pub fn trapezoid_r2_weights(r: &[f64], values: &[f64]) -> Result<Vec<f64>> {
+    let nr = r.len();
+    if values.len() != nr || nr < 2 {
+        return Err(crate::Error::Invalid(
+            "r and values must have matching length >= 2".into(),
+        ));
+    }
+    Ok((0..nr)
+        .map(|i| {
+            let dr = if i == 0 {
+                0.5 * (r[1] - r[0])
+            } else if i == nr - 1 {
+                0.5 * (r[nr - 1] - r[nr - 2])
+            } else {
+                0.5 * (r[i + 1] - r[i - 1])
+            };
+            values[i] * r[i] * r[i] * dr
+        })
+        .collect())
+}

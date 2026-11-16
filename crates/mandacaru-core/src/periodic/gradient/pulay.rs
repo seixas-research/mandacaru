@@ -103,6 +103,24 @@ struct KData {
 }
 
 pub fn contract<D: Derivatives>(d: &D, frozen: &Frozen<D::Fields>) -> Result<Pulay> {
+    let reference = d.layout().reference;
+    contract_matrices(d, &frozen.fields, frozen.hubbard.as_deref(), |s, k| {
+        let bands = &frozen.state.bands[s][k];
+        (bands.density(), bands.weighted(reference))
+    })
+}
+
+/// [`contract`] at any density `D` and energy-weighted density `W` of each `(spin, k)`
+/// (`matrices(spin, k)`, Hermitian `m x m`, in the provider's rows; not necessarily those of
+/// bands: the relaxed densities of a correlated state are not positive), with `extra[spin]`
+/// added to the projector operator (the +U operator of the crystal; the Hartree-Fock one-center
+/// operator of the PAW-LCAO supercell).
+pub fn contract_matrices<D: Derivatives>(
+    d: &D,
+    fields: &D::Fields,
+    extra: Option<&[Matrix]>,
+    matrices: impl Fn(usize, usize) -> (Matrix, Matrix) + Sync,
+) -> Result<Pulay> {
     let l = d.layout();
     let mut out = Pulay::new(l.atoms);
     let terms = Term::of(&l.request.functional)?;
@@ -121,9 +139,9 @@ pub fn contract<D: Derivatives>(d: &D, frozen: &Frozen<D::Fields>) -> Result<Pul
         for s in 0..l.spins {
             let crosses = terms
                 .iter()
-                .map(|&t| d.cross(s, k, t, &frozen.fields).map(|g| (t, g)))
+                .map(|&t| d.cross(s, k, t, fields).map(|g| (t, g)))
                 .collect::<Result<Vec<_>>>()?;
-            let spheres = d.sphere_cross(s, k, &frozen.fields)?;
+            let spheres = d.sphere_cross(s, k, fields)?;
             spins.push((crosses, spheres));
         }
         let spin_orbit = if l.request.spinor {
@@ -150,8 +168,7 @@ pub fn contract<D: Derivatives>(d: &D, frozen: &Frozen<D::Fields>) -> Result<Pul
             spin_orbit,
         } = data;
         for (s, (crosses, spheres)) in spins.into_iter().enumerate() {
-            let bands = &frozen.state.bands[s][k];
-            let (density, weighted) = (bands.density(), bands.weighted(l.reference));
+            let (density, weighted) = matrices(s, k);
             let w = l.degeneracy * l.weights[k];
             for (term, g) in &crosses {
                 // P1 enters the energy through -W dS, every other term through D dH.
@@ -174,8 +191,7 @@ pub fn contract<D: Derivatives>(d: &D, frozen: &Frozen<D::Fields>) -> Result<Pul
                     out.short_range[atom][axis] -= t;
                 }
             }
-            let hubbard = frozen.hubbard.as_ref().map(|o| &o[s]);
-            let operator = projector_operator(d, &frozen.fields, hubbard);
+            let operator = projector_operator(d, fields, extra.map(|o| &o[s]));
             let cd = c.adjoint() * &density;
             let z = &operator * &cd - d.augmentation() * c.adjoint() * &weighted;
             for (axis, ga) in gc.iter().enumerate() {
@@ -197,13 +213,13 @@ pub fn contract<D: Derivatives>(d: &D, frozen: &Frozen<D::Fields>) -> Result<Pul
             // The spin-orbit matrix moves with the atoms only through its own projections: no
             // `dS`, no hat, no `W`. `D` is the spinor density in the provider's frame.
             let so = d.spin_orbit()?;
-            for bands in frozen.state.bands.iter().map(|s| &s[k]) {
+            for s in 0..l.spins {
                 so.add_k(
                     &mut out.spin_orbit,
                     l.degeneracy * l.weights[k],
                     &c_so,
                     &g_so,
-                    &bands.density(),
+                    &matrices(s, k).0,
                 )?;
             }
         }

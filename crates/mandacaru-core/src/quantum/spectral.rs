@@ -20,8 +20,7 @@
 //! holds sector-sized vectors: it is an exact-state analysis, never part of a shot-based run.
 use super::{sparse::SparseMatrix, Basis, Encoding, C64};
 use crate::molecular::transform::Model;
-use crate::{product, Context, Error, Result};
-use nalgebra::{DMatrix, SymmetricEigen};
+use crate::{Context, Error, Result};
 
 fn invalid(message: impl Into<String>) -> Error {
     Error::Invalid(message.into())
@@ -99,71 +98,16 @@ fn ladder(
     Ok(())
 }
 
-/// Lanczos recursion with full reorthogonalization from `start` (not normalized): returns the
-/// Ritz values and weights `|start|^2 U_0j^2`.
+/// The Lanczos poles of `h` from `start` (not normalized): the Ritz values and weights
+/// `|start|^2 U_0j^2` of the shared recursion ([`crate::math::lanczos`]).
 fn lanczos(ctx: &Context, h: &SparseMatrix, start: &[C64], krylov: usize) -> Result<Poles> {
-    let d = start.len();
-    let norm2: f64 = start.iter().map(|v| v.norm_sqr()).sum();
-    if norm2 <= 1e-28 {
-        return Ok(Poles::default());
-    }
-    let steps = krylov.min(d).max(1);
-    let _memory = ctx.reserve(product(&[steps + 2, d, 16])?)?;
-    let mut basis: Vec<Vec<C64>> = Vec::with_capacity(steps);
-    let scale = 1. / norm2.sqrt();
-    basis.push(start.iter().map(|v| v * scale).collect());
-    let mut alpha = Vec::with_capacity(steps);
-    let mut beta: Vec<f64> = Vec::with_capacity(steps);
-    let mut w = vec![C64::default(); d];
-    for i in 0..steps {
-        h.apply_into(&basis[i], &mut w);
-        let a: f64 = basis[i]
-            .iter()
-            .zip(&w)
-            .map(|(v, x)| (v.conj() * x).re)
-            .sum();
-        alpha.push(a);
-        if i + 1 == steps {
-            break;
-        }
-        // Full reorthogonalization, twice (classical Gram-Schmidt is stable when repeated).
-        for _ in 0..2 {
-            for v in &basis {
-                let overlap: C64 = v.iter().zip(&w).map(|(v, x)| v.conj() * x).sum();
-                for (x, v) in w.iter_mut().zip(v) {
-                    *x -= overlap * v;
-                }
-            }
-        }
-        let b = w.iter().map(|v| v.norm_sqr()).sum::<f64>().sqrt();
-        let spread = alpha.iter().map(|v| v.abs()).fold(1f64, f64::max);
-        if b <= 1e-12 * spread {
-            break;
-        }
-        beta.push(b);
-        basis.push(w.iter().map(|v| v / b).collect());
-    }
-    let k = alpha.len();
-    let t = DMatrix::from_fn(k, k, |i, j| {
-        if i == j {
-            alpha[i]
-        } else if i + 1 == j {
-            beta[i]
-        } else if j + 1 == i {
-            beta[j]
-        } else {
-            0.
-        }
-    });
-    let eigen = SymmetricEigen::new(t);
-    let mut order: Vec<usize> = (0..k).collect();
-    order.sort_by(|&a, &b| eigen.eigenvalues[a].total_cmp(&eigen.eigenvalues[b]));
+    let ritz = crate::math::lanczos::poles(ctx, start, krylov, |v, out| {
+        h.apply_into(v, out);
+        Ok(())
+    })?;
     Ok(Poles {
-        energies: order.iter().map(|&j| eigen.eigenvalues[j]).collect(),
-        weights: order
-            .iter()
-            .map(|&j| norm2 * eigen.eigenvectors[(0, j)].powi(2))
-            .collect(),
+        energies: ritz.energies,
+        weights: ritz.weights,
     })
 }
 

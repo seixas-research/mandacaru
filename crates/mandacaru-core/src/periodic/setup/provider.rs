@@ -695,6 +695,7 @@ impl Derivatives for SetupDerivatives<'_> {
             local,
             moments,
             xc,
+            core_kinetic,
             weights,
             kinetic,
         } = output;
@@ -704,19 +705,10 @@ impl Derivatives for SetupDerivatives<'_> {
             weights.as_slice().to_vec(),
             moments.as_slice().to_vec(),
         );
-        let spinor = self.layout.request.spinor;
-        fields.kinetic = kinetic.map(|v| {
-            let blocks: Vec<Vec<f64>> = v.as_slice().chunks(n).map(<[f64]>::to_vec).collect();
-            // E6's potential: the spin average of a collinear crystal; for a spinor the charge
-            // channel, `(v_up + v_dn) / 2` of the local frame (the core tau is unpolarized).
-            let average = if spinor {
-                blocks[0].clone()
-            } else {
-                (0..n)
-                    .map(|k| blocks.iter().map(|b| b[k]).sum::<f64>() / blocks.len() as f64)
-                    .collect()
-            };
-            (blocks, average)
+        // E6's potential, `output_fields`'s `core_kinetic`: the spin average of the frame's
+        // `v_tau` (the core tau is unpolarized).
+        fields.kinetic = kinetic.zip(core_kinetic).map(|(v, average)| {
+            (v.as_slice().chunks(n).map(<[f64]>::to_vec).collect(), average.as_slice().to_vec())
         });
         fields.bands = bands;
         fields._held = Some(held);

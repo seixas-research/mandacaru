@@ -402,3 +402,98 @@ fn a_magnetic_spinor_r2scan_crystal_force_is_the_reconverged_finite_difference()
     eprintln!("{}: F(spinor) - F(UKS) = {:+.3e} Ha/Bohr", case.label, spinor - collinear);
     assert!((spinor - collinear).abs() < GATE, "{}: the spinor force is not the UKS one", case.label);
 }
+
+/// MG-F8 5a: three hydrogen atoms with weakly coupled, noncollinear moments (`triangle_input`),
+/// so the frame of the meta-GGA turns in space by more than a radian and the gradient form
+/// `u . grad m` with its frame term is live in the force; the collinear and time-reversal cases
+/// above are blind to it. Each gated component is one atom along one axis; the oracle is the
+/// Richardson difference of free energies reconverged at displaced positions. With `core` the
+/// hydrogen carries a synthetic smooth partial core (`triangle_species`), so the `Some(core)` arm of
+/// the exact `dE / d core` (E5 and E6 through `CoreSources`) runs at SCF level: the components are
+/// the ones where the old Pauli-charge-channel term missed the finite difference by 2.7 to 5.7 gates
+/// (atom 1 along x and y, atom 0 along y; the exact term misses by 1.4e-9, 6e-10 and 2.4e-7).
+/// The largest displacement is 1e-3 Bohr for the plain triangle and 1.25e-4 for the cored one: the
+/// cored state is soft, and its Richardson miss falls with the pair of steps toward the analytic
+/// force (atom 1 along x: 1.6e-5, 1.0e-7, -5.4e-8, -4.6e-8 at the pairs 1e-3/5e-4, 5e-4/2.5e-4,
+/// 2.5e-4/1.25e-4, 1.25e-4/6e-5; atom 0 along y: 3.6e-5, 1.4e-5, 3.5e-6, 1.6e-7), so the gate takes
+/// the pair 1.25e-4/6.25e-5 (`dev_plan/DECISIONS.md`, MG-F8 5a cored gates).
+fn triangle_force(core: bool, largest_step: f64) {
+    let started = std::time::Instant::now();
+    let ctx = context();
+    let species = triangle_species(&ctx, core);
+    let (files, datasets) = (species.files.clone(), species.datasets.clone());
+    let base = triangle_input(files, Matrix3::zeros());
+    let options = Options { tolerance: 1e-12, density_tolerance: 1e-9, max_iterations: 1000, ..Options::default() };
+    let crystal = textured_triangle(&ctx, &base, &datasets);
+    let result = crystal.solve(&options).unwrap();
+    assert!(result.converged, "the reference SCF did not converge");
+    let turn = frame_turn(result.density.as_slice());
+    eprintln!("H3{}: the magnetization axis turns by {turn:.3} rad, {} iterations", if core { " with a core" } else { "" }, result.history.len());
+    assert!(turn > 1., "the magnetization axis turns by {turn:e} rad: not a noncollinear texture");
+    let breakdown = response::breakdown(&crystal, &result).unwrap();
+    let forces = breakdown.forces();
+    // Atom 0 along x, atom 1 along y, atom 2 along z (Cartesian); with a core the components where
+    // the Pauli-channel term missed most: atom 1 along x and y, atom 0 along y. A displacement `step`
+    // along `direction` is the fractional step `inverse * step * direction`.
+    let components: [(usize, [f64; 3]); 3] = if core {
+        [(1, [1., 0., 0.]), (1, [0., 1., 0.]), (0, [0., 1., 0.])]
+    } else {
+        [(0, [1., 0., 0.]), (1, [0., 1., 0.]), (2, [0., 0., 1.])]
+    };
+    if core {
+        let peak = crystal.core.as_slice().iter().cloned().fold(0., f64::max);
+        assert!(peak > 0.035, "the synthetic core is not in the crystal: peak {peak:e}");
+        // E5 and E6 are live, and a grid proxy of the Pauli expression's gap (`pauli_core_force_gap`)
+        // is above three gates.
+        for (atom, direction) in components {
+            let e5: f64 = (0..3).map(|c| breakdown.core[atom][c] * direction[c]).sum();
+            let e6: f64 = (0..3).map(|c| breakdown.core_kinetic[atom][c] * direction[c]).sum();
+            assert!(e5.abs() > 100. * GATE && e6.abs() > 100. * GATE, "atom {atom}: E5 {e5:e} and E6 {e6:e} are too small to be tested");
+        }
+        let gap = pauli_core_force_gap(&crystal, &result);
+        eprintln!("H3 with a core: the Pauli-channel core term would move the translation force by {:+.3e} {:+.3e} {:+.3e} Ha/Bohr", gap[0], gap[1], gap[2]);
+        assert!(gap.iter().cloned().fold(0., |m: f64, g| m.max(g.abs())) > 3. * GATE, "the Pauli-channel expression is as good as the exact one: {gap:?}");
+    }
+    let inverse = base.lattice.try_inverse().unwrap();
+    let mut worst = 0f64;
+    for (atom, direction) in components {
+        let energy = |step: f64| {
+            let mut displaced = base.clone();
+            let shift = inverse * nalgebra::Vector3::from(direction) * step;
+            for c in 0..3 {
+                displaced.atoms[atom].fractional[c] += shift[c];
+            }
+            let mut moved = textured_triangle(&ctx, &displaced, &datasets);
+            restart(&mut moved, result.density.as_slice());
+            let state = moved.solve(&options).unwrap();
+            assert!(state.converged, "a displaced SCF did not converge");
+            eprintln!("  atom {atom} step {step:+.2e}: free energy {:.12} Ha in {} iterations, moment {:.6}", state.free_energy, state.history.len(), state.magnetization);
+            state.free_energy
+        };
+        let coarse = -(energy(largest_step) - energy(-largest_step)) / (2. * largest_step);
+        let fine = -(energy(0.5 * largest_step) - energy(-0.5 * largest_step)) / largest_step;
+        let oracle = (4. * fine - coarse) / 3.;
+        let analytic: f64 = (0..3).map(|c| forces[atom][c] * direction[c]).sum();
+        let miss = (analytic - oracle).abs();
+        eprintln!("H3 atom {atom} along {direction:?}: force {analytic:+.10e}, oracle {oracle:+.10e} (central {coarse:+.10e} / {fine:+.10e}), miss {miss:.2e} Ha/Bohr; {:.0} s", started.elapsed().as_secs_f64());
+        assert!(oracle.abs() > 100. * GATE, "the oracle {oracle:e} is not above its gate");
+        worst = worst.max(miss);
+        // Every component is printed before the first failure stops the test.
+        if miss >= GATE {
+            eprintln!("atom {atom} along {direction:?}: {miss:e} against {GATE:e}");
+        }
+    }
+    assert!(worst < GATE, "the worst miss {worst:e} against {GATE:e}");
+}
+
+#[test]
+#[ignore = "slow: 49 s (measured 2026-11-16); run: cargo test --profile release-test -p mandacaru-core --test periodic_gradient_xc -- --ignored a_hydrogen_triangle"]
+fn a_hydrogen_triangle_noncollinear_spinor_r2scan_crystal_force_is_the_reconverged_finite_difference() {
+    triangle_force(false, 1e-3);
+}
+
+#[test]
+#[ignore = "slow: 129 s (measured 2026-11-16 on a loaded machine); run: cargo test --profile release-test -p mandacaru-core --test periodic_gradient_xc -- --ignored a_cored_hydrogen_triangle"]
+fn a_cored_hydrogen_triangle_noncollinear_spinor_r2scan_crystal_force_is_the_reconverged_finite_difference() {
+    triangle_force(true, 1.25e-4);
+}

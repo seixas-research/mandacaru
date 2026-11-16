@@ -50,6 +50,15 @@ pub fn multipole_gradient(radius: f64, l: usize, m: i32, delta: [f64; 3]) -> [f6
 /// `value` and `slope` at `|delta|`.
 pub fn radial_gradient(value: f64, slope: f64, l: usize, m: i32, delta: [f64; 3]) -> [f64; 3] {
     let r = delta.iter().map(|v| v * v).sum::<f64>().sqrt();
+    if r == 0. && l == 1 {
+        // On the center a p function `f(r) Y_1m` with `f ~ slope r` is the linear polynomial
+        // `slope r Y_1m(r_hat)`: its gradient is `slope` times the harmonic of each axis, the same
+        // limit from every side (the formula below has neither `r_hat` nor `grad Y` there).
+        return std::array::from_fn(|axis| {
+            let unit = std::array::from_fn(|i| f64::from(u8::from(i == axis)));
+            slope * crate::math::angular::normalized(l, m, unit)
+        });
+    }
     let harmonic = crate::math::angular::cartesian(l, m, delta);
     let angular = crate::math::angular::cartesian_gradient(l, m, delta);
     let unit = if r > 0. {

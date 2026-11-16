@@ -28,10 +28,10 @@ OUT = Path(__file__).parent / "reference" / "excitations.json"
 SETTINGS = dict(method="dft", basis={"name": "PAW-LCAO", "size": "DZP"}, grid_spacing=0.25,
                 parallelization={"threads": 2})
 NUM_STATES = 5
-#: r2SCAN water and NH2 are not frozen yet: the gauge-invariant kinetic density adds a
-#: current-current term to the r2SCAN A - B that would move those roots, and the owner decides
-#: that first (TDDFT_PLAN Q19, section 13). Add "r2scan" here when it is decided.
-XCS = ("lda", "pbe", "hse06")
+#: r2SCAN joined on 2026-11-15, after its A - B gained the current-current term of the
+#: gauge-invariant kinetic density (owner decision Q19a, TDDFT_PLAN T6c-m); frozen against the
+#: library state of the other cases (mandacaru-paw f3ebfbd).
+XCS = ("lda", "pbe", "hse06", "r2scan")
 #: The +U case: CuH (closed shell) with the Dudarev correction on the copper d shell (eV).
 HUBBARD = {"Cu": {"l": "d", "U": 4.0}}
 

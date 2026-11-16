@@ -303,6 +303,36 @@ class TestTheDeterminantDensity:
             assert np.trace(block).real == pytest.approx(count)
 
 
+class TestStabilityFollowing:
+    """A Hartree-Fock run never returns a saddle of its own surface as converged
+    (``molecular::scf`` stability following, RHF and UHF alike)."""
+
+    @staticmethod
+    def _run(symbols, bond, method):
+        atoms = Atoms(symbols, positions=[[0, 0, 0], [0, 0, bond]], cell=[6.0] * 3)
+        atoms.center()
+        atoms.calc = Mandacaru(method=method, grid_spacing=0.3, trace=False,
+                               basis={"name": "PAW-LCAO", "size": "SZ"})
+        energy = atoms.get_potential_energy()
+        return energy, atoms.calc.native_reference.converged
+
+    def test_the_singlet_oxygen_uhf_is_not_above_its_rhf(self):
+        """Before UHF was followed, its cold start stopped on the saddle the RHF
+        leaves, 9.6e-4 Ha above the RHF (this box and grid)."""
+        rhf, rhf_converged = self._run("O2", 1.2065, "rhf")
+        uhf, uhf_converged = self._run("O2", 1.2065, "uhf")
+        assert rhf_converged and uhf_converged
+        assert uhf <= rhf + 1e-6
+
+    def test_a_stretched_nitrogen_rhf_leaves_its_saddle(self):
+        """At 1.8 A the cold-start RHF stops on a saddle of the closed-shell
+        surface (-515.946 eV here, returned converged before the lowest root
+        was searched densely); the followed minimum lies 1.49 eV below."""
+        energy, converged = self._run("N2", 1.7992, "rhf")
+        assert converged
+        assert energy < -515.946 - 1.0
+
+
 class TestInitialMomentsOfACrystal:
     """A crystal with nonzero initial magnetic moments automatically calculates with spin=True."""
 

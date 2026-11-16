@@ -77,6 +77,7 @@ pub struct Augmentation<'a> {
     sites: Sites<'a>,
     shapes: &'a Shapes,
     one_center: Option<&'a dyn OneCenter>,
+    reversal: Option<&'a [(usize, usize, f64)]>,
 }
 
 impl<'a> Augmentation<'a> {
@@ -103,6 +104,7 @@ impl<'a> Augmentation<'a> {
             sites,
             shapes,
             one_center: None,
+            reversal: None,
         })
     }
     /// The same augmentation with a one-center model attached.
@@ -110,6 +112,27 @@ impl<'a> Augmentation<'a> {
         self.one_center = Some(model);
         self
     }
+    /// The same augmentation with the time reversal of the crystal's projectors, entries
+    /// `(target, source, sign)`: `<p_target | psi_{-k}> = sign conj(<p_source | psi_k>)`. A
+    /// time-reversal-halved mesh needs it to build the states at the missing `-k`.
+    pub fn with_time_reversal(mut self, reversal: &'a [(usize, usize, f64)]) -> Self {
+        self.reversal = Some(reversal);
+        self
+    }
+
+    /// `<p | psi_{-k}>` from the output of [`Augmentation::project`] at `k`, every component.
+    pub(super) fn reversed(&self, c: &Crystal, projected: &[C64]) -> Result<Vec<C64>> {
+        let map = self.reversal.ok_or_else(|| {
+            invalid("this augmentation carries no time reversal of its projectors")
+        })?;
+        reverse(map, c.p, projected)
+    }
+
+    /// The time reversal of the crystal's projectors, when attached.
+    pub(super) fn reversal(&self) -> Option<&'a [(usize, usize, f64)]> {
+        self.reversal
+    }
+
     pub(super) fn one_center(&self) -> Option<&'a dyn OneCenter> {
         self.one_center
     }
@@ -239,6 +262,20 @@ impl<'a> Augmentation<'a> {
         }
         out
     }
+}
+
+/// `out[target] = sign conj(a[source])` of every `p`-long component of `a`.
+pub(super) fn reverse(map: &[(usize, usize, f64)], p: usize, a: &[C64]) -> Result<Vec<C64>> {
+    if map.len() != p {
+        return Err(invalid("the time reversal of the projectors does not cover the crystal's p"));
+    }
+    let mut out = vec![C64::default(); a.len()];
+    for (o, chunk) in out.chunks_mut(p).zip(a.chunks(p)) {
+        for &(target, source, sign) in map {
+            o[target] = chunk[source].conj() * sign;
+        }
+    }
+    Ok(out)
 }
 
 /// `row += sum_a moments[a] * shapes[a, :]`: the compensation charges of one pair, added to its

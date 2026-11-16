@@ -6,8 +6,10 @@
 //! `dft::fock_and_energy` (the grid terms read `Re D`, exact in the real basis; the PAW one-center
 //! terms are linearized at the reference atom and live in the constant core matrix, so nothing in
 //! the spheres is recomputed), Hartree-Fock as `h + J[D] - K[D]` with the SCF's pair factors and
-//! the whole complex `D` in the exchange. The Poisson solver, the screening of a hybrid and the
-//! grid scratch are built once.
+//! the whole complex `D` in the exchange. The Poisson solver, the screening of a hybrid, the
+//! orbital gradients of a meta-GGA and the grid scratch are built once. A meta-GGA sees the
+//! gauge-invariant kinetic density `tau~ = tau - |j|^2 / (2 n)` of the complex orbitals
+//! (`dft::evaluate_with`; TDDFT_PLAN.md 13.6.1, owner decision Q19a).
 //!
 //! A uniform vector potential `A` along `e` (the velocity gauge) adds `A e.P + (A^2 / 2) 1` to
 //! every channel, `P = -i <a|grad|b>` the Hermitian momentum matrix (the T2 operator with its
@@ -28,6 +30,8 @@ enum Theory {
         poisson: Poisson,
         screening: Option<dft::Screening>,
         scratch: (Buffer<C64>, Buffer<C64>),
+        /// The orbital gradients of a meta-GGA (its kinetic density and current), built once.
+        gradients: Option<crate::math::storage::RealSamples>,
     },
     HartreeFock {
         core: Matrix,
@@ -58,6 +62,11 @@ impl<'a> MolecularMap<'a> {
                     poisson: Poisson::isolated(ctx, &integrals.grid)?,
                     screening: integrals.screening(name)?,
                     scratch: (ctx.allocate::<C64>(n)?, ctx.allocate::<C64>(n)?),
+                    gradients: if crate::models::functional(name)?.requires_tau {
+                        Some(dft::orbital_gradients(integrals)?)
+                    } else {
+                        None
+                    },
                 }
             }
             None => {
@@ -98,13 +107,14 @@ impl<'a> MolecularMap<'a> {
                 poisson,
                 screening,
                 scratch,
+                gradients,
             } => dft::fock_and_energy(
                 integrals,
                 core,
                 densities,
                 name,
                 poisson,
-                None,
+                gradients.as_ref(),
                 screening.as_ref(),
                 (scratch.0.as_mut_slice(), scratch.1.as_mut_slice()),
             ),

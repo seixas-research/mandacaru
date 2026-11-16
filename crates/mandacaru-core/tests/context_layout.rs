@@ -192,3 +192,50 @@ fn a_one_processor_context_runs_its_lanes_on_the_calling_thread() {
         .all(|(i, &(j, id))| i == j && id == caller));
     assert_eq!(ctx.workers_total(), 0);
 }
+
+#[test]
+fn the_auto_layout_spreads_the_processors_over_the_tasks_it_has_and_shrinks_to_the_budget() {
+    let ctx = Context::new(Some(6), 64 << 20)
+        .unwrap()
+        .with_auto_layout()
+        .unwrap();
+    assert!(ctx.auto_layout());
+    assert_eq!(ctx.layout().workers(), 6);
+    assert_eq!(
+        ctx.lanes(Level::Kpts, 4),
+        4,
+        "one lane per task up to the processors"
+    );
+    assert_eq!(ctx.lanes(Level::Kpts, 10), 6);
+    assert_eq!(ctx.lanes(Level::Bands, 10), 1);
+    // Three tasks on six processors: three lanes of two workers each.
+    let mut lanes = vec![(); ctx.lanes(Level::Kpts, 3)];
+    let out = ctx
+        .map_tasks(Level::Kpts, &mut lanes, 3, |_, i| Ok((i, ctx.width())))
+        .unwrap();
+    assert_eq!(out, vec![(0, 2), (1, 2), (2, 2)]);
+    assert_eq!(ctx.width(), 6);
+    // Lanes that do not fit are fewer lanes, never a refusal.
+    let small = Context::new(Some(4), 10_000)
+        .unwrap()
+        .with_auto_layout()
+        .unwrap();
+    assert_eq!(small.fit_lanes(Level::Kpts, 4, 3000).unwrap(), 3);
+    let _held = small.reserve(9_500).unwrap();
+    assert_eq!(small.fit_lanes(Level::Kpts, 4, 3000).unwrap(), 1);
+    // An explicit layout is refused as before, and asks for no auto on top of it.
+    let explicit = Context::new(Some(1), 10_000)
+        .unwrap()
+        .with_layout(4, 1)
+        .unwrap();
+    assert!(explicit.fit_lanes(Level::Kpts, 4, 3000).is_err());
+    assert!(explicit.with_auto_layout().is_err());
+    // Arranging the processors explicitly ends the auto layout.
+    let arranged = Context::new(Some(2), 1 << 20)
+        .unwrap()
+        .with_auto_layout()
+        .unwrap()
+        .with_layout(2, 1)
+        .unwrap();
+    assert!(!arranged.auto_layout());
+}

@@ -66,22 +66,6 @@ def peak_memory_mb() -> float:
     return float(ru) * scale / (1024.0 ** 2)
 
 
-def current_memory_mb() -> float:
-    """Resident set size of this process *right now*, in MiB.
-
-    The companion of :func:`peak_memory_mb`, which is a monotonic high-water
-    mark: after a stage that allocated and freed a large tensor the peak stays
-    up while this comes back down, so a per-step report needs both.
-    """
-    try:
-        import resource
-        ru = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-        scale = 1.0 if sys.platform == "darwin" else 1024.0
-        return float(ru) * scale / (1024.0 ** 2)
-    except Exception:
-        return float("nan")
-
-
 def cpu_count() -> int | None:
     """Logical CPUs visible to this process (``None`` if undetectable): what the machine
     offers, beside the processors the calculation's layout uses."""
@@ -180,7 +164,6 @@ class Timings:
             "cpu_count": cpu_count(),
             "mpi": "not used (single process, shared-memory scoped threads)",
             "peak_memory_MiB": self.peak_memory_mb,
-            "resident_memory_MiB": current_memory_mb(),
         }
 
     def format_report(self, indent: str = "  ", width: int = 30) -> str:

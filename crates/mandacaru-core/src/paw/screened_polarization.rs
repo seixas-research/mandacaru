@@ -28,7 +28,7 @@ use super::{
     pair_tables::{check, Projector, SpeciesView},
 };
 use crate::{
-    models::xc::{exchange_hole_batch, exchange_hole_hessian_batch},
+    models::xc::{exchange_hole_batch, exchange_hole_curve, exchange_hole_hessian_batch},
     Context, Result,
 };
 use nalgebra::DMatrix;
@@ -319,6 +319,100 @@ impl Polarization {
                 self.exchange_change(&part.fields[0], &doubled(&changes[0]))?,
                 self.exchange_change(&part.fields[1], &doubled(&changes[1]))?,
                 self.exchange_change(&part.fields[2], &d_total)?,
+            ];
+            for spin in 0..2 {
+                let (scaled, whole) = (&fields[spin], &fields[2]);
+                for (value, table) in potentials[spin].iter_mut().zip(&self.tables) {
+                    let (pair, slope) = if smooth {
+                        (&table.ps, &table.d_ps)
+                    } else {
+                        (&table.ae, &table.d_ae)
+                    };
+                    let integrand: Vec<f64> = (0..self.inside)
+                        .map(|k| {
+                            ((scaled.0[k] - whole.0[k]) * pair[k]
+                                + (scaled.1[k] - whole.1[k]) * slope[k])
+                                * self.r[k]
+                                * self.r[k]
+                        })
+                        .collect();
+                    *value += sign * trapezoid(&self.r[..self.inside], &integrand);
+                }
+            }
+        }
+        let matrix = |values: &[f64]| {
+            let mut out = DMatrix::zeros(self.size, self.size);
+            for e in &self.entries {
+                out[(e.a, e.b)] = values[e.table];
+            }
+            out
+        };
+        Ok([matrix(&potentials[0]), matrix(&potentials[1])])
+    }
+
+    /// The `t^2` coefficients of `(local, gradient)` of [`Self::exchange`] along the field
+    /// `density + t change`.
+    fn exchange_second(&self, density: &[f64], change: &[f64]) -> Result<(Vec<f64>, Vec<f64>)> {
+        let slope = gradient_first_edge(&self.r, density)?;
+        let d_slope = gradient_first_edge(&self.r, change)?;
+        let n = self.inside;
+        let (mut local, mut gradient) = (Vec::with_capacity(n), Vec::with_capacity(n));
+        for k in 0..n {
+            let (s, ds) = (slope[k], d_slope[k]);
+            let (e_n, e_s) = exchange_hole_curve(
+                [density[k], change[k], 0.],
+                [s * s, 2. * s * ds, ds * ds],
+                self.omega,
+            )?;
+            local.push(e_n[2]);
+            gradient.push(2. * (e_s[2] * s + e_s[1] * ds));
+        }
+        Ok((local, gradient))
+    }
+
+    /// The second change of the derivatives of `P` ([`Self::evaluate`]'s `up` and `down`) along
+    /// the spin density changes `d_up`, `d_down` from the ground state `up`, `down` (projector
+    /// layout): the `t^2` coefficient of the derivatives at `(up + t d_up, down + t d_down)`,
+    /// half the third derivative of `P` contracted twice with the change. A node floored at zero
+    /// in the ground density does not respond, as in [`Self::linear_response`].
+    pub fn second_change(
+        &self,
+        up: &DMatrix<f64>,
+        down: &DMatrix<f64>,
+        d_up: &DMatrix<f64>,
+        d_down: &DMatrix<f64>,
+    ) -> Result<[DMatrix<f64>; 2]> {
+        let size = (self.size, self.size);
+        if [up, down, d_up, d_down].iter().any(|d| d.shape() != size) {
+            return Err(invalid(
+                "a spin density or its change does not match the projector layout",
+            ));
+        }
+        let mut potentials = [vec![0.; self.tables.len()], vec![0.; self.tables.len()]];
+        for (smooth, sign) in [(false, 1.), (true, -1.)] {
+            let ground = [
+                self.unclamped(up, smooth, true),
+                self.unclamped(down, smooth, true),
+            ];
+            let mut changes = [
+                self.unclamped(d_up, smooth, false),
+                self.unclamped(d_down, smooth, false),
+            ];
+            for (change, ground) in changes.iter_mut().zip(&ground) {
+                for (c, g) in change.iter_mut().zip(ground) {
+                    if *g < 0. {
+                        *c = 0.;
+                    }
+                }
+            }
+            let clamp = |n: &[f64]| n.iter().map(|v| v.max(0.)).collect::<Vec<_>>();
+            let (n_up, n_down) = (clamp(&ground[0]), clamp(&ground[1]));
+            let doubled = |n: &[f64]| n.iter().map(|v| 2. * v).collect::<Vec<_>>();
+            let sum = |a: &[f64], b: &[f64]| a.iter().zip(b).map(|(a, b)| a + b).collect::<Vec<_>>();
+            let fields = [
+                self.exchange_second(&doubled(&n_up), &doubled(&changes[0]))?,
+                self.exchange_second(&doubled(&n_down), &doubled(&changes[1]))?,
+                self.exchange_second(&sum(&n_up, &n_down), &sum(&changes[0], &changes[1]))?,
             ];
             for spin in 0..2 {
                 let (scaled, whole) = (&fields[spin], &fields[2]);

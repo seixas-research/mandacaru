@@ -339,7 +339,7 @@ impl PeriodicSetup {
         // moment blocks as the crystal (the `sites` block a snapshot carries holds exactly these).
         let hybrid = match definition.screened_exchange {
             Some(range) => {
-                crate::periodic::input::hybrid_needs_the_full_mesh(&points, permutations.len())?;
+                crate::periodic::input::hybrid_needs_a_complete_mesh(&points, permutations.len())?;
                 let description = self.description.as_ref().ok_or_else(|| {
                     invalid("a hybrid crystal needs the description of its PAW spheres")
                 })?;
@@ -593,6 +593,26 @@ impl PeriodicSetup {
     /// [`PeriodicSetup::with_geometry`] on this cell: the atoms moved to `fractional`.
     pub fn with_positions(&self, ctx: &Context, fractional: &[[f64; 3]]) -> Result<Self> {
         self.with_geometry(ctx, &self.lattice, fractional)
+    }
+
+    /// This recipe and geometry at the explicit fractional k-points `kpoints` with `weights`, its
+    /// discretization held (as [`PeriodicSetup::with_geometry`]) and no symmetry operation (a
+    /// density of these points is not averaged over a group): the crystal of a PAW-LCAO
+    /// supercell's mesh, whose engines the supercell's force contracts.
+    pub fn with_kpoints(&self, ctx: &Context, kpoints: &[[f64; 3]], weights: &[f64]) -> Result<Self> {
+        let mut input = self.recipe.clone().ok_or_else(|| {
+            crate::Error::Unsupported(
+                "this setup holds no request to rebuild at other k-points from".into(),
+            )
+        })?;
+        input.mesh = None;
+        input.kpoints_frac = kpoints.to_vec();
+        input.weights = weights.to_vec();
+        input.symmetry = false;
+        input.grid_shape = self.pins.grid_shape;
+        input.filter_cutoff = Some(self.pins.filter_cutoff);
+        input.sigma = Some(self.pins.sigma);
+        create_setup(ctx, input, self.datasets.clone())
     }
 
     /// The fractional coordinates of the atoms in this cell.

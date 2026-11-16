@@ -410,6 +410,9 @@ fn a_far_fallback_cutoff_is_noted() {
     let mut recipe = Recipe::for_dataset("Si", "lda", Treatment::Scalar).unwrap();
     let ordinary = generate(&ctx, &recipe).unwrap();
     assert!(ordinary.notes.is_empty(), "{:?}", ordinary.notes);
+    // Silicon tabulates its radii, so the table is emptied: every channel then takes the fallback,
+    // `rc_factor` times the outermost peak of its first reference.
+    recipe.cutoff_table.clear();
     recipe.rc_factor = 1.6;
     let generated = generate(&ctx, &recipe).unwrap();
     assert!(

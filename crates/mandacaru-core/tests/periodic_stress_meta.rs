@@ -223,3 +223,88 @@ fn a_spin_orbit_r2scan_crystal_stress_is_the_reconverged_finite_difference() {
     };
     check(&case, &[(0, 0), (0, 1)]);
 }
+
+/// MG-F8 5a: three hydrogen atoms with weakly coupled, noncollinear moments (`triangle_input`),
+/// so the frame of the meta-GGA turns in space by more than a radian: the gradient form
+/// `u . grad m`, its frame term and the strain of the frame's gradients (X-3 on the frame's
+/// arrays) are live in the stress, which the collinear and time-reversal cases above cannot see.
+/// The unsymmetrized entries are compared (a magnetic state has a torque); the oracle is the
+/// Richardson difference of free energies reconverged at `x -> (1 + eps) x`. The energy of these
+/// soft textures has large higher derivatives in the strain (the angles between the moments are a
+/// nearly flat direction), so the step is part of the gate. Plain triangle: the pair 1e-4 and 5e-5;
+/// at the pair 2e-4 and 1e-4 the analytic g20 is right and the oracle truncates by 8.0e-7 Ha, and
+/// the miss falls with the step to 5.0e-8 (g20 at 1e-4/5e-5; ladder 1.7e-6, 8.0e-7, 5.0e-8 at the
+/// pairs 4e-4/2e-4, 2e-4/1e-4, 1e-4/5e-5). Cored triangle: the pair 5e-5 and 2.5e-5; the miss of
+/// g11 is 1.9e-5, 2.4e-6 and 1.5e-7 Ha at the pairs 2e-4/1e-4, 1e-4/5e-5 and 5e-5/2.5e-5
+/// (`dev_plan/DECISIONS.md`, MG-F8 5a cored gates). With `core` the hydrogen
+/// carries a synthetic smooth partial core (`triangle_species`), so X-4 and X-5 take the exact
+/// `dE / d core` and `dE / d core_tau` of a turning frame (`CoreSources`) at SCF level.
+fn triangle_stress(core: bool, largest_step: f64) {
+    let started = std::time::Instant::now();
+    let ctx = context();
+    let species = triangle_species(&ctx, core);
+    let (files, datasets) = (species.files.clone(), species.datasets.clone());
+    let options = Options { tolerance: 1e-12, density_tolerance: 1e-9, max_iterations: 1000, ..Options::default() };
+    let crystal = textured_triangle(&ctx, &triangle_input(files.clone(), Matrix3::zeros()), &datasets);
+    let result = crystal.solve(&options).unwrap();
+    assert!(result.converged, "the reference SCF did not converge");
+    let turn = frame_turn(result.density.as_slice());
+    eprintln!("H3{}: the magnetization axis turns by {turn:.3} rad, {} iterations", if core { " with a core" } else { "" }, result.history.len());
+    assert!(turn > 1., "the magnetization axis turns by {turn:e} rad: not a noncollinear texture");
+    let stress = response::stress_all_entries(&crystal, &result).unwrap();
+    let b = &stress.breakdown;
+    if core {
+        let peak = crystal.core.as_slice().iter().cloned().fold(0., f64::max);
+        assert!(peak > 0.035, "the synthetic core is not in the crystal: peak {peak:e}");
+    }
+    let mut worst = 0f64;
+    for (a, c) in [(0, 0), (1, 1), (2, 2), (0, 1), (1, 2), (2, 0)] {
+        let energy = |step: f64| {
+            let mut eps = Matrix3::zeros();
+            eps[(a, c)] = step;
+            let mut strained = textured_triangle(&ctx, &triangle_input(files.clone(), eps), &datasets);
+            restart(&mut strained, result.density.as_slice());
+            let state = strained.solve(&options).unwrap();
+            assert!(state.converged, "a strained SCF did not converge");
+            state.free_energy
+        };
+        let coarse = (energy(largest_step) - energy(-largest_step)) / (2. * largest_step);
+        let fine = (energy(0.5 * largest_step) - energy(-0.5 * largest_step)) / largest_step;
+        let oracle = (4. * fine - coarse) / 3.;
+        let got = stress.gradient[a][c];
+        let miss = (got - oracle).abs();
+        eprintln!(
+            "H3 g_{a}{c}: analytic {got:+.10e}, oracle {oracle:+.10e} (central {coarse:+.10e} / {fine:+.10e}), miss {miss:.2e} Ha; S-6 {:+.3e}, X-4 {:+.3e}, X-5 {:+.3e}; {:.0} s",
+            b.kinetic_density[a][c],
+            b.xc_core[a][c],
+            b.xc_core_kinetic[a][c],
+            started.elapsed().as_secs_f64()
+        );
+        assert!(oracle.abs() > 10. * GATE, "the oracle {oracle:e} is not above its gate");
+        assert!(b.kinetic_density[a][c].abs() > 100. * GATE, "S-6 is too small to be tested");
+        if core {
+            // The shear entries are small (X-4 of g20 is 1.1e-4), so the floor is ten gates.
+            assert!(b.xc_core[a][c].abs() > 10. * GATE && b.xc_core_kinetic[a][c].abs() > 10. * GATE, "X-4 or X-5 is too small to be tested");
+        } else {
+            assert_eq!((b.xc_core[a][c], b.xc_core_kinetic[a][c]), (0., 0.), "no core, no X-4 or X-5");
+        }
+        worst = worst.max(miss);
+        // Every entry is printed before the first failure stops the test.
+        if miss >= GATE {
+            eprintln!("g_{a}{c}: {miss:e} against {GATE:e}");
+        }
+    }
+    assert!(worst < GATE, "the worst miss {worst:e} against {GATE:e}");
+}
+
+#[test]
+#[ignore = "slow: 261 s (measured 2026-11-16 on a loaded machine); run: cargo test --profile release-test -p mandacaru-core --test periodic_stress_meta -- --ignored a_hydrogen_triangle"]
+fn a_hydrogen_triangle_noncollinear_spinor_r2scan_crystal_stress_is_the_reconverged_finite_difference() {
+    triangle_stress(false, 1e-4);
+}
+
+#[test]
+#[ignore = "slow: 254 s (measured 2026-11-16 on a loaded machine); run: cargo test --profile release-test -p mandacaru-core --test periodic_stress_meta -- --ignored a_cored_hydrogen_triangle"]
+fn a_cored_hydrogen_triangle_noncollinear_spinor_r2scan_crystal_stress_is_the_reconverged_finite_difference() {
+    triangle_stress(true, 5e-5);
+}

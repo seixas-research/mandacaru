@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from .freeze_real_time import STRIDE, run
+from .freeze_real_time import CRYSTAL_ENERGIES, STRIDE, run
 
 PATH = Path(__file__).parent / "reference" / "real_time.json"
 REFERENCE = json.loads(PATH.read_text()) if PATH.exists() else {"cases": {}}
@@ -25,10 +25,16 @@ CASES = [pytest.param(key, marks=pytest.mark.slow) if record["seconds"] > 120 el
 def test_real_time_traces_match_the_frozen_values(key):
     frozen = REFERENCE["cases"][key]
     rt, _, calc = run(key)
-    found = rt.along[::STRIDE]
-    assert len(found) == len(frozen["along_eA"])
-    scale = max(abs(v) for v in frozen["along_eA"])
-    for value, reference in zip(found, frozen["along_eA"]):
+    trace = "corrected" if rt.periodic else "along_eA"
+    found = (rt.corrected if rt.periodic else rt.along)[::STRIDE]
+    assert len(found) == len(frozen[trace])
+    scale = max(abs(v) for v in frozen[trace])
+    for value, reference in zip(found, frozen[trace]):
         assert abs(value - reference) < RELATIVE * scale, key
+    if rt.periodic:
+        assert abs(rt.diamagnetic[0] - frozen["diamagnetic"]) < 1e-8 * frozen["diamagnetic"]
+        epsilon = rt.dielectric_function(CRYSTAL_ENERGIES, damping=1.0)
+        for value, re, im in zip(epsilon, frozen["epsilon_re"], frozen["epsilon_im"]):
+            assert abs(value - complex(re, im)) < RELATIVE * abs(complex(re, im)), key
     assert abs(rt.kick_energy - frozen["kick_energy_eV"]) < 1e-6 * frozen["kick_energy_eV"]
     calc.close()

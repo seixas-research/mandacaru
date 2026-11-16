@@ -7,6 +7,8 @@
 //!   the dense T1 matrices, to `O(dt^2)`; the spin kick against the triplet matrices;
 //! - R2: the energy after a kick is conserved in both gauges;
 //! - R5: the initial slope of the dipole is the finite-basis f-sum `4 d^T (A - B) d`;
+//! - R16(a): the r2SCAN current-density term of `A - B` is the derivative of the propagated Fock
+//!   matrix (with `tau~`) along an imaginary density change, and V9 holds for r2SCAN;
 //! - refusals of the references the propagation does not take.
 mod paw_molecular_support;
 
@@ -15,7 +17,7 @@ use mandacaru_core::{
     molecular::{
         excitations::{Coupling, Response, Spin, Unrestricted},
         multipoles::{gradient_integrals, position_integrals},
-        realtime::{propagate, Gauge, Kick, RealTime, Request},
+        realtime::{fock_matrices, propagate, Gauge, Kick, RealTime, Request},
         MeanField, MolecularIntegrals, ScfOptions,
     },
     Context,
@@ -276,12 +278,85 @@ fn the_weak_kick_response_is_the_casida_response_function_for_every_builder() {
 }
 
 #[test]
+fn the_r2scan_weak_kick_response_is_the_amended_casida_response_function() {
+    // V9 for r2SCAN against T3's kernel with the current-density term of tau~ (owner decision
+    // Q19a): the propagation sees tau~, so the two agree only with the amendment.
+    check_v9(&["r2scan"], &[2], &["r2scan"], Scheme::Aetrs, 4.);
+}
+
+/// R16(a), V1b for r2SCAN: along an imaginary antisymmetric change i A of the density the
+/// imaginary part of the propagated Fock difference, projected on the occupied-empty block, is the
+/// antisymmetric kernel -2 int (v_tau / n) j^ia . j^jb (plain tau gives zero there). Returns the
+/// largest kernel entry.
+fn check_current_term(integrals: &MolecularIntegrals, state: &MeanField, label: &str) -> f64 {
+    use mandacaru_core::quantum::C64;
+    let mut largest = 0f64;
+    for spin in [Spin::Singlet, Spin::Triplet] {
+        let response = Response::new(integrals, state, spin, Coupling::Adiabatic).unwrap();
+        let (o, v) = (response.occupied(), response.virtual_orbitals());
+        let c = response.orbitals();
+        let y: Vec<f64> = (0..o * v)
+            .map(|i| ((i as f64 + 1.) * 0.731).sin() / (1. + i as f64).sqrt())
+            .collect();
+        let ym = response.matrix(&y);
+        let a = c.columns(0, o) * &ym * c.columns(o, v).transpose();
+        let change = (&a - a.transpose()).map(|x| C64::new(0., x));
+        let d = &state.densities[0];
+        let sign = if spin == Spin::Singlet { 1. } else { -1. };
+        let fock = |h: f64| {
+            let up = d + &change * C64::new(h, 0.);
+            let down = d + &change * C64::new(sign * h, 0.);
+            fock_matrices(integrals, state, &[up, down]).unwrap().0[0].clone()
+        };
+        let imaginary = ((fock(1e-4) - fock(-1e-4)) / C64::new(2e-4, 0.)).map(|z| z.im);
+        let projected = c.columns(0, o).transpose() * imaginary * c.columns(o, v);
+        let kernel = response
+            .antisymmetric_kernel(&DMatrix::from_column_slice(o * v, 1, &y))
+            .unwrap();
+        let kernel = response.matrix(kernel.column(0).as_slice());
+        let error = (&projected - &kernel).amax();
+        eprintln!(
+            "{label} {spin:?}: current kernel {:.4e}, error {error:.2e}",
+            kernel.amax()
+        );
+        assert!(
+            kernel.amax() > 1e-6,
+            "{label} {spin:?}: the current kernel vanishes"
+        );
+        assert!(error < 1e-6 * kernel.amax(), "{label} {spin:?}: {error:e}");
+        largest = largest.max(kernel.amax());
+    }
+    largest
+}
+
+#[test]
+fn the_r2scan_current_term_is_the_derivative_of_the_propagated_fock() {
+    let ctx = Context::new(Some(1), 512 << 20).unwrap();
+    let integrals = paw_hydrogen(&ctx);
+    check_current_term(&integrals, &reference(&integrals, "r2scan"), "H2");
+}
+
+#[test]
+#[ignore = "slow: 14 s; V1b for r2SCAN on library water, whose datasets carry a partial core (needs MANDACARU_PAW_PATH)"]
+fn the_r2scan_current_term_with_a_partial_core_is_the_derivative_of_the_propagated_fock() {
+    // The weights v_tau / n see the total density (the smooth core included), which synthetic
+    // hydrogen has none of.
+    let ctx = Context::new(Some(2), 1 << 30).unwrap();
+    let integrals = library_water(&ctx);
+    let state = integrals
+        .kohn_sham("r2scan", [5, 5], false, &options())
+        .unwrap();
+    assert!(state.converged);
+    check_current_term(&integrals, &state, "water");
+}
+
+#[test]
 fn the_initial_slope_of_the_dipole_is_the_finite_basis_f_sum() {
     // R5: d(delta mu / kappa)/dt at 0+ is sum_n f_n = 4 d^T (A - B) d (V4's finite-basis form,
     // not N). The odd response over the first steps at dt = 0.005 is alpha(t) ~ s t - c t^3.
     let ctx = Context::new(Some(1), 512 << 20).unwrap();
     let integrals = paw_hydrogen(&ctx);
-    for method in ["lda", "rhf"] {
+    for method in ["lda", "rhf", "r2scan"] {
         let state = reference(&integrals, method);
         let response =
             Response::new(&integrals, &state, Spin::Singlet, Coupling::Adiabatic).unwrap();
@@ -335,15 +410,20 @@ fn the_initial_slope_of_the_dipole_is_the_finite_basis_f_sum() {
 fn the_energy_is_conserved_after_a_kick_in_both_gauges() {
     let ctx = Context::new(Some(1), 512 << 20).unwrap();
     let integrals = paw_hydrogen(&ctx);
-    let state = reference(&integrals, "lda");
-    for gauge in [Gauge::Length, Gauge::Velocity] {
+    for (method, gauge) in [
+        ("lda", Gauge::Length),
+        ("lda", Gauge::Velocity),
+        // tau~ with its density term (vera fix 3): without it the finite kick drifts.
+        ("r2scan", Gauge::Length),
+    ] {
+        let state = reference(&integrals, method);
         let mut request = Request::new([0., 0., 1.], 1e-2, 0.05, 80);
         request.gauge = gauge;
         request.corrector_tolerance = 1e-12;
         request.max_corrector_iterations = 30;
         let rt = propagate(&integrals, &state, &request).unwrap();
         eprintln!(
-            "{gauge:?}: kick energy {:.3e}, drift {:.3e} kick energies, W {:.3}, builds {}",
+            "{method} {gauge:?}: kick energy {:.3e}, drift {:.3e} kick energies, W {:.3}, builds {}",
             rt.kick_energy, rt.energy_drift, rt.width, rt.builds
         );
         assert!(rt.kick_energy > 0.);
@@ -391,13 +471,6 @@ fn references_the_propagation_does_not_take_raise() {
     bad.kick = Kick::Spin;
     bad.gauge = Gauge::Velocity;
     assert!(propagate(&integrals, &state, &bad).is_err());
-    let r2scan = integrals
-        .kohn_sham("r2scan", [1, 1], false, &options())
-        .unwrap();
-    let message = propagate(&integrals, &r2scan, &request)
-        .unwrap_err()
-        .to_string();
-    assert!(message.contains("r2scan"), "{message}");
 }
 
 /// The odd and even parts `[x(kappa) -+ x(-kappa)] / 2 kappa` of an observable over a run pair.
@@ -444,7 +517,7 @@ fn the_unrestricted_weak_kick_response_is_the_unrestricted_casida_response_funct
     // V9 on an unrestricted reference: H2+ (one alpha electron, an empty beta channel).
     let ctx = Context::new(Some(1), 512 << 20).unwrap();
     let integrals = paw_hydrogen(&ctx);
-    for method in ["lda", "uhf"] {
+    for method in ["lda", "uhf", "r2scan"] {
         let state = if method == "uhf" {
             integrals.mean_field("uhf", [1, 0], &options())
         } else {
@@ -651,7 +724,7 @@ fn copper_hydride(ctx: &Context, hubbard: Option<(&str, f64, f64)>) -> (Molecula
     let electrons = copper.valence_charge.round() as usize + 1;
     let copper = dataset::species(ctx, &mut arrays, &copper);
     let hydrogen = dataset::species(ctx, &mut arrays, &dataset::read(ctx, "lda-sr", "H"));
-    let mut extra = vec![("allow_heavy_dft", serde_json::Value::Bool(true))];
+    let mut extra = Vec::new();
     if let Some((form, u, j)) = hubbard {
         let request = format!(r#"{{"Cu": {{"l": "d", "U": {u}, "J": {j}, "form": "{form}"}}}}"#);
         extra.push(("hubbard", serde_json::Value::String(request)));

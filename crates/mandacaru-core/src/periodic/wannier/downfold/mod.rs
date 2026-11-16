@@ -12,15 +12,17 @@
 //! ([`screened`]). With `coulomb="isolated"` the bare interaction is that of the fragment alone in a
 //! doubled supercell ([`isolated`]); the screening is the supercell's either way. Not available,
 //! and refused by name: a spinor crystal.
+pub mod basis;
 pub mod coulomb;
 pub mod functions;
 mod isolated;
 pub mod pairs;
 pub mod problem;
 mod screened;
+mod streamed;
 
 use self::{
-    coulomb::Cell,
+    coulomb::{Cell, Kernel},
     functions::supercell_functions,
     isolated::padded as padded_fragment,
     pairs::{coulomb as bare_integrals, Mode, Pairs},
@@ -291,7 +293,7 @@ impl Wannier {
                     ctx,
                     &setup,
                     box_cell,
-                    radius,
+                    Kernel::Truncated(radius),
                     &box_pairs[s],
                     &box_pairs[t],
                     false,
@@ -388,7 +390,7 @@ impl Wannier {
             &crystal.context,
             &setup,
             &cell,
-            cell.half_shortest,
+            Kernel::Truncated(cell.half_shortest),
             &pairs,
             &pairs,
             true,

@@ -167,8 +167,7 @@ def log_steps(path) -> int:
     ``path`` is one destination or several; several report the largest count,
     which is the step they were last written together at.
     """
-    return max((int(_LOG_STEPS.get(_key(t), 0)) for t in _targets(path)),
-               default=0)
+    return max((int(_LOG_STEPS.get(_key(t), 0)) for t in _targets(path)), default=0)
 
 
 def reset_log(path: str | None = None) -> None:
@@ -407,8 +406,7 @@ class Logger:
                             f"cell_angles: alpha={alpha:.6f} beta={beta:.6f} "
                             f"gamma={gamma:.6f}")
         else:
-            self._emit_body("cell_present: False",
-                            "cell_vectors: (non-periodic)")
+            self._emit_body("cell_present: False", "cell_vectors: (non-periodic)")
 
         # Periodicity per direction.  Not derivable from the cell: Mandacaru
         # always has one (it is the grid's box), periodic or not.
@@ -1680,34 +1678,43 @@ def _real_time_block_lines(view, *, seconds) -> list[str]:
     window belong to the view."""
     unit, time_unit = view.energy_unit, view.time_unit
     reference = "hartree-fock" if view.functional is None else f"kohn-sham {view.functional}"
-    keys = [f"propagator: {view.propagator}",
-            f"time_step_{time_unit}: {view.time_step:.6g}",
-            f"steps: {view.steps}",
-            f"duration_{time_unit}: {view.times[-1]:.6g}",
+    keys = [f"propagator: {view.propagator}", f"time_step_{time_unit}: {view.time_step:.6g}",
+            f"steps: {view.steps}", f"duration_{time_unit}: {view.times[-1]:.6g}",
             f"corrector_tolerance: {view.corrector_tolerance:.1e}",
             f"effective_corrector_tolerance: {view.effective_corrector_tolerance:.3e}",
             f"corrector_iterations_max: {view.corrector_iterations}",
-            f"fock_builds: {view.builds}",
-            f"kick: {view.kick}",
-            f"gauge: {view.gauge}",
+            f"fock_builds: {view.builds}", f"kick: {view.kick}", f"gauge: {view.gauge}",
             "direction: " + " ".join(f"{v:.6f}" for v in view.direction),
-            f"strength_per_{view.length_unit}: {view.strength:.6g}",
-            f"reference: {reference}",
-            f"basis_width_{unit}: {view.width:.6f}",
-            f"step_width: {view.step_width:.4f}",
+            f"strength_per_{view.length_unit}: {view.strength:.6g}", f"reference: {reference}",
+            f"basis_width_{unit}: {view.width:.6f}", f"step_width: {view.step_width:.4f}",
             f"step_width_bound: {view.step_width_bound:g}",
             f"aliased_weight: {view.aliased_weight:.3e}",
             f"kick_energy_{unit}: {view.kick_energy:.6e}",
-            f"energy_drift: {view.energy_drift:.3e}",
-            f"max_energy_drift: {view.max_energy_drift}",
-            f"worst_norm_error: {view.worst_norm_error:.3e}",
-            f"wall_time_s: {seconds:.2f}"]
+            f"energy_drift: {view.energy_drift:.3e}", f"max_energy_drift: {view.max_energy_drift}",
+            f"worst_norm_error: {view.worst_norm_error:.3e}"]
+    if view.periodic:
+        # A crystal's own record: the whole mesh it ran on and its basis's diamagnetic balance.
+        keys += [f"kernel: {view.kernel}", "mesh: " + " ".join(str(n) for n in view.mesh),
+                 f"kpoints: {view.kpoints}", "symmetry: whole mesh", f"electrons: {view.electrons:.6f}",
+                 "diamagnetic_sum: " + " ".join(f"{v:.6f}" for v in view.diamagnetic),
+                 "diamagnetic_deficit: " + " ".join(f"{v:.6f}" for v in view.deficit),
+                 f"diamagnetic_source: {view.diamagnetic_source}", f"momentum_residual: {view.momentum_residual:.3e}"]
+    keys.append(f"wall_time_s: {seconds:.2f}")
     return ["", "[REAL TIME]"] + _indent(keys) + [_BANNER]
 
 
 def append_real_time(path: str, view, *, seconds: float) -> None:
     """Append a ``[REAL TIME]`` block (one ``get_real_time`` request) to ``path``."""
     _write_lines(path, _real_time_block_lines(view, seconds=seconds))
+
+
+def append_record(path: str, title: str, view) -> None:
+    """Append the block ``title`` of a view whose native ``record`` holds its lines to ``path``:
+    ``[DIELECTRIC FUNCTION]`` (one ``get_dielectric_function`` request: the request, the mesh and
+    band window, the static tensor's diagonal and the first moment) or a crystal's
+    ``[EXCITED STATES]`` (one ``get_excitations`` request on a crystal), as Rust words them. The
+    spectra themselves belong to the view."""
+    _write_lines(path, ["", title] + _indent([f"{k}: {v}" for k, v in view.record]) + [_BANNER])
 
 
 def _cell_parameters(cell: np.ndarray):
@@ -1743,7 +1750,7 @@ _SECTIONS = {"[BASIS]": "basis", "[ACTIVE SPACE]": "active_space",
              "[MARKOV CHAIN]": "markov_chain",
              "[FORCES]": "forces", "[PERFORMANCE]": "performance",
              "[EXCITED STATES]": "excited_states",
-             "[REAL TIME]": "real_time",
+             "[REAL TIME]": "real_time", "[DIELECTRIC FUNCTION]": "dielectric_function",
              "[VARIATIONAL QUANTUM SUMMARY]": "summary",
              "[GEOMETRY OPTIMIZATION SUMMARY]": "optimization",
              "[RELAXATION COMPLETE]": "completion"}
@@ -1842,7 +1849,7 @@ def parse_output(path: str) -> dict:
                     table = None
                     step["performance"] = {"stages_s": {}}
                 elif section in ("electrons", "measurement", "energy_measurement",
-                                 "gradient_measurement", "real_time"):
+                                 "gradient_measurement", "real_time", "dielectric_function"):
                     step[section] = {}
                 elif section in ("basis", "active_space", "excited_states"):
                     table = None
@@ -1956,8 +1963,8 @@ def parse_output(path: str) -> dict:
                 if len(fields) >= 4:
                     step["system"].setdefault("geometry", []).append(
                         [fields[0]] + [number(v) for v in fields[1:4]])
-            elif section in ("system", "setup", "electrons", "measurement",
-                             "energy_measurement", "gradient_measurement", "real_time") \
+            elif section in ("system", "setup", "electrons", "measurement", "energy_measurement",
+                             "gradient_measurement", "real_time", "dielectric_function") \
                     and ":" in stripped:
                 key, _, value = stripped.partition(":")
                 key, value = key.strip(), value.strip()

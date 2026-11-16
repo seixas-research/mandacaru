@@ -349,6 +349,7 @@ fn an_unconverged_reference_atom_is_named_as_such() {
         functional: functional.into(),
         relativity: Treatment::Scalar,
         polish: 0,
+        j_shares: mandacaru_core::models::configuration::JShares::LowerFirst,
     };
     let stopped = solve_model(&ctx, 8, &options(2), &model("lda"), None, None).unwrap();
     assert!(!stopped.converged);

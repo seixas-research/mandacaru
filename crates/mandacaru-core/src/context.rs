@@ -64,6 +64,9 @@ struct Memory {
 #[derive(Clone, Debug)]
 pub struct Context {
     layout: Layout,
+    /// The `auto` layout (P7): the processors, `kpts = bands = 1` in `layout`, spread over the
+    /// k-point tasks of each region (see [`Context::with_auto_layout`]).
+    auto: bool,
     memory: Arc<Memory>,
     workers: Arc<WorkerStats>,
     execution: Arc<Mutex<()>>,
@@ -123,6 +126,43 @@ impl<T> Buffer<T> {
     }
 }
 
+/// Storage whose capacity is laid out in virtual memory at once but charged to the budget as it
+/// is written: the zero pages are mapped, not touched, so only what the owner writes is resident
+/// (a factorization that does not know its rank in advance addresses a row per pair of the
+/// largest rank it could reach and fills the rows' first entries). [`Lazy::charge`] makes the
+/// bytes about to be written part of the reservation, [`Lazy::finish`] returns the first
+/// `len` entries as a [`Buffer`] with exactly the bytes charged.
+pub struct Lazy<T> {
+    context: Context,
+    data: Vec<T>,
+    reservation: Reservation,
+}
+impl<T> Lazy<T> {
+    pub fn as_slice(&self) -> &[T] {
+        &self.data
+    }
+    pub fn as_mut_slice(&mut self) -> &mut [T] {
+        &mut self.data
+    }
+    /// Charges `entries` more entries to the budget (the caller writes them next).
+    pub fn charge(&mut self, entries: usize) -> Result<()> {
+        let mut grown = self.context.reserve(product(&[entries, size_of::<T>()])?)?;
+        self.reservation.bytes += std::mem::take(&mut grown.bytes);
+        Ok(())
+    }
+    /// The first `len` entries, with the capacity beyond them released; the charge is cut to
+    /// `len` entries.
+    pub fn finish(mut self, len: usize) -> Result<Buffer<T>> {
+        self.data.truncate(len);
+        self.data.shrink_to_fit();
+        self.reservation.shrink_to(product(&[len, size_of::<T>()])?)?;
+        Ok(Buffer {
+            data: self.data,
+            _reservation: self.reservation,
+        })
+    }
+}
+
 /// The worker count a context takes when none is requested: `MANDACARU_NUM_THREADS`, then
 /// `OMP_NUM_THREADS`, then the parallelism the operating system offers this process.
 pub fn default_threads() -> usize {
@@ -179,6 +219,7 @@ impl Context {
                 bands: 1,
                 threads,
             },
+            auto: false,
             memory: Arc::new(Memory {
                 limit: memory_bytes,
                 offload: offload_bytes,
@@ -214,7 +255,29 @@ impl Context {
             threads,
         };
         self.pool = Arc::default();
+        self.auto = false;
         Ok(self)
+    }
+    /// This context with the `auto` layout (P7), for a calculation that names no layout: every
+    /// k-point region runs on as many lanes as it has tasks, up to the processor count, each lane
+    /// with an equal share of the processors, and with fewer lanes when the free budget holds
+    /// fewer (never a refusal: the same calculation on one lane runs). Results do not depend on
+    /// the lanes (every task is a serial computation, read in a fixed order), so this layout gives
+    /// the bits of any explicit one. Only for a context of one k-point and one band group.
+    pub fn with_auto_layout(mut self) -> Result<Self> {
+        if self.layout.kpts != 1 || self.layout.bands != 1 {
+            return Err(Error::Invalid(
+                "the auto layout spreads the threads over the k-point tasks itself; it takes no \
+                 explicit kpts or bands"
+                    .into(),
+            ));
+        }
+        self.auto = true;
+        Ok(self)
+    }
+    /// Whether this context runs the `auto` layout ([`Context::with_auto_layout`]).
+    pub fn auto_layout(&self) -> bool {
+        self.auto
     }
     /// The calculation's persistent pool of one worker per processor, built on its first parallel
     /// action and shared by every clone of this context; `None` for a one-processor context, or
@@ -325,6 +388,7 @@ impl Context {
     }
     fn configured_lanes(&self, level: Level) -> usize {
         match level {
+            Level::Kpts if self.auto => self.width(),
             Level::Kpts => self.layout.kpts,
             Level::Bands => self.layout.bands,
             Level::Threads => self.width(),
@@ -346,6 +410,22 @@ impl Context {
             level.name(),
             level.name()
         )))
+    }
+    /// The lanes a region of `level` runs on when `per_lane` bytes each must fit in the free
+    /// budget: `lanes` itself, refused as [`Context::check_lanes`] refuses it, except for the
+    /// k-point level of the `auto` layout, which takes the largest count that fits (at least one)
+    /// in the smaller of the context's budget and the machine's installed memory.
+    pub fn fit_lanes(&self, level: Level, lanes: usize, per_lane: usize) -> Result<usize> {
+        if self.auto && level == Level::Kpts {
+            // The auto budget: the context's, and never more than the machine has installed.
+            let installed = mandacaru_kernels::heap::installed_memory_bytes()
+                .and_then(|b| usize::try_from(b).ok())
+                .unwrap_or(usize::MAX);
+            let available = self.memory.limit.min(installed).saturating_sub(self.memory_used());
+            return Ok(lanes.min(available / per_lane.max(1)).max(1));
+        }
+        self.check_lanes(level, lanes, per_lane)?;
+        Ok(lanes)
     }
     /// Runs `f(lane, state)` once per entry of `states`, the entries on separate workers of the
     /// context's pool (on the calling thread without one, or with one entry). Each lane runs as
@@ -369,7 +449,14 @@ impl Context {
                 }
                 return Ok(());
             };
-            let width = (self.width() / self.configured_lanes(level).max(1)).max(1);
+            // An auto k-point region shares the processors among the lanes it has; an explicit
+            // level among the lanes the layout names.
+            let divisor = if self.auto && level == Level::Kpts {
+                lanes
+            } else {
+                self.configured_lanes(level)
+            };
+            let width = (self.width() / divisor.max(1)).max(1);
             let id = self.id();
             let stats = self.workers.clone();
             use rayon::prelude::*;
@@ -387,6 +474,23 @@ impl Context {
             });
             outcomes.into_iter().collect()
         })
+    }
+    /// `task(i)` for every `i` in `0..count`, independent serial computations, the results in
+    /// index order: on the layout's k-point lanes when it has more than one, else one lane per
+    /// worker of the calling thread's width (the post-processing of a converged crystal, P6). A
+    /// result depends neither on the lane count nor on the lane that ran it.
+    pub fn map_independent<T: Send>(
+        &self,
+        count: usize,
+        task: impl Fn(usize) -> Result<T> + Sync,
+    ) -> Result<Vec<T>> {
+        let level = if self.layout.kpts > 1 || self.auto {
+            Level::Kpts
+        } else {
+            Level::Threads
+        };
+        let lanes = self.lanes(level, count);
+        self.map_tasks(level, &mut vec![(); lanes], count, |_, i| task(i))
     }
     /// `task(state, i)` for every `i` in `0..count`, the results in index order whatever lane ran
     /// them: the lanes (one per entry of `states`, see [`Context::run_lanes`]) take the next
@@ -479,6 +583,19 @@ impl Context {
         Ok(Buffer {
             data,
             _reservation: reservation,
+        })
+    }
+    /// `len` zero entries mapped but not charged ([`Lazy`]; `vec![0.; len]` is a zeroed allocation,
+    /// whose pages the operating system maps on first write); the owner charges what it writes.
+    pub fn allocate_lazily(&self, len: usize) -> Result<Lazy<f64>> {
+        let bytes = product(&[len, size_of::<f64>()])?;
+        if bytes > isize::MAX as usize {
+            return Err(Error::Overflow);
+        }
+        Ok(Lazy {
+            context: self.clone(),
+            data: vec![0f64; len],
+            reservation: self.reserve(0)?,
         })
     }
     pub fn copy_slice<T: Default + Clone + Copy>(&self, values: &[T]) -> Result<Buffer<T>> {

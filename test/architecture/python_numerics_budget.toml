@@ -20,7 +20,7 @@
 version = 2
 
 [tier_total]
-zero_sloc = 3164
+zero_sloc = 3103
 
 [module]
 "__init__.py" = { sloc = 21 }
@@ -33,20 +33,20 @@ zero_sloc = 3164
 "analysis/fields.py" = { sloc = 90 }
 "analysis/kspace.py" = { cmp = 1, tern = 1, sloc = 69 }
 "analysis/proposals.py" = { bi = 1, arith = 1, arithmax = 1, cmp = 2, tern = 1, sloc = 73 }
-"analysis/real_time.py" = { cmp = 1, sloc = 55 }
+"analysis/real_time.py" = { sloc = 49 }
 "analysis/states.py" = { sloc = 83 }
 "backend_policy.py" = { sloc = 6 }
 "backends/__init__.py" = { sloc = 27 }
 "backends/hardware.py" = { sloc = 153 }
 "backends/measurement.py" = { bi = 6, cmp = 5, tern = 3, sloc = 133 }
-"backends/providers.py" = { dyn = 1, bi = 10, imp = 24, aloops = 3, arith = 4, arithmax = 2, cmp = 5, sloc = 739 }
+"backends/providers.py" = { dyn = 1, bi = 10, imp = 24, aloops = 2, arith = 3, arithmax = 2, cmp = 5, sloc = 739 }
 "basis/__init__.py" = { sloc = 29, category = "hand-off" }
 "basis/atomic_solver.py" = { cmp = 1, tern = 1, nloops = 1, sloc = 85, category = "hand-off" }
 "basis/base.py" = { sloc = 12, category = "hand-off" }
 "basis/filtering.py" = { cmp = 4, nloops = 1, sloc = 116, category = "hand-off" }
 "basis/multizeta.py" = { addsub = 2, cmp = 1, sloc = 32, category = "hand-off" }
 "basis/relativity.py" = { sloc = 108, category = "hand-off" }
-"calculation.py" = { bi = 3, imp = 1, addsub = 3, cmp = 26, nloops = 4, sloc = 1866 }
+"calculation.py" = { bi = 3, imp = 1, addsub = 3, cmp = 26, nloops = 4, sloc = 1860 }
 "circuits/profiling.py" = { imp = 5, sloc = 89 }
 "cli.py" = { arith = 1, arithmax = 1, sloc = 108 }
 "core/__init__.py" = { bi = 1, sloc = 41 }
@@ -62,11 +62,11 @@ zero_sloc = 3164
 "integrals/__init__.py" = { sloc = 2, category = "hand-off" }
 "integrals/grid.py" = { sloc = 70, category = "result-view" }
 "integrations/ase.py" = { sloc = 45 }
-"integrations/ase_properties.py" = { bi = 1, acomp = 1, arith = 1, arithmax = 1, cmp = 5, tern = 1, sloc = 300 }
+"integrations/ase_properties.py" = { bi = 1, acomp = 1, arith = 1, arithmax = 1, cmp = 5, tern = 1, sloc = 299 }
 "integrations/basis_recipe.py" = { cmp = 1, sloc = 73 }
 "integrations/basis_report.py" = { bi = 7, sloc = 155 }
 "integrations/berry.py" = { arith = 1, arithmax = 1, addsub = 2, cmp = 7, tern = 1, nloops = 1, sloc = 148 }
-"integrations/bloch.py" = { acomp = 1, arith = 1, arithmax = 1, cmp = 6, nloops = 1, sloc = 220 }
+"integrations/bloch.py" = { acomp = 1, arith = 1, arithmax = 1, cmp = 6, nloops = 1, sloc = 218 }
 "integrations/circuits.py" = { cmp = 6, nloops = 2, sloc = 256 }
 "integrations/device_forces.py" = { cmp = 1, sloc = 107 }
 "integrations/excitations.py" = { sloc = 39 }
@@ -74,16 +74,16 @@ zero_sloc = 3164
 "integrations/kspace.py" = { cmp = 5, nloops = 2, sloc = 86 }
 "integrations/measurement_scheme.py" = { sloc = 50 }
 "integrations/paw.py" = { cmp = 1, nloops = 1, sloc = 47, category = "validation" }
-"integrations/paw_molecular.py" = { sloc = 80, category = "hand-off" }
-"integrations/real_time.py" = { addsub = 1, cmp = 1, sloc = 55 }
-"integrations/reporting.py" = { addsub = 5, cmp = 2, tern = 2, sloc = 236 }
+"integrations/paw_molecular.py" = { sloc = 78, category = "hand-off" }
+"integrations/real_time.py" = { addsub = 1, sloc = 47 }
+"integrations/reporting.py" = { addsub = 1, cmp = 2, tern = 2, sloc = 235 }
 "integrations/run_log_fields.py" = { addsub = 2, cmp = 5, tern = 2, sloc = 271 }
 "integrations/search.py" = { bi = 1, arith = 2, arithmax = 2, cmp = 7, nloops = 1, sloc = 138 }
-"integrations/setup_block.py" = { bi = 2, addsub = 1, sloc = 98 }
+"integrations/setup_block.py" = { bi = 2, addsub = 1, sloc = 96 }
 "integrations/tapering.py" = { cmp = 1, tern = 1, nloops = 1, sloc = 32 }
 "integrations/transfer.py" = { cmp = 2, sloc = 54 }
 "integrations/wannier.py" = { bi = 1, cmp = 8, tern = 1, nloops = 1, sloc = 210 }
-"models/basis.py" = { cmp = 5, tern = 4, sloc = 286, category = "validation" }
+"models/basis.py" = { sloc = 228, category = "validation" }
 "models/datasets.py" = { cmp = 2, tern = 1, sloc = 32, category = "validation" }
 "models/elements.py" = { sloc = 3, category = "hand-off" }
 "models/radial.py" = { cmp = 3, nloops = 1, sloc = 68, category = "validation" }
@@ -106,21 +106,21 @@ zero_sloc = 3164
 "pseudopotentials/native_context.py" = { sloc = 5, category = "hand-off" }
 "pseudopotentials/orbitals.py" = { cmp = 1, sloc = 155, category = "hand-off" }
 "pseudopotentials/paw.py" = { addsub = 2, cmp = 1, tern = 1, sloc = 213, category = "hand-off" }
-"pseudopotentials/record.py" = { addsub = 1, nloops = 1, sloc = 194, category = "hand-off" }
-"resources.py" = { bi = 2, cmp = 3, nloops = 1, sloc = 117 }
-"results.py" = { imp = 1, cmp = 7, tern = 3, nloops = 1, sloc = 560 }
+"pseudopotentials/record.py" = { addsub = 1, nloops = 1, sloc = 193, category = "hand-off" }
+"resources.py" = { bi = 2, cmp = 3, nloops = 1, sloc = 116 }
+"results.py" = { imp = 1, cmp = 7, tern = 3, nloops = 1, sloc = 558 }
 "specifications.py" = { cmp = 1, sloc = 110 }
 "structure.py" = { cmp = 2, sloc = 92 }
 "units.py" = { cmp = 1, tern = 1, sloc = 47 }
-"utils/__init__.py" = { bi = 1, sloc = 36 }
+"utils/__init__.py" = { bi = 1, sloc = 35 }
 "utils/banner.py" = { addsub = 2, tern = 1, nloops = 2, sloc = 71 }
 "utils/bibliography.py" = { bi = 2, addsub = 5, nloops = 1, sloc = 2287 }
-"utils/bxsf.py" = { aloops = 1, arith = 1, arithmax = 1, addsub = 8, cmp = 1, nloops = 5, sloc = 47 }
+"utils/bxsf.py" = { sloc = 17 }
 "utils/citations.py" = { addsub = 6, nloops = 2, sloc = 297 }
 "utils/cube.py" = { bi = 2, cmp = 1, sloc = 57 }
 "utils/logging.py" = { bi = 14, aloops = 1, arith = 9, arithmax = 6, addsub = 47, neg = 1, cmp = 23, tern = 3, nloops = 5, sloc = 1312 }
 "utils/memory.py" = { bi = 4, aloops = 1, arith = 3, arithmax = 2, addsub = 1, cmp = 2, nloops = 1, sloc = 68 }
-"utils/profiling.py" = { bi = 4, arith = 4, arithmax = 2, addsub = 5, sloc = 112 }
+"utils/profiling.py" = { bi = 4, arith = 2, arithmax = 2, addsub = 5, sloc = 104 }
 "utils/shell_config.py" = { arith = 1, arithmax = 1, sloc = 102 }
 "utils/viewer.py" = { bi = 1, imp = 6, neg = 1, cmp = 10, nloops = 1, sloc = 292 }
 "version.py" = { sloc = 1 }

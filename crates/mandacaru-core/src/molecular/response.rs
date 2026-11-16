@@ -140,6 +140,24 @@ fn real(values: &[C64], what: &str) -> Result<Vec<f64>> {
     Ok(values.iter().map(|v| v.re).collect())
 }
 
+/// The Hamiltonians with an analytic variational force, by [`MolecularIntegrals::kind`]: a PAW-LCAO
+/// molecule. A PAW-LCAO supercell is refused until its derivative exists (Bloch-VQE stage 6a; its
+/// crystal forces run by central finite differences), the all-electron bases have none.
+fn require_analytic_forces(integrals: &MolecularIntegrals) -> Result<()> {
+    use super::periodic::paw::HamiltonianKind;
+    match integrals.kind() {
+        HamiltonianKind::PawMolecule if integrals.corrections.is_some() => Ok(()),
+        // Bloch-VQE stage 6a: the explicit derivative through the crystal's engines at the mesh
+        // (`molecular::periodic::paw::fixed_density_gradient`).
+        HamiltonianKind::PawSupercell => Ok(()),
+        _ => Err(crate::Error::Unsupported(
+            "variational forces are analytic and PAW-LCAO only; the all-electron (HAO) basis has none: \
+             use basis=\"PAW-LCAO\""
+                .into(),
+        )),
+    }
+}
+
 /// The analytic gradient (Hartree per Bohr) of the state `state` of `problem`, built on
 /// `model` of `reference`. PAW-LCAO only: the all-electron basis raises by name.
 pub fn gradient(
@@ -151,10 +169,15 @@ pub fn gradient(
     options: &Options<'_>,
 ) -> Result<Gradient> {
     model.require_dense("an analytic variational force")?;
-    if integrals.paw_setup.is_none() || integrals.corrections.is_none() {
+    require_analytic_forces(integrals)?;
+    let supercell = integrals.kind() == super::periodic::paw::HamiltonianKind::PawSupercell;
+    if supercell {
+        super::periodic::paw::require_gap(reference)?;
+    }
+    if supercell && options.internal {
         return Err(crate::Error::Unsupported(
-            "variational forces are analytic and PAW-LCAO only; the all-electron (HAO) basis has none: \
-             use basis=\"PAW-LCAO\""
+            "rigid rotations are not a symmetry of a crystal: the force of a PAW-LCAO supercell \
+             is Cartesian (internal=False)"
                 .into(),
         ));
     }
@@ -241,7 +264,13 @@ pub fn gradient(
             }
             Ok(out)
         };
-        let total = output(analytic.total.as_slice())?;
+        // A supercell's force is the derivative of the energy per cell, per primitive atom.
+        let total = if supercell {
+            super::periodic::paw::per_cell(integrals, analytic.total.as_slice())?
+        } else {
+            output(analytic.total.as_slice())?
+        };
+        let rows = total.as_slice().len();
         let stationarity = match &residual {
             None => Stationarity::Assumed,
             Some(Residual::Stationary { gradient_norm }) => Stationarity::Stationary { gradient_norm: *gradient_norm },
@@ -255,7 +284,7 @@ pub fn gradient(
             gradient: total,
             stationarity,
             energy,
-            directions: projector.as_ref().map_or(size, |(_, k)| *k),
+            directions: projector.as_ref().map_or(rows, |(_, k)| *k),
             scheme: "analytic",
             reference_stationarity: relaxed.stationarity,
             cphf_residual: relaxed.cphf_residual,
@@ -322,13 +351,14 @@ pub fn device_gradient(
     internal: bool,
 ) -> Result<DeviceGradient> {
     model.require_dense("an analytic variational force")?;
-    if integrals.paw_setup.is_none() || integrals.corrections.is_none() {
+    if integrals.kind() == super::periodic::paw::HamiltonianKind::PawSupercell {
         return Err(crate::Error::Unsupported(
-            "variational forces are analytic and PAW-LCAO only; the all-electron (HAO) basis has none: \
-             use basis=\"PAW-LCAO\""
+            "the device force of a PAW-LCAO supercell is not implemented: its measured \
+             densities have no gated route (the state-vector force is analytic)"
                 .into(),
         ));
     }
+    require_analytic_forces(integrals)?;
     reference.require_unsplit(integrals, model, "an analytic variational force")?;
     let m = model.m;
     let (m2, m4) = (m * m, m.pow(4));

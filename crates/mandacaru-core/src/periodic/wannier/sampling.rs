@@ -581,6 +581,9 @@ pub fn link(
     Ok(out)
 }
 
+/// Mesh points whose links one parallel region forms before they are stored.
+const LINK_CHUNK: usize = 16;
+
 pub fn overlap_mesh(
     c: &Crystal,
     frames: &[Frame],
@@ -611,16 +614,30 @@ pub fn overlap_mesh(
     let total = product(&[frames.len(), shells.vectors.len(), bands, bands, 16])?;
     let free = ctx.memory_limit().saturating_sub(ctx.memory_used());
     let archive = total > free / 4;
-    let mut links = vec![];
-    for k in 0..frames.len() {
-        for (b, vector) in shells.vectors.iter().enumerate() {
-            let matrix = link(
-                c,
-                &frames[k],
-                &frames[neighbors.as_slice()[k * shells.vectors.len() + b]],
-                *vector,
-                augmentation,
-            )?;
+    // The links of a point are one task (P6: on the layout's lanes); the points go in chunks so
+    // that an archived mesh never holds more than a chunk of links in memory.
+    let mut links = Vec::with_capacity(frames.len() * shells.vectors.len());
+    let targets = neighbors.as_slice();
+    for first in (0..frames.len()).step_by(LINK_CHUNK) {
+        let count = LINK_CHUNK.min(frames.len() - first);
+        let chunk = ctx.map_independent(count, |i| {
+            let k = first + i;
+            shells
+                .vectors
+                .iter()
+                .enumerate()
+                .map(|(b, vector)| {
+                    link(
+                        c,
+                        &frames[k],
+                        &frames[targets[k * shells.vectors.len() + b]],
+                        *vector,
+                        augmentation,
+                    )
+                })
+                .collect::<Result<Vec<_>>>()
+        })?;
+        for matrix in chunk.into_iter().flatten() {
             links.push(crate::math::storage::StoredMatrix::new(ctx, matrix, archive)?);
         }
     }

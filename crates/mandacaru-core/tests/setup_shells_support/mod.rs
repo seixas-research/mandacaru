@@ -463,3 +463,241 @@ pub fn spin_orbit_list(
     }
     (out, couplings)
 }
+
+/// How far the AXIS of the magnetization of a spinor density (`[n, m_x, m_y, m_z]`, one block of
+/// points each) turns in space, in radians: the largest angle between the line of `m` at a point
+/// where `|m|` is above a tenth of its peak and its line at the peak (a sign change of a collinear
+/// antiferromagnet is a swap of the two spin channels, not a turn). A collinear state is at
+/// rounding, and a state whose magnetization peaks below 1e-4 (a nonmagnetic or time-reversal-symmetric
+/// one: its direction is noise) returns zero.
+pub fn frame_turn(density: &[f64]) -> f64 {
+    let n = density.len() / 4;
+    assert_eq!(density.len(), 4 * n, "a spinor density has four blocks");
+    let m = |a: usize, k: usize| density[(a + 1) * n + k];
+    let norm = |k: usize| (0..3).map(|a| m(a, k).powi(2)).sum::<f64>().sqrt();
+    let Some(peak) = (0..n).max_by(|&i, &j| norm(i).total_cmp(&norm(j))) else {
+        return 0.;
+    };
+    // Below this the magnetization is numerical noise, whose direction means nothing.
+    if norm(peak) < 1e-4 {
+        return 0.;
+    }
+    (0..n)
+        .filter(|&k| norm(k) > 0.1 * norm(peak))
+        .map(|k| ((0..3).map(|a| m(a, k) * m(a, peak)).sum::<f64>() / (norm(k) * norm(peak))).abs().clamp(0., 1.).acos())
+        .fold(0., f64::max)
+}
+
+/// Three hydrogen atoms on an equilateral triangle of side 5 Bohr in a skew 10 x 10 x 8 Bohr cell
+/// (one grid node per Bohr, `strain` applied as `x -> (1 + strain) x` with the ion width and filter
+/// cutoff pinned to the reference cell), as a spinor crystal on the fully relativistic set. The SCF
+/// started with the three moments at 120 degrees in the xy plane ([`textured_triangle`]) converges
+/// in about 95 iterations to a noncollinear state of net moment 0.825 whose magnetization axis turns
+/// in space by 1.556 rad, with no spin-orbit term (hydrogen has only s channels) and no partial
+/// core. The atoms are weakly coupled, so the angles between the moments are a nearly flat
+/// direction of the energy: every SCF of a finite difference restarts from the reference density
+/// ([`restart`]). The cored variant of the fixture is [`triangle_species`]. It is the one such
+/// state found cheap and stable. Gold hydride at a moment of 0.5
+/// decays to the nonmagnetic state (its converged magnetization peaks at 1.5e-10, noise, so the axis
+/// `frame_turn` it gives is meaningless; at the geometry of the hydrogen pair of `periodic_gradient_xc`
+/// it converges in 276 iterations, in 300 not at all on the other cell), the spinor r2SCAN of
+/// IrH, ReH, OsH, PtH, WH and TaH does not converge, a triangle of hydrogen at 2 Bohr
+/// (a 120 degree state, but a saddle: the ferromagnetic state is 8 mHa lower and displaced SCFs
+/// flow to it), of lithium, chromium and manganese does not converge or ends collinear, and a
+/// lithium atom next to a triangle of hydrogen collapses it to a collinear or nonmagnetic state.
+pub fn triangle_input(files: Vec<(String, String)>, strain: Matrix3<f64>) -> mandacaru_core::periodic::setup::parse::SetupInput {
+    use mandacaru_core::periodic::setup::parse::AtomSpec;
+    let lattice = Matrix3::from_row_slice(&[10., 1., 0.5, 0., 10., 1., 0., 0., 8.]);
+    let reference = lattice;
+    let spacing = (0..3)
+        .map(|a| reference.column(a).norm() / [10., 10., 8.][a])
+        .fold(0f64, f64::max);
+    let center = reference * Vector3::new(0.5, 0.5, 0.5);
+    let inverse = reference.try_inverse().unwrap();
+    let radius = 5. / 3f64.sqrt();
+    let atoms = (0..3)
+        .map(|i| {
+            let phi = 2. * std::f64::consts::PI * i as f64 / 3.;
+            let f = inverse * (center + Vector3::new(radius * phi.cos(), radius * phi.sin(), 0.));
+            AtomSpec { species: 0, symbol: "H".into(), fractional: [f[0], f[1], f[2]], moment: 1. }
+        })
+        .collect();
+    mandacaru_core::periodic::setup::parse::SetupInput {
+        mesh: None,
+        recipes: None,
+        projector_basis: "raw".into(),
+        lattice: (Matrix3::identity() + strain) * reference,
+        grid_shape: [10, 10, 8],
+        atoms,
+        kpoints_frac: vec![[-0.25, 0., 0.], [0.25, 0., 0.]],
+        weights: vec![0.5, 0.5],
+        functional: "r2scan".into(),
+        precision: "float64".into(),
+        basis_size: "SZ".into(),
+        spinor: true,
+        spin: false,
+        symmetry: false,
+        filter_cutoff: Some(std::f64::consts::PI / spacing),
+        sigma: Some(1.4 * spacing),
+        dataset_files: Some(files),
+        hubbard_u: None,
+        charge: None,
+    }
+}
+
+/// The crystal of a three-atom `input` whose starting magnetization is the three atoms' moments
+/// at 120 degrees in the xy plane (the setup itself starts every moment along z): the starting
+/// field of each atom is the z block of the setup with only that atom magnetic, turned to its
+/// direction.
+pub fn textured_triangle(
+    ctx: &Context,
+    input: &mandacaru_core::periodic::setup::parse::SetupInput,
+    datasets: &[Arc<PawDataset>],
+) -> mandacaru_core::periodic::Crystal {
+    use mandacaru_core::periodic::setup::parse::create_setup;
+    let build = |input| create_setup(ctx, input, datasets.to_vec()).unwrap().build(ctx).unwrap();
+    let mut crystal = build(input.clone());
+    let n = crystal.grid.index.points();
+    let mut texture = vec![0.; 3 * n];
+    for i in 0..3 {
+        let phi = 2. * std::f64::consts::PI * i as f64 / 3.;
+        let direction = [phi.cos(), phi.sin(), 0.];
+        let mut one = input.clone();
+        for (j, atom) in one.atoms.iter_mut().enumerate() {
+            atom.moment = if j == i { input.atoms[i].moment } else { 0. };
+        }
+        let single = build(one);
+        for a in 0..3 {
+            for k in 0..n {
+                texture[a * n + k] += direction[a] * single.initial_m.as_slice()[2 * n + k];
+            }
+        }
+    }
+    crystal.initial_m.as_mut_slice().copy_from_slice(&texture);
+    crystal
+}
+
+/// Starts the SCF of `crystal` (a spinor crystal) from `density`, the converged `[n, m_x, m_y, m_z]`
+/// of a neighboring geometry: a noncollinear texture has several nearby solutions, and a
+/// finite difference of its energy needs every displaced SCF on the reference's.
+pub fn restart(crystal: &mut mandacaru_core::periodic::Crystal, density: &[f64]) {
+    let n = crystal.grid.index.points();
+    assert_eq!(density.len(), 4 * n, "a spinor density has four blocks");
+    crystal.initial.as_mut_slice().copy_from_slice(&density[..n]);
+    crystal.initial_m.as_mut_slice().copy_from_slice(&density[n..]);
+}
+
+/// Peak (electrons per Bohr cubed) and 1/e radius (Bohr) of the synthetic smooth core of the
+/// hydrogen of [`triangle_species`]: `PEAK exp(-(r / WIDTH)^2)`, 0.22 electrons in all. Measured
+/// 2026-11-16: with it the textured triangle converges in 281 iterations to net moment 0.838 and a
+/// magnetization axis that turns by 1.535 rad, and the Pauli-charge-channel expression of the core
+/// term (the one before MG-F8 5a) misses the reconverged finite difference by 5.7e-6, 3.6e-6 and
+/// 2.7e-6 Ha/Bohr in the three gated force components (2.7 to 5.7 gates) and by 2.6e-6 to
+/// 3.1e-5 Ha in the six stress entries, where the exact term misses by 6e-10 to 2.4e-7 and 6e-10 to
+/// 1.5e-7. At a peak of 0.05 the displaced SCFs of the force gate no longer converge in 1000
+/// iterations, at 0.1 the reference SCF does not converge in 400.
+pub const TRIANGLE_CORE_PEAK: f64 = 0.04;
+pub const TRIANGLE_CORE_WIDTH: f64 = 1.0;
+
+/// The hydrogen of the triangle fixtures: the shipped record, or the same record with a synthetic
+/// smooth partial core attached (it is not a pseudopotential: the library has no hydrogen with a
+/// core, and none of the heavier atoms tried keeps a turning magnetization with one, `triangle_input`). The
+/// forces and the stress read the records again from their files, so the synthetic record is
+/// written to the temporary directory (removed on drop) and its digest taken from that file.
+pub struct TriangleSpecies {
+    pub files: Vec<(String, String)>,
+    pub datasets: Vec<Arc<PawDataset>>,
+    scratch: Option<PathBuf>,
+}
+
+impl Drop for TriangleSpecies {
+    fn drop(&mut self) {
+        if let Some(path) = &self.scratch {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+pub fn triangle_species(ctx: &Context, core: bool) -> TriangleSpecies {
+    use mandacaru_core::{parquet::Codec, paw::digest::dataset_content_sha256, paw::record::WriteSpec};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static COUNTER: AtomicUsize = AtomicUsize::new(0);
+    let shipped = PathBuf::from(std::env::var_os("MANDACARU_PAW_PATH").expect("MANDACARU_PAW_PATH is unset")).join("pbe-fr/H.parquet");
+    if !core {
+        let digest = dataset_content_sha256(ctx, &shipped).unwrap();
+        return TriangleSpecies {
+            files: vec![(shipped.to_string_lossy().into_owned(), digest)],
+            datasets: vec![Arc::new(dataset(ctx, "pbe-fr", "H"))],
+            scratch: None,
+        };
+    }
+    let mut record = dataset(ctx, "pbe-fr", "H");
+    let r = record.r.as_slice().to_vec();
+    let table = |r: f64| TRIANGLE_CORE_PEAK * (-(r / TRIANGLE_CORE_WIDTH).powi(2)).exp();
+    for (to, &r) in record.smooth_core_density.as_mut_slice().iter_mut().zip(&r) {
+        *to = table(r);
+    }
+    // The charge of the table (trapezoid rule), as the record's own field.
+    let charge: f64 = r
+        .windows(2)
+        .map(|w| 0.5 * (w[1] - w[0]) * (table(w[0]) * w[0] * w[0] + table(w[1]) * w[1] * w[1]))
+        .sum::<f64>()
+        * 4.
+        * std::f64::consts::PI;
+    record.nlcc.applied = true;
+    record.nlcc.source = Some("smooth_core".into());
+    record.nlcc.partial_core_electrons = Some(charge);
+    let path = std::env::temp_dir().join(format!(
+        "mandacaru_triangle_core_{}_{}.parquet",
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    record.write(ctx, &path, &WriteSpec { stride: 1, codec: Codec::Zstd }).unwrap();
+    let digest = dataset_content_sha256(ctx, &path).unwrap();
+    TriangleSpecies {
+        files: vec![(path.to_string_lossy().into_owned(), digest)],
+        datasets: vec![Arc::new(PawDataset::read(ctx, &path).unwrap())],
+        scratch: Some(path),
+    }
+}
+
+/// A grid proxy of what the Pauli-charge-channel expression of the core term (the one before
+/// MG-F8 5a) adds to the force of a rigid translation of the whole crystal, per axis (Ha/Bohr):
+/// the converged state's `v_exact - v_pauli` and `v_tau,exact - v_tau,pauli` against the SPECTRAL
+/// gradient of the core and of its kinetic density, not the slope of the cubic the engine places
+/// (it is 3.0e-5 along x where the engine's per-atom differences sum to about 7e-6). It is zero for
+/// a state whose frame does not turn or whose core is nowhere magnetic: the floor that makes the
+/// cored gates count. The exact old-minus-new numbers are in `dev_plan/DECISIONS.md`.
+pub fn pauli_core_force_gap(crystal: &mandacaru_core::periodic::Crystal, result: &mandacaru_core::periodic::PeriodicResult) -> [f64; 3] {
+    use mandacaru_core::{math::fft::Fft3, periodic::spinor, quantum::C64};
+    let ctx = &crystal.context;
+    let n = crystal.grid.index.points();
+    let tau = result.kinetic_density.as_ref().expect("a meta-GGA state keeps its kinetic density");
+    let mut fft = Fft3::new(ctx, crystal.grid.index.shape()).unwrap();
+    let terms = spinor::exchange_correlation(crystal, &mut fft, result.density.as_slice(), Some(tau.as_slice())).unwrap();
+    let sources = terms.core.as_ref().expect("a spinor meta-GGA returns its core sources");
+    let pauli_kinetic = terms.kinetic_potential.as_ref().expect("a meta-GGA returns v_tau");
+    let core_tau = crystal.core_tau.as_ref().expect("a meta-GGA crystal has its core kinetic density");
+    let mut gap = [0.; 3];
+    for (axis, to) in gap.iter_mut().enumerate() {
+        let mut slope = |field: &[f64]| -> Vec<f64> {
+            let mut work: Vec<C64> = field.iter().map(|v| C64::new(*v, 0.)).collect();
+            fft.transform(&mut work, false).unwrap();
+            for (k, w) in work.iter_mut().enumerate() {
+                *w *= C64::new(0., crystal.xc_wave.as_slice()[axis * n + k]);
+            }
+            fft.transform(&mut work, true).unwrap();
+            work.iter().map(|v| v.re).collect()
+        };
+        let (d_core, d_tau) = (slope(crystal.core.as_slice()), slope(core_tau.as_slice()));
+        let dv = crystal.grid.index.dv();
+        *to = dv
+            * (0..n)
+                .map(|k| {
+                    (sources.potential.as_slice()[k] - terms.potential.as_slice()[k]) * d_core[k]
+                        + (sources.kinetic.as_slice()[k] - pauli_kinetic.as_slice()[k]) * d_tau[k]
+                })
+                .sum::<f64>();
+    }
+    gap
+}

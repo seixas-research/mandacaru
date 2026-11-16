@@ -1,4 +1,7 @@
 //! Python/ASE boundary for the Python-independent molecular engine.
+use super::excitations::{
+    excited_gradient, refuse_excited_state, snapshot_excited, Excited, PyExcitedStateTarget,
+};
 use super::quantum::{PyOperator, PyProblem};
 use super::{array, copy, error, Array, PySpatialGrid};
 use mandacaru_core::{
@@ -29,31 +32,23 @@ impl Drop for PyIntegrals {
         let _ = mandacaru_core::release_freed_memory();
     }
 }
+impl PyIntegrals {
+    /// The excited state `target` picks of a converged `reference`, with the reference: an
+    /// unconverged SCF is reported as such by the caller, not as a response error.
+    fn excited(
+        &self,
+        reference: MeanField,
+        target: Option<&PyExcitedStateTarget>,
+    ) -> mandacaru_core::Result<(MeanField, Option<Arc<Excited>>)> {
+        let excited = match target.filter(|_| reference.converged) {
+            Some(target) => Some(Arc::new(target.solve(&self.inner, &reference)?)),
+            None => None,
+        };
+        Ok((reference, excited))
+    }
+}
 #[pymethods]
 impl PyIntegrals {
-    #[pyo3(signature=(previous,*,max_iterations=300,tolerance=1e-9,diis=true))]
-    fn continue_mean_field(
-        &self,
-        py: Python<'_>,
-        previous: &PyMeanField,
-        max_iterations: usize,
-        tolerance: f64,
-        diis: bool,
-    ) -> PyResult<PyMeanField> {
-        let options = ScfOptions {
-            max_iterations,
-            tolerance,
-            diis,
-            guesses: 1,
-        };
-        let inner = py
-            .detach(|| self.inner.continue_mean_field(&previous.inner, &options))
-            .map_err(error)?;
-        Ok(PyMeanField {
-            inner: Arc::new(inner),
-            integrals: self.inner.clone(),
-        })
-    }
     fn at_geometry(&self, py: Python<'_>, geometry: &super::PyGeometry) -> PyResult<Self> {
         py.detach(|| self.inner.at_geometry(geometry.inner.clone()))
             .map(|inner| Self {
@@ -173,7 +168,10 @@ impl PyIntegrals {
         }
         Ok(out)
     }
-    #[pyo3(signature=(method,num_particles,*,max_iterations=300,tolerance=1e-9,diis=true,guesses=3))]
+    /// Hartree-Fock (`"rhf"`, `"uhf"` or `"ghf"`); `excited_state` (from
+    /// `excited_state_options`) adds the energy and gradient of one CIS or TDHF excited state of
+    /// a converged collinear reference.
+    #[pyo3(signature=(method,num_particles,*,max_iterations=300,tolerance=1e-9,diis=true,guesses=3,excited_state=None))]
     #[allow(clippy::too_many_arguments)]
     fn mean_field(
         &self,
@@ -184,22 +182,34 @@ impl PyIntegrals {
         tolerance: f64,
         diis: bool,
         guesses: usize,
+        excited_state: Option<Bound<'_, PyExcitedStateTarget>>,
     ) -> PyResult<PyMeanField> {
+        if method == "ghf" {
+            refuse_excited_state(&excited_state)?;
+        }
         let options = ScfOptions {
             max_iterations,
             tolerance,
             diis,
             guesses,
         };
-        let inner = py
-            .detach(|| self.inner.mean_field(method, num_particles, &options))
+        let target = excited_state.as_ref().map(|t| t.get());
+        let (inner, excited) = py
+            .detach(|| -> mandacaru_core::Result<_> {
+                let inner = self.inner.mean_field(method, num_particles, &options)?;
+                self.excited(inner, target)
+            })
             .map_err(error)?;
         Ok(PyMeanField {
             inner: Arc::new(inner),
             integrals: self.inner.clone(),
+            excited,
         })
     }
-    #[pyo3(signature = (functional, num_particles, *, unrestricted=false, max_iterations=300, tolerance=1e-9, diis=true, guesses=3, smearing="fermi-dirac", width=mandacaru_core::molecular::occupation::DEFAULT_WIDTH))]
+    /// Kohn-Sham DFT; `excited_state` (from `excited_state_options`) adds the energy and
+    /// gradient of one excited state of the converged reference.
+    #[pyo3(signature = (functional, num_particles, *, unrestricted=false, max_iterations=300, tolerance=1e-9, diis=true, guesses=3, smearing="fermi-dirac", width=mandacaru_core::molecular::occupation::DEFAULT_WIDTH, excited_state=None))]
+    #[allow(clippy::too_many_arguments)]
     fn kohn_sham(
         &self,
         py: Python<'_>,
@@ -212,6 +222,7 @@ impl PyIntegrals {
         guesses: usize,
         smearing: &str,
         width: f64,
+        excited_state: Option<Bound<'_, PyExcitedStateTarget>>,
     ) -> PyResult<PyMeanField> {
         let options = ScfOptions {
             max_iterations,
@@ -219,26 +230,30 @@ impl PyIntegrals {
             diis,
             guesses,
         };
-        let inner = py
-            .detach(|| {
-                self.inner.kohn_sham_smeared(
+        let target = excited_state.as_ref().map(|t| t.get());
+        let (inner, excited) = py
+            .detach(|| -> mandacaru_core::Result<_> {
+                let inner = self.inner.kohn_sham_smeared(
                     functional,
                     num_particles,
                     unrestricted,
                     &options,
                     smearing,
                     width,
-                )
+                )?;
+                self.excited(inner, target)
             })
             .map_err(error)?;
         Ok(PyMeanField {
             inner: Arc::new(inner),
             integrals: self.inner.clone(),
+            excited,
         })
     }
     /// Spinor (noncollinear) Kohn-Sham with `electrons` in one `2m x 2m` set of orbitals, the
     /// spin-orbit term of a spin-orbit dataset included: a `ghf` state with a functional.
-    #[pyo3(signature = (functional, electrons, *, max_iterations=300, tolerance=1e-9, diis=true, guesses=3))]
+    #[pyo3(signature = (functional, electrons, *, max_iterations=300, tolerance=1e-9, diis=true, guesses=3, excited_state=None))]
+    #[allow(clippy::too_many_arguments)]
     fn spinor_kohn_sham(
         &self,
         py: Python<'_>,
@@ -248,6 +263,7 @@ impl PyIntegrals {
         tolerance: f64,
         diis: bool,
         guesses: usize,
+        excited_state: Option<Bound<'_, PyExcitedStateTarget>>,
     ) -> PyResult<PyMeanField> {
         let options = ScfOptions {
             max_iterations,
@@ -255,17 +271,22 @@ impl PyIntegrals {
             diis,
             guesses,
         };
-        let inner = py
-            .detach(|| self.inner.spinor_kohn_sham(functional, electrons, &options))
+        let target = excited_state.as_ref().map(|t| t.get());
+        let (inner, excited) = py
+            .detach(|| -> mandacaru_core::Result<_> {
+                let inner = self.inner.spinor_kohn_sham(functional, electrons, &options)?;
+                self.excited(inner, target)
+            })
             .map_err(error)?;
         Ok(PyMeanField {
             inner: Arc::new(inner),
             integrals: self.inner.clone(),
+            excited,
         })
     }
     /// Spinor Kohn-Sham from a noncollinear start: one initial moment vector per atom (Bohr
     /// magneton), the collinear state with the moments' lengths turned per atom.
-    #[pyo3(signature = (functional, moments, *, charge=0, n_electrons=None, max_iterations=300, tolerance=1e-9, diis=true, guesses=3))]
+    #[pyo3(signature = (functional, moments, *, charge=0, n_electrons=None, max_iterations=300, tolerance=1e-9, diis=true, guesses=3, excited_state=None))]
     #[allow(clippy::too_many_arguments)]
     fn spinor_kohn_sham_noncollinear(
         &self,
@@ -278,6 +299,7 @@ impl PyIntegrals {
         tolerance: f64,
         diis: bool,
         guesses: usize,
+        excited_state: Option<Bound<'_, PyExcitedStateTarget>>,
     ) -> PyResult<PyMeanField> {
         let options = ScfOptions {
             max_iterations,
@@ -285,20 +307,23 @@ impl PyIntegrals {
             diis,
             guesses,
         };
-        let inner = py
-            .detach(|| {
-                self.inner.spinor_kohn_sham_noncollinear(
+        let target = excited_state.as_ref().map(|t| t.get());
+        let (inner, excited) = py
+            .detach(|| -> mandacaru_core::Result<_> {
+                let inner = self.inner.spinor_kohn_sham_noncollinear(
                     functional,
                     charge,
                     &moments,
                     n_electrons,
                     &options,
-                )
+                )?;
+                self.excited(inner, target)
             })
             .map_err(error)?;
         Ok(PyMeanField {
             inner: Arc::new(inner),
             integrals: self.inner.clone(),
+            excited,
         })
     }
 }
@@ -311,6 +336,9 @@ pub struct PyHandover {
 pub struct PyMeanField {
     pub(crate) inner: Arc<MeanField>,
     pub(crate) integrals: Arc<MolecularIntegrals>,
+    /// The excited state of an `excited_state=` request: its energy and gradient are the
+    /// snapshot's and `gradient()`'s; the excitations of `get_excitations` stay the reference's.
+    pub(crate) excited: Option<Arc<Excited>>,
 }
 #[pymethods]
 impl PyMeanField {
@@ -453,7 +481,8 @@ impl PyMeanField {
             })
             .map_err(error)?;
         let out = PyDict::new(py);
-        let shape = [self.integrals.geometry.numbers().len(), 3];
+        // One row per atom of the result: a PAW-LCAO supercell's force is per primitive atom.
+        let shape = [response.gradient.as_slice().len() / 3, 3];
         out.set_item("gradient", array(py, &shape, response.gradient.as_slice().to_vec())?)?;
         out.set_item("energy_ha", response.energy)?;
         out.set_item("directions", response.directions)?;
@@ -743,10 +772,13 @@ impl PyMeanField {
     }
 
     fn gradient<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        if let Some(excited) = &self.excited {
+            return excited_gradient(py, excited, &self.integrals, &self.inner);
+        }
         let gradient = py
             .detach(|| self.integrals.gradient(&self.inner))
             .map_err(error)?;
-        let shape = [self.integrals.geometry.numbers().len(), 3];
+        let shape = [gradient.total.as_slice().len() / 3, 3];
         let out = PyDict::new(py);
         out.set_item(
             "gradient",
@@ -783,42 +815,7 @@ impl PyMeanField {
     fn state<'py>(&self, py: Python<'py>, mapping: &str) -> PyResult<Array<'py, C64>> {
         let out = py
             .detach(|| {
-                let m = self.integrals.m();
-                let particles = self.inner.particles;
-                let encoding = Encoding::new(mapping, 2 * m, particles)?;
-                let mut state = self.integrals.context.allocate::<C64>(
-                    1usize
-                        .checked_shl(encoding.n_qubits() as u32)
-                        .ok_or(mandacaru_core::Error::Overflow)?,
-                )?;
-                if self.inner.method != "uhf" {
-                    state.as_mut_slice()[encoding.reference() as usize] = C64::new(1., 0.);
-                    return Ok(state);
-                }
-                let occupation_encoding = Encoding::new("jordan_wigner", 2 * m, particles)?;
-                let basis = Basis::new(&self.integrals.context, &occupation_encoding, true)?;
-                let rotations: Vec<_> = self
-                    .inner
-                    .coefficients
-                    .iter()
-                    .map(|c| self.inner.model_orbitals.adjoint() * c)
-                    .collect();
-                for &occupation in basis.indices.as_slice() {
-                    let mut amplitude = C64::new(1., 0.);
-                    for spin in 0..2 {
-                        let occupied: Vec<_> = (0..m)
-                            .filter(|&i| occupation & (1u64 << (2 * m - 1 - spin * m - i)) != 0)
-                            .collect();
-                        let determinant =
-                            nalgebra::DMatrix::from_fn(particles[spin], particles[spin], |i, j| {
-                                rotations[spin][(occupied[i], j)]
-                            })
-                            .determinant();
-                        amplitude *= determinant;
-                    }
-                    state.as_mut_slice()[encoding.encode(occupation) as usize] = amplitude;
-                }
-                Ok::<_, mandacaru_core::Error>(state)
+                self.inner.reference_state(&self.integrals, mapping)
             })
             .map_err(error)?;
         array(py, &[out.as_slice().len()], out.as_slice().to_vec())
@@ -832,30 +829,7 @@ impl PyMeanField {
         let m = self.integrals.m();
         let out = py
             .detach(|| {
-                let _work = self
-                    .integrals
-                    .context
-                    .reserve(mandacaru_core::product(&[m, m, 16, 8])?)?;
-                let mut out = self
-                    .integrals
-                    .context
-                    .allocate::<C64>(mandacaru_core::product(&[2 * m, 2 * m])?)?;
-                for spin in 0..2 {
-                    let density = &self.inner.densities[if self.inner.densities.len() == 1 {
-                        0
-                    } else {
-                        spin
-                    }];
-                    let transformed =
-                        self.inner.model_orbitals.adjoint() * density * &self.inner.model_orbitals;
-                    for p in 0..m {
-                        for q in 0..m {
-                            out.as_mut_slice()[(spin * m + p) * 2 * m + spin * m + q] =
-                                transformed[(p, q)];
-                        }
-                    }
-                }
-                Ok::<_, mandacaru_core::Error>(out)
+                self.inner.model_rdm(&self.integrals)
             })
             .map_err(error)?;
         array(py, &[2 * m, 2 * m], out.as_slice().to_vec())
@@ -959,6 +933,9 @@ impl PyMeanField {
         out.set_item("smearing_width", value.smearing_width)?;
         out.set_item("free_energy", value.total_free_energy(&self.integrals))?;
         out.set_item("aufbau_inversion", value.aufbau_inversion)?;
+        if let Some(excited) = &self.excited {
+            snapshot_excited(&out, excited)?;
+        }
         if include_hamiltonian {
             let model = py.detach(|| value.model(&self.integrals)).map_err(error)?;
             out.set_item("h_mo", array(py, &[n, n], model.one.as_slice().to_vec())?)?;
@@ -1111,6 +1088,7 @@ impl PyModel {
                     model.one.as_slice(),
                     two,
                     model.particles[0],
+                    model.exchange_madelung,
                 )
             })
             .map_err(error)?;

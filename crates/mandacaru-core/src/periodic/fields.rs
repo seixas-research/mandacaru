@@ -143,6 +143,39 @@ pub struct Terms {
     /// included, clamped as the energy saw them); `None` for a functional without it. The
     /// crystal stress differentiates the kernel's wave numbers on these ([`nonlocal::strain`]).
     pub nonlocal_source: Option<nonlocal::Source>,
+    /// What the partial core is differentiated against when it is not the spin average of
+    /// `potential` and `kinetic_potential`; `None` otherwise ([`CoreSources`]).
+    pub core: Option<CoreSources>,
+}
+
+/// The exact derivatives of the xc energy in the unpolarized partial core of a spinor meta-GGA.
+/// The core enters the frame's spin densities as `n_up/dn = (n + core +- u . m) / 2` and
+/// `tau_up/dn = (tau_0 + core_tau +- u . tau_vec) / 2`, and the frame `u` is built from the valence
+/// fields alone, so `dE / d core = (v_up + v_dn) / 2 - div (f_up + f_dn) / 2` and `dE / d core_tau
+/// = (v_tau,up + v_tau,dn) / 2`, taken from the frame's potentials before the unrotation. The
+/// Pauli charge channels of `potential` and `kinetic_potential` are these plus the turn of the
+/// frame, which the core never moves.
+pub struct CoreSources {
+    /// `dE / d core` per node, with the divergence of the spin-averaged flux.
+    pub potential: Buffer<f64>,
+    /// `dE / d core_tau` per node.
+    pub kinetic: Buffer<f64>,
+}
+
+/// What the functional gives at its nodes before the flux divergence: the frame of
+/// [`partials`].
+pub(super) struct Partials {
+    pub energy: f64,
+    /// `d f / d n_s`, two blocks of `n`, without the divergence of the flux.
+    pub local: Buffer<f64>,
+    /// A meta-GGA's `d f / d tau_s`, `spins` blocks of `n`, zero where the kinetic density is
+    /// negative.
+    pub kinetic_potential: Option<Buffer<f64>>,
+    /// `partial_c n_s` the functional saw, `(6, n)` with row `3 s + c` (half core included).
+    pub gradients: Buffer<f64>,
+    /// `d f / d (partial_c n_s)`, the same layout.
+    pub flux: Buffer<f64>,
+    pub nonlocal_source: Option<nonlocal::Source>,
 }
 
 /// The semilocal functional of the spin layout `spins` of `rho` (and `tau`): one block holds the
@@ -156,6 +189,70 @@ pub fn evaluate(
     tau: Option<&[f64]>,
     spins: usize,
 ) -> Result<Terms> {
+    let Partials { energy, mut local, kinetic_potential, gradients, flux, nonlocal_source } =
+        partials(c, fft, rho, tau, spins, None)?;
+    let n = c.grid.index.points();
+    for s in 0..2 {
+        for a in 0..3 {
+            let divergence = derivative(
+                c,
+                fft,
+                &flux.as_slice()[(3 * s + a) * n..(3 * s + a + 1) * n],
+                a,
+            )?;
+            for k in 0..n {
+                local.as_mut_slice()[s * n + k] -= divergence.as_slice()[k];
+            }
+        }
+    }
+    Ok(Terms {
+        energy,
+        potential: vanish_below_zero(c, rho, spins, local.as_slice())?,
+        kinetic_potential,
+        gradients: Some(gradients),
+        flux: Some(flux),
+        nonlocal_source,
+        core: None,
+    })
+}
+
+/// `local` of the spin layout `spins` of `rho` where the density the functional saw is positive,
+/// zero where its clamp at zero acted.
+pub(super) fn vanish_below_zero(
+    c: &Crystal,
+    rho: &[f64],
+    spins: usize,
+    local: &[f64],
+) -> Result<Buffer<f64>> {
+    let n = c.grid.index.points();
+    let mut potential = c.context.allocate::<f64>(spins * n)?;
+    for s in 0..spins {
+        for k in 0..n {
+            let raw = if spins == 1 {
+                rho[k] + c.core.as_slice()[k]
+            } else {
+                rho[s * n + k] + 0.5 * c.core.as_slice()[k]
+            };
+            potential.as_mut_slice()[s * n + k] = if raw < 0. { 0. } else { local[s * n + k] };
+        }
+    }
+    Ok(potential)
+}
+
+/// The functional at the nodes of `rho` (and `tau`), as [`evaluate`] but without the divergence
+/// of the flux in `local`. The gradients of the two spin channels are the spectral derivatives of
+/// the clamped densities, or the gradients `supplied` (`(6, n)`, row `3 s + c`, of the valence
+/// densities `rho` only: the half core's gradient is added here, and the clamp does not touch
+/// them): a spinor meta-GGA hands the frame projections of the Pauli gradients
+/// (`models::noncollinear::rotate_gradients`), and takes the divergence on the Pauli channels.
+pub(super) fn partials(
+    c: &Crystal,
+    fft: &mut Fft3,
+    rho: &[f64],
+    tau: Option<&[f64]>,
+    spins: usize,
+    supplied: Option<&[f64]>,
+) -> Result<Partials> {
     let ctx = &c.context;
     let definition = models::functional(&c.functional)?;
     let n = c.grid.index.points();
@@ -186,11 +283,29 @@ pub fn evaluate(
     }
     let mut gradients = ctx.allocate::<f64>(6 * n)?;
     let mut sigma = ctx.allocate::<f64>(3 * n)?;
-    for s in 0..2 {
-        for a in 0..3 {
-            let d = derivative(c, fft, &densities.as_slice()[s * n..(s + 1) * n], a)?;
-            gradients.as_mut_slice()[(3 * s + a) * n..(3 * s + a + 1) * n]
-                .copy_from_slice(d.as_slice());
+    match supplied {
+        None => {
+            for s in 0..2 {
+                for a in 0..3 {
+                    let d = derivative(c, fft, &densities.as_slice()[s * n..(s + 1) * n], a)?;
+                    gradients.as_mut_slice()[(3 * s + a) * n..(3 * s + a + 1) * n]
+                        .copy_from_slice(d.as_slice());
+                }
+            }
+        }
+        Some(given) => {
+            if given.len() != 6 * n || given.iter().any(|v| !v.is_finite()) {
+                return Err(invalid("supplied spin gradients are two spins of three finite axes"));
+            }
+            for a in 0..3 {
+                let core = derivative(c, fft, c.core.as_slice(), a)?;
+                for s in 0..2 {
+                    for k in 0..n {
+                        gradients.as_mut_slice()[(3 * s + a) * n + k] =
+                            given[(3 * s + a) * n + k] + 0.5 * core.as_slice()[k];
+                    }
+                }
+            }
         }
     }
     for k in 0..n {
@@ -281,40 +396,12 @@ pub fn evaluate(
             }
         }
     }
-    for s in 0..2 {
-        for a in 0..3 {
-            let divergence = derivative(
-                c,
-                fft,
-                &flux.as_slice()[(3 * s + a) * n..(3 * s + a + 1) * n],
-                a,
-            )?;
-            for k in 0..n {
-                local.as_mut_slice()[s * n + k] -= divergence.as_slice()[k];
-            }
-        }
-    }
-    let mut potential = ctx.allocate::<f64>(spins * n)?;
-    for s in 0..spins {
-        for k in 0..n {
-            let raw = if spins == 1 {
-                rho[k] + c.core.as_slice()[k]
-            } else {
-                rho[s * n + k] + 0.5 * c.core.as_slice()[k]
-            };
-            potential.as_mut_slice()[s * n + k] = if raw < 0. {
-                0.
-            } else {
-                local.as_slice()[s * n + k]
-            };
-        }
-    }
-    Ok(Terms {
+    Ok(Partials {
         energy,
-        potential,
+        local,
         kinetic_potential: vtau,
-        gradients: Some(gradients),
-        flux: Some(flux),
+        gradients,
+        flux,
         nonlocal_source,
     })
 }

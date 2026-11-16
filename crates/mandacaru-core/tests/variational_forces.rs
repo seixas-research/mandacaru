@@ -86,6 +86,7 @@ fn the_fixed_density_gradient_of_the_hartree_fock_determinant_is_the_analytic_fo
             weighted: w,
             frame: occupied,
             two: two_body_forms(&two, 1).unwrap(),
+            cluster_frame: None,
         };
         let gradient = base.fixed_density_gradient(&densities).unwrap();
         let worst = gradient
@@ -139,6 +140,7 @@ fn the_fixed_density_gradient_of_an_adapt_state_is_the_derivative_at_fixed_orbit
             weighted: DMatrix::zeros(m, m),
             frame: a.clone(),
             two: two_body_forms(&two, t).unwrap(),
+            cluster_frame: None,
         };
         assert!((energy_at_fixed_orbitals(&base, &a, &one, &two) - solved.energy).abs() < 1e-9);
         let gradient = base.fixed_density_gradient(&densities).unwrap();

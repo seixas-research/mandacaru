@@ -81,6 +81,9 @@ pub struct Unrestricted<'a> {
     exchange: f64,
     polarization: Option<crate::paw::molecular::SphereKernels>,
     meta: Option<xc_kernel::MetaKernel>,
+    /// The weights `v_tau,s / n_s` of the current-density term of `A - B` (`[spin][point]`,
+    /// r2SCAN only).
+    current: Option<Buffer<f64>>,
     hubbard: Option<super::hubbard::HubbardKernel>,
 }
 
@@ -194,6 +197,7 @@ impl<'a> Unrestricted<'a> {
             exchange: 0.,
             polarization: None,
             meta: None,
+            current: None,
             hubbard: None,
         };
         if coupling == Coupling::Independent {
@@ -223,6 +227,12 @@ impl<'a> Unrestricted<'a> {
                 if coupling == Coupling::Adiabatic && requires_tau {
                     operator.meta = Some(super::meta::ground_kernel(
                         integrals,
+                        &densities,
+                        fields.valence.as_slice(),
+                    )?);
+                    operator.current = Some(super::meta::current_weights(
+                        integrals,
+                        name,
                         &densities,
                         fields.valence.as_slice(),
                     )?);
@@ -613,7 +623,7 @@ impl<'a> Unrestricted<'a> {
             ));
         }
         let mut out = DMatrix::zeros(self.dimension(), block.ncols());
-        if self.exchange == 0. && self.hubbard.is_none() {
+        if self.exchange == 0. && self.hubbard.is_none() && self.current.is_none() {
             return Ok(out);
         }
         for c in 0..block.ncols() {
@@ -638,6 +648,25 @@ impl<'a> Unrestricted<'a> {
                 )?;
                 k[0] += &parts[0];
                 k[1] += &parts[1];
+            }
+            // The current-density term of tau~, each spin with its own weights.
+            if let Some(weights) = &self.current {
+                let n = self.integrals.grid.index.points();
+                for (s, channel) in self.channels.iter().enumerate() {
+                    if let (Some(samples), Some(gradients)) = (&channel.samples, &channel.gradients)
+                    {
+                        k[s] += super::meta::current_elements(
+                            samples.as_slice(),
+                            gradients.as_slice(),
+                            n,
+                            channel.o + channel.v,
+                            channel.o,
+                            &y[s],
+                            &weights.as_slice()[s * n..(s + 1) * n],
+                            self.integrals.grid.index.dv(),
+                        )?;
+                    }
+                }
             }
             out.set_column(c, &nalgebra::DVector::from_vec(self.flat(&k)));
         }

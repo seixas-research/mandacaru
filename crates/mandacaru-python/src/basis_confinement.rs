@@ -12,7 +12,7 @@ use mandacaru_core::{
     Reservation,
 };
 use numpy::{PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods};
-use pyo3::{exceptions::PyValueError, prelude::*};
+use pyo3::prelude::*;
 
 /// A PAW channel's arrays, copied out of Python and accounted in the context.
 struct Owned {
@@ -366,30 +366,6 @@ fn pao_quasi_gaussian<'py>(
 }
 
 #[pyfunction]
-fn pao_polarization_radial<'py>(
-    py: Python<'py>,
-    table: PyReadonlyArray1<'py, f64>,
-    l: usize,
-    r_cut: f64,
-    r_char: f64,
-) -> PyResult<Array<'py, f64>> {
-    let out = radial::polarization_radial(table.as_slice()?, l, r_cut, r_char).map_err(error)?;
-    array(py, &[out.len()], out)
-}
-
-#[pyfunction]
-fn pao_power_shape<'py>(
-    py: Python<'py>,
-    table: PyReadonlyArray1<'py, f64>,
-    outermost: PyReadonlyArray1<'py, f64>,
-    power: usize,
-) -> PyResult<Array<'py, f64>> {
-    let out =
-        radial::power_shape(table.as_slice()?, outermost.as_slice()?, power).map_err(error)?;
-    array(py, &[out.len()], out)
-}
-
-#[pyfunction]
 #[allow(clippy::too_many_arguments)]
 fn pao_bound_level(
     context: PyRef<'_, PyContext>,
@@ -471,154 +447,6 @@ fn diffuse_radial<'py>(
     Ok((array(py, &[values.len()], values)?, alpha, r_cut))
 }
 
-#[pyfunction]
-fn diffuse_rms(r: PyReadonlyArray1<'_, f64>, values: PyReadonlyArray1<'_, f64>) -> PyResult<f64> {
-    let (r, values) = (r.as_slice()?, values.as_slice()?);
-    if r.len() != values.len() || r.len() < 2 {
-        return Err(PyValueError::new_err(
-            "rms needs a table of matching arrays",
-        ));
-    }
-    Ok(diffuse::rms(r, values))
-}
-
-#[pyfunction]
-fn diffuse_radial_norm(
-    r: PyReadonlyArray1<'_, f64>,
-    values: PyReadonlyArray1<'_, f64>,
-) -> PyResult<f64> {
-    let (r, values) = (r.as_slice()?, values.as_slice()?);
-    if r.len() != values.len() || r.len() < 2 {
-        return Err(PyValueError::new_err(
-            "a norm needs a table of matching arrays",
-        ));
-    }
-    Ok(radial::radial_norm(r, values))
-}
-
-#[pyfunction]
-fn diffuse_extended_grid<'py>(
-    py: Python<'py>,
-    r: PyReadonlyArray1<'py, f64>,
-    reach: f64,
-) -> PyResult<Array<'py, f64>> {
-    let out = diffuse::extended_grid(r.as_slice()?, reach).map_err(error)?;
-    array(py, &[out.len()], out)
-}
-
-#[pyfunction]
-fn diffuse_on_grid<'py>(
-    context: PyRef<'_, PyContext>,
-    py: Python<'py>,
-    r_new: PyReadonlyArray1<'py, f64>,
-    r_old: PyReadonlyArray1<'py, f64>,
-    values: PyReadonlyArray1<'py, f64>,
-) -> PyResult<Array<'py, f64>> {
-    let (r_new, _a) = copy(&context.inner, &r_new)?;
-    let (r_old, _b) = copy(&context.inner, &r_old)?;
-    let (values, _c) = copy(&context.inner, &values)?;
-    let ctx = &context.inner;
-    let out = py
-        .detach(|| diffuse::on_grid(ctx, &r_new, &r_old, &values))
-        .map_err(error)?;
-    array(py, &[out.len()], out)
-}
-
-#[pyfunction]
-fn diffuse_orthogonalize<'py>(
-    context: PyRef<'_, PyContext>,
-    py: Python<'py>,
-    r: PyReadonlyArray1<'py, f64>,
-    same: Vec<PyReadonlyArray1<'py, f64>>,
-    values: PyReadonlyArray1<'py, f64>,
-    renormalize: bool,
-    tolerance: f64,
-) -> PyResult<(f64, bool, Array<'py, f64>)> {
-    let (r, _a) = copy(&context.inner, &r)?;
-    let (values, _b) = copy(&context.inner, &values)?;
-    let mut held = Vec::with_capacity(same.len());
-    let mut keep = Vec::with_capacity(same.len());
-    for g in &same {
-        let (g, reservation) = copy(&context.inner, g)?;
-        held.push(g);
-        keep.push(reservation);
-    }
-    let shell = py
-        .detach(|| {
-            let views: Vec<&[f64]> = held.iter().map(Vec::as_slice).collect();
-            diffuse::orthogonalize(&r, &views, &values, renormalize, tolerance)
-        })
-        .map_err(error)?;
-    let n = shell.values.len();
-    Ok((
-        shell.residual,
-        shell.accepted,
-        array(py, &[n], shell.values)?,
-    ))
-}
-
-#[pyfunction]
-fn diffuse_face_distance(
-    origin: [f64; 3],
-    step: [[f64; 3]; 3],
-    shape: [usize; 3],
-    center: [f64; 3],
-) -> PyResult<f64> {
-    diffuse::face_distance(origin, step, shape, center).map_err(error)
-}
-
-/// Native orchestration of `diffuse_tables`:
-/// Multi-channel radial generation, Fourier filtering, and linear-dependence orthogonalization.
-#[pyfunction(signature = (
-    context,
-    r_base,
-    existing,
-    channels,
-    recipe_params,
-    filter_wavevector=None,
-    grid_reach=3.0,
-    linear_dependence_tol=1e-4,
-))]
-#[allow(clippy::type_complexity)]
-fn diffuse_build_tables<'py>(
-    context: PyRef<'_, PyContext>,
-    py: Python<'py>,
-    r_base: PyReadonlyArray1<'py, f64>,
-    existing: Vec<(usize, usize, PyReadonlyArray1<'py, f64>, PyReadonlyArray1<'py, f64>)>,
-    channels: Vec<(usize, usize, f64)>,
-    recipe_params: (usize, f64, f64, f64, f64),
-    filter_wavevector: Option<f64>,
-    grid_reach: f64,
-    linear_dependence_tol: f64,
-) -> PyResult<(
-    Vec<(Array<'py, f64>, Array<'py, f64>, usize, usize)>,
-    Vec<(usize, usize, usize, usize, f64, f64, f64, f64, f64, bool, f64)>,
-)> {
-    let ctx = &context.inner;
-    let (count, ratio, cutoff_norm, rms_radius_or_neg, rms_ratio) = recipe_params;
-    let recipe = diffuse::Recipe {
-        count, ratio, cutoff_norm, rms_ratio,
-        rms_radius: (rms_radius_or_neg > 0.0).then_some(rms_radius_or_neg),
-    };
-    let held: Vec<(usize, usize, Vec<f64>, Vec<f64>)> = existing.iter()
-        .map(|(n, l, r, v)| Ok((*n, *l, r.as_slice()?.to_vec(), v.as_slice()?.to_vec())))
-        .collect::<PyResult<_>>()?;
-    let views: Vec<(usize, usize, &[f64], &[f64])> = held.iter()
-        .map(|(n, l, r, v)| (*n, *l, r.as_slice(), v.as_slice())).collect();
-    let base = r_base.as_slice()?.to_vec();
-    let (built, rows) = py
-        .detach(|| diffuse::build_tables(ctx, &base, &views, &channels, &recipe,
-                                         filter_wavevector, grid_reach, linear_dependence_tol))
-        .map_err(error)?;
-    let mut tables = Vec::with_capacity(built.len());
-    for (r, values, n, l) in built {
-        tables.push((array(py, &[r.len()], r)?, array(py, &[values.len()], values)?, n, l));
-    }
-    let shells = rows.into_iter().map(|w| (w.l, w.index, w.n, w.reference_l, w.reference_rms, w.rms,
-                                           w.alpha, w.r_cut, w.residual, w.accepted, w.r_max)).collect();
-    Ok((tables, shells))
-}
-
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(confinement_potential, m)?)?;
     m.add_function(wrap_pyfunction!(confinement_energy, m)?)?;
@@ -627,18 +455,9 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(confinement_radius, m)?)?;
     m.add_function(wrap_pyfunction!(confinement_orbital, m)?)?;
     m.add_function(wrap_pyfunction!(pao_quasi_gaussian, m)?)?;
-    m.add_function(wrap_pyfunction!(pao_polarization_radial, m)?)?;
-    m.add_function(wrap_pyfunction!(pao_power_shape, m)?)?;
     m.add_function(wrap_pyfunction!(pao_bound_level, m)?)?;
     m.add_function(wrap_pyfunction!(pao_bound_radial, m)?)?;
     m.add_function(wrap_pyfunction!(diffuse_parameters, m)?)?;
     m.add_function(wrap_pyfunction!(diffuse_radial, m)?)?;
-    m.add_function(wrap_pyfunction!(diffuse_rms, m)?)?;
-    m.add_function(wrap_pyfunction!(diffuse_radial_norm, m)?)?;
-    m.add_function(wrap_pyfunction!(diffuse_extended_grid, m)?)?;
-    m.add_function(wrap_pyfunction!(diffuse_on_grid, m)?)?;
-    m.add_function(wrap_pyfunction!(diffuse_orthogonalize, m)?)?;
-    m.add_function(wrap_pyfunction!(diffuse_face_distance, m)?)?;
-    m.add_function(wrap_pyfunction!(diffuse_build_tables, m)?)?;
     Ok(())
 }

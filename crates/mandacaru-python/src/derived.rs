@@ -5,11 +5,12 @@ use mandacaru_core::{derived, units};
 use numpy::{IntoPyArray, PyArrayDyn, PyArrayMethods, PyReadonlyArray2, PyReadonlyArrayDyn, PyUntypedArrayMethods};
 use pyo3::{prelude::*, types::PyDict};
 
-/// `values` (a float or a float64 array, atomic units) in user units: `quantity` is `energy`,
+/// `values` (a float, a float64 array or a complex128 array, atomic units) in user units: `quantity` is `energy`,
 /// `length`, `force`, `gradient_to_force`, `stress`, `area` or `inverse_energy`; `atomic_units` keeps atomic units; `cells`
 /// divides a supercell value per primitive cell; `plus` (user units, the shape of `values`) is
 /// added after the conversion; `total` sums `values` first and returns one float
-/// (`units::to_user_values`, `units::to_user_total`).
+/// (`units::to_user_values`, `units::to_user_total`). A complex array converts its real and
+/// imaginary parts alike (the conversions are linear), without `plus` or `total`.
 #[pyfunction]
 #[pyo3(signature=(values, quantity, atomic_units=false, cells=1, total=false, plus=None))]
 pub fn to_user_units<'py>(
@@ -27,6 +28,21 @@ pub fn to_user_units<'py>(
         let out = units::to_user_values(&[value], quantity, atomic_units, cells, plus.as_deref())
             .map_err(error)?;
         return Ok(out[0].into_pyobject(py)?.into_any());
+    }
+    if let Ok(complex) = values.extract::<PyReadonlyArrayDyn<'py, numpy::Complex64>>() {
+        if plus.is_some() || total {
+            return Err(error(mandacaru_core::Error::Invalid(
+                "a complex array converts without plus or total".into(),
+            )));
+        }
+        let data: Vec<numpy::Complex64> = complex.as_array().iter().copied().collect();
+        let part = |f: fn(&numpy::Complex64) -> f64| {
+            units::to_user_values(&data.iter().map(f).collect::<Vec<_>>(), quantity, atomic_units, cells, None)
+        };
+        let (re, im) = (part(|z| z.re).map_err(error)?, part(|z| z.im).map_err(error)?);
+        let out: Vec<numpy::Complex64> = re.iter().zip(&im).map(|(&r, &i)| numpy::Complex64::new(r, i)).collect();
+        let result: Bound<'py, PyArrayDyn<numpy::Complex64>> = out.into_pyarray(py).reshape(complex.shape().to_vec())?;
+        return Ok(result.into_any());
     }
     let array: PyReadonlyArrayDyn<'py, f64> = values.extract()?;
     let data = array.as_array().iter().copied().collect::<Vec<_>>();

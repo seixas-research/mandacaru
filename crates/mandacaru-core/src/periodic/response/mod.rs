@@ -38,6 +38,7 @@ use crate::{math::storage::MatrixSource, product, Error, Result};
 use std::sync::{Arc, Mutex, OnceLock};
 
 pub(in crate::periodic) mod setup;
+pub mod supercell;
 use setup::Setup;
 
 pub(in crate::periodic) fn description(c: &Crystal) -> Result<&Description> {

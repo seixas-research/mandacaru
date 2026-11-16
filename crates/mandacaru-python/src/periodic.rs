@@ -307,74 +307,6 @@ impl PyCrystal {
     ) -> PyResult<Bound<'py, PyDict>> {
         result.hubbard_response(py, alphas)
     }
-    #[doc(hidden)]
-    fn _setup_arrays<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        let dict = PyDict::new(py);
-        let ctx = &self.inner.context;
-        for (i, p) in self.inner.points.iter().enumerate() {
-            let read_psi = p.psi.read(ctx).map_err(error)?;
-            dict.set_item(format!("k{i}.psi"), array(py, &[read_psi.len()], read_psi.to_vec())?)?;
-            dict.set_item(format!("k{i}.overlap"), array(py, &[self.inner.m, self.inner.m], matrix_values(&p.overlap))?)?;
-            dict.set_item(format!("k{i}.fixed"), array(py, &[self.inner.m, self.inner.m], matrix_values(&p.fixed))?)?;
-            dict.set_item(format!("k{i}.projections"), array(py, &[self.inner.m, self.inner.p], matrix_values(&p.projections))?)?;
-            if let Some(ref so) = p.spin_orbit {
-                dict.set_item(format!("k{i}.spin_orbit"), array(py, &[so.nrows(), so.ncols()], matrix_values(so))?)?;
-            }
-        }
-        dict.set_item("blocks", array(py, &[self.inner.blocks.as_slice().len()], self.inner.blocks.as_slice().to_vec())?)?;
-        dict.set_item("core", array(py, &[self.inner.core.as_slice().len()], self.inner.core.as_slice().to_vec())?)?;
-        if let Some(ref tau) = self.inner.core_tau {
-            dict.set_item("core_tau", array(py, &[tau.as_slice().len()], tau.as_slice().to_vec())?)?;
-        }
-        dict.set_item("initial", array(py, &[self.inner.initial.as_slice().len()], self.inner.initial.as_slice().to_vec())?)?;
-        dict.set_item("initial_m", array(py, &[self.inner.initial_m.as_slice().len()], self.inner.initial_m.as_slice().to_vec())?)?;
-        dict.set_item("initial_q", array(py, &[self.inner.initial_q.as_slice().len()], self.inner.initial_q.as_slice().to_vec())?)?;
-        dict.set_item("kernel", array(py, &[self.inner.kernel.as_slice().len()], self.inner.kernel.as_slice().to_vec())?)?;
-        dict.set_item("xc_wave", array(py, &[self.inner.xc_wave.as_slice().len()], self.inner.xc_wave.as_slice().to_vec())?)?;
-        dict.set_item("phase", array(py, &[self.inner.phase.as_slice().len()], self.inner.phase.as_slice().to_vec())?)?;
-        dict.set_item("kerker", array(py, &[self.inner.kerker.as_slice().len()], self.inner.kerker.as_slice().to_vec())?)?;
-        dict.set_item("ion", array(py, &[self.inner.ion.as_slice().len()], self.inner.ion.as_slice().to_vec())?)?;
-        let read_hats = self.inner.hats.read(ctx).map_err(error)?;
-        dict.set_item("hats", array(py, &[read_hats.len()], read_hats.to_vec())?)?;
-        dict.set_item("u", array(py, &[self.inner.u.as_slice().len()], self.inner.u.as_slice().to_vec())?)?;
-        dict.set_item("uion", array(py, &[self.inner.uion.as_slice().len()], self.inner.uion.as_slice().to_vec())?)?;
-        dict.set_item("linear", array(py, &[self.inner.linear.as_slice().len()], self.inner.linear.as_slice().to_vec())?)?;
-        let flat_perms: Vec<u64> = self.inner.permutations.iter().flat_map(|p| p.iter().map(|&x| x as u64)).collect();
-        dict.set_item("permutations", array(py, &[flat_perms.len()], flat_perms)?)?;
-        dict.set_item("qsym", array(py, &[self.inner.qsym.as_slice().len()], self.inner.qsym.as_slice().to_vec())?)?;
-        Ok(dict)
-    }
-    #[doc(hidden)]
-    fn _setup_metadata(&self) -> PyResult<String> {
-        let meta = serde_json::json!({
-            "schema_version": 1,
-            "representation": "periodic-paw-snapshot",
-            "energy_unit": "Ha",
-            "length_unit": "bohr",
-            "m": self.inner.m,
-            "p": self.inner.p,
-            "channels": self.inner.channels,
-            "eion": self.inner.eion,
-            "ion_constant": self.inner.ion_constant,
-            "constant": self.inner.constant,
-            "reference": self.inner.reference,
-            "electrons": self.inner.electrons,
-            "spins": self.inner.spins,
-            "spinor": self.inner.spinor,
-            "time_reversal": self.inner.time_reversal,
-            "functional": self.inner.functional,
-            "precision": self.inner.precision.name(),
-            "relativistic": self.inner.relativistic,
-            "datasets": self.inner.description.as_ref().map(|d| &d.datasets),
-            "permutation_count": self.inner.permutations.len(),
-        });
-        serde_json::to_string(&meta)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
-    }
-    #[doc(hidden)]
-    fn _build_stages(&self) -> PyResult<Vec<(String, f64, usize)>> {
-        Ok(vec![("crystal_build".to_string(), 0.0, self.inner.context.memory_peak())])
-    }
 }
 #[pyclass(name = "PeriodicResult", module = "mandacaru._native", frozen)]
 pub struct PyPeriodicResult {
@@ -848,23 +780,13 @@ impl PyPeriodicResult {
             .reserve(product(&[data_json.len(), 32]).map_err(error)?)
             .map_err(error)?;
         let owned = data_json.to_owned();
-        let (eps, projections, _memory) = py
+        let (eps, projections) = py
             .detach(|| {
                 let v: serde_json::Value = serde_json::from_str(&owned)
                     .map_err(|e| mandacaru_core::Error::Invalid(e.to_string()))?;
                 let raw = v.as_array().filter(|a| !a.is_empty()).ok_or_else(|| {
                     mandacaru_core::Error::Invalid("bands need a nonempty k-point list".into())
                 })?;
-                let memory = c.context.reserve(product(&[
-                    raw.len(),
-                    c.spins,
-                    c.bands(),
-                    c.bands()
-                        .checked_add(c.p)
-                        .ok_or(mandacaru_core::Error::Overflow)?,
-                    16,
-                    16,
-                ])?)?;
                 let points = raw
                     .iter()
                     .map(|v| {
@@ -884,48 +806,9 @@ impl PyPeriodicResult {
                         "unreferenced band input arrays".into(),
                     ));
                 }
-                let mut eps = vec![];
-                let mut projections = vec![];
-                let n = c.grid.index.points();
-                let is_hybrid = c.screened_exchange()?.is_some();
-                for s in 0..c.spins {
-                    for p in &points {
-                        let exchange = if is_hybrid {
-                            Some(c.hybrid_exchange_at_k(
-                                &self.inner.matrices,
-                                p,
-                                s,
-                                self.inner.options.exxdiv_treatment,
-                            )?)
-                        } else {
-                            None
-                        };
-                        let (e, _, y) = mandacaru_core::periodic::solver::diagonalize_with_exchange(
-                            c,
-                            p,
-                            if c.spinor {
-                                self.inner.potential.as_slice()
-                            } else {
-                                &self.inner.potential.as_slice()[s * n..(s + 1) * n]
-                            },
-                            self.inner.moment_potential.as_slice(),
-                            self.inner
-                                .kinetic_potential
-                                .as_ref()
-                                .map(|v| &v.as_slice()[s * n..(s + 1) * n]),
-                            // The converged DFT+U operator of this spin channel.
-                            self.inner.hubbard.as_ref().map(|h| &h.operators[s]),
-                            exchange.as_ref(),
-                        )?;
-                        eps.extend(e.iter().map(|e| e + c.reference));
-                        for a in 0..c.bands() {
-                            for b in 0..c.bands() {
-                                projections.push(y[(a, b)].norm_sqr());
-                            }
-                        }
-                    }
-                }
-                Ok::<_, mandacaru_core::Error>((eps, projections, memory))
+                let bands =
+                    mandacaru_core::periodic::analysis::bands_of_points(c, &self.inner, &points)?;
+                Ok::<_, mandacaru_core::Error>((bands.eigenvalues, bands.projections))
             })
             .map_err(error)?;
         let nk = eps.len() / (c.spins * c.bands());
@@ -951,75 +834,20 @@ impl PyPeriodicResult {
             )
         })?;
         let c = &self.crystal;
-        let n_k = fractional_k.len();
-        if n_k == 0 {
-            return Err(pyo3::exceptions::PyValueError::new_err(
-                "fractional_k cannot be empty",
-            ));
-        }
-        let weights = vec![1.0 / n_k as f64; n_k];
-        let (eps, projections, _memory) = py
+        let bands = py
             .detach(|| {
-                let points = setup.matrices_at(&c.context, &fractional_k, &weights)?;
-                let memory = c.context.reserve(product(&[
-                    n_k,
-                    c.spins,
-                    c.bands(),
-                    c.bands()
-                        .checked_add(c.p)
-                        .ok_or(mandacaru_core::Error::Overflow)?,
-                    16,
-                    16,
-                ])?)?;
-                let mut eps = Vec::with_capacity(c.spins * n_k * c.bands());
-                let mut projections = Vec::with_capacity(c.spins * n_k * c.bands() * c.bands());
-                let n = c.grid.index.points();
-                let is_hybrid = c.screened_exchange()?.is_some();
-                for s in 0..c.spins {
-                    for p in &points {
-                        let exchange = if is_hybrid {
-                            Some(c.hybrid_exchange_at_k(
-                                &self.inner.matrices,
-                                p,
-                                s,
-                                self.inner.options.exxdiv_treatment,
-                            )?)
-                        } else {
-                            None
-                        };
-                        let (e, _, y) = mandacaru_core::periodic::solver::diagonalize_with_exchange(
-                            c,
-                            p,
-                            if c.spinor {
-                                self.inner.potential.as_slice()
-                            } else {
-                                &self.inner.potential.as_slice()[s * n..(s + 1) * n]
-                            },
-                            self.inner.moment_potential.as_slice(),
-                            self.inner
-                                .kinetic_potential
-                                .as_ref()
-                                .map(|v| &v.as_slice()[s * n..(s + 1) * n]),
-                            self.inner.hubbard.as_ref().map(|h| &h.operators[s]),
-                            exchange.as_ref(),
-                        )?;
-                        eps.extend(e.iter().map(|e| e + c.reference));
-                        for a in 0..c.bands() {
-                            for b in 0..c.bands() {
-                                projections.push(y[(a, b)].norm_sqr());
-                            }
-                        }
-                    }
-                }
-                Ok::<_, mandacaru_core::Error>((eps, projections, memory))
+                mandacaru_core::periodic::analysis::bands_at(c, setup, &self.inner, &fractional_k)
             })
             .map_err(error)?;
-        let nk = eps.len() / (c.spins * c.bands());
+        let nk = fractional_k.len();
         let out = PyDict::new(py);
-        out.set_item("eigenvalues", array(py, &[c.spins, nk, c.bands()], eps)?)?;
+        out.set_item(
+            "eigenvalues",
+            array(py, &[c.spins, nk, c.bands()], bands.eigenvalues)?,
+        )?;
         out.set_item(
             "projections",
-            array(py, &[c.spins, nk, c.bands(), c.bands()], projections)?,
+            array(py, &[c.spins, nk, c.bands(), c.bands()], bands.projections)?,
         )?;
         Ok(out)
     }

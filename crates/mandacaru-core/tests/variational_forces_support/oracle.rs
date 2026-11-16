@@ -41,6 +41,10 @@ pub struct Options<'a> {
     pub step: f64,
     pub internal: bool,
     pub extrapolate: bool,
+    /// The directions to differentiate along (columns over the `3 N` Cartesian rows), in place of
+    /// the Cartesian or internal ones: a supercell's collective image directions (every image of a
+    /// primitive atom moving together, the only motion its geometry continuation takes).
+    pub directions: Option<&'a DMatrix<f64>>,
 }
 impl Default for Options<'_> {
     fn default() -> Self {
@@ -51,6 +55,7 @@ impl Default for Options<'_> {
             step: 1e-3,
             internal: false,
             extrapolate: true,
+            directions: None,
         }
     }
 }
@@ -245,6 +250,7 @@ pub fn gradient(
         step,
         internal,
         extrapolate,
+        directions: chosen,
     } = *options;
     if integrals.samples.precision() != mandacaru_core::math::storage::Precision::Float64 {
         return Err(invalid(
@@ -314,10 +320,14 @@ pub fn gradient(
         } else {
             None
         };
-        let directions = internal_basis.as_ref().map_or_else(
-            || DMatrix::identity(size, size),
-            |basis| basis.matrix.clone(),
-        );
+        let directions = match chosen {
+            Some(d) if d.nrows() == size => d.clone(),
+            Some(_) => return Err(invalid("the oracle's directions need one row per Cartesian coordinate")),
+            None => internal_basis.as_ref().map_or_else(
+                || DMatrix::identity(size, size),
+                |basis| basis.matrix.clone(),
+            ),
+        };
         let mut gradient = ctx.allocate::<f64>(size)?;
         let mut uncorrected = ctx.allocate::<f64>(size)?;
         let mut estimate = 0f64;

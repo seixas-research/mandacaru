@@ -214,6 +214,22 @@ impl Kind {
     }
 }
 
+/// Refuses a response that does not belong to the trace: `alpha` and `S` are a molecule's (from
+/// the induced dipole), `epsilon` a crystal's (from the macroscopic current); `current` says
+/// which trace it is.
+pub fn check_source(kind: Kind, current: bool) -> Result<()> {
+    match (kind, current) {
+        (Kind::Dielectric, false) => Err(invalid(
+            "dielectric_function is a crystal's response (from its current); a molecule has \
+             strength_function and polarizability",
+        )),
+        (Kind::Strength | Kind::Polarizability, true) => Err(invalid(
+            "a crystal's response is dielectric_function: its trace is a current, not a dipole",
+        )),
+        _ => Ok(()),
+    }
+}
+
 /// The response function `kind` of a trace sampled in atomic units (`samples` at `n time_step`
 /// after a kick of `strength`), on `frequencies` with `damping` given in the user's energy unit
 /// (eV, or Hartree when `atomic`), returned in the user's units: `S` in 1/eV (real part),
@@ -257,4 +273,64 @@ pub fn spectrum_in_user_units(
         }
     };
     Ok((values.into_iter().map(|v: C64| v * factor).collect(), tail))
+}
+
+/// [`spectrum_in_user_units`] of every column of `samples`, `nt` rows of `columns` values (row
+/// major), returned row major `(frequencies, columns)` with the largest tail. A dielectric trace
+/// of nine columns is the tensor `j_a` of the kick along `b` at `3 a + b` (`direction="all"`):
+/// `epsilon_ab = delta_ab - 4 pi i j_ab / (z A_0)`, so the off-diagonal elements carry no `1`.
+#[allow(clippy::too_many_arguments)]
+pub fn columns_in_user_units(
+    ctx: &Context,
+    kind: Kind,
+    samples: &[f64],
+    columns: usize,
+    time_step: f64,
+    strength: f64,
+    frequencies: &[f64],
+    damping: f64,
+    window: Window,
+    atomic: bool,
+) -> Result<(Vec<C64>, f64)> {
+    if columns == 0 || samples.len() % columns != 0 {
+        return Err(invalid("the trace's columns do not divide its samples"));
+    }
+    if kind == Kind::Dielectric && !matches!(columns, 1 | 9) {
+        return Err(invalid(
+            "a dielectric trace is one current along the field or the 3 x 3 tensor of \
+             direction='all'",
+        ));
+    }
+    let n = frequencies.len();
+    let mut out = vec![C64::new(0., 0.); n * columns];
+    let mut tail = 0f64;
+    for column in 0..columns {
+        let trace: Vec<f64> = samples
+            .iter()
+            .skip(column)
+            .step_by(columns)
+            .copied()
+            .collect();
+        let (values, t) = spectrum_in_user_units(
+            ctx,
+            kind,
+            &trace,
+            time_step,
+            strength,
+            frequencies,
+            damping,
+            window,
+            atomic,
+        )?;
+        tail = tail.max(t);
+        let unit = if kind == Kind::Dielectric && columns == 9 && column % 4 != 0 {
+            1.
+        } else {
+            0.
+        };
+        for (i, value) in values.into_iter().enumerate() {
+            out[i * columns + column] = value - unit;
+        }
+    }
+    Ok((out, tail))
 }

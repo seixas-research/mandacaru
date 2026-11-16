@@ -39,7 +39,7 @@ pub(super) fn response<M: MatrixSource>(
     let Some(model) = augmentation.one_center() else {
         return Ok((zero(), 0.));
     };
-    let terms = one_center(c, matrices, model)?;
+    let terms = one_center(c, matrices, model, augmentation.reversal())?;
     if terms.operators.len() != if c.spinor { 1 } else { c.spins } {
         return Err(invalid(
             "the one-center model returned the wrong number of operators",

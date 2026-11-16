@@ -77,8 +77,8 @@ class _RadialTabulated(BasisFunction):
         """Interpolated radial function; zero beyond the tabulated range.
 
         Below the first table point the function continues as
-        ``R(r_0) (r / r_0)^l``, as the engine's orbital evaluator
-        (``_native.radial_orbital_evaluate``) does.  A constant continuation would leave an
+        ``R(r_0) (r / r_0)^l``, as the engine's table evaluator
+        (``basis::table::evaluate``) does.  A constant continuation would leave an
         ``l > 0`` function finite at its own nucleus, where the angular factor
         is undefined: a grid node on the nucleus then sampled ``R(r_0)``
         times a direction set by round-off, and the same Bloch sum came out

@@ -65,7 +65,22 @@ pub fn species(ctx: &Context, arrays: &mut Arrays, dataset: &PawDataset) -> Valu
     } else {
         vec![0.; n]
     };
-    json!({
+    // The record's core states (`u = r R` of every closed core subshell), as the Python adapter
+    // hands them over inside the record; a version-2 dataset has none.
+    let core_states: Option<Vec<Value>> = dataset.core_states.as_ref().map(|states| {
+        states
+            .iter()
+            .map(|s| {
+                json!({
+                    "n": s.n,
+                    "l": s.l,
+                    "occupation": s.occupation,
+                    "orbital": table(ctx, arrays, s.orbital.as_slice()),
+                })
+            })
+            .collect()
+    });
+    let mut species = json!({
         "atomic_number": dataset.atomic_number,
         "spin_orbit": false,
         "frozen_subshells": dataset.frozen_subshells,
@@ -82,5 +97,9 @@ pub fn species(ctx: &Context, arrays: &mut Arrays, dataset: &PawDataset) -> Valu
         "one_center_energy": dataset.one_center_energy,
         "relativistic_exchange": dataset.relativistic_exchange,
         "channels": channels,
-    })
+    });
+    if let Some(states) = core_states {
+        species["core_states"] = Value::Array(states);
+    }
+    species
 }

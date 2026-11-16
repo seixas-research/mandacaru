@@ -9,6 +9,7 @@
 //! pieces that move on the grid (basis functions, potentials centered on an
 //! atom) are contracted by the caller or here, term by term.
 mod compensation;
+mod coupled;
 mod densities;
 mod hubbard;
 mod projections;
@@ -18,6 +19,7 @@ mod spheres;
 mod spinor_screened;
 
 pub use densities::{DensityTerms, Forms};
+pub use hubbard::imaginary_force as hubbard_imaginary_force;
 pub use screened::HybridResponse;
 pub use spinor_screened::{pseudo_index, SpinorExchange};
 pub use radial::{core_slope, local_slope, long_range_slope, multipole_gradient, potential_slope};

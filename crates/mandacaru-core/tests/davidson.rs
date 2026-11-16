@@ -1,6 +1,6 @@
 //! The matrix-free Davidson solvers of `math::davidson` against dense eigensolves.
 use mandacaru_core::math::{
-    davidson::{lowest, lowest_paired, Options, Paired, Symmetric},
+    davidson::{lowest, lowest_paired, lowest_root, solve_shifted, Options, Paired, Symmetric},
     linalg::real_eigen,
 };
 use nalgebra::DMatrix;
@@ -153,4 +153,71 @@ fn an_unstable_paired_problem_raises() {
     sum[(0, 0)] = -0.5;
     let error = lowest_paired(&DensePair { sum, difference }, &Options::new(2)).unwrap_err();
     assert!(error.to_string().contains("no real root"), "{error}");
+}
+
+/// An operator split into two blocks the diagonal does not reveal (an orbital Hessian's symmetry
+/// blocks): the block of the smallest diagonal entries is positive, the other carries the lowest
+/// root, -0.5, along its uniform vector. A start of unit vectors stays in the first block and
+/// misses it; `lowest_root` finds it densely and by seeded Davidson alike.
+#[test]
+fn the_lowest_root_is_found_in_a_block_the_smallest_diagonal_does_not_reach() {
+    let (n, split) = (300, 250);
+    let mut a = DMatrix::zeros(n, n);
+    a.view_mut((0, 0), (split, split))
+        .copy_from(&response_like(split, 17, 0.002));
+    let width = (n - split) as f64;
+    for i in split..n {
+        for j in split..n {
+            a[(i, j)] = if i == j { 2. } else { 0. } - 2.5 / width;
+        }
+    }
+    let (exact, _) = real_eigen(a.clone()).unwrap();
+    assert!((exact[0] + 0.5).abs() < 1e-12, "{}", exact[0]);
+    let operator = Dense(a);
+    let unit = lowest(&operator, &Options { tolerance: 1e-9, ..Options::new(1) }).unwrap();
+    assert!(unit.converged && unit.values[0] > 0.2, "the unit-vector start left its block: {}", unit.values[0]);
+    let dense = lowest_root(&operator, n, 1e-9).unwrap().unwrap();
+    let seeded = lowest_root(&operator, 0, 1e-9).unwrap().unwrap();
+    println!(
+        "unit start {:.6}; dense {:.12} ({} applications); seeded Davidson {:.12} ({} applications)",
+        unit.values[0], dense.value, dense.applications, seeded.value, seeded.applications
+    );
+    assert!(dense.dense && dense.converged && (dense.value + 0.5).abs() < 1e-12);
+    assert!(!seeded.dense && seeded.converged && (seeded.value + 0.5).abs() < 1e-10);
+    assert!((dense.vector.dot(&seeded.vector).abs() - 1.).abs() < 1e-8);
+}
+
+/// `solve_shifted` against a dense solve: `(A + shift) x = b` for an indefinite `A` whose shifted
+/// form is positive definite (the trust-region step of the SCF's second-order descent).
+#[test]
+fn the_shifted_solve_matches_a_dense_solve() {
+    let n = 60;
+    let mut a = response_like(n, 5, 0.01);
+    a[(0, 0)] -= 0.6;
+    let (values, _) = real_eigen(a.clone()).unwrap();
+    let shift = 0.05 - values[0];
+    let b = nalgebra::DVector::from_iterator(n, (0..n).map(|i| ((i * 7) % 11) as f64 - 5.));
+    let solve = solve_shifted(&Dense(a.clone()), shift, &b, 1e-12, 500).unwrap();
+    let x = &solve.x;
+    let exact = (&a + DMatrix::identity(n, n) * shift).lu().solve(&b).unwrap();
+    println!("lowest eigenvalue {:.4}, shift {shift:.4}: |x - exact| / |exact| {:.2e}", values[0], (x - &exact).norm() / exact.norm());
+    assert!(values[0] < 0. && solve.converged && solve.positive);
+    assert!((x - &exact).norm() < 1e-10 * exact.norm());
+}
+
+/// A shift that leaves the operator indefinite (set from a root above the lowest, as a missed
+/// Davidson root would): the solve ends not converged and not positive, without an error.
+#[test]
+fn a_shift_that_leaves_the_operator_indefinite_is_reported_not_converged() {
+    let n = 60;
+    let mut a = response_like(n, 5, 0.01);
+    a[(0, 0)] -= 0.6;
+    let (values, _) = real_eigen(a.clone()).unwrap();
+    // Positive above the second root only: the lowest stays negative.
+    let shift = 0.05 - values[1];
+    assert!(values[0] + shift < 0.);
+    let b = nalgebra::DVector::from_iterator(n, (0..n).map(|i| ((i * 7) % 11) as f64 - 5.));
+    let solve = solve_shifted(&Dense(a), shift, &b, 1e-12, 500).unwrap();
+    println!("lowest {:.4}, second {:.4}, shift {shift:.4}: converged {}, positive {}", values[0], values[1], solve.converged, solve.positive);
+    assert!(!solve.converged && !solve.positive);
 }

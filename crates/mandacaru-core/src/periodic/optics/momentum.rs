@@ -23,6 +23,7 @@
 use super::super::{
     berry::{Bands, Metal},
     bloch_mesh::{MeshIndex, Sampler},
+    input::KPoint,
     invalid,
     setup::{blocks::to_raw_basis, pulay::periodic_parts, pulay::Mesh, PeriodicSetup},
     wannier::sampling::Frame,
@@ -32,6 +33,7 @@ use crate::{
         angular::{cartesian, complex},
         fft::Fft3,
         reciprocal,
+        storage::ComplexSamples,
     },
     paw::{
         momentum::{one_center_gradient, SphereWaves},
@@ -46,6 +48,11 @@ type Matrix = DMatrix<C64>;
 
 /// The largest anti-Hermitian part of `P` (relative to its largest element) a crystal accepts.
 pub const HERMITIAN_TOLERANCE: f64 = 1e-6;
+/// The scale (Bohr^-1) below which a frame's `P` vanishes, by symmetry (bands of one parity at a
+/// k invariant under inversion: rock-salt LiH in SZ, largest element about 4e-16), so its
+/// anti-Hermitian part is rounding: the residual is measured against this floor, not against
+/// rounding itself (the refusal of LiH SZ, 5.6e-2 of a 4e-16 element, grid part 2e-17).
+pub const MOMENTUM_FLOOR: f64 = 1e-8;
 
 /// `Delta p` (three `P x P` matrices, Hermitian) in the order and the projector basis of the
 /// crystal's projectors.
@@ -186,11 +193,51 @@ pub fn band_momenta(
             "the momentum matrix of a spinor crystal is not implemented".into(),
         ));
     }
+    momenta(
+        ctx,
+        setup,
+        mesh,
+        &frame.samples,
+        &frame.projections,
+        k,
+        one_center,
+    )
+}
+
+/// [`BandMomenta`] of the Bloch basis functions of `point` (`m x m`, the frame the SCF's `H(k)`
+/// is assembled in, before the Loewdin transform).
+pub fn basis_momenta(
+    ctx: &Context,
+    setup: &PeriodicSetup,
+    mesh: &Mesh,
+    point: &KPoint,
+    one_center: &[Matrix; 3],
+) -> Result<BandMomenta> {
+    momenta(
+        ctx,
+        setup,
+        mesh,
+        &point.psi,
+        &point.projections,
+        point.k,
+        one_center,
+    )
+}
+
+/// `P = P_grid + proj Delta p proj^dagger` of the functions whose grid samples are the rows of
+/// `samples` and whose projector overlaps are the rows of `projections`, Hermitized.
+fn momenta(
+    ctx: &Context,
+    setup: &PeriodicSetup,
+    mesh: &Mesh,
+    samples: &ComplexSamples,
+    projections: &Matrix,
+    k: [f64; 3],
+    one_center: &[Matrix; 3],
+) -> Result<BandMomenta> {
     let n = mesh.len();
-    let bands = frame.projections.nrows();
-    let samples = frame
-        .samples
-        .read_range(ctx, 0, crate::product(&[bands, n])?)?;
+    let bands = projections.nrows();
+    let samples = samples.read_range(ctx, 0, crate::product(&[bands, n])?)?;
     let mut fft = Fft3::new(ctx, setup.grid.index.shape())?;
     let (parts, _held) = periodic_parts(ctx, &mut fft, mesh, k, &samples, bands)?;
     let symbols = reciprocal::bloch(ctx, &setup.grid, k)?;
@@ -201,6 +248,14 @@ pub fn band_momenta(
     ];
     let mut largest = 0f64;
     let mut defect = 0f64;
+    // The anti-Hermitian parts of the grid and sphere terms apart, for the refusal's message.
+    let mut parts_defect = [0f64; 2];
+    let anti = |m: &Matrix| {
+        (m - m.adjoint())
+            .iter()
+            .map(|v| v.norm())
+            .fold(0., f64::max)
+    };
     for (axis, out) in matrices.iter_mut().enumerate() {
         let weights = &symbols.vectors.as_slice()[axis * n..(axis + 1) * n];
         let mut weighted = parts.clone();
@@ -210,7 +265,11 @@ pub fn band_momenta(
             }
         }
         let grid = parts.adjoint() * weighted;
-        let sphere = &frame.projections * &one_center[axis] * frame.projections.adjoint();
+        let sphere = projections * &one_center[axis] * projections.adjoint();
+        parts_defect = [
+            parts_defect[0].max(anti(&grid)),
+            parts_defect[1].max(anti(&sphere)),
+        ];
         let total = grid + sphere;
         largest = largest.max(total.iter().map(|v| v.norm()).fold(0., f64::max));
         defect = defect.max(
@@ -221,11 +280,13 @@ pub fn band_momenta(
         );
         *out = (&total + total.adjoint()) * C64::new(0.5, 0.);
     }
-    let residual = if largest > 0. { defect / largest } else { 0. };
+    let residual = defect / largest.max(MOMENTUM_FLOOR);
     if residual > HERMITIAN_TOLERANCE {
         return Err(crate::Error::Kernel(format!(
             "the momentum matrix is not Hermitian: anti-Hermitian part {residual:.3e} of its \
-             largest element (bound {HERMITIAN_TOLERANCE:.0e})"
+             largest element (bound {HERMITIAN_TOLERANCE:.0e}; grid part {:.3e}, sphere part \
+             {:.3e}, absolute)",
+            parts_defect[0], parts_defect[1]
         )));
     }
     Ok(BandMomenta { matrices, residual })
@@ -238,6 +299,9 @@ pub struct Diamagnetic {
     pub channels: Vec<f64>,
     /// The band degeneracy times the sum over channels.
     pub total: f64,
+    /// The column `N_dia e` of the band-sum tensor (Cartesian; `e . vector = total`): the static
+    /// paramagnetic current along every axis of a field along `e`.
+    pub vector: [f64; 3],
     /// The valence electrons of the cell.
     pub electrons: f64,
     /// The largest anti-Hermitian residual of `P` over the mesh.
@@ -272,6 +336,8 @@ pub struct Transitions {
     pub channels: Vec<usize>,
     pub gaps: Vec<f64>,
     pub weights: Vec<f64>,
+    /// `w_k Re[conj(e . P_cv) P_cv]` along the three axes (`e .` of it is the weight).
+    pub cross: Vec<[f64; 3]>,
     /// Electrons one band of a channel holds (2 unpolarized, 1 otherwise).
     pub degeneracy: f64,
     pub electrons: f64,
@@ -306,17 +372,20 @@ pub fn transitions(
         channels: vec![],
         gaps: vec![],
         weights: vec![],
+        cross: vec![],
         degeneracy: sampler.degeneracy(),
         electrons: crystal.electrons,
         volume: sampler.lattice.determinant().abs(),
         residual: 0.,
     };
     let mut point = vec![0usize; sampler.channels()];
-    sampler.frames(mesh, &all, |s, frame| {
+    // Streamed: each frame is dropped after its transitions are read, so the mesh costs one
+    // chunk of frames (`Sampler::visit`), never the whole mesh of orbital samples.
+    sampler.visit(mesh, &all, |s, frame| {
         let fractional = mesh.point(point[s]);
         point[s] += 1;
         let k: [f64; 3] = (sampler.reciprocal * nalgebra::Vector3::from(fractional)).into();
-        let momenta = band_momenta(ctx, sampler.setup, &grid_mesh, frame, k, &one_center)?;
+        let momenta = band_momenta(ctx, sampler.setup, &grid_mesh, &frame, k, &one_center)?;
         out.residual = out.residual.max(momenta.residual);
         let along = &momenta.matrices[0] * C64::new(e[0], 0.)
             + &momenta.matrices[1] * C64::new(e[1], 0.)
@@ -332,6 +401,9 @@ pub fn transitions(
                 out.channels.push(s);
                 out.gaps.push(gap);
                 out.weights.push(weight * along[(c, v)].norm_sqr());
+                out.cross.push(std::array::from_fn(|axis| {
+                    weight * (along[(c, v)].conj() * momenta.matrices[axis][(c, v)]).re
+                }));
             }
         }
         Ok(())
@@ -343,11 +415,22 @@ impl Transitions {
     /// The diamagnetic band sum (module documentation).
     pub fn diamagnetic(&self, channels: usize) -> Diamagnetic {
         let mut per = vec![0f64; channels];
-        for ((s, gap), w) in self.channels.iter().zip(&self.gaps).zip(&self.weights) {
+        let mut vector = [0f64; 3];
+        for (((s, gap), w), cross) in self
+            .channels
+            .iter()
+            .zip(&self.gaps)
+            .zip(&self.weights)
+            .zip(&self.cross)
+        {
             per[*s] += 2. * w / gap;
+            for (to, x) in vector.iter_mut().zip(cross) {
+                *to += 2. * self.degeneracy * x / gap;
+            }
         }
         Diamagnetic {
             total: self.degeneracy * per.iter().sum::<f64>(),
+            vector,
             channels: per,
             electrons: self.electrons,
             residual: self.residual,

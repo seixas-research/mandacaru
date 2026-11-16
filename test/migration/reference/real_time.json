@@ -1,5 +1,5 @@
 {
- "description": "induced dipole along x (e Angstrom, every 20 steps) after a density kick of 0.002 / Angstrom (HSE06: 1e-4 / Bohr), ETRS with corrector tolerance 1e-6, 1 fs in steps of 0.005 fs; H2O, NH2 (unrestricted) and CuH with hubbard_u Cu d U = 4 eV, PAW-LCAO DZP, grid_spacing 0.25 Angstrom",
+ "description": "induced dipole along x (e Angstrom, every 20 steps) after a density kick of 0.002 / Angstrom (HSE06: 1e-4 / Bohr), ETRS with corrector tolerance 1e-6, 1 fs in steps of 0.005 fs; H2O, NH2 (unrestricted) and CuH with hubbard_u Cu d U = 4 eV, PAW-LCAO DZP, grid_spacing 0.25 Angstrom; Si (diamond, 5.43 Angstrom, SZ, 2^3 mesh): the corrected current along x (e / (Angstrom^2 fs)) after a vector-potential kick of 0.002 / Angstrom, N, N_dia and epsilon(E + 1 eV i) at 1, 3, 5 and 8 eV",
  "settings": {
   "method": "dft",
   "basis": {
@@ -11,7 +11,30 @@
    "threads": 2
   }
  },
- "version": "26.11.19",
+ "crystal_settings": {
+  "method": "dft",
+  "basis": {
+   "name": "PAW-LCAO",
+   "size": "SZ"
+  },
+  "grid_spacing": 0.25,
+  "kpts": {
+   "size": [
+    2,
+    2,
+    2
+   ],
+   "gamma": true
+  },
+  "smearing": {
+   "method": "fermi-dirac",
+   "width": 0.01
+  },
+  "parallelization": {
+   "threads": 2
+  }
+ },
+ "version": "26.11.21",
  "platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
  "cases": {
   "water/lda": {
@@ -113,6 +136,40 @@
    "builds": 403,
    "width_eV": 162.27020246414213,
    "seconds": 17.034478332847357
+  },
+  "Si/lda": {
+   "corrected": [
+    -0.00599579886429265,
+    -0.004508268301890341,
+    -0.0013274112796072188,
+    0.0016765130369543197,
+    0.00325210550653309,
+    0.0031023645637945165,
+    0.0022540285194173476,
+    0.0016412281076912004,
+    0.001488077777457022,
+    0.0012349815583014832,
+    6.113708669336146e-06
+   ],
+   "electrons": 8.0,
+   "diamagnetic": 10.365002038835737,
+   "epsilon_re": [
+    31.128282564920063,
+    12.812251830619639,
+    -5.075273805149387,
+    -6.053961694238521
+   ],
+   "epsilon_im": [
+    -1.4189262781247844,
+    26.636174240337308,
+    16.57347242736828,
+    4.314091266540088
+   ],
+   "kick_energy_eV": 0.00012191942771622231,
+   "energy_drift": 1.0907028491320557e-05,
+   "builds": 403,
+   "width_eV": 22.206562347346235,
+   "seconds": 6.963959125103429
   }
  },
  "refrozen": {

@@ -78,3 +78,56 @@ fn the_complex_harmonic_of_a_real_orbital_is_the_standard_one() {
     assert!((complex.re - (3. / (4. * PI)).sqrt()).abs() < 1e-15);
     assert!(gradient.iter().all(|g| g.re.is_finite() && g.im.is_finite()));
 }
+
+#[test]
+fn the_sampled_harmonics_are_the_pointwise_ones_and_the_real_transform_is_unitary() {
+    use mandacaru_core::math::harmonics::{
+        harmonic_gradient_samples, harmonic_samples, real_transform, GradientSamples, Samples,
+    };
+    let theta = [0.3, 1.2, 2.9];
+    let phi = [0.1, -2.0, 3.0];
+    match harmonic_samples(2, -1, &theta, &phi, true).unwrap() {
+        Samples::Real(values) => {
+            for i in 0..3 {
+                assert_eq!(values[i], harmonic(2, -1, theta[i], phi[i], true).0);
+            }
+        }
+        Samples::Complex(_) => panic!("real requested"),
+    }
+    assert!(harmonic_samples(1, 0, &theta, &phi[..2], false).is_err());
+    let (x, y, z) = ([0.3, -1.0], [0.2, 0.5], [1.1, -0.7]);
+    match harmonic_gradient_samples(3, 2, &x, &y, &z, false).unwrap() {
+        GradientSamples::Complex(values, gradient) => {
+            for i in 0..2 {
+                let (_, _, v, g) = harmonic_gradient(3, 2, x[i], y[i], z[i], false);
+                assert_eq!(values[i], v);
+                assert_eq!([gradient[0][i], gradient[1][i], gradient[2][i]], g);
+            }
+        }
+        GradientSamples::Real(..) => panic!("complex requested"),
+    }
+    for l in 0..4 {
+        let dim = 2 * l + 1;
+        let u = real_transform(l);
+        for i in 0..dim {
+            for j in 0..dim {
+                let product: num_complex::Complex64 = (0..dim)
+                    .map(|k| u[i * dim + k] * u[j * dim + k].conj())
+                    .sum();
+                let expected = if i == j { 1.0 } else { 0.0 };
+                assert!((product - expected).norm() < 1e-14, "l={l} ({i}, {j})");
+            }
+        }
+    }
+}
+
+#[test]
+fn a_unit_slater_fit_is_a_normalized_contraction_with_its_overlap_below_one() {
+    use mandacaru_core::sto_fit::fit_sto_reference;
+    let (alpha, c, overlap) = fit_sto_reference(1, 0, 3).unwrap();
+    assert!(alpha.windows(2).all(|w| w[0] > w[1]), "{alpha:?}");
+    assert_eq!(c.len(), 3);
+    // STO-3G of the 1s Slater function: the best three-Gaussian overlap is about 0.9984.
+    assert!(overlap > 0.998 && overlap < 1.0, "{overlap}");
+    assert!(fit_sto_reference(1, 0, 0).is_err());
+}

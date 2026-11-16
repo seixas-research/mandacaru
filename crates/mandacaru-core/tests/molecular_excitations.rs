@@ -1730,8 +1730,10 @@ fn a_rounding_sized_negative_total_gradient_contraction_is_zero_and_a_real_one_r
 
 #[test]
 fn meta_gga_roots_satisfy_the_dense_and_sum_rule_identities() {
-    // V3 and V4 for r2SCAN: the kinetic density depends on the symmetric part of the density
-    // matrix only, so A - B is the gap and the Casida strengths sum to the bare ones.
+    // V3 and V4 for r2SCAN with the current-density term of tau~ (owner decision Q19a): A - B is
+    // the gap plus -2 int (v_tau / n) j^ia . j^jb, symmetric and not diagonal, so the Casida
+    // roots are those of the paired problem and V4 takes its general form
+    // sum_n omega_n mu_n^2 = 2 d^T (A - B) d.
     let ctx = Context::new(Some(1), 512 << 20).unwrap();
     let integrals = paw_hydrogen(&ctx, &[0, 1]);
     let state = reference(&integrals, "r2scan");
@@ -1739,10 +1741,14 @@ fn meta_gga_roots_satisfy_the_dense_and_sum_rule_identities() {
     let n = response.dimension();
     let (sum, difference) = dense(&response);
     let delta = DMatrix::from_diagonal(&DVector::from_column_slice(response.delta()));
-    assert!(
-        (&difference - &delta).amax() < 1e-14,
-        "A - B is diagonal for a meta-GGA"
+    let current = &difference - &delta;
+    eprintln!(
+        "r2SCAN: current-density part of A - B {:.3e} (largest entry), asymmetry {:.1e}",
+        current.amax(),
+        (&current - current.transpose()).amax()
     );
+    assert!(current.amax() > 1e-6, "the current-density term vanishes");
+    assert!((&current - current.transpose()).amax() < 1e-12 * current.amax().max(1.));
     let root = symmetric_root(&difference);
     let (squares, _) = real_eigen(&root * &sum * &root).unwrap();
     let casida = excitations(
@@ -1762,15 +1768,11 @@ fn meta_gga_roots_satisfy_the_dense_and_sum_rule_identities() {
             .zip(&casida.transition_dipoles)
             .map(|(w, mu)| w * mu[axis] * mu[axis])
             .sum();
-        let bare: f64 = 2.
-            * d[axis]
-                .iter()
-                .zip(response.delta())
-                .map(|(x, w)| w * x * x)
-                .sum::<f64>();
+        let x = d[axis].clone();
+        let general = 2. * x.dot(&(&difference * &x));
         assert!(
-            (weighted - bare).abs() < 1e-9 * bare.abs().max(1e-8),
-            "axis {axis}"
+            (weighted - general).abs() < 1e-9 * general.abs().max(1e-8),
+            "axis {axis}: {weighted} vs {general}"
         );
     }
 }
@@ -1786,8 +1788,7 @@ fn copper_hydride(ctx: &Context, hubbard: Option<(&str, f64, f64)>) -> (Molecula
     let electrons = copper.valence_charge.round() as usize + 1;
     let copper = dataset::species(ctx, &mut arrays, &copper);
     let hydrogen = dataset::species(ctx, &mut arrays, &dataset::read(ctx, "lda-sr", "H"));
-    // Copper has a frozen core: Kohn-Sham only, so the build is told to allow it.
-    let mut extra = vec![("allow_heavy_dft", serde_json::Value::Bool(true))];
+    let mut extra = Vec::new();
     if let Some((form, u, j)) = hubbard {
         let request = format!(r#"{{"Cu": {{"l": "d", "U": {u}, "J": {j}, "form": "{form}"}}}}"#);
         extra.push(("hubbard", serde_json::Value::String(request)));

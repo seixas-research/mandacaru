@@ -8,7 +8,10 @@
 //! ```
 //!
 //! with `psi_mk` the pseudo Bloch states of the frame and `U(k)` the localized gauge. The function
-//! of the cell `R` is the home one moved by `R`; the supercell grid wraps (Born-von Karman).
+//! of the cell `R` is the home one moved by `R`; the supercell grid wraps (Born-von Karman). The
+//! same map forms the PAW-LCAO supercell functions from the crystal's Bloch sums of its basis
+//! ([`bloch_functions`], `psi_mk` the Bloch sum of the function `m` and `U(k)` the phases of
+//! the supercell functions' cells and their Lowdin frame).
 use super::coulomb::Cell;
 use crate::{
     periodic::{
@@ -72,7 +75,6 @@ pub fn supercell_functions(
     cell: &Cell,
     ids: &[usize],
 ) -> Result<Functions> {
-    let ctx = &crystal.context;
     let functions = channel.localized.gauge.first().map_or(0, |g| g.ncols());
     if ids.is_empty() || ids.iter().any(|n| *n >= functions) {
         return Err(invalid(
@@ -89,9 +91,57 @@ pub fn supercell_functions(
     if channel.frames.len() != cell.cells || channel.localized.gauge.len() != cell.cells {
         return Err(invalid("the channel does not fill the supercell's mesh"));
     }
+    let bands = channel.localized.gauge[0].nrows();
+    let sources = channel
+        .frames
+        .iter()
+        .zip(&channel.localized.gauge)
+        .map(|(frame, gauge)| {
+            if frame.components != 1 || gauge.nrows() != bands {
+                return Err(invalid(
+                    "the frames of a channel must share their band space",
+                ));
+            }
+            Ok(Source {
+                fractional: frame.fractional,
+                samples: &frame.samples,
+                projections: &frame.projections,
+                gauge,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    bloch_functions(crystal, cell, &sources, ids)
+}
+
+/// The Bloch states of one mesh point a set of supercell functions is formed from: the states
+/// `psi_mk` on the cell grid (rows), their projections `<psi_mk|p_j>` and the gauge `U(k)` whose
+/// columns are the functions.
+pub struct Source<'a> {
+    pub fractional: [f64; 3],
+    pub samples: &'a crate::math::storage::ComplexSamples,
+    pub projections: &'a Matrix,
+    pub gauge: &'a Matrix,
+}
+
+/// The supercell functions `w_n(r + T) = (1/N) sum_k e^{ik.T} sum_m U_mn(k) psi_mk(r)` of the
+/// columns `ids` of the gauges of `sources` (one per mesh point of `cell`), with their projector
+/// coefficients `<p_{jT}|w_n>`.
+pub fn bloch_functions(
+    crystal: &Crystal,
+    cell: &Cell,
+    sources: &[Source<'_>],
+    ids: &[usize],
+) -> Result<Functions> {
+    let ctx = &crystal.context;
+    let functions = sources.first().map_or(0, |s| s.gauge.ncols());
+    if sources.len() != cell.cells || ids.is_empty() || ids.iter().any(|n| *n >= functions) {
+        return Err(invalid(
+            "supercell functions need one source per mesh point and existing gauge columns",
+        ));
+    }
     let n = crystal.grid.index.points();
     let p = crystal.p;
-    let bands = channel.localized.gauge[0].nrows();
+    let bands = sources[0].gauge.nrows();
     let mut values = ids
         .iter()
         .map(|_| ctx.allocate::<C64>(product(&[cell.cells, n])?))
@@ -109,18 +159,22 @@ pub fn supercell_functions(
         .collect();
     let cells: Vec<[i64; 3]> = (0..cell.cells).map(|t| cell.cell_vector(t)).collect();
     let mut phi = vec![vec![C64::default(); n]; ids.len()];
-    for (k, frame) in channel.frames.iter().enumerate() {
-        let gauge: &Matrix = &channel.localized.gauge[k];
-        if frame.components != 1 || gauge.nrows() != bands {
+    for source in sources {
+        let gauge: &Matrix = source.gauge;
+        if gauge.nrows() != bands
+            || gauge.ncols() != functions
+            || source.projections.nrows() != bands
+            || source.projections.ncols() != p
+        {
             return Err(invalid(
-                "the frames of a channel must share their band space",
+                "the sources of supercell functions must share their band space",
             ));
         }
         for row in phi.iter_mut() {
             row.fill(C64::default());
         }
         for m in 0..bands {
-            let sample = frame.samples.read_range(ctx, m * n, n)?;
+            let sample = source.samples.read_range(ctx, m * n, n)?;
             for (i, id) in ids.iter().enumerate() {
                 let u = gauge[(m, *id)];
                 if u.norm_sqr() == 0. {
@@ -137,14 +191,14 @@ pub fn supercell_functions(
             for m in 0..bands {
                 let u = gauge[(m, *id)];
                 for (j, slot) in a.iter_mut().enumerate() {
-                    *slot += u * frame.projections[(m, j)].conj();
+                    *slot += u * source.projections[(m, j)].conj();
                 }
             }
             for (t, vector) in cells.iter().enumerate() {
                 let angle = 2.
                     * PI
                     * (0..3)
-                        .map(|a| frame.fractional[a] * vector[a] as f64)
+                        .map(|a| source.fractional[a] * vector[a] as f64)
                         .sum::<f64>();
                 let phase = C64::from_polar(1. / cell.cells as f64, angle);
                 for (j, value) in a.iter().enumerate() {

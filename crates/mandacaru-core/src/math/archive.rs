@@ -4,7 +4,9 @@
 //! read by positional I/O only: no seek, no per-read `open`, and no heap allocation (a read goes
 //! through a fixed stack block into the caller's slice). The file lives in a per-calculation
 //! folder under the configured scratch directory or OS temporary directory ([`ScratchDir`]:
-//! `TMPDIR` is honored and folders named `.mandacaru` are refused) and is removed with its owner.
+//! `TMPDIR` is honored and folders named `.mandacaru` are refused) and is removed with its owner;
+//! the folders of runs that died without unwinding are swept by the next one
+//! ([`sweep_stale_folders`]).
 //!
 //! Descriptors are bounded: an archive keeps its file open for its whole life while fewer than
 //! [`MAX_OPEN_HANDLES`] archives of the process do, and opens the file for the duration of a
@@ -162,6 +164,7 @@ impl ScratchDir {
             )));
         }
         std::fs::create_dir_all(&base).map_err(io)?;
+        sweep_stale_folders(&base);
         let path = loop {
             let path = base.join(format!(
                 "mandacaru-scratch-{}-{}",
@@ -188,6 +191,47 @@ impl ScratchDir {
         self.path.lock().ok().and_then(|path| path.clone())
     }
 }
+/// The pid of a folder named exactly `mandacaru-scratch-<pid>-<n>` (decimal digits), else `None`.
+fn scratch_owner(name: &str) -> Option<u32> {
+    let rest = name.strip_prefix("mandacaru-scratch-")?;
+    let (pid, serial) = rest.split_once('-')?;
+    let digits = |part: &str| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit());
+    if !digits(pid) || !digits(serial) {
+        return None;
+    }
+    pid.parse().ok()
+}
+
+/// Removes, under `base`, the scratch folders of processes that no longer exist: a run stopped
+/// by a signal (SIGTERM's default action or SIGKILL) never reaches [`ScratchDir`]'s `Drop`, so
+/// its folder stays until the next calculation sweeps it here. Only real directories (not
+/// links) named exactly `mandacaru-scratch-<pid>-<n>` are considered; the current process's
+/// folders and those of a live process (including one of another user, which may not be
+/// signaled) are never touched. Best effort: an entry that cannot be read or removed is left.
+/// Returns the folders removed.
+pub fn sweep_stale_folders(base: &std::path::Path) -> Vec<PathBuf> {
+    let own = std::process::id();
+    let mut removed = Vec::new();
+    let Ok(entries) = std::fs::read_dir(base) else {
+        return removed;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(pid) = name.to_str().and_then(scratch_owner) else {
+            continue;
+        };
+        if pid == own || mandacaru_kernels::process::is_alive(pid) {
+            continue;
+        }
+        let path = entry.path();
+        let is_folder = std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_dir());
+        if is_folder && std::fs::remove_dir_all(&path).is_ok() {
+            removed.push(path);
+        }
+    }
+    removed
+}
+
 impl Drop for ScratchDir {
     fn drop(&mut self) {
         if let Some(path) = self.path.get_mut().unwrap_or_else(|e| e.into_inner()).take() {

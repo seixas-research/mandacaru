@@ -1,5 +1,6 @@
 //! Typed radial tables decoded by the Python file-format adapter.
 use super::*;
+use crate::paw::core_exchange::{FrozenCore, StoredShell};
 use crate::math::{
     radial::{integrate, validate},
     spline::Cubic,
@@ -59,7 +60,15 @@ pub struct Species {
     pub xc_core_tau: Cubic,
     pub dft_constant: f64,
     pub relativistic_exchange: bool,
-    pub core_supported: bool,
+    /// Why this species' frozen core has no Hartree-Fock exchange operator (its record carries no
+    /// core states, or a subshell is partially filled, or the states do not reproduce the stored
+    /// core density), naming the element; `None` for an empty core and for a core whose
+    /// core-valence exchange is in `Channel::core_exchange`. Kohn-Sham never reads it.
+    pub core_refusal: Option<String>,
+    /// Whether a screened hybrid is available: the core is empty or a single closed 1s shell, the
+    /// only cores whose hybrid the molecule has been validated for (the screened one-center
+    /// terms carry no core-valence exchange of their own).
+    pub hybrid_core_supported: bool,
     /// The spin-orbit channels of a fully relativistic dataset (empty unless the molecule was
     /// built with spin-orbit allowed): read as the crystal reads them
     /// (`periodic::response::setup::spin_orbit`).
@@ -74,6 +83,59 @@ pub struct SpinOrbitChannel {
     pub radials: Vec<Cubic>,
     pub coupling: crate::models::spin_orbit::Coupling,
 }
+/// What a species' frozen core allows: the core of its stored states (the exchange with every
+/// channel's partial waves, [`FrozenCore::exchange`]) or the reason it has none, and whether
+/// the core is one a screened hybrid supports.
+struct CoreSupport {
+    frozen: Option<FrozenCore>,
+    refusal: Option<String>,
+    hybrid: bool,
+}
+
+/// The [`CoreSupport`] of a species of `atomic_number` and valence `charge` whose stored core
+/// `density` is `core_charge` electrons on `r`, from its stored `states` (`None` for a record
+/// that carries none).
+fn core_support(
+    symbol: &str,
+    atomic_number: u8,
+    charge: f64,
+    (r, density): (&[f64], &[f64]),
+    core_charge: f64,
+    states: Option<&[StoredShell<'_>]>,
+) -> CoreSupport {
+    if core_charge <= 1e-6 {
+        return CoreSupport {
+            frozen: None,
+            refusal: None,
+            hybrid: true,
+        };
+    }
+    let hybrid = states.is_some_and(|s| {
+        s.len() == 1 && (s[0].n, s[0].l) == (1, 0) && (s[0].occupation - 2.).abs() < 1e-9
+    });
+    let electrons = atomic_number as f64 - charge;
+    match states.map(|s| FrozenCore::from_states(symbol, r, density, electrons, s)) {
+        Some(Ok(core)) => CoreSupport {
+            frozen: Some(core),
+            refusal: None,
+            hybrid,
+        },
+        Some(Err(reason)) => CoreSupport {
+            frozen: None,
+            refusal: Some(reason),
+            hybrid,
+        },
+        None => CoreSupport {
+            frozen: None,
+            refusal: Some(format!(
+                "{symbol}: the dataset carries no core states, which the core-valence exchange \
+                 of Hartree-Fock needs"
+            )),
+            hybrid,
+        },
+    }
+}
+
 impl Species {
     pub fn local(&self, r: f64) -> f64 {
         let knots = self.ionic.knots.as_slice();
@@ -84,7 +146,7 @@ impl Species {
         }
     }
     pub fn parse(ctx: &Context, v: &Value, arrays: &mut Arrays, raw: bool) -> Result<Self> {
-        Self::parse_with_options(ctx, v, arrays, raw, false, false)
+        Self::parse_with_options(ctx, v, arrays, raw, false)
     }
 
     pub fn from_dataset(
@@ -92,7 +154,6 @@ impl Species {
         ds: &crate::paw::record::PawDataset,
         raw: bool,
         allow_spin_orbit: bool,
-        allow_heavy_dft: bool,
     ) -> Result<Self> {
         if !allow_spin_orbit && !ds.spin_orbit.is_empty() {
             return Err(invalid(
@@ -117,51 +178,33 @@ impl Species {
                 .map(|(r, n)| 4. * PI * r * r * n)
                 .collect::<Vec<_>>(),
         )?;
-        let occupied_1s = ds.channels.values().any(|ch| {
-            ch.n == 1 && ch.occupations.data().first().is_some_and(|&n| n > 0.)
-        });
-        let ordinary_core = ds.frozen_subshells.is_empty()
-            && !ds
-                .semicore_subshells
-                .iter()
-                .any(|s| s.len() >= 2 && s[0] == 1 && s[1] == 0);
-        let closed_1s = ordinary_core
-            && (3..=10).contains(&atomic_number)
-            && ((atomic_number as f64 - charge) - 2.).abs() < 1e-8
-            && (core_charge - 2.).abs() < 0.02
-            && !occupied_1s;
-        let core_supported = core_charge <= 1e-6 || closed_1s;
-        if !allow_heavy_dft && !core_supported {
-            return Err(invalid(
-                "native PAW frozen-core exchange currently requires an empty core or a single closed 1s shell",
-            ));
-        }
         if core_slice.iter().any(|v| *v < 0.) {
             return Err(invalid("core density must be nonnegative"));
         }
-        let _core_memory = ctx.reserve(product(&[r_slice.len(), 8])?)?;
-        let core_orbital: Vec<_> = core_slice
-            .iter()
-            .map(|n| (2. * PI * n).sqrt())
-            .collect();
-        let mut core_extent = 0;
-        if closed_1s {
-            let total = core_charge;
-            let mut integrated = 0.;
-            for i in 1..r_slice.len() {
-                let a = r_slice[i - 1];
-                let b = r_slice[i];
-                integrated += 0.5
-                    * (b - a)
-                    * 4.
-                    * PI
-                    * (a * a * core_slice[i - 1] + b * b * core_slice[i]);
-                if integrated >= (1. - 1e-14) * total {
-                    core_extent = (i + 2).min(r_slice.len());
-                    break;
-                }
-            }
-        }
+        let stored: Option<Vec<StoredShell<'_>>> = ds.core_states.as_ref().map(|states| {
+            states
+                .iter()
+                .map(|s| StoredShell {
+                    n: s.n,
+                    l: s.l,
+                    occupation: s.occupation,
+                    orbital: s.orbital.as_slice(),
+                })
+                .collect()
+        });
+        let _core_memory = ctx.reserve(product(&[
+            r_slice.len(),
+            stored.as_ref().map_or(0, Vec::len) + 3,
+            8,
+        ])?)?;
+        let support = core_support(
+            &ds.symbol,
+            atomic_number,
+            charge,
+            (r_slice, core_slice),
+            core_charge,
+            stored.as_deref(),
+        );
         if ds.nlcc.applied
             && ds.nlcc.source.as_deref() != Some("smooth_core")
             && ds.nlcc.r_nlcc.is_some()
@@ -385,33 +428,8 @@ impl Species {
                 }
             }
             ch.xc = &transform * vx * transform.transpose();
-            if closed_1s {
-                if core_extent < 4 {
-                    return Err(invalid("invalid core radial extent"));
-                }
-                let mut exchange = DMatrix::zeros(refs, refs);
-                for i in 0..refs {
-                    for j in 0..refs {
-                        let left: Vec<_> = (0..core_extent)
-                            .map(|k| ch.ae[i][k] * core_orbital[k])
-                            .collect();
-                        let right: Vec<_> = (0..core_extent)
-                            .map(|k| ch.ae[j][k] * core_orbital[k])
-                            .collect();
-                        exchange[(i, j)] =
-                            -0.5 * (crate::paw::pair_tables::coulomb(
-                                &r_slice[..core_extent],
-                                &left,
-                                &right,
-                                ch.l,
-                            ) + crate::paw::pair_tables::coulomb(
-                                &r_slice[..core_extent],
-                                &right,
-                                &left,
-                                ch.l,
-                            )) / (2 * ch.l + 1) as f64;
-                    }
-                }
+            if let Some(core) = &support.frozen {
+                let exchange = core.exchange(r_slice, ch.l, &ch.ae)?;
                 ch.core_exchange = &transform * exchange * transform.transpose();
             }
             let mix = |waves: &Vec<Vec<f64>>| {
@@ -467,7 +485,8 @@ impl Species {
             xc_core_tau,
             dft_constant,
             relativistic_exchange: ds.relativistic_exchange,
-            core_supported,
+            core_refusal: support.refusal,
+            hybrid_core_supported: support.hybrid,
             spin_orbit,
             _memory: memory,
         })
@@ -479,7 +498,6 @@ impl Species {
         arrays: &mut Arrays,
         raw: bool,
         allow_spin_orbit: bool,
-        allow_heavy_dft: bool,
     ) -> Result<Self> {
         if !allow_spin_orbit && v["spin_orbit"].as_bool() != Some(false) {
             return Err(invalid(
@@ -507,59 +525,52 @@ impl Species {
         let entries = v["channels"]
             .as_array()
             .ok_or_else(|| invalid("PAW channels must be a list"))?;
-        let occupied_1s = entries.iter().any(|ch| {
-            ch["principal_n"].as_u64() == Some(1)
-                && ch["occupations"].as_array().is_some_and(|o| {
-                    o.first()
-                        .and_then(serde_json::Value::as_f64)
-                        .is_some_and(|n| n > 0.)
-                })
-        });
-        let ordinary_core = v["frozen_subshells"].as_array().is_some_and(Vec::is_empty)
-            && v["semicore_subshells"].as_array().is_some_and(|shells| {
-                !shells
-                    .iter()
-                    .any(|s| s[0].as_u64() == Some(1) && s[1].as_u64() == Some(0))
-            });
-        let closed_1s = ordinary_core
-            && (3..=10).contains(&atomic_number)
-            && ((atomic_number as f64 - charge) - 2.).abs() < 1e-8
-            && (core_charge - 2.).abs() < 0.02
-            && !occupied_1s;
-        let core_supported = core_charge <= 1e-6 || closed_1s;
-        if !allow_heavy_dft && !core_supported {
-            return Err(invalid("native PAW frozen-core exchange currently requires an empty core or a single closed 1s shell"));
-        }
         if core.as_slice().iter().any(|v| *v < 0.) {
             return Err(invalid("core density must be nonnegative"));
         }
-        // For one closed, nodeless 1s shell: n_c = 2 R_1s^2/(4 pi).
-        // Recover its tabulated orbital exactly, preserving the dataset's
-        // relativistic reference and normalization without an atomic re-solve.
-        let _core_memory = ctx.reserve(product(&[r.as_slice().len(), 8])?)?;
-        let core_orbital: Vec<_> = core
-            .as_slice()
-            .iter()
-            .map(|n| (2. * PI * n).sqrt())
-            .collect();
-        let mut core_extent = 0;
-        if closed_1s {
-            let total = core_charge;
-            let mut integrated = 0.;
-            for i in 1..r.as_slice().len() {
-                let a = r.as_slice()[i - 1];
-                let b = r.as_slice()[i];
-                integrated += 0.5
-                    * (b - a)
-                    * 4.
-                    * PI
-                    * (a * a * core.as_slice()[i - 1] + b * b * core.as_slice()[i]);
-                if integrated >= (1. - 1e-14) * total {
-                    core_extent = (i + 2).min(r.as_slice().len());
-                    break;
-                }
-            }
-        }
+        // The core states of a species given as tables, as a record stores them (`n`, `l`,
+        // `occupation` and the table of `u = r R`); a species without the key has none.
+        let states = match v.get("core_states") {
+            None | Some(Value::Null) => None,
+            Some(list) => Some(
+                list.as_array()
+                    .ok_or_else(|| invalid("PAW core states must be a list"))?
+                    .iter()
+                    .map(|e| {
+                        Ok((
+                            u32::try_from(count(&e["n"])?).map_err(|_| invalid("invalid core state n"))?,
+                            u32::try_from(count(&e["l"])?).map_err(|_| invalid("invalid core state l"))?,
+                            number(&e["occupation"])?,
+                            table(arrays, &e["orbital"])?,
+                        ))
+                    })
+                    .collect::<Result<Vec<_>>>()?,
+            ),
+        };
+        let stored: Option<Vec<StoredShell<'_>>> = states.as_ref().map(|states| {
+            states
+                .iter()
+                .map(|(n, l, occupation, orbital)| StoredShell {
+                    n: *n,
+                    l: *l,
+                    occupation: *occupation,
+                    orbital: orbital.as_slice(),
+                })
+                .collect()
+        });
+        let _core_memory = ctx.reserve(product(&[
+            r.as_slice().len(),
+            stored.as_ref().map_or(0, Vec::len) + 3,
+            8,
+        ])?)?;
+        let support = core_support(
+            &format!("Z = {atomic_number}"),
+            atomic_number,
+            charge,
+            (r.as_slice(), core.as_slice()),
+            core_charge,
+            stored.as_deref(),
+        );
         let valence = table(arrays, &v["valence"])?;
         validate(r.as_slice(), valence.as_slice())?;
         let xc_core = table(arrays, &v["xc_core"])?;
@@ -753,33 +764,8 @@ impl Species {
                 }
             }
             ch.xc = &transform * vx * transform.transpose();
-            if closed_1s {
-                if core_extent < 4 {
-                    return Err(invalid("invalid core radial extent"));
-                }
-                let mut exchange = DMatrix::zeros(refs, refs);
-                for i in 0..refs {
-                    for j in 0..refs {
-                        let left: Vec<_> = (0..core_extent)
-                            .map(|k| ch.ae[i][k] * core_orbital[k])
-                            .collect();
-                        let right: Vec<_> = (0..core_extent)
-                            .map(|k| ch.ae[j][k] * core_orbital[k])
-                            .collect();
-                        exchange[(i, j)] =
-                            -0.5 * (crate::paw::pair_tables::coulomb(
-                                &r.as_slice()[..core_extent],
-                                &left,
-                                &right,
-                                ch.l,
-                            ) + crate::paw::pair_tables::coulomb(
-                                &r.as_slice()[..core_extent],
-                                &right,
-                                &left,
-                                ch.l,
-                            )) / (2 * ch.l + 1) as f64;
-                    }
-                }
+            if let Some(core) = &support.frozen {
+                let exchange = core.exchange(r.as_slice(), ch.l, &ch.ae)?;
                 ch.core_exchange = &transform * exchange * transform.transpose();
             }
             let mix = |waves: &Vec<Vec<f64>>| {
@@ -809,7 +795,8 @@ impl Species {
             xc_core_tau,
             dft_constant,
             relativistic_exchange: relativistic,
-            core_supported,
+            core_refusal: support.refusal,
+            hybrid_core_supported: support.hybrid,
             spin_orbit: Vec::new(),
             _memory: memory,
         })

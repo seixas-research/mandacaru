@@ -95,6 +95,7 @@ pub(super) fn assemble(
         residuals: solved.residuals[..count].to_vec(),
         iterations: solved.iterations,
         applications: solved.applications,
+        spinor: None,
     };
     for root in 0..count {
         let plus = response.matrix(solved.plus.column(root).as_slice());
@@ -123,18 +124,7 @@ pub(super) fn assemble(
                 weight: plus[(i, a)] * minus[(i, a)],
             })
             .collect();
-        transitions.sort_by(|x, y| {
-            y.weight
-                .total_cmp(&x.weight)
-                .then((x.occupied, x.virtual_orbital).cmp(&(y.occupied, y.virtual_orbital)))
-        });
-        let keep = transitions
-            .iter()
-            .take(MOST_TRANSITIONS)
-            .take_while(|t| t.weight >= SMALLEST_WEIGHT)
-            .count()
-            .max(1);
-        transitions.truncate(keep);
+        keep_dominant(&mut transitions);
         out.transitions.push(transitions);
         out.nto_weights.push(singular_weights(&plus)?);
         if let (Some(factors), Some(shifts)) = (&one_center, out.one_center_hartree.as_mut()) {
@@ -154,6 +144,27 @@ pub(super) fn assemble(
         out.minus.push(vec![minus]);
     }
     Ok(out)
+}
+
+/// The dominant transitions of a root, largest weight first: at most [`MOST_TRANSITIONS`], those
+/// below [`SMALLEST_WEIGHT`] left out (the largest is always kept).
+pub(super) fn keep_dominant(transitions: &mut Vec<Transition>) {
+    transitions.sort_by(|x, y| {
+        y.weight
+            .total_cmp(&x.weight)
+            .then((x.channel, x.occupied, x.virtual_orbital).cmp(&(
+                y.channel,
+                y.occupied,
+                y.virtual_orbital,
+            )))
+    });
+    let keep = transitions
+        .iter()
+        .take(MOST_TRANSITIONS)
+        .take_while(|t| t.weight >= SMALLEST_WEIGHT)
+        .count()
+        .max(1);
+    transitions.truncate(keep);
 }
 
 /// `sigma_k^2 / sum sigma^2` of `t`, descending, from the eigenvalues of `t t^T`.
@@ -303,6 +314,7 @@ pub(super) fn assemble_unrestricted(
         residuals: solved.residuals[..count].to_vec(),
         iterations: solved.iterations,
         applications: solved.applications,
+        spinor: None,
     };
     for root in 0..count {
         let plus = operator.matrices(solved.plus.column(root).as_slice());
@@ -332,22 +344,7 @@ pub(super) fn assemble_unrestricted(
                 }
             }
         }
-        transitions.sort_by(|x, y| {
-            y.weight
-                .total_cmp(&x.weight)
-                .then((x.channel, x.occupied, x.virtual_orbital).cmp(&(
-                    y.channel,
-                    y.occupied,
-                    y.virtual_orbital,
-                )))
-        });
-        let keep = transitions
-            .iter()
-            .take(MOST_TRANSITIONS)
-            .take_while(|t| t.weight >= SMALLEST_WEIGHT)
-            .count()
-            .max(1);
-        transitions.truncate(keep);
+        keep_dominant(&mut transitions);
         out.transitions.push(transitions);
         // Singular values of both spin blocks together.
         let mut values = Vec::new();

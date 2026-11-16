@@ -178,3 +178,97 @@ fn the_hybrid_free_energy_is_stationary_in_the_spin_orbit_strength() {
     // The wrong slope (twice E_SO, the second-order energy's lambda-derivative mistaken) is far.
     assert!((2. * e_so - richardson).abs() > 100. * floor.max(1e-12));
 }
+
+/// Drops the second point of every `(k, -k)` pair of the listed mesh (the first when `last`) and
+/// doubles the weight of the one kept: a time-reversal half of the mesh.
+fn halve(v: &mut serde_json::Value, last: bool) {
+    let mut points = v["kpoints"].as_array().unwrap().clone();
+    if last {
+        points.reverse();
+    }
+    let fractional = |p: &serde_json::Value| -> Vec<f64> {
+        p["fractional"].as_array().unwrap().iter().map(|x| x.as_f64().unwrap()).collect()
+    };
+    let mut kept: Vec<serde_json::Value> = Vec::new();
+    for point in &points {
+        let k = fractional(point);
+        let mirrored = |q: &serde_json::Value| {
+            fractional(q).iter().zip(&k).all(|(a, b)| ((a + b) - (a + b).round()).abs() < 1e-8)
+        };
+        if let Some(first) = kept.iter_mut().find(|q| mirrored(q)) {
+            let w = first["weight"].as_f64().unwrap() + point["weight"].as_f64().unwrap();
+            first["weight"] = serde_json::json!(w);
+        } else {
+            kept.push(point.clone());
+        }
+    }
+    assert!(kept.len() < points.len(), "the mesh has no pair (k, -k) to halve");
+    v["kpoints"] = serde_json::json!(kept);
+}
+
+/// Q11/SH-5, the time-reversal-halved mesh of a spinor hybrid (HSE06 + spin-orbit, si_so_tr3
+/// and si_so_tr4) and of its scalar twin, on the frozen complex-harmonic snapshots. Their arrays
+/// are exact time-reversal images (misses 1e-15, `periodic_hybrid_spinor_time_reversal.rs`), but
+/// on their even 10^3 grid the compensation shape transforms break the covariance on the Nyquist
+/// planes (`K(-k)` against `U K(k)^* U^T`: 2e-8 to 7e-8 of K), so the whole-mesh SCF state is not
+/// exactly symmetric under time reversal and the half that keeps `k` and the half that keeps
+/// `-k` differ by 2.1e-10 Ha (tr3) and 1.2e-10 Ha (tr4), measured 2026-11-15. The whole mesh is
+/// their mean, to 1.5e-14 Ha measured, which is what halving must give: gate 1e-12 Ha, and the
+/// bands of a half within 1e-8 Ha of the whole mesh's. The Rust-built
+/// crystals, exact under time reversal, meet the 1e-10 Ha gate directly
+/// (`periodic_layout.rs`, `a_time_reversal_halved_hybrid_mesh_gives_the_whole_mesh_energy`).
+#[test]
+#[ignore = "slow: twelve spinor and scalar hybrid SCFs, 110 s; run: cargo test --profile release-test -p mandacaru-core --test periodic_hybrid_spinor_scf -- --ignored a_time_reversal_halved_mesh"]
+fn a_time_reversal_halved_mesh_gives_the_whole_mesh_energy() {
+    let mut failures = Vec::new();
+    for name in ["si_so_tr3.json", "si_so_tr4.json"] {
+        for (label, twin) in [("spinor", false), ("scalar", true)] {
+            let edit = |v: &mut serde_json::Value| {
+                if twin {
+                    scalar_twin(v);
+                }
+            };
+            // Tighter than `options`: the 1e-10 Ha gate sits under the energy those leave.
+            let tight = Options {
+                tolerance: 1e-13,
+                density_tolerance: 1e-11,
+                ..options()
+            };
+            let run = |edit: &dyn Fn(&mut serde_json::Value)| {
+                let c = hybrid(&context(), name, edit);
+                let r = c.solve(&tight).unwrap();
+                assert!(r.converged, "{name}: not converged");
+                (c, r)
+            };
+            let (c, whole) = run(&edit);
+            let (h, half) = run(&|v| {
+                edit(v);
+                halve(v, false);
+            });
+            let (_, other) = run(&|v| {
+                edit(v);
+                halve(v, true);
+            });
+            let mean = (whole.free_energy - 0.5 * (half.free_energy + other.free_energy)).abs();
+            let split = (half.free_energy - other.free_energy).abs();
+            let mut bands = 0f64;
+            for (k, point) in h.points.iter().enumerate() {
+                let at = (0..c.points.len())
+                    .find(|&j| {
+                        (0..3).all(|a| (c.points[j].fractional[a] - point.fractional[a]).abs() < 1e-12)
+                    })
+                    .unwrap();
+                for (a, b) in half.eigenvalues[k].iter().zip(&whole.eigenvalues[at]) {
+                    bands = bands.max((a - b).abs());
+                }
+            }
+            println!(
+                "{name} {label}: whole ({} points) {:.12} Ha, halves ({} points) {:.12} and {:.12} Ha (split {split:.2e}), whole - mean {mean:.2e}, bands {bands:.2e}",
+                c.points.len(), whole.free_energy, h.points.len(), half.free_energy, other.free_energy
+            );
+            failures.extend((mean >= 1e-12).then(|| format!("{name} {label}: {mean:e}")));
+            failures.extend((bands >= 1e-8).then(|| format!("{name} {label}: bands {bands:e}")));
+        }
+    }
+    assert!(failures.is_empty(), "{failures:?}");
+}

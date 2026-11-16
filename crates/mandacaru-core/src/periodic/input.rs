@@ -323,30 +323,45 @@ fn tree_bytes(source: &str) -> Result<usize> {
         .ok_or(crate::Error::Overflow)
 }
 
-/// The periodic exact exchange sums over `Crystal::points`, so it is exact only on the whole mesh:
-/// equal weights, a point set closed under `k -> -k`, and no symmetry table beside several points.
-/// An irreducible wedge or a time-reversal-halved mesh would give a wrong energy and wrong bands
-/// with no error, so it is refused. One Gamma point is complete whatever the table says.
-pub(super) fn hybrid_needs_the_full_mesh(points: &[KPoint], permutations: usize) -> Result<()> {
+/// Whether `-k` of listed point `q` is listed too (or `q` is its own partner, a
+/// time-reversal-invariant point), modulo the reciprocal lattice in fractional coordinates.
+pub(super) fn has_partner(points: &[KPoint], q: usize) -> bool {
     const TOLERANCE: f64 = 1e-8;
-    let first = points.first().map_or(0., |p| p.weight);
-    let uniform = points.iter().all(|p| (p.weight - first).abs() < 1e-10);
-    let closed = points.iter().all(|p| {
-        points.iter().any(|q| {
-            (0..3).all(|i| {
-                let sum = p.fractional[i] + q.fractional[i];
-                (sum - sum.round()).abs() < TOLERANCE
-            })
+    let k = points[q].fractional;
+    points.iter().any(|other| {
+        (0..3).all(|i| {
+            let sum = k[i] + other.fractional[i];
+            (sum - sum.round()).abs() < TOLERANCE
         })
-    });
-    if uniform && closed && (permutations == 0 || points.len() == 1) {
+    })
+}
+
+/// The periodic exact exchange sums over the whole mesh: it takes `Crystal::points` as that mesh
+/// or as its time-reversal half (every listed point stands for itself and `-k`, its states at
+/// `-k` the conjugate ones, `screened_exchange::occupied_states`). So the listed points, with
+/// each one missing its partner counted twice, must have equal weights, and no symmetry table may
+/// stand beside several points (an irreducible wedge of the point group would give a wrong
+/// energy and wrong bands with no error). One Gamma point is complete whatever the table says.
+pub(super) fn hybrid_needs_a_complete_mesh(points: &[KPoint], permutations: usize) -> Result<()> {
+    let unfolded = |q: usize| {
+        let weight = points[q].weight;
+        if has_partner(points, q) {
+            weight
+        } else {
+            0.5 * weight
+        }
+    };
+    let first = if points.is_empty() { 0. } else { unfolded(0) };
+    let uniform = (0..points.len()).all(|q| (unfolded(q) - first).abs() < 1e-10);
+    if uniform && (permutations == 0 || points.len() == 1) {
         return Ok(());
     }
     Err(crate::Error::Unsupported(
-        "a hybrid functional needs the full k mesh: its exact exchange sums over the listed \
-         k-points, and these are a symmetry or time-reversal reduction of the mesh. The \
-         Mandacaru setup keeps the whole mesh for a hybrid; a crystal from another source must \
-         list every point of its mesh"
+        "a hybrid functional needs the whole k mesh or its time-reversal half: its exact \
+         exchange sums over the listed k-points (each one without its -k standing for both), and \
+         these are a point-group reduction of the mesh or have unequal weights. The Mandacaru \
+         setup reduces a hybrid's mesh by time reversal alone; a crystal from another source must \
+         list every point of its mesh or of that half"
             .into(),
     ))
 }
@@ -714,7 +729,7 @@ impl Crystal {
             return Err(invalid("DFT+U is not available with hybrid functionals"));
         }
         if definition.screened_exchange.is_some() {
-            hybrid_needs_the_full_mesh(&points, permutations.len())?;
+            hybrid_needs_a_complete_mesh(&points, permutations.len())?;
         }
         let hubbard = super::hubbard::Spec::parse(
             &v["hubbard"],

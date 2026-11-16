@@ -15,16 +15,16 @@ use crate::{
 use nalgebra::{DMatrix, Matrix3, Rotation3, UnitQuaternion, SVD};
 type Matrix = DMatrix<C64>;
 
-/// Rotate the local density into its eigenframe, differentiate the collinear
-/// functional there, and rotate the functional derivative back. In a GGA the
-/// derivatives are taken on the eigenvalue fields before this final rotation.
-/// The spinor XC: the collinear functional in the local spin frame `m_hat = m / |m|`, with
-/// `n_up/dn = (n +- |m|) / 2` and, for a meta-GGA, `tau_up/dn = (tau_0 +- m_hat . tau_vec) / 2`
-/// (`tau` is [`super::fields::kinetic_density`], one block per field channel). The potentials
-/// return in the Pauli channels: `v_0 = (v_up + v_dn) / 2`, `v_a = (v_up - v_dn) / 2 m_hat_a`, and
-/// for a meta-GGA `v_tau` likewise. Because `tau_up/dn` depend on `m_hat`, the magnetization
-/// potential also carries `(v_tau,up - v_tau,dn) / 2 (tau_a - (m_hat . tau_vec) m_hat_a) / |m|`, the
-/// derivative of the frame, so the potential stays the derivative of the energy.
+/// The spinor XC: the collinear functional in a local spin frame `u` (`models::noncollinear`):
+/// `m_hat = m / |m|` for a semilocal functional, `n_up/dn = (n +- |m|) / 2`; for a meta-GGA the
+/// leading eigenvector of `zeta zeta^T + eta eta^T` (`zeta = m / n`, `eta = tau_vec / tau_0`),
+/// `n_up/dn = (n +- u . m) / 2` and `tau_up/dn = (tau_0 +- u . tau_vec) / 2` (`tau` is
+/// [`super::fields::kinetic_density`], one block per field channel). The potentials return in the
+/// Pauli channels with the turn of the frame, so the potential stays the derivative of the energy.
+///
+/// A semilocal functional's rotated densities are differentiated on the grid (`grad |m|`), its
+/// divergence taken in the frame. A meta-GGA takes the gradients as the molecule does
+/// ([`meta_exchange_correlation`]).
 pub fn exchange_correlation(
     c: &Crystal,
     fft: &mut Fft3,
@@ -33,6 +33,9 @@ pub fn exchange_correlation(
 ) -> Result<super::fields::Terms> {
     if c.time_reversal {
         return solver::collinear_xc(c, fft, fields, tau, 1);
+    }
+    if let Some(tau) = tau {
+        return meta_exchange_correlation(c, fft, fields, tau);
     }
     use crate::models::noncollinear::{rotate, unrotate};
     let n = c.grid.index.points();
@@ -61,6 +64,119 @@ pub fn exchange_correlation(
         gradients: terms.gradients,
         flux: terms.flux,
         nonlocal_source: terms.nonlocal_source,
+        core: None,
+    })
+}
+
+/// The spinor meta-GGA in the molecule's gradient form: the density gradients of the frame are the
+/// projections of the Pauli channels' spectral gradients, `grad n_up/dn = (grad n +- u . grad m) / 2`
+/// (`rotate_gradients`, the half core's gradient added by [`super::fields::partials`]), not the
+/// gradients of the rotated densities `u . m`: the two differ by `m . grad u`, where the frame
+/// turns. The frame fluxes `dE / d grad n_s` return through `unrotate_gradients` (the Pauli fluxes
+/// and the turn of the frame through the gradient projections) and their divergence is subtracted
+/// from the Pauli potentials. `Terms::gradients` and `flux` stay the frame's: a strain moves the
+/// Pauli gradients as `-delta_cb d_a`, which the linear rotation carries to the frame's.
+///
+/// The partial core's derivatives return as `Terms::core` ([`super::fields::CoreSources`]): the
+/// frame is built from the valence fields, so the core moves the spin densities, gradients and
+/// kinetic densities by halves and never the frame, and `dE / d core` is the spin average of the
+/// frame's potential and flux before the unrotation. The Pauli charge channel of the returned
+/// potential also carries the frame's turn, which is not a derivative in the core.
+fn meta_exchange_correlation(
+    c: &Crystal,
+    fft: &mut Fft3,
+    fields: &[f64],
+    tau: &[f64],
+) -> Result<super::fields::Terms> {
+    use crate::models::noncollinear::{rotate, rotate_gradients, unrotate, unrotate_gradients};
+    let ctx = &c.context;
+    let n = c.grid.index.points();
+    let rotated = rotate(ctx, n, fields, Some(tau))?;
+    let mut work = ctx.allocate::<C64>(n)?;
+    let mut gradients = ctx.allocate::<f64>(12 * n)?;
+    for channel in 0..4 {
+        for axis in 0..3 {
+            let row = channel * 3 + axis;
+            solver::derivative_into(
+                c,
+                fft,
+                &fields[channel * n..(channel + 1) * n],
+                axis,
+                work.as_mut_slice(),
+                &mut gradients.as_mut_slice()[row * n..(row + 1) * n],
+            )?;
+        }
+    }
+    let frame = rotate_gradients(ctx, n, fields, &rotated, gradients.as_slice())?;
+    let rho = rotated.densities.as_slice();
+    let partials = super::fields::partials(
+        c,
+        fft,
+        rho,
+        rotated.tau.as_ref().map(|t| t.as_slice()),
+        2,
+        Some(frame.as_slice()),
+    )?;
+    let local = super::fields::vanish_below_zero(c, rho, 2, partials.local.as_slice())?;
+    let (mut potential, kinetic) = unrotate(
+        ctx,
+        n,
+        fields,
+        &rotated,
+        local.as_slice(),
+        partials.kinetic_potential.as_ref().map(|v| v.as_slice()),
+        Some(tau),
+    )?;
+    let Some(mut kinetic) = kinetic else {
+        return Err(invalid("a spinor meta-GGA returns its kinetic potential"));
+    };
+    let Some(frame_kinetic) = partials.kinetic_potential.as_ref() else {
+        return Err(invalid("a spinor meta-GGA returns its kinetic potential"));
+    };
+    let mut core = ctx.allocate::<f64>(n)?;
+    let mut core_kinetic = ctx.allocate::<f64>(n)?;
+    for k in 0..n {
+        core.as_mut_slice()[k] = 0.5 * (local.as_slice()[k] + local.as_slice()[n + k]);
+        core_kinetic.as_mut_slice()[k] = 0.5 * (frame_kinetic.as_slice()[k] + frame_kinetic.as_slice()[n + k]);
+    }
+    let flux = unrotate_gradients(
+        ctx,
+        n,
+        fields,
+        &rotated,
+        gradients.as_slice(),
+        partials.flux.as_slice(),
+        potential.as_mut_slice(),
+        Some((tau, kinetic.as_mut_slice())),
+    )?;
+    let mut divergence = ctx.allocate::<f64>(n)?;
+    for channel in 0..4 {
+        for axis in 0..3 {
+            let row = channel * 3 + axis;
+            solver::derivative_into(
+                c,
+                fft,
+                &flux.as_slice()[row * n..(row + 1) * n],
+                axis,
+                work.as_mut_slice(),
+                divergence.as_mut_slice(),
+            )?;
+            for k in 0..n {
+                potential.as_mut_slice()[channel * n + k] -= divergence.as_slice()[k];
+                if channel == 0 {
+                    core.as_mut_slice()[k] -= divergence.as_slice()[k];
+                }
+            }
+        }
+    }
+    Ok(super::fields::Terms {
+        energy: partials.energy,
+        potential,
+        kinetic_potential: Some(kinetic),
+        gradients: Some(partials.gradients),
+        flux: Some(partials.flux),
+        nonlocal_source: partials.nonlocal_source,
+        core: Some(super::fields::CoreSources { potential: core, kinetic: core_kinetic }),
     })
 }
 

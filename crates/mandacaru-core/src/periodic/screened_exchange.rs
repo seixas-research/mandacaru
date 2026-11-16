@@ -11,6 +11,7 @@
 //! and `Crystal::hybrid_exchange_at_k` (`hybrid_setup.rs`), which hold the crystal's spheres.
 
 use super::{
+    input::has_partner,
     invalid,
     screened_augmentation::{add_compensation, Augmentation, OneCenter, OneCenterTerms},
     Crystal, KPoint,
@@ -159,6 +160,12 @@ pub(super) type Stage<'a> = Option<(&'a Augmentation<'a>, Part)>;
 /// Occupied Bloch states at a given q-point for one spin channel or spinor.
 pub(super) struct OccupiedStates {
     pub(super) weight: f64,
+    /// The wave vector of the source point (a time-reversal partner's is `-k` of the listed one).
+    pub(super) k: [f64; 3],
+    /// The listed point the states come from, and whether they are its time-reversal partner's
+    /// (at `-k`, built from the listed point's states).
+    pub(super) point: usize,
+    pub(super) partner: bool,
     // For each occupied state: [up] for collinear, [up, down] for spinor
     pub(super) wavefunctions: Vec<Vec<Buffer<C64>>>,
     // For each occupied state: its coefficients over the basis, the square root of the
@@ -228,6 +235,9 @@ fn extract_occupied(
 
     Ok(OccupiedStates {
         weight: point.weight,
+        k: point.k,
+        point: q_idx,
+        partner: false,
         wavefunctions,
         coefficients,
         projected: Vec::new(),
@@ -255,9 +265,87 @@ pub(super) fn occupied_states<M: MatrixSource>(
                 .map(|coefficients| augmentation.project(c, &c.points[q], coefficients))
                 .collect();
         }
-        all.push(occ);
+        // A time-reversal-halved mesh lists `q` without `-q`: its states stand for both, at half
+        // the listed weight each.
+        if has_partner(&c.points, q) {
+            all.push(occ);
+        } else {
+            occ.weight *= 0.5;
+            let partner = reversed_states(c, &occ, stage)?;
+            all.push(occ);
+            all.push(partner);
+        }
     }
     Ok(all)
+}
+
+/// The states at `-q` of the states at `q`, by time reversal: the complex conjugates on the grid
+/// (collinear) or the Kramers partners `i sigma_y psi^*` (a time-reversal-symmetric spinor,
+/// `(up, down) -> (down^*, -up^*)`), their projections through [`Augmentation::reversed`] (the
+/// projectors are complex harmonics), the same weight. `coefficients` are those over the
+/// conjugated Bloch sums of `q` (the derivative passes, which would read them, refuse a partner).
+fn reversed_states(c: &Crystal, occ: &OccupiedStates, stage: Stage) -> Result<OccupiedStates> {
+    if c.spinor && !c.time_reversal {
+        return Err(crate::Error::Unsupported(
+            "a magnetic spinor crystal has no time-reversal partner states: its hybrid exchange \
+             needs the whole k mesh"
+                .into(),
+        ));
+    }
+    // Component `i` of the partner is `sign` times the reversed component `source`.
+    let order: &[(usize, f64)] = if c.spinor {
+        &[(1, 1.), (0, -1.)]
+    } else {
+        &[(0, 1.)]
+    };
+    let mut wavefunctions = Vec::with_capacity(occ.wavefunctions.len());
+    for components in &occ.wavefunctions {
+        let mut parts = Vec::with_capacity(order.len());
+        for &(source, sign) in order {
+            let psi = components[source].as_slice();
+            let mut out = c.context.allocate::<C64>(psi.len())?;
+            for (o, v) in out.as_mut_slice().iter_mut().zip(psi) {
+                *o = v.conj() * sign;
+            }
+            parts.push(out);
+        }
+        wavefunctions.push(parts);
+    }
+    // The same on a vector of `order.len()` components of `size` entries, `reverse` per component.
+    let reorder = |v: &[C64], size: usize, reverse: &dyn Fn(&[C64]) -> Result<Vec<C64>>| {
+        let mut out = Vec::with_capacity(v.len());
+        for &(source, sign) in order {
+            out.extend(reverse(&v[source * size..(source + 1) * size])?.into_iter().map(|x| x * sign));
+        }
+        Ok::<_, crate::Error>(out)
+    };
+    let coefficients = occ
+        .coefficients
+        .iter()
+        .map(|v| reorder(v, c.m, &|chunk| Ok(chunk.iter().map(|x| x.conj()).collect())))
+        .collect::<Result<Vec<_>>>()?;
+    let projected = match stage {
+        Some((augmentation, _)) => occ
+            .projected
+            .iter()
+            .map(|a| reorder(a, c.p, &|chunk| augmentation.reversed(c, chunk)))
+            .collect::<Result<Vec<_>>>()?,
+        None => Vec::new(),
+    };
+    Ok(OccupiedStates {
+        weight: occ.weight,
+        k: occ.k.map(|v| -v),
+        point: occ.point,
+        partner: true,
+        wavefunctions,
+        coefficients,
+        projected,
+    })
+}
+
+/// Whether the listed mesh is a time-reversal-halved one (some point lacks its `-k` partner).
+pub(super) fn halved(c: &Crystal) -> bool {
+    (0..c.points.len()).any(|q| !has_partner(&c.points, q))
 }
 
 /// The Coulomb weight of one (k, q) pair on the grid: `sqrt(w_q dv / N v^omega(Q))`.
@@ -480,15 +568,14 @@ fn target_matrix(
     let lanes = lane.bands.len().max(1);
 
     // Loop over source q-points
-    for (q, occ_q) in occupied.iter().enumerate() {
+    for occ_q in occupied {
         if occ_q.wavefunctions.is_empty() {
             continue;
         }
-        let source_point = &c.points[q];
         let k_diff = [
-            source_point.k[0] - target_point.k[0],
-            source_point.k[1] - target_point.k[1],
-            source_point.k[2] - target_point.k[2],
+            occ_q.k[0] - target_point.k[0],
+            occ_q.k[1] - target_point.k[1],
+            occ_q.k[2] - target_point.k[2],
         ];
         let sqrt_kernel_weight = kernel_weights(c, k_diff, occ_q.weight, omega, exxdiv)?;
         let shapes = match stage {
@@ -549,7 +636,7 @@ fn exchange_lanes(c: &Crystal, nk: usize) -> Result<Vec<TargetLane>> {
     let target_bytes = product(&[c.m, c.grid.index.points(), 16])?
         .checked_add(product(&[b_lanes, band_bytes])?)
         .ok_or(crate::Error::Overflow)?;
-    ctx.check_lanes(Level::Kpts, k_lanes, target_bytes)?;
+    let k_lanes = ctx.fit_lanes(Level::Kpts, k_lanes, target_bytes)?;
     Ok((0..k_lanes).map(|_| TargetLane::new(c)).collect())
 }
 
@@ -617,6 +704,7 @@ pub(super) fn one_center<M: MatrixSource>(
     c: &Crystal,
     matrices: &[M],
     model: &dyn OneCenter,
+    reversal: Option<&[(usize, usize, f64)]>,
 ) -> Result<OneCenterTerms> {
     let (nk, p, m) = (c.points.len(), c.p, c.m);
     if c.spinor {
@@ -634,6 +722,26 @@ pub(super) fn one_center<M: MatrixSource>(
                 }
             }
         }
+        // The partner of a listed point of a time-reversal-halved mesh: `U P^* U^T` with
+        // `U = i sigma_y (x) Pi`, blocks `(s, t) <- (sign) Pi P_{1-s, 1-t}^* Pi^T`.
+        if halved(c) {
+            let map = reversal.ok_or_else(|| {
+                invalid("a time-reversal-halved mesh needs the time reversal of the projectors")
+            })?;
+            let mut mirrored = Matrix::zeros(2 * p, 2 * p);
+            for s in 0..2 {
+                for t in 0..2 {
+                    let sign = if s == t { 1. } else { -1. };
+                    for &(i, a, si) in map {
+                        for &(j, b, sj) in map {
+                            mirrored[(s * p + i, t * p + j)] =
+                                projected[((1 - s) * p + a, (1 - t) * p + b)].conj() * (sign * si * sj);
+                        }
+                    }
+                }
+            }
+            projected = (&projected + mirrored) * C64::new(0.5, 0.);
+        }
         return model.spinor(&c.context, &projected);
     }
     let mut projected = vec![Matrix::zeros(p, p); c.spins];
@@ -642,6 +750,23 @@ pub(super) fn one_center<M: MatrixSource>(
             let d = matrices[s * nk + k].matrix(&c.context)?;
             *total +=
                 point.projections.adjoint() * &*d * &point.projections * C64::new(point.weight, 0.);
+        }
+    }
+    // On a time-reversal-halved mesh each listed point stands for itself and its partner at
+    // `-k`, whose projected density is `Pi P^* Pi^T` (`Pi` the time reversal of the projectors):
+    // the sum over the whole mesh is the average of the listed sum and its reversal.
+    if halved(c) {
+        let map = reversal.ok_or_else(|| {
+            invalid("a time-reversal-halved mesh needs the time reversal of the projectors")
+        })?;
+        for total in &mut projected {
+            let mut mirrored = Matrix::zeros(p, p);
+            for &(i, a, si) in map {
+                for &(j, b, sj) in map {
+                    mirrored[(i, j)] = total[(a, b)].conj() * (si * sj);
+                }
+            }
+            *total = (&*total + mirrored) * C64::new(0.5, 0.);
         }
     }
     model.collinear(&c.context, &projected)
@@ -685,7 +810,7 @@ pub fn exchange_operators_with<M: MatrixSource>(
     )?;
     if let Some(model) = augmentation.and_then(|a| a.one_center()) {
         let nk = c.points.len();
-        let terms = one_center(c, matrices, model)?;
+        let terms = one_center(c, matrices, model, augmentation.and_then(|a| a.reversal()))?;
         if terms.operators.len() != if c.spinor { 1 } else { c.spins } {
             return Err(invalid("the one-center model returned the wrong number of operators"));
         }
@@ -751,7 +876,7 @@ pub fn exchange_operator_at_k_with<M: MatrixSource>(
         stage,
     )?;
     if let Some(model) = augmentation.and_then(|a| a.one_center()) {
-        let terms = one_center(c, matrices, model)?;
+        let terms = one_center(c, matrices, model, augmentation.and_then(|a| a.reversal()))?;
         let operator = terms
             .operators
             .get(spin)

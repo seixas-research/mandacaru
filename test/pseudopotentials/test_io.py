@@ -129,22 +129,15 @@ class TestRoundTrip:
 
 
 class TestCoreStates:
-    """A dataset read from a format-3 file (with the stored core states) is a view without
-    them, so saving it from Python would drop them: the write refuses, naming the native
-    writers."""
+    """The view of a file carries its core states (dataset format 3, the only one read), so
+    saving it keeps them."""
 
-    def test_saving_a_view_of_a_cored_file_is_refused(self, tmp_path):
-        from mandacaru import _native
-        from mandacaru.pseudopotentials.native_context import context
-
-        upgraded = tmp_path / "Li.parquet"
-        _native.paw_upgrade_core_states(context(), library_file("Li", paw_library_path()),
-                                        str(upgraded))
-        pp = load_pseudopotential(upgraded)
-        assert pp.core_states
-        with pytest.raises(ValueError, match="core states.*paw_upgrade_core_states"):
-            save_pseudopotential(pp, tmp_path / "copy.parquet")
-        assert not (tmp_path / "copy.parquet").exists()
+    def test_saving_a_view_of_a_cored_file_keeps_its_core_states(self, tmp_path):
+        pp = load_pseudopotential(library_file("Li", paw_library_path()))
+        assert [(s["n"], s["l"], s["occupation"]) for s in pp.core_states] == [(1, 0, 2.0)]
+        back = load_pseudopotential(save_pseudopotential(pp, tmp_path / "copy.parquet"))
+        assert [(s["n"], s["l"], s["occupation"]) for s in back.core_states] == [(1, 0, 2.0)]
+        assert list(back.core_states[0]["orbital"]) == list(pp.core_states[0]["orbital"])
 
 
 class TestFormatDetection:

@@ -6,6 +6,7 @@ pub mod bloch;
 pub mod heap;
 pub mod one_body;
 pub mod onecenter;
+pub mod process;
 pub mod radial;
 pub mod runtime;
 pub mod two_center;

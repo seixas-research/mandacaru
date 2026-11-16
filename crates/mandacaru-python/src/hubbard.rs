@@ -240,7 +240,7 @@ pub(crate) fn view<'py>(
         let mut traces = Vec::with_capacity(crystal.spins);
         for spin in 0..crystal.spins {
             let n = report.occupation(spin, index);
-            traces.push((0..p).map(|a| n[a * p + a].re).sum::<f64>());
+            traces.push(report.occupation_trace(spin, index, p));
             values.extend(n.iter().map(|z| Complex64::new(z.re, z.im)));
         }
         let item = PyDict::new(py);

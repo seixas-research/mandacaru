@@ -1,9 +1,10 @@
 """The analytic PAW-LCAO molecular forces as a user gets them: ``Mandacaru`` + ASE.
 
-``reference/molecular_forces.json`` holds, per molecule, the atoms, the options and the forces of the retired
-finite-difference route (the symmetric Richardson difference of the fixed-orthonormal-density energy expression),
-frozen before the analytic gradient replaced it. Each case rebuilds its atoms from the file and checks the live
-analytic force against the frozen number.Needs ``MANDACARU_PAW_PATH``.
+``reference/molecular_forces.json`` holds, per molecule, the atoms, the options and the analytic forces,
+re-frozen on 2026-11-16 against the regenerated PAW library (the first freeze, 2026-11-03, was the retired
+finite-difference route, which the analytic gradient reproduced to 2.0e-7 eV/Angstrom). The force's own oracle,
+reconverged finite differences at a fixed grid, is the Rust slow tier ``paw_forces_dataset``. Each case rebuilds
+its atoms from the file and checks the live analytic force against the frozen number. Needs ``MANDACARU_PAW_PATH``.
 """
 import json
 import os
@@ -21,8 +22,8 @@ COMMON = REFERENCE["options_common"]
 
 pytestmark = pytest.mark.skipif(not os.environ.get("MANDACARU_PAW_PATH"), reason="MANDACARU_PAW_PATH is not set")
 
-#: eV/Angstrom. Measured worst miss against the frozen number is 2.0e-7 (water); the retired route's own
-#: Richardson step error is 1e-5 at most (2.5e-7 Ha/Bohr), so the tolerance is 25 times the measurement.
+#: eV/Angstrom. Two independent runs of the 2026-11-16 freeze give the same bits. The tolerance is the one the
+#: retired route set: its Richardson step error was 1e-5 at most, 25 times the analytic force's miss against it.
 TOLERANCE = 5e-6
 
 
@@ -37,7 +38,7 @@ def molecule(case, **overrides):
 
 
 @pytest.mark.parametrize("case", ["h2_pbe", "h2_rhf", "lih_rhf", "lih_pbe", "h2o_pbe", "h2o_rhf", "oh_upbe", "h2o_r2scan", "h2o_hse06"])
-def test_the_analytic_force_reproduces_the_retired_finite_difference(case):
+def test_the_analytic_force_reproduces_the_frozen_force(case):
     atoms, record = molecule(case)
     forces = atoms.get_forces()
     miss = np.abs(forces - np.array(record["forces_ev_angstrom"])).max()

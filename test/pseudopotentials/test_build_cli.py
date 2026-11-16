@@ -179,5 +179,27 @@ def test_the_report_is_of_the_file_read_back(tmp_path, capsys):
     out = capsys.readouterr().out
     assert code == 0, out
     assert "read back: levels within" in out and "phase" in out
+    assert "gates: G1 pass, G2 pass" in out and "G13 n/a" in out
     assert [p.name for p in (tmp_path / "paw-lcao").iterdir()] == [
         "H.parquet"]
+
+
+def test_a_file_that_fails_a_gate_is_refused_with_its_rows_and_not_written(
+        tmp_path, capsys, monkeypatch):
+    """The gates run in Rust (``paw::validate``) on the file read back, before it is moved into place
+    (the refusal itself is gated in ``crates/mandacaru-core/tests/paw_validate_release.rs``): the build
+    returns the refusal as data and this module prints its rows."""
+    from mandacaru import _native
+
+    def refused(context, symbol, options, path, **keywords):
+        return {"kind": "gate", "gates": {"passed": False},
+                "refusal": f"{symbol} (lda scalar) fails 1 gate row(s); not written:\n"
+                           "  G9  FAIL         smooth-core electrons against partial_core_electrons (e): "
+                           "2.137e-4 <= 1.000e-4"}
+    monkeypatch.setattr(_native, "paw_build", refused)
+    code = main(["--pp", "PAW", "--element", "H", "--output", str(tmp_path)])
+    out = capsys.readouterr().out
+    assert code == 1, out
+    assert "H  FAILED" in out and "G9  FAIL" in out and "not written" in out
+    assert "1 of 1 dataset(s) written" not in out
+    assert not list((tmp_path / "paw-lcao").iterdir())

@@ -37,16 +37,11 @@ pub fn four(ctx: &Context, eri: &Eri, coefficients: [&DMatrix<C64>; 4]) -> Resul
         }
         return Ok(out);
     }
-    if let Eri::Cholesky { rank, factors, .. } = eri {
+    if let Some(rank) = eri.factor_count() {
         let _work = ctx.reserve(product(&[n.max(m), n.max(m), 16, 8])?)?;
         let mut out = ctx.allocate::<C64>(product(&sizes)?)?;
-        for column in 0..*rank {
-            let b = DMatrix::from_fn(m, m, |p, q| {
-                C64::new(
-                    factors.as_slice()[super::integrals::pair(p, q) * rank + column],
-                    0.,
-                )
-            });
+        for column in 0..rank {
+            let b = eri.factor(column).map(|v| C64::new(v, 0.));
             let left = coefficients[0].adjoint() * &b * coefficients[2];
             let right = coefficients[1].adjoint() * b * coefficients[3];
             for p in 0..np {
@@ -117,6 +112,10 @@ pub struct Model {
     /// dense tensor; `two` is then empty and every reader of it goes through
     /// [`Model::dense_two`], which refuses by name.
     pub factorized: Option<std::sync::Arc<super::double_factorized::DoubleFactorized>>,
+    /// `v_M` (Hartree) of the Hamiltonian the model was built from
+    /// ([`super::MolecularIntegrals::exchange_madelung`]): added to the occupied levels of the
+    /// model's MP2 denominators; zero for a molecule.
+    pub exchange_madelung: f64,
     _memory: Reservation,
 }
 pub struct OrbitalRotation {
@@ -243,6 +242,7 @@ impl Model {
             orbital_rotation: None,
             orbital_symmetry_sets: Vec::new(),
             factorized: None,
+            exchange_madelung: 0.,
             _memory: ctx.reserve(product(&[n, n, 64])?)?,
         })
     }
@@ -274,6 +274,7 @@ impl Model {
             orbital_rotation: None,
             orbital_symmetry_sets: Vec::new(),
             factorized: Some(std::sync::Arc::new(factorized)),
+            exchange_madelung: 0.,
             _memory: ctx.reserve(product(&[m, m, 64])?)?,
         })
     }
@@ -386,6 +387,7 @@ impl Model {
             constant,
             false,
         )?;
+        result.exchange_madelung = self.exchange_madelung;
         result.orbital_indices = active.iter().map(|&i| self.orbital_indices[i]).collect();
         result.frozen_indices = self
             .frozen_indices

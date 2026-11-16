@@ -116,6 +116,11 @@ pub fn solve_reference_with(ctx: &Context, recipe: &Recipe, source: &dyn XcSourc
             functional: recipe.functional.clone(),
             relativity: recipe.relativity,
             polish: atom::POLISH_ROUNDS,
+            // The PAW partial waves are the scalar (j-averaged) ones of the spherical reference
+            // configuration: its Dirac atom shares an open subshell in proportion to 2j + 1, not
+            // j by j, or its effective potential (the dataset's local potential) carries the
+            // Hartree potential of the difference of the two densities out to 20 Bohr.
+            j_shares: crate::models::configuration::JShares::Proportional,
         },
         configuration.as_deref(),
         None,

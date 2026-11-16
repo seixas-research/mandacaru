@@ -65,8 +65,7 @@ class ASEProperties:
         (:meth:`get_berry_curvature` holds the per-channel numbers). It is oriented along
         ``G_a x G_b`` (``a, b`` the in-plane directions in cyclic order), so it changes sign when
         the cell is relabeled into the other handedness; the Hall conductivity does not."""
-        return self.get_berry_curvature(plane, kpts=kpts, offset=offset,
-                                        bands=bands).chern_number
+        return self.get_berry_curvature(plane, kpts=kpts, offset=offset, bands=bands).chern_number
 
     def get_wannier_charge_center_flow(self, plane, direction, kpts=None, offset=0.0, bands=None):
         """The flow of the hybrid Wannier charge centers across a k plane
@@ -151,9 +150,11 @@ class ASEProperties:
         return anomalous_hall(self._calculation_owner(), kpts=kpts, stacklevel=3).sigma
 
     def get_excitations(self, num_states=5, *, approximation="tda", spin=None,
-                        kernel="adiabatic", tolerance=1e-5, max_iterations=200):
+                        kernel=None, tolerance=1e-5, max_iterations=200, **crystal):
         """The lowest ``num_states`` linear-response excitations of a converged molecule
-        (:class:`~mandacaru.analysis.excitations.Excitations`).
+        (:class:`~mandacaru.analysis.excitations.Excitations`), or the lowest Bethe-Salpeter
+        excitons of a converged insulating crystal
+        (:class:`~mandacaru.analysis.excitations.CrystalExcitations`).
 
         Time-dependent DFT on a ``method="dft"`` state (``xc="lda"``, ``"pbe"``, ``"r2scan"``
         or ``"hse06"``: the adiabatic kernel of the functional, with the kinetic-density
@@ -172,24 +173,41 @@ class ASEProperties:
         engine's energy, whose one-center terms are linearized; the view reports, per root,
         the first-order shift the missing one-center Hartree kernel would make. The view holds
         the length-form strengths and the velocity form (with the PAW one-center part of the
-        gradient), which agree only as the basis is completed. rVV10, spin-orbit datasets,
-        fractional occupations, crystals and ``precision="float32"`` raise. Each call appends an ``[EXCITED STATES]`` block to the
-        run log.
+        gradient), which agree only as the basis is completed. A spinor reference (a spin-orbit
+        dataset or noncollinear moments; ``xc="lda"`` or ``"pbe"``, ``kernel="adiabatic"``,
+        ``spin`` unset) gives the two-component excitations with the noncollinear kernel: one
+        channel of spinors, complex transition moments and amplitudes (the phase of each state
+        is a convention) and ``spin == "spinor"``; its transition densities and natural
+        transition orbitals raise ``NotImplementedError`` and ``one_center_hartree`` is
+        ``None``. rVV10, fractional occupations and ``precision="float32"`` raise.
+        ``kernel=None`` is ``"adiabatic"`` on a molecule.
+
+        On a crystal (``method="dft"``, ``xc="lda"`` or ``"pbe"``, closed shell) the Tamm-Dancoff
+        Bethe-Salpeter equation runs on the Kohn-Sham states of the whole Gamma-anchored mesh
+        ``kpts`` (keyword; default the SCF's): ``kernel=None`` or ``"bse"`` (exchange and the
+        statically screened direct term, the RPA ``W`` of every band), ``"hartree"`` (exchange
+        only) or ``"independent"``; ``spin`` ``"singlet"`` (default) or ``"triplet"``; the
+        keywords ``bands=(valence, conduction)`` (default every band), ``scissor`` (eV) and
+        ``cutoff`` (1/Angstrom, the largest ``|q + G|``). Each exciton's binding is measured
+        against the continuum's onset on the same mesh. ``approximation="casida"``,
+        ``kernel="adiabatic"`` and spin-polarized crystals raise ``NotImplementedError``. Each
+        call appends an ``[EXCITED STATES]`` block to the run log.
         """
         from .excitations import excitations
 
         return excitations(self._calculation_owner(), num_states, approximation=approximation,
                            spin=spin, kernel=kernel, tolerance=tolerance,
-                           max_iterations=max_iterations)
+                           max_iterations=max_iterations, **crystal)
 
     def get_real_time(self, duration=40.0, time_step=0.005, *, direction="x", strength=0.002,
                       kick="density", gauge=None, propagator="etrs", corrector_tolerance=1e-6,
-                      max_energy_drift=0.05):
-        """Propagate a converged molecule in real time after a delta kick
+                      max_energy_drift=0.05, kernel="adiabatic", kpts=None):
+        """Propagate a converged molecule or crystal in real time after a kick
         (:class:`~mandacaru.analysis.real_time.RealTime`).
 
-        The occupied orbitals of the ``method="dft"`` (``xc="lda"``, ``"pbe"`` or ``"hse06"``,
-        with ``hubbard_u`` its +U on the complex shell occupations), ``rhf`` or ``uhf`` reference
+        The occupied orbitals of the ``method="dft"`` (``xc="lda"``, ``"pbe"``, ``"hse06"`` or
+        ``"r2scan"``, the last with the gauge-invariant kinetic density of complex orbitals; with
+        ``hubbard_u`` its +U on the complex shell occupations), ``rhf`` or ``uhf`` reference
         are propagated under the state's own Fock matrix for ``duration`` in steps of
         ``time_step`` (fs; atomic time units with ``atomic_units=True``) after a kick of
         ``strength`` (1/Angstrom; 1/Bohr) along ``direction`` (``"x"``, ``"y"``, ``"z"`` or a
@@ -202,16 +220,65 @@ class ASEProperties:
         whose product with the basis width ``W`` of the Fock matrix exceeds its stability bound
         (4 for ETRS, 1 for the others). The run raises when the energy drifts by more than
         ``max_energy_drift`` kick energies (``None`` checks nothing). The view's
-        ``strength_function`` and ``polarizability`` are the spectra. r2SCAN, rVV10, spin-orbit
-        datasets, fractional occupations, crystals and ``precision="float32"`` raise. Each call
-        appends a ``[REAL TIME]`` block to the run log.
+        ``strength_function`` and ``polarizability`` are the spectra.
+
+        A crystal (an insulator; ``xc="lda"``, ``"pbe"`` or ``"r2scan"``, with or without
+        ``hubbard_u``) runs in the velocity gauge: a uniform
+        vector potential of ``strength`` (1/Angstrom; 1/Bohr) along ``direction`` is switched on
+        at ``t = 0`` and the macroscopic current is recorded on the whole Gamma-anchored mesh
+        ``kpts`` (default: the SCF's mesh, rebuilt without symmetry, since the field breaks it).
+        ``kernel="hartree"`` freezes the exchange-correlation potential at the ground state
+        (TD-Hartree: RPA with local fields) and ``kernel="independent"`` the whole Hamiltonian
+        (independent particles). The view's ``dielectric_function`` is the spectrum, from the current without
+        the finite basis's static deficit ``N - N_dia`` (both reported). ``gauge="length"`` and
+        ``kick="spin"`` raise ``ValueError`` on a crystal.
+
+        For DFT+U and r2SCAN crystals, whose kernels respond to the current, ``N_dia`` is
+        measured first by self-consistency at a static field (``diamagnetic_source``). rVV10,
+        spin-orbit datasets, fractional occupations, metals, hybrid crystals and
+        ``precision="float32"`` raise. Each call appends a ``[REAL TIME]`` block to
+        the run log.
         """
         from .real_time import real_time
 
         return real_time(self._calculation_owner(), duration, time_step, direction=direction,
                          strength=strength, kick=kick, gauge=gauge, propagator=propagator,
                          corrector_tolerance=corrector_tolerance,
-                         max_energy_drift=max_energy_drift)
+                         max_energy_drift=max_energy_drift, kernel=kernel, kpts=kpts)
+
+    def get_dielectric_function(self, energies=None, damping=0.1, *, kernel="hartree", bands=None,
+                                scissor=0.0, cutoff=None, direction=None, kpts=None, alpha=None):
+        """The macroscopic dielectric function of a converged insulating crystal at ``q -> 0``
+        (:class:`~mandacaru.analysis.real_time.DielectricFunction`), in the frequency domain.
+
+        ``epsilon(E + i damping)`` on ``energies`` (eV, Ha with ``atomic_units=True``; default 0
+        to 20 eV in 0.05 eV steps) from the Kohn-Sham polarizability of the bands on the whole
+        Gamma-anchored mesh ``kpts`` (default: the SCF's mesh, without symmetry). The
+        long-wavelength head uses the momentum matrix of the static PAW-LCAO basis, the matrix
+        :meth:`get_real_time` reads. ``kernel`` is ``"hartree"`` (the random-phase
+        approximation with local fields on the reciprocal vectors ``|G| <= cutoff``,
+        1/Angstrom; default 3 / Bohr), ``"independent"`` (independent particles), ``"bse"``
+        (the Tamm-Dancoff Bethe-Salpeter equation of the singlets: local fields and the
+        statically screened electron-hole attraction, on the same window; see
+        :meth:`get_excitations`) or ``"long-range"`` (local fields and the model kernel
+        ``-alpha / |q + G|^2``; ``alpha`` given, or fitted as ``4.615 / eps_inf - 0.213`` to the
+        computed local-field ``eps_inf``; exact along the axes of a cubic crystal).
+        ``bands=(valence, conduction)`` keeps that many bands of each spin channel on each side
+        of the gap (default: every band); ``scissor`` (eV) is added to every transition energy,
+        the dipoles kept. ``direction`` (``"x"``, ``"y"``, ``"z"`` or a vector) sets the view's
+        ``epsilon``, ``loss`` and ``absorption``; ``None`` takes the isotropic average, and the
+        view always holds the whole ``tensor``. Its first moment is the basis's diamagnetic band
+        sum (``sum_rule``), not the valence count.
+
+        Metals, fractional occupations, spinor, hybrid, DFT+U and meta-GGA crystals (the
+        velocity of their nonlocal or ``tau`` terms is not in the momentum matrix), ``precision="float32"``,
+        a mesh not closed under ``k -> -k`` and a molecule raise; so do ``kernel="adiabatic"``,
+        which is not built. Each call appends a ``[DIELECTRIC FUNCTION]`` block to the run log.
+        """
+        from .real_time import dielectric_function
+
+        return dielectric_function(self._calculation_owner(), energies, damping, kernel=kernel, bands=bands,
+                                   scissor=scissor, cutoff=cutoff, direction=direction, kpts=kpts, alpha=alpha)
 
     def _calculation_owner(self):
         return self
@@ -236,9 +303,7 @@ class ASEProperties:
             return np.asarray(state["eigenvalues"]), np.asarray(state["weights"])
         reference = calculation.native_reference
         if reference is None:
-            raise RuntimeError(
-                "a cached quantum Hamiltonian has no molecular orbital spectrum"
-            )
+            raise RuntimeError("a cached quantum Hamiltonian has no molecular orbital spectrum")
         return np.asarray(reference.snapshot()["energies"])[:, None, :], np.ones(1)
 
     def get_fermi_level(self):
@@ -369,11 +434,8 @@ class ASEProperties:
             return np.asarray(_bloch.supercell(calculation)["kpoints"])
         if calculation._load_crystal is not None:
             raise NotImplementedError("a cached crystal stores its irreducible mesh")
-        return calculation.context.kmesh(
-            calculation._kpts_spec["size"],
-            gamma=calculation._kpts_spec["gamma"],
-            time_reversal=False,
-        )["full"]
+        spec = calculation._kpts_spec
+        return calculation.context.kmesh(spec["size"], gamma=spec["gamma"], time_reversal=False)["full"]
 
     def _bands_at(self, fractional):
         """Eigenvalues (Hartree) at fractional k-points, from the Rust crystal (``bands_at``)."""

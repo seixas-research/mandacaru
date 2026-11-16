@@ -38,7 +38,7 @@ type Matrix = DMatrix<C64>;
 pub struct SpinorEvaluation {
     pub fock: Matrix,
     pub energy: f64,
-    /// The exchange-correlation energy in the local frame.
+    /// The exchange-correlation energy in the local frame (`models::noncollinear`).
     pub xc: f64,
     /// The Hartree energy (of the charge alone).
     pub hartree: f64,
@@ -324,7 +324,7 @@ pub(super) fn spinor_parts(
         name,
         relativistic,
     )?;
-    let (mut potentials, kinetic) = noncollinear::unrotate(
+    let (mut potentials, mut kinetic) = noncollinear::unrotate(
         ctx,
         n,
         grid.as_slice(),
@@ -335,12 +335,21 @@ pub(super) fn spinor_parts(
     )?;
     let mut channel_fock: Vec<Matrix> = Vec::with_capacity(4);
     let mut meta_potentials = None;
-    if let Some((gradients, _, slopes)) = &meta {
-        let (frame_flux, kinetic) = match (terms.gradient_potentials.as_ref(), kinetic.as_ref()) {
+    if let Some((gradients, tau, slopes)) = &meta {
+        let (frame_flux, kinetic) = match (terms.gradient_potentials.as_ref(), kinetic.as_mut()) {
             (Some(f), Some(k)) => (f, k),
             _ => return Err(invalid("a meta-GGA evaluation returned no kinetic or gradient potentials")),
         };
-        let flux = noncollinear::unrotate_gradients(ctx, n, grid.as_slice(), &rotated, slopes.as_slice(), frame_flux.as_slice(), potentials.as_mut_slice())?;
+        let flux = noncollinear::unrotate_gradients(
+            ctx,
+            n,
+            grid.as_slice(),
+            &rotated,
+            slopes.as_slice(),
+            frame_flux.as_slice(),
+            potentials.as_mut_slice(),
+            Some((tau.as_slice(), kinetic.as_mut_slice())),
+        )?;
         let restricted = (fields.terms.tau_potentials.as_ref(), fields.terms.gradient_potentials.as_ref());
         let (Some(restricted_tau), Some(restricted_flux)) = restricted else {
             return Err(invalid("the restricted meta-GGA evaluation returned no kinetic or gradient potentials"));
@@ -570,10 +579,7 @@ impl MolecularIntegrals {
                     aufbau_inversion: None,
                     entropy: 0.,
                 };
-                if best.as_ref().is_none_or(|(b, _, _)| {
-                    (candidate.converged && !b.converged)
-                        || (candidate.converged == b.converged && candidate.energy < b.energy - 1e-12)
-                }) {
+                if best.as_ref().is_none_or(|(b, _, _)| candidate.beats(b, options.tolerance)) {
                     best = Some((candidate, value.hartree, value.xc));
                 }
             }
@@ -597,7 +603,7 @@ impl MolecularIntegrals {
 /// operator on the grid: `v_a`, and for a meta-GGA `- 1/2 D (v_tau,a D) + F_a . D - D (F_a .)`
 /// with `D` the grid derivative (the scalar contraction's `kinetic_density_action` and
 /// `density_gradient_action`). The charge channel is the shared contraction's, with channel 0.
-fn magnetization_gradient(integrals: &MolecularIntegrals, d: &Matrix, potentials: &ChannelPotentials) -> Result<Vec<f64>> {
+pub(super) fn magnetization_gradient(integrals: &MolecularIntegrals, d: &Matrix, potentials: &ChannelPotentials) -> Result<Vec<f64>> {
     let (n, m) = (integrals.grid.index.points(), integrals.m());
     let ao = integrals.basis.orbitals.len();
     let atoms = integrals.geometry.numbers().len();

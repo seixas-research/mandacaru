@@ -1,6 +1,7 @@
 //! Static independent-particle response and the symmetric RPA Dyson equation.
 //! Transition densities include the caller's complete PAW augmentation.
 pub mod bloch;
+pub mod interaction;
 pub mod medium;
 pub mod transitions;
 

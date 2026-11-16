@@ -439,6 +439,70 @@ impl MolecularIntegrals {
     }
 }
 
+impl MolecularIntegrals {
+    /// The explicit derivative (three per atom, Hartree per Bohr) of an energy whose derivative
+    /// in the grid values of the orbitals `orbitals` (coefficients over the atomic-orbital basis)
+    /// is `actions` (`[orbital][point]`, `dE = sum_i int A_i dpsi_i dv`), as the basis functions
+    /// move with their atoms at fixed coefficients: a grid term that is not a density functional,
+    /// such as a meta-GGA's current-density term.
+    pub(crate) fn action_gradient(&self, orbitals: &[Vec<f64>], actions: &[f64]) -> Result<Vec<f64>> {
+        let (m, n) = (self.m(), self.grid.index.points());
+        if orbitals.iter().any(|c| c.len() != m) || actions.len() != orbitals.len() * n {
+            return Err(invalid("an orbital action must span the basis and the grid"));
+        }
+        // `grid::contract` weighs each action by twice the orbital's weight.
+        let pseudo: Vec<Occupied> = orbitals
+            .iter()
+            .map(|c| Occupied { spin: 0, weight: 0.5, energy: 0., w_weight: 0., ao: c.clone() })
+            .collect();
+        let points = grid::points(self)?;
+        Ok(grid::contract(self, &pseudo, points.as_slice(), actions))
+    }
+
+    /// The explicit derivative (three per atom, Hartree per Bohr) of the coupled screened
+    /// exchange `-(fraction/2) sum_kl c_kl (rho_kl | rho_lk)` of the complex orbitals `orbitals`
+    /// (coefficients over the atomic-orbital basis) with the real symmetric `couplings`
+    /// ([`crate::paw::molecular::Setup::coupled_exchange`]), at fixed coefficients: an excited
+    /// state's screened exchange along its directions.
+    pub(crate) fn coupled_exchange_gradient(
+        &self,
+        setup: &crate::paw::molecular::Setup,
+        orbitals: &[Vec<C64>],
+        couplings: &DMatrix<f64>,
+        omega: f64,
+        fraction: f64,
+    ) -> Result<Vec<f64>> {
+        let m = self.m();
+        if orbitals.iter().any(|c| c.len() != m) {
+            return Err(invalid("a coupled orbital must span the basis"));
+        }
+        let pseudo: Vec<Occupied> = orbitals
+            .iter()
+            .flat_map(|c| {
+                [0, 1].map(|part| Occupied {
+                    spin: 0,
+                    weight: 1.,
+                    energy: 0.,
+                    w_weight: 0.,
+                    ao: c.iter().map(|z| if part == 0 { z.re } else { z.im }).collect(),
+                })
+            })
+            .collect();
+        let psi = self.on_grid(&pseudo)?;
+        let exchange = setup.coupled_exchange(self, omega, fraction, &pseudo, psi.as_slice(), couplings)?;
+        drop(psi);
+        let points = grid::points(self)?;
+        let mut total = grid::contract(self, &pseudo, points.as_slice(), exchange.grid.as_slice());
+        let compensation = grid::contract(self, &pseudo, points.as_slice(), exchange.compensation.as_slice());
+        for part in std::iter::once(compensation).chain(exchange.contributions.into_iter().map(|c| c.gradient)) {
+            for (t, v) in total.iter_mut().zip(part) {
+                *t += v;
+            }
+        }
+        Ok(total)
+    }
+}
+
 /// `-sum_j psi_j v_ij` for every occupied orbital: the exact-exchange action,
 /// from one Poisson solve per orbital pair of the same spin.
 fn contract_exchange(

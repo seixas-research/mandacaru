@@ -19,8 +19,10 @@
 //!   dipole; its poles are the same, its weights the velocity strengths.
 //!
 //! +U enters through the complex occupations of its shells (`MolecularHubbard::evaluate_complex`),
-//! which carry the current through the shell. The run refuses what it cannot do: meta-GGA
-//! references (their Fock matrix needs the current-density term, stage T6c), nonlocal
+//! which carry the current through the shell. A meta-GGA (r2SCAN) sees the gauge-invariant
+//! kinetic density `tau~ = tau - |j|^2 / (2 n)` of the complex orbitals, with its current-density
+//! Fock term (`dft::evaluate_with`, owner decision Q19a), the same functional whose second
+//! derivative the amended linear-response kernel is. The run refuses what it cannot do: nonlocal
 //! correlation, fractional occupations, a spinor reference and float32, and a step above the
 //! scheme's `dt W` bound.
 mod fock;
@@ -245,12 +247,6 @@ fn check_reference(integrals: &MolecularIntegrals, reference: &MeanField) -> Res
     }
     if let Some(name) = reference.functional.as_deref() {
         let definition = crate::models::functional(name)?;
-        if definition.requires_tau {
-            return unsupported(format!(
-                "real-time propagation with xc='{name}' needs the gauge-invariant kinetic density \
-                 and its current-density term, which are not implemented yet"
-            ));
-        }
         if definition.nonlocal_b.is_some() {
             return unsupported(format!(
                 "real-time propagation with xc='{name}' (nonlocal rVV10 correlation) is not \
@@ -272,6 +268,46 @@ fn unit(direction: [f64; 3]) -> Result<[f64; 3]> {
 }
 
 /// Propagates `reference` after the kick of `request`.
+/// Refuses the crystal options a molecule does not take: the propagation mesh `kpts`, and a
+/// `kernel` other than the reference's own adiabatic one.
+pub fn check_molecular_options(kernel: &str, kpts: Option<[usize; 3]>) -> Result<()> {
+    if kpts.is_some() {
+        return Err(invalid(
+            "kpts is a crystal's propagation mesh; a molecule has none",
+        ));
+    }
+    if kernel != "adiabatic" {
+        return Err(Error::Unsupported(format!(
+            "kernel={kernel:?} is offered for crystals only; a molecule propagates its own \
+             adiabatic Fock matrix"
+        )));
+    }
+    Ok(())
+}
+
+/// The matrices the propagation steps with, without a field, and the energy, at the complex
+/// orthonormal-frame `densities` (one per-spin matrix of a restricted reference, or both spins):
+/// the builder of the reference read at complex densities (the meta-GGA's `tau~` with its
+/// current, +U on complex occupations, the complex exchange). The oracle of the antisymmetric
+/// kernel checks (V1b, R16a).
+pub fn fock_matrices(
+    integrals: &MolecularIntegrals,
+    reference: &MeanField,
+    densities: &[Matrix],
+) -> Result<(Vec<Matrix>, f64)> {
+    check_reference(integrals, reference)?;
+    let m = integrals.m();
+    if densities.is_empty() || densities.len() > 2 || densities.iter().any(|d| d.shape() != (m, m))
+    {
+        return Err(invalid(
+            "fock_matrices needs one or two m x m density matrices",
+        ));
+    }
+    integrals.context.run(|| {
+        fock::MolecularMap::new(integrals, reference.functional.as_deref())?.bare(densities)
+    })
+}
+
 pub fn propagate(
     integrals: &MolecularIntegrals,
     reference: &MeanField,

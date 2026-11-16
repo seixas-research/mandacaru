@@ -1,6 +1,12 @@
 //! Geometry, grid-index and workspace values at the language boundary.
 use super::{array, error, layout, Array};
-use mandacaru_core::{math::SpatialGrid, Buffer, Geometry, Grid, LengthUnit};
+use mandacaru_core::{
+    math::{
+        grid::{self, GridBox},
+        SpatialGrid,
+    },
+    Buffer, Geometry, Grid, LengthUnit,
+};
 use numpy::{PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods};
 use pyo3::{exceptions::PyValueError, prelude::*};
 #[pyclass(name = "Geometry", module = "mandacaru._native", frozen)]
@@ -108,10 +114,6 @@ impl PyGrid {
     fn dv_bohr3(&self) -> f64 {
         self.inner.dv()
     }
-    #[getter]
-    fn inverse_metric<'py>(&self, py: Python<'py>) -> PyResult<Array<'py, f64>> {
-        array(py, &[3, 3], self.inner.metric().to_vec())
-    }
 }
 
 #[pyclass(name = "Workspace", module = "mandacaru._native")]
@@ -192,14 +194,6 @@ impl PySpatialGrid {
     #[getter]
     fn dv_bohr3(&self) -> f64 {
         self.inner.index.dv()
-    }
-    #[getter]
-    fn max_step_norm(&self) -> f64 {
-        let s = self.inner.step_values();
-        let col0 = (s[0] * s[0] + s[3] * s[3] + s[6] * s[6]).sqrt();
-        let col1 = (s[1] * s[1] + s[4] * s[4] + s[7] * s[7]).sqrt();
-        let col2 = (s[2] * s[2] + s[5] * s[5] + s[8] * s[8]).sqrt();
-        col0.max(col1).max(col2)
     }
     #[getter]
     fn points(&self) -> usize {
@@ -333,8 +327,8 @@ impl PySpatialGrid {
                     arr.shape()
                 )));
             }
-            let sl = arr.as_slice()?;
-            (0..3).map(|i| 0.5 * (sl[i] + sl[3 + i] + sl[6 + i])).collect()
+            let sl: [f64; 9] = arr.as_slice()?.try_into().expect("a (3, 3) tensor");
+            grid::cell_center(&sl).to_vec()
         } else if let Ok(v) = center.extract::<Vec<f64>>() {
             v
         } else if let Ok(arr) = center.extract::<PyReadonlyArray1<'_, f64>>() {
@@ -445,25 +439,20 @@ impl PySpatialGrid {
             None
         };
 
-        enum BoxSpec {
-            None,
-            Scalar(f64),
-            Axes([f64; 3]),
-        }
         let box_spec = if cell_matrix.is_some() {
-            BoxSpec::None
+            GridBox::None
         } else if let Some(b) = box_size {
             if b.is_none() {
-                BoxSpec::None
+                GridBox::None
             } else if let Ok(s) = b.extract::<f64>() {
-                BoxSpec::Scalar(unit.to_bohr(s).abs())
+                GridBox::Scalar(unit.to_bohr(s).abs())
             } else if let Ok(arr) = b.extract::<PyReadonlyArray1<'_, f64>>() {
                 layout(&arr)?;
                 let sl = arr.as_slice()?;
                 if sl.len() == 1 {
-                    BoxSpec::Scalar(unit.to_bohr(sl[0]).abs())
+                    GridBox::Scalar(unit.to_bohr(sl[0]).abs())
                 } else if sl.len() == 3 {
-                    BoxSpec::Axes([
+                    GridBox::Axes([
                         unit.to_bohr(sl[0]).abs(),
                         unit.to_bohr(sl[1]).abs(),
                         unit.to_bohr(sl[2]).abs(),
@@ -476,9 +465,9 @@ impl PySpatialGrid {
                 }
             } else if let Ok(vec) = b.extract::<Vec<f64>>() {
                 if vec.len() == 1 {
-                    BoxSpec::Scalar(unit.to_bohr(vec[0]).abs())
+                    GridBox::Scalar(unit.to_bohr(vec[0]).abs())
                 } else if vec.len() == 3 {
-                    BoxSpec::Axes([
+                    GridBox::Axes([
                         unit.to_bohr(vec[0]).abs(),
                         unit.to_bohr(vec[1]).abs(),
                         unit.to_bohr(vec[2]).abs(),
@@ -495,7 +484,7 @@ impl PySpatialGrid {
                 ));
             }
         } else {
-            BoxSpec::None
+            GridBox::None
         };
 
         let divisors = if let Some(cm) = commensurate {
@@ -518,175 +507,20 @@ impl PySpatialGrid {
             None
         };
 
-        let is_cubic_path = cell_matrix.is_none()
-            && matches!(box_spec, BoxSpec::Scalar(_))
-            && h_scalar
-            && !periodic;
-
-        if is_cubic_path {
-            let box_bohr = match box_spec {
-                BoxSpec::Scalar(val) => val,
-                _ => unreachable!(),
-            };
-            let points = ((2.0 * box_bohr / h_axes[0]).round() as isize + 1).max(2) as usize;
-            let dx = 2.0 * box_bohr / (points - 1) as f64;
-            let shape = [points, points, points];
-            let step = [
-                dx, 0.0, 0.0,
-                0.0, dx, 0.0,
-                0.0, 0.0, dx,
-            ];
-            let origin = [
-                center_bohr[0] - box_bohr,
-                center_bohr[1] - box_bohr,
-                center_bohr[2] - box_bohr,
-            ];
-            return Ok(Self {
-                inner: SpatialGrid::new(shape, origin, step, false).map_err(error)?,
-            });
-        }
-
-        if periodic {
-            let cell_m = cell_matrix.ok_or_else(|| {
-                PyValueError::new_err("a periodic grid needs the cell it is periodic in")
-            })?;
-            let mut lengths = [0.0; 3];
-            for m in 0..3 {
-                lengths[m] =
-                    (cell_m[m][0].powi(2) + cell_m[m][1].powi(2) + cell_m[m][2].powi(2)).sqrt();
-            }
-            let mut counts = [
-                ((lengths[0] / h_axes[0]).round() as isize).max(1) as usize,
-                ((lengths[1] / h_axes[1]).round() as isize).max(1) as usize,
-                ((lengths[2] / h_axes[2]).round() as isize).max(1) as usize,
-            ];
-            if let Some(divs) = divisors {
-                for m in 0..3 {
-                    let d = divs[m].max(1);
-                    let n = counts[m];
-                    let rem = (-(n as isize)).rem_euclid(d as isize) as usize;
-                    counts[m] = n + rem;
-                }
-            }
-            let shape = counts;
-            let mut step = [0.0; 9];
-            for m in 0..3 {
-                for row in 0..3 {
-                    step[row * 3 + m] = cell_m[m][row] / counts[m] as f64;
-                }
-            }
-            let middle = [
-                0.5 * (cell_m[0][0] + cell_m[1][0] + cell_m[2][0]),
-                0.5 * (cell_m[0][1] + cell_m[1][1] + cell_m[2][1]),
-                0.5 * (cell_m[0][2] + cell_m[1][2] + cell_m[2][2]),
-            ];
-            let origin = [
-                center_bohr[0] - middle[0],
-                center_bohr[1] - middle[1],
-                center_bohr[2] - middle[2],
-            ];
-            return Ok(Self {
-                inner: SpatialGrid::new(shape, origin, step, true).map_err(error)?,
-            });
-        }
-
-        if let Some(cell_m) = cell_matrix {
-            if skew {
-                let mut lengths = [0.0; 3];
-                for m in 0..3 {
-                    lengths[m] = (cell_m[m][0].powi(2)
-                        + cell_m[m][1].powi(2)
-                        + cell_m[m][2].powi(2))
-                    .sqrt();
-                }
-                let counts = [
-                    ((lengths[0] / h_axes[0]).round() as isize + 1).max(2) as usize,
-                    ((lengths[1] / h_axes[1]).round() as isize + 1).max(2) as usize,
-                    ((lengths[2] / h_axes[2]).round() as isize + 1).max(2) as usize,
-                ];
-                let shape = counts;
-                let mut step = [0.0; 9];
-                for m in 0..3 {
-                    for row in 0..3 {
-                        step[row * 3 + m] = cell_m[m][row] / (counts[m] - 1) as f64;
-                    }
-                }
-                let r_center = [
-                    0.5 * (cell_m[0][0] + cell_m[1][0] + cell_m[2][0]),
-                    0.5 * (cell_m[0][1] + cell_m[1][1] + cell_m[2][1]),
-                    0.5 * (cell_m[0][2] + cell_m[1][2] + cell_m[2][2]),
-                ];
-                let origin = [
-                    center_bohr[0] - r_center[0],
-                    center_bohr[1] - r_center[1],
-                    center_bohr[2] - r_center[2],
-                ];
-                return Ok(Self {
-                    inner: SpatialGrid::new(shape, origin, step, false).map_err(error)?,
-                });
-            }
-        }
-
-        let half = if let Some(cell_m) = cell_matrix {
-            let mut extent = [0.0; 3];
-            for axis in 0..3 {
-                extent[axis] =
-                    cell_m[0][axis].abs() + cell_m[1][axis].abs() + cell_m[2][axis].abs();
-            }
-            [0.5 * extent[0], 0.5 * extent[1], 0.5 * extent[2]]
-        } else {
-            match box_spec {
-                BoxSpec::Scalar(val) => [val, val, val],
-                BoxSpec::Axes(axes) => axes,
-                BoxSpec::None => {
-                    return Err(PyValueError::new_err(
-                        "either cell or box_size must be provided",
-                    ))
-                }
-            }
-        };
-        let counts = [
-            ((2.0 * half[0] / h_axes[0]).round() as isize + 1).max(2) as usize,
-            ((2.0 * half[1] / h_axes[1]).round() as isize + 1).max(2) as usize,
-            ((2.0 * half[2] / h_axes[2]).round() as isize + 1).max(2) as usize,
-        ];
-        let shape = counts;
-        let step = [
-            h_axes[0], 0.0, 0.0,
-            0.0, h_axes[1], 0.0,
-            0.0, 0.0, h_axes[2],
-        ];
-        let origin = [
-            center_bohr[0] - 0.5 * h_axes[0] * (counts[0] - 1) as f64,
-            center_bohr[1] - 0.5 * h_axes[1] * (counts[1] - 1) as f64,
-            center_bohr[2] - 0.5 * h_axes[2] * (counts[2] - 1) as f64,
-        ];
         Ok(Self {
-            inner: SpatialGrid::new(shape, origin, step, false).map_err(error)?,
+            inner: grid::grid_from_spec(
+                center_bohr,
+                h_axes,
+                h_scalar,
+                box_spec,
+                cell_matrix,
+                periodic,
+                skew,
+                divisors,
+            )
+            .map_err(error)?,
         })
     }
-}
-
-#[pyfunction]
-pub fn positions_center(positions: PyReadonlyArray2<'_, f64>) -> PyResult<[f64; 3]> {
-    layout(&positions)?;
-    let shape = positions.shape();
-    if shape.len() != 2 || shape[1] != 3 {
-        return Err(PyValueError::new_err("positions must have shape (N, 3)"));
-    }
-    let n = shape[0];
-    if n == 0 {
-        return Ok([0.0, 0.0, 0.0]);
-    }
-    let slice = positions.as_slice()?;
-    let mut sum = [0.0; 3];
-    for row in slice.chunks_exact(3) {
-        sum[0] += row[0];
-        sum[1] += row[1];
-        sum[2] += row[2];
-    }
-    let inv_n = 1.0 / (n as f64);
-    Ok([sum[0] * inv_n, sum[1] * inv_n, sum[2] * inv_n])
 }
 
 #[pyfunction]
@@ -695,11 +529,8 @@ pub fn grid_step_max_norm(step: PyReadonlyArray2<'_, f64>) -> PyResult<f64> {
     if step.shape() != [3, 3] {
         return Err(PyValueError::new_err("step must have shape (3,3)"));
     }
-    let s = step.as_slice()?;
-    let col0 = (s[0] * s[0] + s[3] * s[3] + s[6] * s[6]).sqrt();
-    let col1 = (s[1] * s[1] + s[4] * s[4] + s[7] * s[7]).sqrt();
-    let col2 = (s[2] * s[2] + s[5] * s[5] + s[8] * s[8]).sqrt();
-    Ok(col0.max(col1).max(col2))
+    let s: [f64; 9] = step.as_slice()?.try_into().expect("a (3, 3) tensor");
+    Ok(grid::step_max_norm(&s))
 }
 
 fn rows(cell: &PyReadonlyArray2<'_, f64>) -> PyResult<[[f64; 3]; 3]> {
@@ -785,7 +616,6 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(fractional_coordinates, m)?)?;
     m.add_function(wrap_pyfunction!(repeat_cell, m)?)?;
     m.add_function(wrap_pyfunction!(neighbor_vectors, m)?)?;
-    m.add_function(wrap_pyfunction!(positions_center, m)?)?;
     m.add_function(wrap_pyfunction!(grid_step_max_norm, m)?)?;
     Ok(())
 }

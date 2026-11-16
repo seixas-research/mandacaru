@@ -85,3 +85,52 @@ fn sparse_apply_of_a_complex64_state_accumulates_in_float64() {
     }
     assert_eq!(context.memory_used(), 0);
 }
+
+/// The compressed-row view (`math::csr`): the transpose keeps every row's columns ascending and
+/// is an involution, the conjugate and the dense form agree with the operator's matrix, and `A x`
+/// is the dense product.
+#[test]
+fn the_csr_view_transposes_conjugates_and_multiplies_like_the_dense_matrix() {
+    use mandacaru_core::math::csr::ComplexCsr;
+    let a = ComplexCsr {
+        rows: 3,
+        cols: 3,
+        offsets: vec![0, 2, 3, 5],
+        columns: vec![0, 2, 1, 0, 2],
+        values: vec![
+            C64::new(1.0, 2.0),
+            C64::new(0.5, -1.0),
+            C64::new(-3.0, 0.0),
+            C64::new(0.0, 4.0),
+            C64::new(2.0, 2.0),
+        ],
+    };
+    let dense = a.dense();
+    let t = a.transpose();
+    assert_eq!(t.offsets, vec![0, 2, 3, 5]);
+    assert_eq!(t.columns, vec![0, 2, 1, 0, 2]);
+    let td = t.dense();
+    for i in 0..3 {
+        for j in 0..3 {
+            assert_eq!(td[i * 3 + j], dense[j * 3 + i]);
+            assert_eq!(a.conj().dense()[i * 3 + j], dense[i * 3 + j].conj());
+        }
+    }
+    assert_eq!(t.transpose().dense(), dense);
+    let x = [
+        C64::new(1.0, -1.0),
+        C64::new(0.25, 0.0),
+        C64::new(-2.0, 0.5),
+    ];
+    let y = a.apply(&x, 1, |v, x| v * x);
+    for i in 0..3 {
+        let mut expected = C64::new(0.0, 0.0);
+        for j in 0..3 {
+            expected += dense[i * 3 + j] * x[j];
+        }
+        assert!((y[i] - expected).norm() < 1e-14);
+    }
+    let real = a.apply(&[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], 2, |v, x: f64| v * x);
+    assert_eq!(real.len(), 6);
+    assert!((real[1] - (dense[0] * 2.0 + dense[2] * 6.0)).norm() < 1e-14);
+}

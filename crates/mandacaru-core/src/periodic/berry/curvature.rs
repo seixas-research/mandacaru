@@ -139,14 +139,26 @@ pub fn plane(sampler: &Sampler, lattice: &Lattice, normal: usize, layer: usize) 
             vec![C64::default(); size[0] * size[1]],
             vec![C64::default(); size[0] * size[1]],
         ];
-        for i in 0..size[0] {
-            for j in 0..size[1] {
-                for (d, direction) in [a, b].into_iter().enumerate() {
-                    let link = sampler.link(lattice, s, at(i, j), direction)?;
-                    let (det, smallest) = links::link_phase(&link, LINK_TOLERANCE)?;
-                    out.minimum = out.minimum.min(smallest);
-                    along[d][i * size[1] + j] = det;
-                }
+        // One task per plaquette corner (P6: on the layout's lanes), read back in the old order.
+        let phases = sampler
+            .crystal
+            .context
+            .map_independent(size[0] * size[1], |point| {
+                let (i, j) = (point / size[1], point % size[1]);
+                [a, b]
+                    .into_iter()
+                    .map(|direction| {
+                        links::link_phase(
+                            &sampler.link(lattice, s, at(i, j), direction)?,
+                            LINK_TOLERANCE,
+                        )
+                    })
+                    .collect::<Result<Vec<_>>>()
+            })?;
+        for (point, pair) in phases.into_iter().enumerate() {
+            for (d, (det, smallest)) in pair.into_iter().enumerate() {
+                out.minimum = out.minimum.min(smallest);
+                along[d][point] = det;
             }
         }
         let field = links::lattice_field(&along[0], &along[1], size)?;

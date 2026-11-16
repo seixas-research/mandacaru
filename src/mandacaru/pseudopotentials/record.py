@@ -122,7 +122,7 @@ def dataset_from_record(payload: str, tables: dict, *, warn: bool = True):
         semicore_subshells=tuple(tuple(int(x) for x in o)
                                  for o in meta["semicore_subshells"]),
         nlcc=dict(meta["nlcc"]), spin_orbit=spin_orbit,
-        defects=read_defects(meta["defects"]), core_states=meta.get("core_states") or [])
+        defects=read_defects(meta["defects"]), core_states=[dict(s, orbital=np.asarray(tables[s["table"]])) for s in meta.get("core_states", [])])
     if warn:
         warn_defects(dataset, dataset.family)
     return dataset
@@ -141,6 +141,8 @@ def record_of(pp) -> tuple[str, dict]:
     tables = {name: np.ascontiguousarray(getattr(pp, name), dtype=np.float64)
               for name in ("r", "v_local", "v_local_screened", "valence_density",
                            "core_density", "smooth_core_density")}
+    for state in pp.core_states:
+        tables[state["table"]] = np.ascontiguousarray(state["orbital"], dtype=np.float64)
     channels = {}
     for l, channel in sorted(pp.channels.items()):
         for i, (ae, ps, p, chi) in enumerate(zip(channel.ae_waves, channel.pseudo_waves,
@@ -187,6 +189,7 @@ def record_of(pp) -> tuple[str, dict]:
         "extra_l": int(pp.extra_l), "nlcc": dict(pp.nlcc or {}),
         "frozen_subshells": [list(o) for o in pp.frozen_subshells],
         "semicore_subshells": [list(o) for o in pp.semicore_subshells],
+        "core_states": [{k: s[k] for k in ("n", "l", "occupation", "energy", "table")} for s in pp.core_states],
         "defects": {
             "ghosts": {str(l): float(e) for l, e in defects.get("ghosts", {}).items()},
             "phases": {str(l): [float(a), float(b)]
@@ -231,10 +234,6 @@ def write_dataset(pp, path, *, stride: int = 1, format: str | None = None,
     read back, and moved into place only if the read-back is what was written.
     """
     path = os.fspath(path)
-    if pp.core_states:
-        raise ValueError(f"{pp.symbol} was read with its core states (dataset format 3), which "
-                         "this view does not carry: writing it would drop them; copy the file, or "
-                         "write it natively (_native.paw_build, _native.paw_upgrade_core_states)")
     if format is None:
         format = _EXTENSION_FORMATS.get(os.path.splitext(path)[1].lower(),
                                         DEFAULT_FORMAT)

@@ -36,6 +36,8 @@
 //! operators `c+_{k nu} = N^{-1/2} sum_R exp(2 pi i k.R) c+_{R nu}` the spectral function needs,
 //! and the mean-field band structure at any `k` (exact at the mesh points, a Fourier
 //! interpolation between them).
+pub mod paw;
+
 use super::integrals::{MolecularIntegrals, PeriodicElectrostatics};
 use super::invalid;
 use crate::basis::{Basis, Orbital};

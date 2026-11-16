@@ -1201,7 +1201,7 @@ class CirqProvider(CircuitProvider):
             elif gate == "rz":
                 moments.append(cirq.rz(float(op[2])).on(q[int(op[1])]))
             elif gate == "sdg":
-                moments.append((cirq.S ** -1).on(q[int(op[1])]))
+                moments.append(cirq.inverse(cirq.S).on(q[int(op[1])]))
             elif gate == "x":
                 moments.append(cirq.X(q[int(op[1])]))
             elif gate == "h":

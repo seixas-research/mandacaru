@@ -119,7 +119,7 @@ fn silicon_crystal_solves_without_python_and_releases_owned_storage() {
     assert_eq!(ctx.memory_used(), 0);
 }
 #[test]
-fn a_hybrid_crystal_needs_the_whole_k_mesh() {
+fn a_hybrid_crystal_needs_the_whole_k_mesh_or_its_time_reversal_half() {
     use serde_json::{json, Value};
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../test/migration/phase5/si_crystal.json");
@@ -138,10 +138,11 @@ fn a_hybrid_crystal_needs_the_whole_k_mesh() {
     // operations): the plain functional loads it, the hybrid must not.
     assert!(load(&|_| {}).is_ok());
     let error = load(&hybrid).err().expect("a wedge must be refused").to_string();
-    assert!(error.contains("full k mesh"), "{error}");
+    assert!(error.contains("time-reversal half"), "{error}");
     assert!(matches!(load(&hybrid), Err(mandacaru_core::Error::Unsupported(_))));
     // One point is the whole mesh when it is Gamma or any time-reversal-invariant point, even
-    // beside the symmetry table; a point that is not its own mirror image is half a mesh.
+    // beside the symmetry table; a point that is not its own mirror image stands for itself and
+    // its partner at -k, the time-reversal half of that pair.
     let one = |fractional: [f64; 3]| {
         move |v: &mut Value| {
             hybrid(v);
@@ -153,8 +154,21 @@ fn a_hybrid_crystal_needs_the_whole_k_mesh() {
     };
     assert!(load(&one([0., 0., 0.])).is_ok());
     assert!(load(&one([0., 0., 0.5])).is_ok());
-    let half = load(&one([0.1, 0., 0.])).err().expect("k and -k are both needed").to_string();
-    assert!(half.contains("full k mesh"), "{half}");
+    assert!(load(&one([0.1, 0., 0.])).is_ok());
+    // A half whose unfolded weights differ is refused: Gamma at 1/2 beside 0.1 at 1/2 unfolds to
+    // 1/2, 1/4, 1/4.
+    let uneven = |v: &mut Value| {
+        hybrid(v);
+        let (mut a, mut b) = (v["kpoints"][0].clone(), v["kpoints"][0].clone());
+        a["weight"] = json!(0.5);
+        a["fractional"] = json!([0., 0., 0.]);
+        b["weight"] = json!(0.5);
+        b["fractional"] = json!([0.1, 0., 0.]);
+        v["kpoints"] = json!([a, b]);
+        v["permutations"] = json!([]);
+    };
+    let half = load(&uneven).err().expect("unequal unfolded weights").to_string();
+    assert!(half.contains("time-reversal half"), "{half}");
     // Two points with equal weights are still refused beside a symmetry table, and kept without.
     let pair = |table: bool| {
         move |v: &mut Value| {

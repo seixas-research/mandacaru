@@ -500,6 +500,7 @@ pub(super) fn collinear_xc(
         gradients: (c.functional == "pbe").then_some(gradients),
         flux: (c.functional == "pbe").then_some(flux),
         nonlocal_source: None,
+        core: None,
     })
 }
 pub(super) struct LocalPotential {
@@ -677,6 +678,49 @@ pub fn diagonalize_with_solver_ws(
             previous_y,
         );
     }
+    let h = hamiltonian(c, data, v, w, kinetic_potential, hubbard, exchange, projector_ws)?;
+    let h_ortho = data.lowdin.adjoint() * h * &data.lowdin;
+    let h_ortho = (&h_ortho + h_ortho.adjoint()) * C64::new(0.5, 0.);
+
+    let (eps, y) = match eigensolver {
+        Eigensolver::Direct => eigen(h_ortho)?,
+        Eigensolver::Davidson => davidson(&h_ortho, previous_y, 1e-6, 4)?,
+        Eigensolver::RmmDiis => {
+            if let Some(y_prev) = previous_y {
+                rmm_diis(&h_ortho, y_prev, 1e-6, 3)?
+            } else {
+                eigen(h_ortho)?
+            }
+        }
+        Eigensolver::Mixed => {
+            if current_residual < switch_tolerance {
+                if let Some(y_prev) = previous_y {
+                    rmm_diis(&h_ortho, y_prev, 1e-6, 3)?
+                } else {
+                    davidson(&h_ortho, previous_y, 1e-6, 4)?
+                }
+            } else {
+                davidson(&h_ortho, previous_y, 1e-6, 4)?
+            }
+        }
+    };
+    Ok((eps, &data.lowdin * &y, y))
+}
+/// The collinear Kohn-Sham matrix `H(k)` of one spin channel in the non-orthogonal Bloch basis
+/// (Hermitized), from the local potential `v`, the moment potentials `w`, the meta-GGA `v_tau`, the
+/// DFT+U operator and the exact exchange: the matrix [`diagonalize_with_solver_ws`] diagonalizes
+/// in the Loewdin frame, and the one the real-time step (`periodic::realtime`) propagates with.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn hamiltonian(
+    c: &Crystal,
+    data: &KPoint,
+    v: &[f64],
+    w: &[C64],
+    kinetic_potential: Option<&[f64]>,
+    hubbard: Option<&Matrix>,
+    exchange: Option<&Matrix>,
+    projector_ws: Option<&mut crate::math::projection::ComplexProjectorWorkspace>,
+) -> Result<Matrix> {
     let m = c.m;
     let p = c.p;
     let n = c.grid.index.points();
@@ -720,39 +764,66 @@ pub fn diagonalize_with_solver_ws(
     if let Some(k) = exchange {
         h -= k * C64::new(c.require_screened_exchange()?.1, 0.);
     }
-    let h = (&h + h.adjoint()) * C64::new(0.5, 0.);
-    let h_ortho = data.lowdin.adjoint() * h * &data.lowdin;
-    let h_ortho = (&h_ortho + h_ortho.adjoint()) * C64::new(0.5, 0.);
-
-    let (eps, y) = match eigensolver {
-        Eigensolver::Direct => eigen(h_ortho)?,
-        Eigensolver::Davidson => davidson(&h_ortho, previous_y, 1e-6, 4)?,
-        Eigensolver::RmmDiis => {
-            if let Some(y_prev) = previous_y {
-                rmm_diis(&h_ortho, y_prev, 1e-6, 3)?
-            } else {
-                eigen(h_ortho)?
-            }
-        }
-        Eigensolver::Mixed => {
-            if current_residual < switch_tolerance {
-                if let Some(y_prev) = previous_y {
-                    rmm_diis(&h_ortho, y_prev, 1e-6, 3)?
-                } else {
-                    davidson(&h_ortho, previous_y, 1e-6, 4)?
-                }
-            } else {
-                davidson(&h_ortho, previous_y, 1e-6, 4)?
-            }
-        }
-    };
-    Ok((eps, &data.lowdin * &y, y))
+    Ok((&h + h.adjoint()) * C64::new(0.5, 0.))
 }
+
+/// The fields of [`bare_hamiltonian`]: the electrostatic potential on the grid and the channel
+/// potentials of zero electron density (the Gaussian ions' field, `conj(u_ion) + linear`).
+pub(super) fn bare_fields(c: &Crystal) -> Result<(Buffer<f64>, Buffer<C64>)> {
+    let n = c.grid.index.points();
+    let mut fft = Fft3::new(&c.context, c.grid.index.shape())?;
+    let empty = c.context.allocate::<f64>(n)?;
+    let field = electrostatic(c, &mut fft, empty.as_slice(), &vec![C64::default(); c.channels])?;
+    Ok((field.potential, field.moments))
+}
+
+/// The bare one-body operator `h(k)` of the crystal's PAW Hamiltonian at `point`: `fixed(k)` plus
+/// the potential of the Gaussian ions on the grid and the couplings of the compensation charges
+/// to the ions (the density-independent part of the electrostatics the SCF adds), with no Hartree
+/// and no exchange-correlation term. The one-body part of the PAW-LCAO supercell Hamiltonian
+/// (`molecular::periodic::paw`), whose two-body part carries the electron-electron Coulomb.
+pub fn bare_hamiltonian(c: &Crystal, point: &KPoint) -> Result<Matrix> {
+    let (potential, moments) = bare_fields(c)?;
+    hamiltonian(
+        c,
+        point,
+        potential.as_slice(),
+        moments.as_slice(),
+        None,
+        None,
+        None,
+        None,
+    )
+}
+
+/// The Hartree energy of the electrons of the density matrices `matrices` (one spin channel, the
+/// solver's layout): the part of the crystal's electrostatic energy quadratic in the density,
+/// `(E(rho, q) + E(-rho, -q)) / 2 - E(0, 0)`. The audit of the two-body integrals of the PAW-LCAO
+/// supercell (`molecular::periodic::paw`) against the crystal's own electrostatics.
+pub fn hartree_energy(c: &Crystal, matrices: &[crate::math::storage::StoredMatrix]) -> Result<f64> {
+    if c.spins != 1 || c.spinor {
+        return Err(invalid("the Hartree audit takes one scalar spin channel"));
+    }
+    let (rho, q) = density(c, matrices)?;
+    let n = c.grid.index.points();
+    let mut fft = Fft3::new(&c.context, c.grid.index.shape())?;
+    let mut minus = c.context.allocate::<f64>(n)?;
+    for (to, from) in minus.as_mut_slice().iter_mut().zip(&rho.as_slice()[..n]) {
+        *to = -from;
+    }
+    let negative: Vec<C64> = q.as_slice().iter().map(|v| -v).collect();
+    let zero = c.context.allocate::<f64>(n)?;
+    let plus = electrostatic_energy(c, &mut fft, &rho.as_slice()[..n], q.as_slice())?;
+    let minus = electrostatic_energy(c, &mut fft, minus.as_slice(), &negative)?;
+    let none = electrostatic_energy(c, &mut fft, zero.as_slice(), &vec![C64::default(); q.as_slice().len()])?;
+    Ok(0.5 * (plus + minus) - none)
+}
+
 /// The lanes of a crystal's spin channel and k-point tasks: the layout's `kpts`, refused when it
 /// exceeds the `tasks` the crystal has (a layout never leaves lanes idle).
 pub(super) fn kpoint_lanes(c: &Crystal, tasks: usize) -> Result<usize> {
     let kpts = c.context.layout().kpts;
-    if kpts > tasks {
+    if kpts > tasks && !c.context.auto_layout() {
         return Err(invalid(format!(
             "parallelization kpts={kpts} exceeds the {tasks} k-point tasks of this crystal \
              ({} k-points x {} spin channels); the largest kpts is {tasks}",
@@ -1198,7 +1269,7 @@ impl Crystal {
             let transient = product(&[c.p, c.p, 16, 12])?
                 .checked_add(product(&[m, m, 16, 16])?)
                 .ok_or(crate::Error::Overflow)?;
-            ctx.check_lanes(
+            let lanes = ctx.fit_lanes(
                 Level::Kpts,
                 lanes,
                 transient

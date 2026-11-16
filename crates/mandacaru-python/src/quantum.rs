@@ -385,14 +385,13 @@ impl PyOperator {
             .map_err(error)?;
         let nnz = csr.nnz;
         Ok(crate::sparse::PyCSRMatrix {
-            shape: (d, d),
-            rust_indices: csr.columns.as_slice()[..nnz].to_vec(),
-            rust_indptr: csr.offsets.as_slice().to_vec(),
-            is_complex: true,
-            real_data: Vec::new(),
-            complex_data: csr.values.as_slice()[..nnz].to_vec(),
-            has_sorted_indices: true,
-            use_int32: d < i32::MAX as usize && nnz < i32::MAX as usize,
+            inner: mandacaru_core::math::csr::ComplexCsr {
+                rows: d,
+                cols: d,
+                offsets: csr.offsets.as_slice().to_vec(),
+                columns: csr.columns.as_slice()[..nnz].to_vec(),
+                values: csr.values.as_slice()[..nnz].to_vec(),
+            },
         })
     }
     fn matrix<'py>(&self, py: Python<'py>) -> PyResult<Array<'py, C64>> {
@@ -1002,10 +1001,6 @@ impl PyProblem {
     #[getter]
     fn pool_labels(&self) -> Vec<String> {
         self.inner.pool.iter().map(|g| g.label.clone()).collect()
-    }
-    #[getter]
-    fn pool_screenable(&self) -> Vec<bool> {
-        self.inner.pool_screenable.clone()
     }
     /// Every pool commutator `[H, A_k]` as its Pauli terms, all at once: for the independent
     /// checks of small problems. A measured run reads `pool_paulis`, which never holds them all.

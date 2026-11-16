@@ -269,7 +269,8 @@ pub fn mp2<'py>(
     let (two, _two) = copy(ctx, &two)?;
     let out = py
         .detach(|| {
-            mandacaru_core::molecular::correlation::natural_orbitals(ctx, m, &one, &two, occupied)
+            // Integrals given without a lattice: a molecule's MP2, no occupied-level shift.
+            mandacaru_core::molecular::correlation::natural_orbitals(ctx, m, &one, &two, occupied, 0.)
         })
         .map_err(error)?;
     mp2_result(py, out)

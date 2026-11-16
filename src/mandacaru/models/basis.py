@@ -7,7 +7,6 @@ from dataclasses import dataclass
 from .. import _native
 
 _L_LETTERS = "spdfghik"
-_L_OF = {c: i for i, c in enumerate(_L_LETTERS)}
 
 
 # --------------------------------------------------------------------------- #
@@ -152,52 +151,29 @@ NATIVE_NAMESPACE = "native"
 PUBLISHED_NAMESPACE = "published"
 
 
-def _pol_spec(text: str) -> tuple[tuple[int, int], ...]:
-    """``"3df"`` -> ``((2, 3), (3, 1))``; ``"d"`` -> ``((2, 1),)``; ``"2p"`` -> ``((1, 2),)``."""
-    out = []
-    for count, letter in re.findall(r"(\d*)([spdfghi])", text.strip().lower()):
-        out.append((_L_OF[letter], int(count) if count else 1))
-    if not out and text.strip():
-        raise ValueError(f"cannot read the polarization spec {text!r}")
-    return tuple(out)
-
-
 def _parse_pople(match) -> GaussianRecipe:
     core_k, valence_digits, plus, stars, paren = match.groups()
     core = (int(core_k),)
     valence = tuple(int(d) for d in valence_digits)
-    plus_count = len(plus)
-    # Polarization: "*" -> d on heavy; "**" -> plus p on H; "(d)", "(d,p)",
-    # "(3df,3pd)", "(2df,2p)" -> explicit per-atom-class shells.
-    pol_heavy: tuple = ()
-    pol_h: tuple = ()
-    if stars:
-        pol_heavy = ((2, 1),)
-        if len(stars) == 2:
-            pol_h = ((1, 1),)
-    elif paren:
-        groups = [g.strip() for g in paren.split(",")]
-        pol_heavy = _pol_spec(groups[0]) if groups and groups[0] else ()
-        pol_h = _pol_spec(groups[1]) if len(groups) > 1 else ()
-    # Pople's 3-21G* puts d functions on second-row atoms only.
-    min_z = 11 if (core_k == "3" and valence_digits == "21") else 3
-    pol_text = ("*" * len(stars)) if stars else (f"({paren})" if paren else "")
-    name = f"{core_k}-{valence_digits}{'+' * plus_count}G{pol_text}"
+    # The marks' shells ("*", "**", "+", "++", "(2df,2p)") and the 3-21G* row limit are the
+    # engine's rule; this only reads the name.
+    ladder = _native.pople_ladder(core[0], list(valence), len(plus), len(stars), paren)
+    pol_text = stars or (f"({paren})" if paren else "")
     return GaussianRecipe(
-        name=name,
+        name=f"{core_k}-{valence_digits}{plus}G{pol_text}",
         family="pople",
         core=core,
         valence=valence,
-        polarization=pol_heavy,
-        polarization_h=pol_h,
-        diffuse=(0, 1) if plus_count >= 1 else (),
-        diffuse_h=(0,) if plus_count == 2 else (),
-        polarization_min_z=min_z,
+        polarization=tuple(map(tuple, ladder["polarization"])),
+        polarization_h=tuple(map(tuple, ladder["polarization_h"])),
+        diffuse=tuple(ladder["diffuse"]),
+        diffuse_h=tuple(ladder["diffuse_h"]),
+        polarization_min_z=ladder["polarization_min_z"],
         description=(
             f"Pople split-valence: {core_k}-primitive core, valence "
             f"{'+'.join(map(str, valence))}"
-            + (", diffuse sp on heavy atoms" if plus_count else "")
-            + (" and s on H" if plus_count == 2 else "")
+            + (", diffuse sp on heavy atoms" if ladder["diffuse"] else "")
+            + (" and s on H" if ladder["diffuse_h"] else "")
         ),
     )
 
@@ -230,64 +206,24 @@ def _parse_dunning(match) -> GaussianRecipe:
     )
 
 
-_KARLSRUHE_TABLE = {
-    # key: (core pattern, valence pattern, heavy pol, H pol, diffuse)
-    "SV(P)": ((5,), (3, 1), ((2, 1),), (), False),
-    "SVP": ((5,), (3, 1), ((2, 1),), ((1, 1),), False),
-    "SVPD": ((5,), (3, 1), ((2, 1),), ((1, 1),), True),
-    "TZVP": ((6, 1), (3, 1, 1), ((2, 2), (3, 1)), ((1, 1),), False),
-    "TZDP": ((6, 1), (3, 1, 1), ((2, 2), (3, 1)), ((1, 1),), False),
-    "TZVPD": ((6, 1), (3, 1, 1), ((2, 2), (3, 1)), ((1, 1),), True),
-    "TZVPP": ((6, 1), (3, 1, 1), ((2, 2), (3, 1)), ((1, 2), (2, 1)), False),
-    "TZVPPD": ((6, 1), (3, 1, 1), ((2, 2), (3, 1)), ((1, 2), (2, 1)), True),
-    "QZVP": (
-        (7, 1, 1),
-        (3, 1, 1, 1),
-        ((2, 3), (3, 2), (4, 1)),
-        ((1, 3), (2, 2)),
-        False,
-    ),
-    "QZVPD": (
-        (7, 1, 1),
-        (3, 1, 1, 1),
-        ((2, 3), (3, 2), (4, 1)),
-        ((1, 3), (2, 2)),
-        True,
-    ),
-    "QZVPP": (
-        (7, 1, 1),
-        (3, 1, 1, 1),
-        ((2, 3), (3, 2), (4, 1)),
-        ((1, 3), (2, 2), (3, 1)),
-        False,
-    ),
-    "QZVPPD": (
-        (7, 1, 1),
-        (3, 1, 1, 1),
-        ((2, 3), (3, 2), (4, 1)),
-        ((1, 3), (2, 2), (3, 1)),
-        True,
-    ),
-}
-
-
 def _parse_karlsruhe(match) -> GaussianRecipe:
     key = match.group(1).upper()
-    core, valence, pol_heavy, pol_h, diffuse = _KARLSRUHE_TABLE[key]
+    ladder = _native.karlsruhe_ladder(key)
+    valence = tuple(ladder["valence"])
     zeta = {2: "double", 3: "triple", 4: "quadruple"}[len(valence)]
     note = " (accepted as a spelling of def2-TZVP)" if key == "TZDP" else ""
     return GaussianRecipe(
         name=f"def2-{key}",
         family="karlsruhe",
-        core=core,
+        core=tuple(ladder["core"]),
         valence=valence,
-        polarization=pol_heavy,
-        polarization_h=pol_h,
-        diffuse_present=diffuse,
-        diffuse_l_max=2,
+        polarization=tuple(map(tuple, ladder["polarization"])),
+        polarization_h=tuple(map(tuple, ladder["polarization_h"])),
+        diffuse_present=ladder["diffuse_present"],
+        diffuse_l_max=ladder["diffuse_l_max"],
         description=(
             f"Karlsruhe def2, {zeta}-zeta valence with polarization"
-            + (", diffuse-augmented (D)" if diffuse else "")
+            + (", diffuse-augmented (D)" if ladder["diffuse_present"] else "")
             + note
         ),
     )

@@ -7,6 +7,8 @@
 //! on disk; the screened hybrid (HSE06) with its target points on the k-point lanes and its
 //! occupied states on the band lanes, unpolarized, spin-polarized and spinor; and the refusal of
 //! more lanes than tasks. The built and the hybrid crystals need `MANDACARU_PAW_PATH`.
+#[allow(dead_code)]
+mod berry_support;
 mod hubbard_support;
 mod setup_shells_support;
 mod setup_support;
@@ -15,7 +17,11 @@ use mandacaru_core::{
     math::storage::{ComplexSamples, Precision},
     models::hubbard_request::Request,
     periodic::{
-        setup::parse::{create_setup, AtomSpec, SetupInput},
+        analysis,
+        setup::{
+            parse::{create_setup, AtomSpec, SetupInput},
+            PeriodicSetup,
+        },
         solver::Options,
         wannier::sampling,
         Crystal, PeriodicResult,
@@ -227,6 +233,11 @@ struct Cell {
     hubbard: Option<&'static str>,
 }
 fn build(ctx: &Context, cell: &Cell) -> Crystal {
+    setup(ctx, cell).build(ctx).unwrap()
+}
+
+/// The setup of `cell` (its datasets read from `MANDACARU_PAW_PATH`).
+fn setup(ctx: &Context, cell: &Cell) -> PeriodicSetup {
     let points: usize = cell.grid.iter().product();
     assert!(
         points.div_ceil(mandacaru_core::math::projection::density_tile(points)) >= 2,
@@ -294,10 +305,7 @@ fn build(ctx: &Context, cell: &Cell) -> Crystal {
         hubbard_u: cell.hubbard.map(|text| Request::parse(text).unwrap()),
         charge: None,
     };
-    create_setup(ctx, input, datasets)
-        .unwrap()
-        .build(ctx)
-        .unwrap()
+    create_setup(ctx, input, datasets).unwrap()
 }
 
 /// Silicon (two atoms, fcc cell of 10.26 Bohr) on 20^3 points: four density tiles.
@@ -340,6 +348,49 @@ fn a_crystal_built_on_several_density_tiles_is_the_same_on_every_layout() {
 fn a_spin_polarized_built_crystal_is_the_same_on_every_layout() {
     let spin = silicon(true, "lda", "lda-sr");
     same_on(&[(2, 2), (4, 1), (1, 1)], |ctx| build(ctx, &spin), &tight());
+}
+
+/// Off-mesh bands (P6) on `(kpts, threads)` layouts: every number of the eigenvalues and the
+/// projections equals the first layout's, and the k-point lanes ran.
+fn off_mesh_bands_same_on(layouts: &[(usize, usize)], cell: &Cell) {
+    let points = [[0.1, 0.0, 0.0], [0.37, 0.2, 0.0], [0.5, 0.5, 0.5]];
+    let mut reference: Option<(Vec<u64>, Vec<u64>)> = None;
+    for &(kpts, threads) in layouts {
+        let ctx = context(kpts, threads);
+        let built = setup(&ctx, cell);
+        let c = built.build(&ctx).unwrap();
+        let state = c.solve(&tight()).unwrap();
+        assert!(state.converged);
+        let launched = ctx.workers_total();
+        let bands = analysis::bands_at(&c, &built, &state, &points).unwrap();
+        assert_eq!(bands.eigenvalues.len(), c.spins * points.len() * c.bands());
+        let bits = (
+            bands.eigenvalues.iter().map(|e| e.to_bits()).collect(),
+            bands.projections.iter().map(|p| p.to_bits()).collect(),
+        );
+        match &reference {
+            None => reference = Some(bits),
+            Some(first) => assert!(
+                *first == bits,
+                "kpts={kpts} threads={threads} differs from {:?}",
+                layouts[0]
+            ),
+        }
+        if kpts > 1 {
+            assert!(
+                ctx.workers_total() >= launched + kpts,
+                "kpts={kpts}: the off-mesh lanes did not run"
+            );
+        }
+        drop((bands, state, c, built));
+        assert_eq!(ctx.memory_used(), 0);
+    }
+}
+
+#[test]
+fn off_mesh_bands_are_the_same_on_every_k_point_layout() {
+    off_mesh_bands_same_on(&[(1, 1), (2, 1), (2, 2)], &silicon(false, "lda", "lda-sr"));
+    off_mesh_bands_same_on(&[(1, 1), (4, 1), (2, 1)], &silicon(true, "lda", "lda-sr"));
 }
 
 #[test]
@@ -607,4 +658,91 @@ fn hybrid_forces_and_stress_are_the_same_on_every_k_point_and_band_layout() {
         |ctx| build(ctx, &hybrid),
         &tight(),
     );
+}
+
+/// The Berry strings and plane and the Wannier links (P6) of an H2 chain on `(kpts, threads)`
+/// layouts: every phase, center, flux and spread equals the first layout's.
+#[test]
+fn berry_links_and_wannier_links_are_the_same_on_every_k_point_layout() {
+    use mandacaru_core::periodic::{
+        berry::{curvature, strings, Bands, Metal},
+        wannier::{setup::Wannier, Options as WannierOptions},
+    };
+    let mut cell = berry_support::h2_chain("lda-sr", "lda");
+    cell.mesh = [2, 1, 1];
+    let mut reference: Option<Vec<u64>> = None;
+    for (kpts, threads) in [(1, 1), (2, 1), (2, 2)] {
+        let ctx = context(kpts, threads);
+        let solved = berry_support::solve_on(&cell, "raw", "SZ", ctx);
+        let launched = solved.ctx.workers_total();
+        let sampler = solved.sampler();
+        let manifold = sampler.manifold(Bands::Occupied, Metal::Undefined).unwrap();
+        let lattice = sampler.lattice([4, 2, 2], [0.; 3], &manifold).unwrap();
+        let set = strings::strings(&sampler, &lattice, 0).unwrap();
+        let plane = curvature::plane(&sampler, &lattice, 2, 0).unwrap();
+        let wannier = Wannier::build(
+            solved.crystal.clone(),
+            solved.state.clone(),
+            solved.setup.clone(),
+            r#"{"size": [4, 2, 2], "trials": [{"center": [3.0, 4.0, 4.0], "orbital": "s"}]}"#,
+            &WannierOptions::default(),
+        )
+        .unwrap();
+        let spread = &wannier.channels[0].localized.spread;
+        let mut bits: Vec<u64> = set.phases.iter().flatten().map(|v| v.to_bits()).collect();
+        bits.extend(set.centers.iter().flatten().flatten().map(|v| v.to_bits()));
+        bits.extend(plane.flux.iter().flatten().map(|v| v.to_bits()));
+        bits.extend(
+            spread
+                .centers
+                .as_slice()
+                .iter()
+                .flatten()
+                .map(|v| v.to_bits()),
+        );
+        bits.push(spread.total().to_bits());
+        match &reference {
+            None => reference = Some(bits),
+            Some(first) => assert!(*first == bits, "kpts={kpts} threads={threads} differs"),
+        }
+        if kpts > 1 {
+            assert!(
+                solved.ctx.workers_total() >= launched + kpts,
+                "kpts={kpts}: the post-processing lanes did not run"
+            );
+        }
+    }
+}
+
+/// The `auto` layout (P7) on 4 processors: the bits of the one-lane run, on two k-point tasks
+/// (more processors than tasks, which an explicit `kpts = 4` refuses) and on four (spin-polarized).
+#[test]
+fn the_auto_layout_gives_the_bits_of_an_explicit_one() {
+    for (cell, explicit) in [
+        (silicon(false, "lda", "lda-sr"), (1, 1)),
+        (silicon(true, "lda", "lda-sr"), (2, 2)),
+    ] {
+        let reference = {
+            let ctx = context(explicit.0, explicit.1);
+            let state = build(&ctx, &cell).solve(&tight()).unwrap();
+            bits(&state)
+        };
+        let ctx = Context::new(Some(4), 1 << 30)
+            .unwrap()
+            .with_auto_layout()
+            .unwrap();
+        let state = build(&ctx, &cell).solve(&tight()).unwrap();
+        assert!(state.converged);
+        assert!(bits(&state) == reference, "auto differs from {explicit:?}");
+        assert!(ctx.workers_total() >= 2, "the auto lanes did not run");
+        assert!(
+            ctx.workers_peak() <= 4 * 2,
+            "{} workers at once",
+            ctx.workers_peak()
+        );
+    }
+    let refused = context(4, 1);
+    assert!(build(&refused, &silicon(false, "lda", "lda-sr"))
+        .solve(&tight())
+        .is_err());
 }

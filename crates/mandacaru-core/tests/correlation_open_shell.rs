@@ -334,6 +334,7 @@ fn a_closed_shell_reference_gives_the_closed_shell_mp2() {
             model.one.as_slice(),
             model.two.as_slice(),
             1,
+            model.exchange_madelung,
         )
         .unwrap();
         let open =

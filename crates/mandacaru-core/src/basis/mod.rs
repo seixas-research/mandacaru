@@ -291,6 +291,20 @@ fn gaussian_shells(fits: &Value, z: u8, recipe: &Value) -> Result<Vec<Shell>> {
     Ok(shells)
 }
 impl Basis {
+    /// Every orbital at every point of `points` (`3 n` Cartesian coordinates, Bohr): `m x n`,
+    /// row-major, one row per orbital.
+    pub fn evaluate_points(&self, ctx: &Context, points: &[f64]) -> Result<crate::Buffer<f64>> {
+        let n = points.len() / 3;
+        let m = self.orbitals.len();
+        let mut out = ctx.allocate(product(&[m, n])?)?;
+        for (a, orbital) in self.orbitals.iter().enumerate() {
+            for k in 0..n {
+                out.as_mut_slice()[a * n + k] =
+                    orbital.evaluate(points[k * 3..k * 3 + 3].try_into().unwrap());
+            }
+        }
+        Ok(out)
+    }
     pub fn from_orbitals(ctx: &Context, orbitals: Vec<Orbital>) -> Result<Self> {
         if orbitals.is_empty()
             || orbitals.iter().any(|o| {
@@ -599,10 +613,18 @@ impl Orbital {
             Radial::Tabulated(table) => {
                 let (v, d) = tabulated(table, self.l, r);
                 let safe = r.max(1e-15);
-                (
-                    v / safe.powi(self.l as i32),
-                    (d - self.l as f64 * v / safe) / safe.powi(self.l as i32),
-                )
+                if self.l == 1 && r <= CENTER {
+                    // On the center a p function is the linear `lim(R / r) r Y_1m`, so its gradient
+                    // is that limit times the solid harmonic's (`R(0) = 0` and the floor radius
+                    // would zero it or lose digits to the spline's cancellation); the radial
+                    // slope is not used there.
+                    (p_slope_at_center(table), 0.)
+                } else {
+                    (
+                        v / safe.powi(self.l as i32),
+                        (d - self.l as f64 * v / safe) / safe.powi(self.l as i32),
+                    )
+                }
             }
             Radial::Numerical(table) => {
                 let safe = r.max(1e-15);
@@ -656,7 +678,11 @@ impl Orbital {
         };
         std::array::from_fn(|i| {
             radial * angular(grad[i])
-                + if r > 1e-15 {
+                // The cusp of an s function has no gradient on the center: there the mean of its
+                // two sides (zero) is the derivative a central difference of the energy gives, and
+                // a grid node that is the center only up to rounding (its offset a few 1e-15, with
+                // no direction of its own) is the center.
+                + if r > CENTER {
                     dr * [x, y, z][i] / r * angular(value)
                 } else {
                     0.
@@ -760,6 +786,22 @@ impl Orbital {
         }
     }
 }
+/// Within this distance (Bohr) of its center a point is the center of the orbital: a grid node
+/// that is the center only up to rounding (an offset of a few 1e-15, with no direction of its
+/// own) must take the same gradient as one exactly on it.
+const CENTER: f64 = 1e-12;
+
+/// `lim R(r) / r` of a p table at its center: the slope of the spline on a first node at the
+/// center, the linear continuation below a first node off it.
+fn p_slope_at_center(table: &crate::math::spline::Cubic) -> f64 {
+    let knots = table.knots.as_slice();
+    if knots[0] > 0. {
+        table.values.as_slice()[0] / knots[0]
+    } else {
+        table.value_slope(0.).1
+    }
+}
+
 fn tabulated(table: &crate::math::spline::Cubic, l: usize, r: f64) -> (f64, f64) {
     let knots = table.knots.as_slice();
     if r > knots[knots.len() - 1] {
