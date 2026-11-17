@@ -30,7 +30,9 @@ pub fn dipole_one_body<'py>(
     let m = shape[1];
     let positions = position_integrals.as_slice()?.to_vec();
     let (h, modes, constant) = py
-        .detach(|| fermion_terms::dipole_one_body(&positions, m, field, nuclear_dipole, spatial_orbitals))
+        .detach(|| {
+            fermion_terms::dipole_one_body(&positions, m, field, nuclear_dipole, spatial_orbitals)
+        })
         .map_err(error)?;
     let matrix = h.into_pyarray(py).reshape([modes, modes])?;
     Ok((matrix, constant))

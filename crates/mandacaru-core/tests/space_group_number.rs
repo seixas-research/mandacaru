@@ -25,9 +25,15 @@ fn test_identify_hexagonal_slab() {
     let a = 2.5;
     let vac = 12.0;
     let lat = Matrix3::new(
-        a, 0.0, 0.0,
-        -a / 2.0, a * 3.0f64.sqrt() / 2.0, 0.0,
-        0.0, 0.0, vac,
+        a,
+        0.0,
+        0.0,
+        -a / 2.0,
+        a * 3.0f64.sqrt() / 2.0,
+        0.0,
+        0.0,
+        0.0,
+        vac,
     );
     let frac = [[0.0, 0.0, 0.0]];
     let labels = [1];
@@ -84,9 +90,15 @@ fn test_identify_mg_hcp() {
     let a = 3.21;
     let c = 5.21;
     let hex = Matrix3::new(
-        a, 0.0, 0.0,
-        -a / 2.0, a * 3.0f64.sqrt() / 2.0, 0.0,
-        0.0, 0.0, c,
+        a,
+        0.0,
+        0.0,
+        -a / 2.0,
+        a * 3.0f64.sqrt() / 2.0,
+        0.0,
+        0.0,
+        0.0,
+        c,
     );
     let frac = [[1.0 / 3.0, 2.0 / 3.0, 0.25], [2.0 / 3.0, 1.0 / 3.0, 0.75]];
     let labels = [12, 12];
@@ -108,9 +120,15 @@ fn test_identify_aln_wurtzite() {
     let c = 4.98;
     let u = 0.382;
     let hex = Matrix3::new(
-        a, 0.0, 0.0,
-        -a / 2.0, a * 3.0f64.sqrt() / 2.0, 0.0,
-        0.0, 0.0, c,
+        a,
+        0.0,
+        0.0,
+        -a / 2.0,
+        a * 3.0f64.sqrt() / 2.0,
+        0.0,
+        0.0,
+        0.0,
+        c,
     );
     let frac = [
         [1.0 / 3.0, 2.0 / 3.0, 0.0],
@@ -151,9 +169,15 @@ fn standard_cell_for_group(number: usize) -> Matrix3<f64> {
             let a = 4.0;
             let c = 6.0;
             Matrix3::new(
-                a, 0.0, 0.0,
-                -a / 2.0, a * 3.0f64.sqrt() / 2.0, 0.0,
-                0.0, 0.0, c,
+                a,
+                0.0,
+                0.0,
+                -a / 2.0,
+                a * 3.0f64.sqrt() / 2.0,
+                0.0,
+                0.0,
+                0.0,
+                c,
             )
         }
         mandacaru_core::periodic::space_group::CrystalSystem::Cubic => {
@@ -172,10 +196,7 @@ fn generate_atoms_from_catalog(
         .unwrap_or_else(|| panic!("lookup({}) failed", number));
     let c_trans = mandacaru_core::periodic::space_group::catalog::centering_vectors(g.centering);
 
-    let base_positions = [
-        [0.1234, 0.2789, 0.3912],
-        [0.4111, 0.1923, 0.6345],
-    ];
+    let base_positions = [[0.1234, 0.2789, 0.3912], [0.4111, 0.1923, 0.6345]];
     let base_labels = [1u32, 2u32];
 
     let mut frac_vec: Vec<[f64; 3]> = Vec::new();
@@ -183,11 +204,20 @@ fn generate_atoms_from_catalog(
 
     let c_inv_t = transform_c.map(|c| {
         let c_f64 = Matrix3::new(
-            c[(0, 0)] as f64, c[(0, 1)] as f64, c[(0, 2)] as f64,
-            c[(1, 0)] as f64, c[(1, 1)] as f64, c[(1, 2)] as f64,
-            c[(2, 0)] as f64, c[(2, 1)] as f64, c[(2, 2)] as f64,
+            c[(0, 0)] as f64,
+            c[(0, 1)] as f64,
+            c[(0, 2)] as f64,
+            c[(1, 0)] as f64,
+            c[(1, 1)] as f64,
+            c[(1, 2)] as f64,
+            c[(2, 0)] as f64,
+            c[(2, 1)] as f64,
+            c[(2, 2)] as f64,
         );
-        c_f64.try_inverse().expect("transform_c must be invertible").transpose()
+        c_f64
+            .try_inverse()
+            .expect("transform_c must be invertible")
+            .transpose()
     });
 
     for (k, &pos0) in base_positions.iter().enumerate() {
@@ -199,13 +229,29 @@ fn generate_atoms_from_catalog(
                 let ty = (t[1] + c[1]) as f64 / 24.0;
                 let tz = (t[2] + c[2]) as f64 / 24.0;
 
-                let x = w[(0, 0)] as f64 * pos0[0] + w[(0, 1)] as f64 * pos0[1] + w[(0, 2)] as f64 * pos0[2] + tx + shift[0];
-                let y = w[(1, 0)] as f64 * pos0[0] + w[(1, 1)] as f64 * pos0[1] + w[(1, 2)] as f64 * pos0[2] + ty + shift[1];
-                let z = w[(2, 0)] as f64 * pos0[0] + w[(2, 1)] as f64 * pos0[1] + w[(2, 2)] as f64 * pos0[2] + tz + shift[2];
+                let x = w[(0, 0)] as f64 * pos0[0]
+                    + w[(0, 1)] as f64 * pos0[1]
+                    + w[(0, 2)] as f64 * pos0[2]
+                    + tx
+                    + shift[0];
+                let y = w[(1, 0)] as f64 * pos0[0]
+                    + w[(1, 1)] as f64 * pos0[1]
+                    + w[(1, 2)] as f64 * pos0[2]
+                    + ty
+                    + shift[1];
+                let z = w[(2, 0)] as f64 * pos0[0]
+                    + w[(2, 1)] as f64 * pos0[1]
+                    + w[(2, 2)] as f64 * pos0[2]
+                    + tz
+                    + shift[2];
 
                 let p_coord = if let Some(inv_t) = &c_inv_t {
                     let v = inv_t * nalgebra::Vector3::new(x, y, z);
-                    [v[0].rem_euclid(1.0), v[1].rem_euclid(1.0), v[2].rem_euclid(1.0)]
+                    [
+                        v[0].rem_euclid(1.0),
+                        v[1].rem_euclid(1.0),
+                        v[2].rem_euclid(1.0),
+                    ]
                 } else {
                     [x.rem_euclid(1.0), y.rem_euclid(1.0), z.rem_euclid(1.0)]
                 };
@@ -234,9 +280,15 @@ fn generate_atoms_from_catalog(
 
     let lat = if let Some(c) = transform_c {
         let c_f64 = Matrix3::new(
-            c[(0, 0)] as f64, c[(0, 1)] as f64, c[(0, 2)] as f64,
-            c[(1, 0)] as f64, c[(1, 1)] as f64, c[(1, 2)] as f64,
-            c[(2, 0)] as f64, c[(2, 1)] as f64, c[(2, 2)] as f64,
+            c[(0, 0)] as f64,
+            c[(0, 1)] as f64,
+            c[(0, 2)] as f64,
+            c[(1, 0)] as f64,
+            c[(1, 1)] as f64,
+            c[(1, 2)] as f64,
+            c[(2, 0)] as f64,
+            c[(2, 1)] as f64,
+            c[(2, 2)] as f64,
         );
         c_f64 * cell
     } else {
@@ -259,7 +311,8 @@ fn build_from_catalog(
         labels: &labels_vec,
     };
 
-    let ops = find(&cell_obj, 1e-5).unwrap_or_else(|e| panic!("find failed for SG {}: {}", number, e));
+    let ops =
+        find(&cell_obj, 1e-5).unwrap_or_else(|e| panic!("find failed for SG {}: {}", number, e));
     identify(&ops, &cell_obj).unwrap_or_else(|e| panic!("identify failed for SG {}: {}", number, e))
 }
 
@@ -284,16 +337,30 @@ fn test_hard_case_a_enantiomorphic_pairs_and_left_handed_cells() {
 
         // 1. Exact numbers
         let id_a = build_from_catalog(num_a, lat, [0.0; 3], None);
-        assert_eq!(id_a.number, num_a, "Expected SG {}, got {}", num_a, id_a.number);
+        assert_eq!(
+            id_a.number, num_a,
+            "Expected SG {}, got {}",
+            num_a, id_a.number
+        );
 
         let id_b = build_from_catalog(num_b, lat, [0.0; 3], None);
-        assert_eq!(id_b.number, num_b, "Expected SG {}, got {}", num_b, id_b.number);
+        assert_eq!(
+            id_b.number, num_b,
+            "Expected SG {}, got {}",
+            num_b, id_b.number
+        );
 
         // 2. Reflecting atomic coordinates (x -> -x) swaps chirality to partner
         let (lat_a, frac_a, labels_a) = generate_atoms_from_catalog(num_a, lat, [0.0; 3], None);
         let frac_refl_a: Vec<[f64; 3]> = frac_a
             .iter()
-            .map(|p| [(-p[0]).rem_euclid(1.0), (-p[1]).rem_euclid(1.0), (-p[2]).rem_euclid(1.0)])
+            .map(|p| {
+                [
+                    (-p[0]).rem_euclid(1.0),
+                    (-p[1]).rem_euclid(1.0),
+                    (-p[2]).rem_euclid(1.0),
+                ]
+            })
             .collect();
         let cell_refl_a = Cell {
             lattice: lat_a,
@@ -311,7 +378,13 @@ fn test_hard_case_a_enantiomorphic_pairs_and_left_handed_cells() {
         let (lat_b, frac_b, labels_b) = generate_atoms_from_catalog(num_b, lat, [0.0; 3], None);
         let frac_refl_b: Vec<[f64; 3]> = frac_b
             .iter()
-            .map(|p| [(-p[0]).rem_euclid(1.0), (-p[1]).rem_euclid(1.0), (-p[2]).rem_euclid(1.0)])
+            .map(|p| {
+                [
+                    (-p[0]).rem_euclid(1.0),
+                    (-p[1]).rem_euclid(1.0),
+                    (-p[2]).rem_euclid(1.0),
+                ]
+            })
             .collect();
         let cell_refl_b = Cell {
             lattice: lat_b,
@@ -389,20 +462,15 @@ fn test_hard_case_b_two_origin_choices() {
 #[test]
 fn test_hard_case_c_orthorhombic_six_axis_labelings() {
     let proper_perms = [
-        Matrix3::new(1, 0, 0, 0, 1, 0, 0, 0, 1),   // abc
-        Matrix3::new(0, 0, 1, 1, 0, 0, 0, 1, 0),   // cab
-        Matrix3::new(0, 1, 0, 0, 0, 1, 1, 0, 0),   // bca
-        Matrix3::new(0, 1, 0, 1, 0, 0, 0, 0, -1),  // ba-c
-        Matrix3::new(1, 0, 0, 0, 0, -1, 0, 1, 0),  // a-cb
-        Matrix3::new(0, 0, -1, 0, 1, 0, 1, 0, 0),  // -cba
+        Matrix3::new(1, 0, 0, 0, 1, 0, 0, 0, 1),  // abc
+        Matrix3::new(0, 0, 1, 1, 0, 0, 0, 1, 0),  // cab
+        Matrix3::new(0, 1, 0, 0, 0, 1, 1, 0, 0),  // bca
+        Matrix3::new(0, 1, 0, 1, 0, 0, 0, 0, -1), // ba-c
+        Matrix3::new(1, 0, 0, 0, 0, -1, 0, 1, 0), // a-cb
+        Matrix3::new(0, 0, -1, 0, 1, 0, 1, 0, 0), // -cba
     ];
 
-    let cases = [
-        (62, "Pnma"),
-        (64, "Cmce"),
-        (74, "Imma"),
-        (70, "Fddd"),
-    ];
+    let cases = [(62, "Pnma"), (64, "Cmce"), (74, "Imma"), (70, "Fddd")];
 
     for &(num, expected_symbol) in &cases {
         let lat = standard_cell_for_group(num);
@@ -465,7 +533,8 @@ fn test_hard_case_e_rhombohedral_obverse_reverse_and_primitive() {
         assert_eq!(id_rev.number, num, "SG {} failed in hexagonal reverse", num);
 
         // 3. Primitive rhombohedral cell
-        let (lat_hex, frac_hex, labels_hex) = generate_atoms_from_catalog(num, hex_lat, [0.0; 3], None);
+        let (lat_hex, frac_hex, labels_hex) =
+            generate_atoms_from_catalog(num, hex_lat, [0.0; 3], None);
         // Transformation matrix from primitive to hexagonal coordinates: M_prim
         let m_prim = Matrix3::new(1.0, 0.0, 1.0, -1.0, 1.0, 1.0, 0.0, -1.0, 1.0);
         let m_prim_inv_t = m_prim.try_inverse().unwrap().transpose();
@@ -476,10 +545,16 @@ fn test_hard_case_e_rhombohedral_obverse_reverse_and_primitive() {
 
         for (&p, &l) in frac_hex.iter().zip(labels_hex.iter()) {
             let v = m_prim * nalgebra::Vector3::new(p[0], p[1], p[2]);
-            let p_wrapped = [v[0].rem_euclid(1.0), v[1].rem_euclid(1.0), v[2].rem_euclid(1.0)];
+            let p_wrapped = [
+                v[0].rem_euclid(1.0),
+                v[1].rem_euclid(1.0),
+                v[2].rem_euclid(1.0),
+            ];
 
             let already = frac_prim.iter().zip(labels_prim.iter()).any(|(q, &ql)| {
-                if ql != l { return false; }
+                if ql != l {
+                    return false;
+                }
                 let dx = (q[0] - p_wrapped[0]).rem_euclid(1.0);
                 let dy = (q[1] - p_wrapped[1]).rem_euclid(1.0);
                 let dz = (q[2] - p_wrapped[2]).rem_euclid(1.0);
@@ -500,9 +575,15 @@ fn test_hard_case_e_rhombohedral_obverse_reverse_and_primitive() {
             fractional: &frac_prim,
             labels: &labels_prim,
         };
-        let ops_prim = find(&cell_prim, 1e-5).unwrap_or_else(|e| panic!("find failed for primitive SG {}: {}", num, e));
-        let id_prim = identify(&ops_prim, &cell_prim).unwrap_or_else(|e| panic!("identify failed for primitive SG {}: {}", num, e));
-        assert_eq!(id_prim.number, num, "Primitive cell of SG {} returned {}", num, id_prim.number);
+        let ops_prim = find(&cell_prim, 1e-5)
+            .unwrap_or_else(|e| panic!("find failed for primitive SG {}: {}", num, e));
+        let id_prim = identify(&ops_prim, &cell_prim)
+            .unwrap_or_else(|e| panic!("identify failed for primitive SG {}: {}", num, e));
+        assert_eq!(
+            id_prim.number, num,
+            "Primitive cell of SG {} returned {}",
+            num, id_prim.number
+        );
 
         if num == 148 {
             assert_eq!(id_prim.symbol, "R-3");
@@ -519,13 +600,25 @@ fn test_hard_case_g_h_i_metric_special_supercells_and_spellings() {
     let cubic_lat = Matrix3::new(5.0, 0.0, 0.0, 0.0, 5.0, 0.0, 0.0, 0.0, 5.0);
 
     let id2 = build_from_catalog(2, cubic_lat, [0.0; 3], None);
-    assert_eq!(id2.number, 2, "Metric-cubic lattice: expected SG 2, got {}", id2.number);
+    assert_eq!(
+        id2.number, 2,
+        "Metric-cubic lattice: expected SG 2, got {}",
+        id2.number
+    );
 
     let id14 = build_from_catalog(14, cubic_lat, [0.0; 3], None);
-    assert_eq!(id14.number, 14, "Metric-cubic lattice: expected SG 14, got {}", id14.number);
+    assert_eq!(
+        id14.number, 14,
+        "Metric-cubic lattice: expected SG 14, got {}",
+        id14.number
+    );
 
     let id123 = build_from_catalog(123, cubic_lat, [0.0; 3], None);
-    assert_eq!(id123.number, 123, "Metric-cubic lattice: expected SG 123, got {}", id123.number);
+    assert_eq!(
+        id123.number, 123,
+        "Metric-cubic lattice: expected SG 123, got {}",
+        id123.number
+    );
 
     // 2. Supercells 2x1x1, 2x2x2, and skewed cells for SG 123
     let tet_lat = standard_cell_for_group(123);
@@ -600,4 +693,3 @@ fn test_hard_case_g_h_i_metric_special_supercells_and_spellings() {
     check_spelling(67, "Cmme");
     check_spelling(68, "Ccce");
 }
-

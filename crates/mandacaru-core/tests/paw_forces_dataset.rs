@@ -698,15 +698,36 @@ fn multi_shell_core_terms() {
             .map(|(l, e)| {
                 let values = radii
                     .iter()
-                    .map(|&r| r.powi(l as i32) * (-e * r).exp() * if r >= 7. { 0. } else { (1. - (r / 7.).powi(2)).powi(3) })
+                    .map(|&r| {
+                        r.powi(l as i32)
+                            * (-e * r).exp()
+                            * if r >= 7. {
+                                0.
+                            } else {
+                                (1. - (r / 7.).powi(2)).powi(3)
+                            }
+                    })
                     .collect();
                 (l, radii.clone(), values)
             })
             .collect();
         let positions = if case == "AuBe" { AUBE } else { ALH };
-        let base = molecule(&ctx, &numbers, &positions, 14., 0.5, (species, vec![0, 1], arrays), "raw", &shells);
+        let base = molecule(
+            &ctx,
+            &numbers,
+            &positions,
+            14.,
+            0.5,
+            (species, vec![0, 1], arrays),
+            "raw",
+            &shells,
+        );
         let electrons = valence.round() as usize;
-        let particles = if case == "AuBe" { [electrons.div_ceil(2), electrons / 2] } else { particles };
+        let particles = if case == "AuBe" {
+            [electrons.div_ceil(2), electrons / 2]
+        } else {
+            particles
+        };
         let state = solve(&base, Method::Ks("pbe"), particles);
         let gradient = base.gradient(&state).unwrap();
         let terms = by_term(&gradient);
@@ -716,7 +737,10 @@ fn multi_shell_core_terms() {
             let (fd, _) = fixed_density_derivative(&base, &state, atom, axis);
             let total = gradient.total.as_slice()[3 * atom + axis];
             eprintln!("{case} atom {atom} axis {axis}: total analytic {total:+.8e}, fixed-density FD {fd:+.8e}");
-            assert!((total - fd).abs() < 1e-7, "{case} atom {atom} axis {axis}: {total:e} vs {fd:e}");
+            assert!(
+                (total - fd).abs() < 1e-7,
+                "{case} atom {atom} axis {axis}: {total:e} vs {fd:e}"
+            );
             let mut names: Vec<_> = terms.keys().collect();
             names.sort();
             for name in names {
@@ -724,7 +748,10 @@ fn multi_shell_core_terms() {
                 match oracle.get(name.as_str()) {
                     Some((reference, _)) => {
                         eprintln!("  {name:<34} analytic {analytic:+.8e} oracle {reference:+.8e} diff {:+.2e}", analytic - reference);
-                        assert!((analytic - reference).abs() < 1e-7, "{case} {name}: {analytic:e} vs {reference:e}");
+                        assert!(
+                            (analytic - reference).abs() < 1e-7,
+                            "{case} {name}: {analytic:e} vs {reference:e}"
+                        );
                     }
                     None => eprintln!("  {name:<34} analytic {analytic:+.8e} (no oracle)"),
                 }
@@ -732,4 +759,3 @@ fn multi_shell_core_terms() {
         }
     }
 }
-

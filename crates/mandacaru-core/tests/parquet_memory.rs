@@ -435,10 +435,9 @@ fn a_tiny_compressed_text_page_cannot_make_the_reader_allocate_what_it_claims() 
 // ---------------------------------------------------------------------------
 
 /// Multi-column files whose columns carry zstd pages.
-const SWEEP_TARGETS: [&str; 4] = [
+const SWEEP_TARGETS: [&str; 3] = [
     "hamiltonian/pyarrow_zstd.parquet",
     "hamiltonian/fastparquet_zstd.parquet",
-    "pseudopotential/fastparquet_zstd.parquet",
     "generic/pyarrow_special_values_zstd.parquet",
 ];
 

@@ -2,11 +2,14 @@
 //! by the gates of section 4.4:
 //!
 //! - E0: without kernel the excitonic tensor is T5a's independent-particle tensor;
-//! - E1: the full (coupling) exchange-only equation is T5a's Dyson equation with local fields;
+//! - E1: the full (coupling) exchange-only equation is T5a's Dyson equation with local fields,
+//!   by the Woodbury oracle and by the production coupling form; with the direct term the
+//!   coupling form's eigenpairs are its resolvent;
 //! - E3: a two-band Wannier-Mott model through the same head average, contraction and solvers
 //!   gives the hydrogenic 1s binding `mu / (2 eps^2)` and a 2s near a quarter of it;
 //! - E4, E5: a bound singlet below the continuum's onset in LiH and LiF on two meshes, the triplet
-//!   at or below it, the Wannier-Mott estimate beside it (recorded, `#[ignore]` for LiF);
+//!   at or below it, the Wannier-Mott estimate `mu / (2 eps_M^2)` from the onset's band masses
+//!   beside it (recorded, `#[ignore]`);
 //! - E6: `H` Hermitian, Davidson equal to the dense roots, Haydock equal to the eigenvector sum;
 //! - E7: the operator does not depend on the layout.
 //!
@@ -126,6 +129,346 @@ fn the_coupled_exchange_equation_is_the_local_field_dyson_equation() {
             .tensor[0][0][0]
     );
     assert!(difference < 1e-10, "{difference:e}");
+}
+
+#[test]
+fn the_coupling_form_with_the_exchange_alone_is_the_dyson_equation() {
+    // E1 for the production coupling form: with the exchange alone its tensor, summed over every
+    // eigenpair of `L^dagger diag(1, -1) L`, is T5a's Dyson equation with local fields and the
+    // Woodbury oracle `coupled_tensor`; its lowest root lies at or below the Tamm-Dancoff one.
+    let solved = solve(&lih("lda-sr"));
+    let sampler = solved.sampler();
+    let mesh = MeshIndex::new([2, 1, 1], [0.; 3]).unwrap();
+    let mut optical = Optical::new(vec![0., 0.1, 0.25, 0.4], 0.05, Kernel::Hartree);
+    optical.cutoff = 2.;
+    let reference = dielectric(&sampler, &mesh, &optical).unwrap();
+    let columns = pairs(&sampler, &mesh, &optical).unwrap();
+    let mut request = Request::new(Kernel::Hartree, Spin::Singlet);
+    request.cutoff = 2.;
+    request.coupling = true;
+    let op = operator(&sampler, &mesh, &request).unwrap();
+    let all = op.coupled().unwrap();
+    let ours: Vec<_> = optical
+        .frequencies
+        .iter()
+        .map(|w| op.tensor(&all, C64::new(*w, 0.05)))
+        .collect();
+    let oracle: Vec<_> = optical
+        .frequencies
+        .iter()
+        .map(|w| coupled_tensor(&columns, C64::new(*w, 0.05)).unwrap())
+        .collect();
+    request.coupling = false;
+    let tda = operator(&sampler, &mesh, &request)
+        .unwrap()
+        .dense()
+        .unwrap();
+    let symmetry = op.coupling.as_ref().unwrap().symmetry;
+    eprintln!(
+        "E1 coupling form, LiH ({} transitions): against Dyson {:.2e}, against the Woodbury \
+         oracle {:.2e}; B symmetric to {symmetry:.1e}; lowest {:.10} Ha (Tamm-Dancoff {:.10})",
+        op.energies.len(),
+        worst(&ours, &reference.tensor),
+        worst(&ours, &oracle),
+        all.energies[0],
+        tda.energies[0]
+    );
+    assert!(worst(&ours, &reference.tensor) < 1e-9);
+    assert!(worst(&ours, &oracle) < 1e-9);
+    assert!(all.energies[0] <= tda.energies[0] + 1e-12);
+}
+
+#[test]
+fn the_coupling_form_with_the_direct_term_is_its_resolvent() {
+    // The coupling form with exchange and the screened direct term on the H2 chain DZP (Gamma):
+    // `M` Hermitian, `B` symmetric (time reversal and `W(r, r') = W(r', r)`), the eigenpair
+    // tensor equal to the resolvent `s h^T (z - diag(1, -1) M)^-1 diag(1, -1) h^*` by one dense
+    // solve per frequency, `X^dagger X - Y^dagger Y = 1` on every root, and the lowest root at
+    // or below the Tamm-Dancoff one. LiH SZ on 2 x 1 x 1 (two mesh points, so `B` reads the
+    // direct term across `k' != k`): `B` symmetric, and since its coarse-mesh head gives a
+    // negative Tamm-Dancoff root, `M` is not positive definite and refuses by name.
+    let unstable = solve(&lih("lda-sr"));
+    let mut request = Request::new(Kernel::Bse, Spin::Singlet);
+    request.cutoff = 2.;
+    request.coupling = true;
+    let across = operator(
+        &unstable.sampler(),
+        &MeshIndex::new([2, 1, 1], [0.; 3]).unwrap(),
+        &request,
+    )
+    .unwrap();
+    let symmetry = across.coupling.as_ref().unwrap().symmetry;
+    let refusal = across.coupled().unwrap_err().to_string();
+    eprintln!("LiH 2 x 1 x 1: B symmetric to {symmetry:.1e}; {refusal}");
+    assert!(symmetry < 1e-8, "{symmetry:e}");
+    assert!(refusal.contains("positive definite"), "{refusal}");
+    let solved = solve_sized(&h2_chain("lda-sr", "lda"), "raw", "DZP");
+    let sampler = solved.sampler();
+    let mesh = MeshIndex::new([1, 1, 1], [0.; 3]).unwrap();
+    let op = operator(&sampler, &mesh, &request).unwrap();
+    let coupling = op.coupling.as_ref().unwrap();
+    let n = op.energies.len();
+    let all = op.coupled().unwrap();
+    let (a, b, a2) = (&op.hamiltonian, &coupling.resonant, &coupling.antiresonant);
+    let signed = DMatrix::from_fn(2 * n, 2 * n, |i, j| {
+        let value = match (i < n, j < n) {
+            (true, true) => a[(i, j)],
+            (true, false) => b[(i, j - n)],
+            (false, true) => b[(j, i - n)].conj(),
+            (false, false) => a2[(i - n, j - n)],
+        };
+        if i < n {
+            value
+        } else {
+            -value
+        }
+    });
+    let heads = |axis: usize| -> Vec<C64> {
+        op.dipoles
+            .iter()
+            .chain(&coupling.dipoles)
+            .map(|h| h[axis])
+            .collect()
+    };
+    let frequencies = [0., 0.1, 0.2, 0.3];
+    let resolvent: Vec<[[C64; 3]; 3]> = frequencies
+        .iter()
+        .map(|w| {
+            let z = C64::new(*w, 0.05);
+            let system = DMatrix::from_fn(2 * n, 2 * n, |i, j| {
+                C64::new(f64::from(u8::from(i == j)), 0.) * z - signed[(i, j)]
+            });
+            let right = DMatrix::from_fn(2 * n, 3, |i, axis| {
+                let h = heads(axis)[i].conj();
+                if i < n {
+                    h
+                } else {
+                    -h
+                }
+            });
+            let solved = system.lu().solve(&right).unwrap();
+            std::array::from_fn(|x| {
+                std::array::from_fn(|y| {
+                    let chi: C64 = heads(x)
+                        .iter()
+                        .enumerate()
+                        .map(|(i, h)| h * solved[(i, y)])
+                        .sum();
+                    C64::new(f64::from(u8::from(x == y)), 0.) - chi * op.scale * (4. * PI)
+                })
+            })
+        })
+        .collect();
+    let ours: Vec<_> = frequencies
+        .iter()
+        .map(|w| op.tensor(&all, C64::new(*w, 0.05)))
+        .collect();
+    let y = all.antiresonant.as_ref().unwrap();
+    let norms = (0..n)
+        .map(|l| (all.vectors.column(l).norm_squared() - y.column(l).norm_squared() - 1.).abs())
+        .fold(0f64, f64::max);
+    request.coupling = false;
+    let tda = operator(&sampler, &mesh, &request)
+        .unwrap()
+        .dense()
+        .unwrap();
+    eprintln!(
+        "coupling form with the direct term, H2 chain DZP ({n} transitions): Hermiticity {:.2e}, B \
+         symmetric to {:.1e}; eigenpairs against the resolvent {:.2e}; X^dagger X - Y^dagger Y - 1 \
+         {norms:.1e}; lowest {:.10} Ha (Tamm-Dancoff {:.10}), largest |B| {:.3e} Ha",
+        op.hermiticity,
+        coupling.symmetry,
+        worst(&ours, &resolvent),
+        all.energies[0],
+        tda.energies[0],
+        b.iter().map(|v| v.norm()).fold(0f64, f64::max)
+    );
+    assert!(coupling.symmetry < 1e-8, "{:e}", coupling.symmetry);
+    assert!(worst(&ours, &resolvent) < 1e-9);
+    assert!(norms < 1e-9, "{norms:e}");
+    assert!(all.energies[0] <= tda.energies[0] + 1e-12);
+}
+
+/// The screened-exchange energy `E_W = -(s / 2) sum_{k k'} sum_{i j occupied} M_{jk, ik'}^dagger
+/// W(k' - k) M_{jk, ik'}` (`s = 1 / (N_k Omega)`, per spin or per spinor) of the occupied
+/// orbitals moved to `phi_vk + eps sum_c Z_{vck} phi_ck`, unnormalized, so that `E_W(eps)` is a
+/// quartic: the pair densities of the moved orbitals are the bilinear combinations
+/// `sum_ab conj(U_k[j, a]) U_k'[i, b] M_{ak, bk'}` of every band pair's.
+fn screened_exchange(
+    parts: &bse::DirectParts,
+    transitions: &[bse::Transition],
+    z: &[C64],
+    eps: C64,
+    scale: f64,
+) -> f64 {
+    let (bands, occupied) = (parts.bands, parts.occupied[0]);
+    let nk = transitions.iter().map(|t| t.k).max().unwrap() + 1;
+    let identity = |j: usize, a: usize| C64::new(f64::from(u8::from(j == a)), 0.);
+    let mut u: Vec<DMatrix<C64>> = (0..nk)
+        .map(|_| DMatrix::from_fn(occupied, bands, identity))
+        .collect();
+    for (t, z) in transitions.iter().zip(z) {
+        u[t.k][(t.valence, t.conduction)] += eps * z;
+    }
+    let mut energy = 0.;
+    for (block, per_k) in parts.blocks.iter().zip(&parts.densities[0]) {
+        for (k, kp, m) in per_k {
+            let coefficients = DMatrix::from_fn(bands * bands, occupied * occupied, |ab, ji| {
+                let (a, b) = (ab / bands, ab % bands);
+                let (j, i) = (ji / occupied, ji % occupied);
+                u[*k][(j, a)].conj() * u[*kp][(i, b)]
+            });
+            let moved = m * coefficients;
+            let screened = &block.screened * &moved;
+            energy += (0..moved.ncols())
+                .map(|c| moved.column(c).dotc(&screened.column(c)).re)
+                .sum::<f64>();
+        }
+    }
+    -0.5 * scale * energy
+}
+
+/// `beta = Z^dagger B Z^*` of the direct part of `B` from the screened-exchange energy alone: the
+/// `e^{-2i theta}` part of `d^2 E_W / d eps^2` along `e^{i theta} Z` is `2 Re(e^{-2i theta}
+/// beta)`; every other part (the direct term of `A` and the screened exchange of the moved
+/// conduction orbitals) does not depend on `theta`. Central differences at 1e-2 and 5e-3,
+/// Richardson (exact for a quartic).
+fn screened_exchange_coupling(
+    parts: &bse::DirectParts,
+    transitions: &[bse::Transition],
+    z: &[C64],
+    scale: f64,
+) -> C64 {
+    let zero = screened_exchange(parts, transitions, z, C64::new(0., 0.), scale);
+    let second = |theta: f64| {
+        let phase = C64::from_polar(1., theta);
+        let at = |h: f64| {
+            (screened_exchange(parts, transitions, z, phase * h, scale)
+                + screened_exchange(parts, transitions, z, -phase * h, scale)
+                - 2. * zero)
+                / (h * h)
+        };
+        (4. * at(5e-3) - at(1e-2)) / 3.
+    };
+    C64::new(
+        second(0.) - second(PI / 2.),
+        second(PI / 4.) - second(3. * PI / 4.),
+    ) / 4.
+}
+
+/// The direct part of the coupling block `B` of `solved` on `mesh` (cutoff 2): the triplet
+/// operator's `B` (no exchange), or the singlet's less that of `kernel='hartree'` (its exchange).
+fn direct_coupling(solved: &Solved, spin: Spin, mesh: &MeshIndex) -> (bse::Operator, DMatrix<C64>) {
+    let mut request = Request::new(Kernel::Bse, spin);
+    request.cutoff = 2.;
+    request.coupling = true;
+    let op = operator(&solved.sampler(), mesh, &request).unwrap();
+    let mut b = op.coupling.as_ref().unwrap().resonant.clone();
+    if spin == Spin::Singlet {
+        request.kernel = Kernel::Hartree;
+        let exchange = operator(&solved.sampler(), mesh, &request).unwrap();
+        b -= &exchange.coupling.as_ref().unwrap().resonant;
+    }
+    (op, b)
+}
+
+#[test]
+fn the_direct_part_of_the_coupling_block_is_the_second_derivative_of_the_screened_exchange() {
+    // The independent check of the direct part of `B`: the coupling form's direct term is the
+    // second derivative of one functional, the screened exchange `E_W` of the occupied orbitals
+    // in the operator's own `W`, and its `B` part is the phase-2 part of that derivative along a
+    // complex rotation of valence into conduction (`screened_exchange_coupling`). The oracle
+    // reads `W` and the pair densities of every band pair (`bse::direct_parts`), not the
+    // operator's band-index map, its `(k, k')` order, its conjugations, its sign or its
+    // prefactor. LiH DZP on 2 x 1 x 1 (`B` across `k' != k`, nine conduction bands), the
+    // triplet operator: every element of the symmetric part of `B` from unit and paired `Z`.
+    // The spinor path with spin-orbit coupling is the slow Xe case below.
+    let mesh = MeshIndex::new([2, 1, 1], [0.; 3]).unwrap();
+    let solved = solve_sized(&lih("lda-sr"), "raw", "DZP");
+    let (op, b) = direct_coupling(&solved, Spin::Triplet, &mesh);
+    let parts = bse::direct_parts(&solved.sampler(), &mesh, 2.).unwrap();
+    let n = op.transitions.len();
+    let scale = 1. / (mesh.points() as f64 * op.volume);
+    let unit = |t: usize, u: usize| -> Vec<C64> {
+        (0..n)
+            .map(|i| C64::new(f64::from(u8::from(i == t) + u8::from(i == u && u != t)), 0.))
+            .collect()
+    };
+    let diagonal: Vec<C64> = (0..n)
+        .map(|t| screened_exchange_coupling(&parts, &op.transitions, &unit(t, t), scale))
+        .collect();
+    let mut oracle = DMatrix::<C64>::zeros(n, n);
+    for t in 0..n {
+        oracle[(t, t)] = diagonal[t];
+        for u in t + 1..n {
+            let paired = screened_exchange_coupling(&parts, &op.transitions, &unit(t, u), scale);
+            oracle[(t, u)] = (paired - diagonal[t] - diagonal[u]) / 2.;
+            oracle[(u, t)] = oracle[(t, u)];
+        }
+    }
+    let symmetric = (&b + b.transpose()) * C64::new(0.5, 0.);
+    let largest = symmetric.iter().map(|v| v.norm()).fold(0f64, f64::max);
+    let miss = (&oracle - &symmetric)
+        .iter()
+        .map(|v| v.norm())
+        .fold(0f64, f64::max)
+        / largest;
+    let crossing = (0..n)
+        .flat_map(|t| (0..n).map(move |u| (t, u)))
+        .filter(|&(t, u)| op.transitions[t].k != op.transitions[u].k)
+        .map(|(t, u)| symmetric[(t, u)].norm())
+        .fold(0f64, f64::max);
+    eprintln!(
+        "LiH DZP 2 x 1 x 1 ({n} transitions, {} bands, {} occupied): direct B against the \
+         screened-exchange energy {miss:.2e} of its largest {largest:.3e} Ha (largest across \
+         k' != k {crossing:.3e} Ha)",
+        parts.bands, parts.occupied[0]
+    );
+    // Measured 2026-11-16: 9.89e-11 of 3.152e-2 Ha (across k' != k 2.332e-2 Ha). Red checks:
+    // `c` and `c'` swapped in the block's index map 6.1e-1, the `(c v')` column read as
+    // `(v c')` 1.9.
+    assert!(miss < 1e-8, "{miss:e}");
+    assert!(crossing > 1e-6 * largest, "{crossing:e}");
+}
+
+#[test]
+#[ignore = "slow: about 11 s, the fcc Xe spin-orbit SCF and two coupling operators; run: cargo test --profile release-test -p mandacaru-core --test periodic_bse -- --ignored the_direct_part_of_a_spin_orbit"]
+fn the_direct_part_of_a_spin_orbit_crystals_coupling_block_is_the_second_derivative_of_the_screened_exchange(
+) {
+    // The same oracle on spinor transitions with spin-orbit coupling: fcc Xe (`lda-fr`, SZP,
+    // Gamma; the 5p split by 1.36 eV), `B` of the singlet operator less that of
+    // `kernel='hartree'`, along three complex `Z`.
+    let gamma = MeshIndex::new([1, 1, 1], [0.; 3]).unwrap();
+    let solved = solve_scaled_spin_orbit(&xenon("lda-fr", true), "SZP", 1.);
+    let (op, b) = direct_coupling(&solved, Spin::Singlet, &gamma);
+    let parts = bse::direct_parts(&solved.sampler(), &gamma, 2.).unwrap();
+    let scale = 1. / op.volume;
+    let n = op.transitions.len();
+    let largest = b.iter().map(|v| v.norm()).fold(0f64, f64::max);
+    let misses: Vec<f64> = (1..=3)
+        .map(|seed| {
+            let z: Vec<C64> = (0..n)
+                .map(|t| {
+                    let x = (seed * 31 + t) as f64;
+                    C64::new((1.3 * x + 0.7).sin(), (2.1 * x + 0.4).cos())
+                })
+                .collect();
+            let expected: C64 = (0..n)
+                .flat_map(|t| (0..n).map(move |u| (t, u)))
+                .map(|(t, u)| z[t].conj() * b[(t, u)] * z[u].conj())
+                .sum();
+            let found = screened_exchange_coupling(&parts, &op.transitions, &z, scale);
+            (found - expected).norm() / expected.norm()
+        })
+        .collect();
+    eprintln!(
+        "Xe SZP with spin-orbit coupling, Gamma ({n} transitions, {} spinor bands, {} occupied): \
+         direct B against the screened-exchange energy {:.2e}, {:.2e}, {:.2e} (relative, three \
+         Z; largest |B| {largest:.3e} Ha)",
+        parts.bands, parts.occupied[0], misses[0], misses[1], misses[2]
+    );
+    // Measured 2026-11-16: 2.07e-11, 2.10e-9, 1.59e-10 (largest |B| 4.861e-2 Ha).
+    assert!(misses.iter().all(|m| *m < 1e-8), "{misses:?}");
 }
 
 /// The model's direct element of every mesh vector `p` through the crate's head average and
@@ -389,8 +732,45 @@ fn rocksalt(symbols: [&'static str; 2], a: f64, grid: usize, mesh: usize) -> Cel
     }
 }
 
+/// E5's band masses `(m_e, m_h)` (electron masses): the curvature of the conduction and valence
+/// bands of the onset's transition at its mesh point, `1 / m = d^2 e / dk^2` by central
+/// differences of 0.01 / Bohr along x, y and z, averaged over the three axes (an isotropic
+/// estimate; at a degenerate band edge it is the curvature of the band the onset names).
+fn band_masses(solved: &Solved, op: &bse::Operator, mesh: &MeshIndex) -> (f64, f64) {
+    let sampler = solved.sampler();
+    let t = (0..op.energies.len())
+        .min_by(|&a, &b| op.energies[a].total_cmp(&op.energies[b]))
+        .unwrap();
+    let onset = op.transitions[t];
+    let k = Vector3::from(mesh.point(onset.k));
+    let to_fractional = sampler.reciprocal.try_inverse().unwrap();
+    let bands = vec![onset.valence, onset.conduction];
+    let at = |shift: Vector3<f64>| -> [f64; 2] {
+        let f = k + to_fractional * shift;
+        let point = MeshIndex::new([1, 1, 1], [f[0], f[1], f[2]]).unwrap();
+        let frames = sampler
+            .frames(&point, &[bands.clone()], |_, _| Ok(()))
+            .unwrap();
+        let e = frames[0][0].energies.as_slice();
+        [e[0], e[1]]
+    };
+    let step = 0.01;
+    let centre = at(Vector3::zeros());
+    let mut inverse = [0f64; 2];
+    for a in 0..3 {
+        let mut d = Vector3::zeros();
+        d[a] = step;
+        let (plus, minus) = (at(d), at(-d));
+        for s in 0..2 {
+            inverse[s] += (plus[s] + minus[s] - 2. * centre[s]) / (step * step) / 3.;
+        }
+    }
+    (1. / inverse[1], -1. / inverse[0])
+}
+
 /// The lowest singlet and triplet of `solved` on an `n^3` response mesh: binding against the
-/// onset, participation ratio, and the Wannier-Mott estimate from `eps_M`.
+/// onset, participation ratio, and the Wannier-Mott estimate `mu / (2 eps_M^2)` from the band
+/// masses of the onset (E5, a diagnostic).
 fn excitons(
     solved: &Solved,
     n: usize,
@@ -420,6 +800,14 @@ fn excitons(
     let participation = 1. / a.iter().map(|x| x.norm_sqr().powi(2)).sum::<f64>();
     let binding = singlet.onset - lowest.energies[0];
     let eps = singlet.static_tensor[0][0];
+    let (electron, hole) = band_masses(solved, &singlet, &mesh);
+    let reduced = 1. / (1. / electron + 1. / hole);
+    eprintln!(
+        "{label} {n}^3 E5: m_e {electron:.4}, m_h {hole:.4}, mu {reduced:.4}; Wannier-Mott \
+         mu / (2 eps_M^2) = {:.4} eV against the binding {:.4} eV",
+        reduced / (2. * eps * eps) * HARTREE_EV,
+        (singlet.onset - lowest.energies[0]) * HARTREE_EV
+    );
     eprintln!(
         "{label} {n}^3 ({} transitions, window {window:?}): onset {:.4} eV; singlets {:?} eV; \
          binding {:.4} eV; triplet {:.4} eV (binding {:.4}); participation {:.1} of {}; eps_M \
@@ -620,4 +1008,186 @@ fn the_lithium_hydride_sz_momentum_is_hermitian_where_it_vanishes_by_symmetry() 
         block < 1e-10 && sphere < 1e-12 && residual < 1e-6,
         "{residual:e}"
     );
+}
+
+/// T8 crystals, the collinear limit of the Bethe-Salpeter equation: LiH on `lda-fr` solved with
+/// two-component states and its spin-orbit term zeroed (Kramers-unpolarized). Its operator, exchange
+/// and direct terms on every spinor transition, has the collinear singlets once and the triplets
+/// three times as its roots, and the collinear singlets' excitonic tensor; `spin='triplet'`
+/// refuses by name.
+#[test]
+fn a_spinor_crystal_without_spin_orbit_coupling_has_the_collinear_excitons() {
+    let collinear = solve_without_spin_orbit(&lih("lda-fr"));
+    let spinor = solve_without_spin_orbit(&Cell {
+        spinor: true,
+        ..lih("lda-fr")
+    });
+    let mesh = MeshIndex::new([2, 1, 1], [0.; 3]).unwrap();
+    let mut request = Request::new(Kernel::Bse, Spin::Singlet);
+    request.cutoff = 2.;
+    let singlet = operator(&collinear.sampler(), &mesh, &request).unwrap();
+    let mut triplet_request = request.clone();
+    triplet_request.spin = Spin::Triplet;
+    let triplet = operator(&collinear.sampler(), &mesh, &triplet_request).unwrap();
+    let two = operator(&spinor.sampler(), &mesh, &request).unwrap();
+    let (s, t, b) = (
+        singlet.dense().unwrap(),
+        triplet.dense().unwrap(),
+        two.dense().unwrap(),
+    );
+    let mut expected: Vec<f64> = s.energies.clone();
+    for e in &t.energies {
+        expected.extend([*e; 3]);
+    }
+    expected.sort_by(f64::total_cmp);
+    let roots = (0..expected.len())
+        .map(|j| (expected[j] - b.energies[j]).abs())
+        .fold(0f64, f64::max);
+    let frequencies = [0., 0.1, 0.2, 0.3];
+    let a: Vec<_> = frequencies
+        .iter()
+        .map(|w| singlet.tensor(&s, C64::new(*w, 0.05)))
+        .collect();
+    let c: Vec<_> = frequencies
+        .iter()
+        .map(|w| two.tensor(&b, C64::new(*w, 0.05)))
+        .collect();
+    let spectra = worst(&a, &c);
+    eprintln!(
+        "LiH BSE: {} spinor roots against {} singlets and 3 x {} triplets, worst {roots:.2e} Ha; \
+         tensor {spectra:.2e}; head {:.6} / {:.6} Ha Bohr^3; Hermiticity {:.1e}; lowest {:?} / \
+         singlet {:?} triplet {:?}",
+        b.energies.len(),
+        s.energies.len(),
+        t.energies.len(),
+        singlet.head,
+        two.head,
+        two.hermiticity,
+        &b.energies[..4.min(b.energies.len())],
+        &s.energies[..2.min(s.energies.len())],
+        &t.energies[..2.min(t.energies.len())]
+    );
+    assert_eq!(b.energies.len(), expected.len());
+    assert!(roots < 1e-8, "{roots:e}");
+    assert!(spectra < 1e-8, "{spectra:e}");
+    let mut refused = request.clone();
+    refused.spin = Spin::Triplet;
+    assert!(operator(&spinor.sampler(), &mesh, &refused)
+        .err()
+        .is_some_and(|e| e.to_string().contains("spin='singlet'")));
+}
+
+/// T5b, spin-polarized crystals, the collinear limit: LiH solved spin-polarized at zero moment has
+/// the two equal channels of the closed shell. Its two-channel operator (the exchange across both
+/// channels, the direct term within each) has the singlets and the triplets, each once, as its
+/// roots and the singlets' excitonic tensor; `spin='triplet'` refuses by name.
+#[test]
+fn a_spin_polarized_crystal_has_the_singlets_and_the_triplets() {
+    let closed = solve(&lih("lda-sr"));
+    let polarized = solve(&Cell {
+        spin: true,
+        ..lih("lda-sr")
+    });
+    let mesh = MeshIndex::new([2, 1, 1], [0.; 3]).unwrap();
+    let mut request = Request::new(Kernel::Bse, Spin::Singlet);
+    request.cutoff = 2.;
+    let singlet = operator(&closed.sampler(), &mesh, &request).unwrap();
+    let mut triplet_request = request.clone();
+    triplet_request.spin = Spin::Triplet;
+    let triplet = operator(&closed.sampler(), &mesh, &triplet_request).unwrap();
+    let two = operator(&polarized.sampler(), &mesh, &request).unwrap();
+    let (s, t, b) = (
+        singlet.dense().unwrap(),
+        triplet.dense().unwrap(),
+        two.dense().unwrap(),
+    );
+    let mut expected: Vec<f64> = s.energies.iter().chain(&t.energies).copied().collect();
+    expected.sort_by(f64::total_cmp);
+    let roots = (0..expected.len())
+        .map(|j| (expected[j] - b.energies[j]).abs())
+        .fold(0f64, f64::max);
+    let frequencies = [0., 0.1, 0.2, 0.3];
+    let a: Vec<_> = frequencies
+        .iter()
+        .map(|w| singlet.tensor(&s, C64::new(*w, 0.05)))
+        .collect();
+    let c: Vec<_> = frequencies
+        .iter()
+        .map(|w| two.tensor(&b, C64::new(*w, 0.05)))
+        .collect();
+    let spectra = worst(&a, &c);
+    eprintln!(
+        "LiH two channels: {} roots against {} singlets and {} triplets, worst {roots:.2e} Ha; \
+         tensor {spectra:.2e}; head {:.6} / {:.6} Ha Bohr^3; Hermiticity {:.1e}; channels of the \
+         transitions {:?}",
+        b.energies.len(),
+        s.energies.len(),
+        t.energies.len(),
+        singlet.head,
+        two.head,
+        two.hermiticity,
+        two.transitions
+            .iter()
+            .map(|x| x.channel)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(b.energies.len(), expected.len());
+    assert!(roots < 1e-8, "{roots:e}");
+    assert!(spectra < 1e-8, "{spectra:e}");
+    assert!(operator(&polarized.sampler(), &mesh, &triplet_request)
+        .err()
+        .is_some_and(|e| e.to_string().contains("spin='singlet'")));
+}
+
+/// T5b, spin-polarized crystals with unequal channels: an H3 radical in a cell (Gamma only, SZ, 2
+/// up and 1 down: windows (2, 1) and (1, 2)). Its two-channel operator is the spin-conserving
+/// block of the same cell solved as a spinor crystal magnetized along z without spin-orbit
+/// coupling (the spin-flip transitions decouple from it), so every two-channel root is a root of
+/// the spinor operator.
+#[test]
+fn the_two_channel_excitons_are_the_spin_conserving_ones_of_the_spinor_crystal() {
+    let cell = Cell {
+        symbols: vec!["H", "H", "H"],
+        fractional: vec![
+            [1.4 / 6., 0.5, 0.5],
+            [3.0 / 6., 0.55, 0.5],
+            [4.6 / 6., 0.5, 0.52],
+        ],
+        moments: vec![1., 0., 0.],
+        ..h2_chain("lda-fr", "lda")
+    };
+    let polarized = solve_without_spin_orbit(&Cell {
+        spin: true,
+        ..cell.clone()
+    });
+    let spinor = solve_without_spin_orbit(&Cell {
+        spinor: true,
+        ..cell
+    });
+    let mesh = MeshIndex::new([1, 1, 1], [0.; 3]).unwrap();
+    let mut request = Request::new(Kernel::Bse, Spin::Singlet);
+    request.cutoff = 2.;
+    let two = operator(&polarized.sampler(), &mesh, &request).unwrap();
+    let whole = operator(&spinor.sampler(), &mesh, &request).unwrap();
+    let (a, b) = (two.dense().unwrap(), whole.dense().unwrap());
+    let worst = a
+        .energies
+        .iter()
+        .map(|e| {
+            b.energies
+                .iter()
+                .map(|f| (e - f).abs())
+                .fold(f64::INFINITY, f64::min)
+        })
+        .fold(0f64, f64::max);
+    let channels: Vec<usize> = two.transitions.iter().map(|t| t.channel).collect();
+    eprintln!(
+        "H3 cell: two-channel roots {:?} (transitions by channel {channels:?}, windows of the \
+         columns {:?}); spinor roots {:?}; worst distance to a spinor root {worst:.2e} Ha; heads \
+         {:.6} / {:.6}",
+        a.energies, two.window, b.energies, two.head, whole.head
+    );
+    assert_eq!(channels.iter().filter(|&&c| c == 0).count(), 2);
+    assert_eq!(channels.iter().filter(|&&c| c == 1).count(), 2);
+    assert!(worst < 1e-7, "{worst:e}");
 }

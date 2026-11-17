@@ -27,19 +27,34 @@
 //! plug in through [`OneCenter`].
 //!
 //! Two approximations are measured, not hidden (log, section W-E4P / P1). The shapes are
-//! evaluated at the one wrapped wave vector `Q` of each grid index, not averaged over the
-//! aliases the grid's lattice operations pick as the setup's `hats` are: the averaged form
-//! breaks the exact translation invariance of `K` (the origin phase is at one alias, the atoms
-//! at the others) and moves `K` by 2e-8 (Si) of itself. The tail of the shapes beyond the box
-//! (the on-site `tail` of the Hartree `U`) is not added: 4e-9 of `K`, 4e-7 of the
-//! compensation's own effect.
+//! evaluated at the wrapped wave vector `Q` of each grid index, each alias with its own origin
+//! phase, not averaged at one origin phase as the setup's `hats` are: that averaged form breaks
+//! the exact translation invariance of `K` (the origin phase is at one alias, the atoms at the
+//! others) and moves `K` by 2e-8 (Si) of itself. The tail of the shapes beyond the box (the
+//! on-site `tail` of the Hartree `U`) is not added: 4e-9 of `K`, 4e-7 of the compensation's own
+//! effect.
+//!
+//! An index has more than one wave vector where the operations of the grid's lattice
+//! ([`reciprocal::shifted_aliases`]) pick more than one for it: `Q` moved by an operation,
+//! wrapped into the box and moved back is not always `Q` wrapped. On a face of the box (where
+//! `k_diff` has no fractional part along an axis of even size, the frequency `N/2` is its own
+//! negative) either face alone breaks the reciprocity of the exchange (`tr(D1 K[D2]) = tr(D2
+//! K[D1])`), since `hat(-Q) = hat(Q)^*` holds for the other face only; near the edge of a skewed
+//! box (hexagonal, fcc) a single wrap is not moved by the operations onto the wrap of the image
+//! index, which breaks the covariance of the exchange under the point group (wurtzite AlN with
+//! HSE06: levels of related k-points 5.5e-9 Ha apart). Such an index takes the mean of its
+//! aliases, each weighted by the fraction of the operations that pick it and with its own
+//! origin phase `e^{+iG.r0}` at `G = Q - k_diff`, so that the translation invariance is kept
+//! too. The aliases of an index move with the operations, and those of `-Q` at `-k_diff` are the
+//! negatives of those of `Q` (the lattice group holds the inversion), so both properties hold by
+//! construction. An index with one alias is evaluated as before, bit for bit.
 mod strain;
 
 pub use strain::ShapeStrain;
 
 use super::{invalid, Crystal, KPoint};
 use crate::{
-    math::{fft::frequency, reciprocal},
+    math::reciprocal,
     periodic::setup::shapes::{Shapes, Sites, Transient},
     quantum::C64,
     Buffer, Context, Result,
@@ -172,43 +187,39 @@ impl<'a> Augmentation<'a> {
     ) -> Result<Buffer<C64>> {
         let rows = self.sites.channels.len();
         let n = c.grid.index.points();
-        let shape = c.grid.index.shape();
         let dv = c.grid.index.dv();
         let mut out = c.context.allocate::<C64>(rows * n)?;
         if rows == 0 {
             return Ok(out);
         }
         let b = reciprocal::reciprocal_cell(&c.grid)?;
-        let kappa = b
-            .try_inverse()
-            .ok_or_else(|| invalid("singular reciprocal cell"))?
-            * Vector3::from(k_diff);
+        let aliases = reciprocal::shifted_aliases(&c.context, &c.grid, k_diff)?;
         let block = (Transient::of(&c.context).dense_bytes / (rows * 16 + 64 + 56)).max(1);
         let _scratch = c
             .context
             .reserve(crate::product(&[block.min(n), rows * 16 + 64 + 56])?)?;
         let mut vectors: Vec<[f64; 3]> = Vec::with_capacity(block.min(n));
         let mut phases: Vec<C64> = Vec::with_capacity(block.min(n));
+        let mut faces: Vec<usize> = Vec::new();
+        let kd = Vector3::from(k_diff);
+        let phase_of = |q: &Vector3<f64>, weight: f64| {
+            let g = q - kd;
+            let angle = g[0] * c.grid.origin[0] + g[1] * c.grid.origin[1] + g[2] * c.grid.origin[2];
+            C64::from_polar(weight / dv, angle)
+        };
         for start in (0..n).step_by(block) {
             vectors.clear();
             phases.clear();
-            for at in start..(start + block).min(n) {
-                let index = [
-                    at / (shape[1] * shape[2]),
-                    at / shape[2] % shape[1],
-                    at % shape[2],
-                ];
-                let wrapped = Vector3::from_fn(|a, _| {
-                    let size = shape[a] as f64;
-                    let x = frequency(index[a], shape[a]) + kappa[a];
-                    x - size * ((x + 0.5 * size + 1e-9) / size).floor()
-                });
-                let q = b * wrapped;
-                let g = q - Vector3::from(k_diff);
-                let angle =
-                    g[0] * c.grid.origin[0] + g[1] * c.grid.origin[1] + g[2] * c.grid.origin[2];
+            faces.clear();
+            let stop = (start + block).min(n);
+            for at in start..stop {
+                let (images, weights) = aliases.of(at);
+                if images.len() > 1 {
+                    faces.push(at);
+                }
+                let q = b * Vector3::from(images[0]);
+                phases.push(phase_of(&q, weights[0]));
                 vectors.push(q.into());
-                phases.push(C64::from_polar(1. / dv, angle));
             }
             self.shapes
                 .transforms(&self.sites, &vectors, &mut out.as_mut_slice()[start..], n)?;
@@ -216,10 +227,43 @@ impl<'a> Augmentation<'a> {
                 for (v, phase) in phases.iter().enumerate() {
                     out.as_mut_slice()[row * n + start + v] *= phase;
                     if let Some(axis) = slope {
-                        out.as_mut_slice()[row * n + start + v] *=
-                            C64::new(0., -vectors[v][axis]);
+                        out.as_mut_slice()[row * n + start + v] *= C64::new(0., -vectors[v][axis]);
                     }
                 }
+            }
+            // The other images of the indices on a face, a few at a time.
+            let mut pending: Vec<(usize, [f64; 3], C64)> = Vec::new();
+            let flush =
+                |pending: &mut Vec<(usize, [f64; 3], C64)>, out: &mut [C64]| -> Result<()> {
+                    let width = pending.len();
+                    let wave: Vec<[f64; 3]> = pending.iter().map(|p| p.1).collect();
+                    let mut rows_of = vec![C64::default(); rows * width];
+                    self.shapes
+                        .transforms(&self.sites, &wave, &mut rows_of, width)?;
+                    for row in 0..rows {
+                        for (j, (at, q, phase)) in pending.iter().enumerate() {
+                            let mut value = rows_of[row * width + j] * phase;
+                            if let Some(axis) = slope {
+                                value *= C64::new(0., -q[axis]);
+                            }
+                            out[row * n + at] += value;
+                        }
+                    }
+                    pending.clear();
+                    Ok(())
+                };
+            for &at in &faces {
+                let (images, weights) = aliases.of(at);
+                for (image, weight) in images.iter().zip(weights).skip(1) {
+                    let q = b * Vector3::from(*image);
+                    pending.push((at, q.into(), phase_of(&q, *weight)));
+                    if pending.len() == (block / 2).max(1) {
+                        flush(&mut pending, out.as_mut_slice())?;
+                    }
+                }
+            }
+            if !pending.is_empty() {
+                flush(&mut pending, out.as_mut_slice())?;
             }
         }
         Ok(out)
@@ -267,7 +311,9 @@ impl<'a> Augmentation<'a> {
 /// `out[target] = sign conj(a[source])` of every `p`-long component of `a`.
 pub(super) fn reverse(map: &[(usize, usize, f64)], p: usize, a: &[C64]) -> Result<Vec<C64>> {
     if map.len() != p {
-        return Err(invalid("the time reversal of the projectors does not cover the crystal's p"));
+        return Err(invalid(
+            "the time reversal of the projectors does not cover the crystal's p",
+        ));
     }
     let mut out = vec![C64::default(); a.len()];
     for (o, chunk) in out.chunks_mut(p).zip(a.chunks(p)) {

@@ -72,7 +72,8 @@ impl Sources for NoHead {
         let symbols = reciprocal::bloch(&c.context, &c.grid, k_diff)?;
         for at in 0..n {
             if symbols.squares.as_slice()[at] <= 1e-12 {
-                self.heads.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                self.heads
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 for row in 0..6 {
                     out.as_mut_slice()[row * n + at] = 0.;
                 }

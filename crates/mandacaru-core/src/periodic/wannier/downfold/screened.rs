@@ -84,6 +84,7 @@ fn view<'a>(frame: &'a Frame, target: Vec<f64>, bands: usize, points: usize) -> 
         samples: &frame.samples,
         projections: Some(&frame.projections),
         points,
+        components: 1,
     }
 }
 

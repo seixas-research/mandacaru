@@ -225,7 +225,12 @@ def _scaled_error(value, reference):
 
 class TestFrozenPythonOutputs:
     """The Rust routines reproduce the numbers the Python ones gave (the
-    shipped lda-sr datasets and fixed radii; ``test/migration/reference/paw``)."""
+    shipped lda-sr datasets and fixed radii; ``test/migration/reference/paw``).
+
+    Since 2026-11-16 the keys that read the shipped library are self-pins of the production
+    routine on the regenerated library (file format 3): the ``library_refreeze`` entry of the
+    JSON beside the reference lists them with the library digests and the extension; the other
+    keys keep their Python-era values."""
 
     X = np.concatenate([[0.0, 1e-9, 1e-3], np.linspace(0.01, 6.0, 300)])
 

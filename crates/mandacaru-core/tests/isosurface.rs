@@ -12,7 +12,11 @@ fn frozen() -> Value {
 }
 
 fn floats(v: &Value) -> Vec<f64> {
-    v.as_array().unwrap().iter().map(|x| x.as_f64().unwrap()).collect()
+    v.as_array()
+        .unwrap()
+        .iter()
+        .map(|x| x.as_f64().unwrap())
+        .collect()
 }
 
 #[test]
@@ -20,7 +24,12 @@ fn the_triangles_are_the_frozen_python_ones() {
     let reference = frozen();
     for case in reference["surfaces"].as_array().unwrap() {
         let name = case["name"].as_str().unwrap();
-        let shape: Vec<usize> = case["shape"].as_array().unwrap().iter().map(|x| x.as_u64().unwrap() as usize).collect();
+        let shape: Vec<usize> = case["shape"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|x| x.as_u64().unwrap() as usize)
+            .collect();
         let (x, y, z) = (floats(&case["x"]), floats(&case["y"]), floats(&case["z"]));
         let triangles = marching_tetrahedra(
             [shape[0], shape[1], shape[2]],
@@ -30,10 +39,21 @@ fn the_triangles_are_the_frozen_python_ones() {
         )
         .unwrap();
         let want = floats(&case["triangles"]);
-        assert_eq!(triangles.len(), case["count"].as_u64().unwrap() as usize, "{name}");
+        assert_eq!(
+            triangles.len(),
+            case["count"].as_u64().unwrap() as usize,
+            "{name}"
+        );
         let got: Vec<f64> = triangles.iter().flatten().flatten().copied().collect();
-        let miss = got.iter().zip(&want).map(|(a, b)| (a - b).abs()).fold(0f64, f64::max);
-        println!("{name}: {} triangles, worst vertex miss {miss:.1e}", triangles.len());
+        let miss = got
+            .iter()
+            .zip(&want)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0f64, f64::max);
+        println!(
+            "{name}: {} triangles, worst vertex miss {miss:.1e}",
+            triangles.len()
+        );
         assert!(miss <= 1e-12, "{name}: {miss:e}");
     }
 }
@@ -44,10 +64,20 @@ fn the_enclosing_levels_are_the_frozen_python_ones() {
     let weights = floats(&reference["weights"]);
     for case in reference["levels"].as_array().unwrap() {
         let fraction = case["fraction"].as_f64().unwrap();
-        assert_eq!(enclosing_level(&weights, fraction).unwrap(), case["level"].as_f64().unwrap(), "{fraction}");
+        assert_eq!(
+            enclosing_level(&weights, fraction).unwrap(),
+            case["level"].as_f64().unwrap(),
+            "{fraction}"
+        );
     }
     for fraction in [0., 1., 1.5] {
-        assert!(enclosing_level(&weights, fraction).unwrap_err().to_string().contains("enclosed"));
+        assert!(enclosing_level(&weights, fraction)
+            .unwrap_err()
+            .to_string()
+            .contains("enclosed"));
     }
-    assert!(enclosing_level(&[0., 0.], 0.5).unwrap_err().to_string().contains("zero everywhere"));
+    assert!(enclosing_level(&[0., 0.], 0.5)
+        .unwrap_err()
+        .to_string()
+        .contains("zero everywhere"));
 }

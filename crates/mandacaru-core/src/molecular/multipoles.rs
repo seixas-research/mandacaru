@@ -57,35 +57,54 @@ pub fn position_integrals(
     for sum in &mut out {
         *sum = (&*sum + sum.transpose()) * (0.5 * dv);
     }
-    if let Some(setup) = integrals.paw_setup.as_ref() {
-        let projections = integrals
-            .corrections
-            .as_ref()
-            .and_then(|c| c.projections.as_ref())
-            .ok_or_else(|| invalid("PAW position integrals need the atoms' projections"))?;
-        let atoms = setup.position_blocks();
-        if atoms.len() != projections.len() || atoms.len() != integrals.geometry.positions().len() {
-            return Err(invalid("PAW projections and atoms disagree"));
-        }
-        for axis in 0..3 {
-            let mut raw = DMatrix::<f64>::zeros(m, m);
-            for ((blocks, c), position) in atoms
-                .iter()
-                .zip(projections)
-                .zip(integrals.geometry.positions())
-            {
-                if c.nrows() != m || c.ncols() != blocks.overlap.nrows() {
-                    return Err(invalid("PAW projections and one-center blocks disagree"));
-                }
-                let local =
-                    &blocks.overlap * (position[axis] - origin[axis]) + &blocks.dipole[axis];
-                raw += c * local * c.transpose();
-            }
+    if let Some(raw) = one_center_positions(integrals, origin)? {
+        for (sum, raw) in out.iter_mut().zip(raw) {
             let frame = integrals.lowdin.transpose() * raw * &integrals.lowdin;
-            out[axis] += (&frame + frame.transpose()) * 0.5;
+            *sum += (&frame + frame.transpose()) * 0.5;
         }
     }
     Ok(out)
+}
+
+/// The PAW one-center part of the position integrals about `origin` (Bohr) over the raw atomic
+/// basis, `sum_A P^A ((R_A - O) Delta^(0) + Delta^(1)) P^A^T` per axis (`None` off PAW-LCAO): the
+/// charge and dipole of an atomic-basis pair density that its smooth field leaves out.
+pub fn one_center_positions(
+    integrals: &MolecularIntegrals,
+    origin: [f64; 3],
+) -> Result<Option<[DMatrix<f64>; 3]>> {
+    let Some(setup) = integrals.paw_setup.as_ref() else {
+        return Ok(None);
+    };
+    let m = integrals.m();
+    let projections = integrals
+        .corrections
+        .as_ref()
+        .and_then(|c| c.projections.as_ref())
+        .ok_or_else(|| invalid("PAW position integrals need the atoms' projections"))?;
+    let atoms = setup.position_blocks();
+    if atoms.len() != projections.len() || atoms.len() != integrals.geometry.positions().len() {
+        return Err(invalid("PAW projections and atoms disagree"));
+    }
+    let mut out = [
+        DMatrix::<f64>::zeros(m, m),
+        DMatrix::<f64>::zeros(m, m),
+        DMatrix::<f64>::zeros(m, m),
+    ];
+    for (axis, raw) in out.iter_mut().enumerate() {
+        for ((blocks, c), position) in atoms
+            .iter()
+            .zip(projections)
+            .zip(integrals.geometry.positions())
+        {
+            if c.nrows() != m || c.ncols() != blocks.overlap.nrows() {
+                return Err(invalid("PAW projections and one-center blocks disagree"));
+            }
+            let local = &blocks.overlap * (position[axis] - origin[axis]) + &blocks.dipole[axis];
+            *raw += c * local * c.transpose();
+        }
+    }
+    Ok(Some(out))
 }
 
 /// The gradient integrals `<a| d/dx_k |b>` (Bohr^-1) in the orthonormal frame: the grid part with
@@ -155,4 +174,68 @@ pub fn gradient_integrals(integrals: &MolecularIntegrals) -> Result<[DMatrix<f64
         }
     }
     Ok(out)
+}
+
+/// The electric dipole moment `sum_A Z_A (R_A - O) - sum_s g tr(D_s X(O))` (Bohr times the
+/// elementary charge) of the molecular state with the orthonormal-frame densities `densities`,
+/// about `origin` (Bohr): the ions' charges (the PAW valence charges, the nuclear numbers on an
+/// all-electron basis) at their positions, less the electrons through [`position_integrals`]
+/// (the PAW one-center dipole included). One per-spin matrix is a restricted state's (`g = 2`),
+/// two are both spins (`g = 1`), and a spinor state's `2m x 2m` matrix contributes its charge
+/// component. A neutral molecule's moment does not depend on `origin`.
+pub fn dipole_moment(
+    integrals: &MolecularIntegrals,
+    densities: &[DMatrix<crate::quantum::C64>],
+    origin: [f64; 3],
+) -> Result<[f64; 3]> {
+    let m = integrals.m();
+    let spinor = densities.len() == 1 && densities[0].shape() == (2 * m, 2 * m);
+    if densities.is_empty()
+        || densities.len() > 2
+        || (!spinor && densities.iter().any(|d| d.shape() != (m, m)))
+    {
+        return Err(invalid(
+            "a dipole moment needs one or two m x m density matrices or one 2m x 2m spinor one",
+        ));
+    }
+    let x = position_integrals(integrals, origin)?;
+    let degeneracy = if densities.len() == 1 && !spinor {
+        2.
+    } else {
+        1.
+    };
+    let charge = |d: &DMatrix<crate::quantum::C64>, a: usize, b: usize| {
+        if spinor {
+            (d[(a, b)] + d[(m + a, m + b)]).re
+        } else {
+            d[(a, b)].re
+        }
+    };
+    let numbers = integrals.geometry.numbers();
+    let positions = integrals.geometry.positions();
+    let charges: Vec<f64> = (0..numbers.len())
+        .map(|i| {
+            integrals
+                .corrections
+                .as_ref()
+                .map_or(numbers[i] as f64, |c| c.charges[i])
+        })
+        .collect();
+    Ok(std::array::from_fn(|axis| {
+        let ions: f64 = charges
+            .iter()
+            .zip(positions)
+            .map(|(z, r)| z * (r[axis] - origin[axis]))
+            .sum();
+        let electrons: f64 = densities
+            .iter()
+            .map(|d| {
+                (0..m)
+                    .flat_map(|a| (0..m).map(move |b| (a, b)))
+                    .map(|(a, b)| charge(d, a, b) * x[axis][(b, a)])
+                    .sum::<f64>()
+            })
+            .sum();
+        ions - degeneracy * electrons
+    }))
 }

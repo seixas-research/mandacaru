@@ -4,15 +4,16 @@ use num_complex::Complex64;
 #[test]
 fn complex_gram_matches_direct_hermitian_products() {
     let (rows, columns) = (31, 5);
-    let values: Vec<_> = (0..rows * columns).map(|i| {
-        Complex64::new((i as f64 * 0.17).sin(), (i as f64 * 0.23).cos())
-    }).collect();
+    let values: Vec<_> = (0..rows * columns)
+        .map(|i| Complex64::new((i as f64 * 0.17).sin(), (i as f64 * 0.23).cos()))
+        .collect();
     for scale in [0.37, -0.5] {
         let result = complex_gram(&values, rows, columns, scale).unwrap();
         for i in 0..columns {
             for j in 0..columns {
                 let expected: Complex64 = (0..rows)
-                    .map(|p| values[p + i * rows].conj() * values[p + j * rows]).sum();
+                    .map(|p| values[p + i * rows].conj() * values[p + j * rows])
+                    .sum();
                 assert!((result[(i, j)] - expected * scale).norm() < 1e-12);
             }
         }

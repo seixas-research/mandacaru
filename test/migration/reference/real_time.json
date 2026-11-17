@@ -40,136 +40,136 @@
   "water/lda": {
    "along_eA": [
     0.0,
-    -0.0001780026244606753,
-    -0.0008724836251897145,
-    -0.0011181689635893603,
-    -0.0006860762389818517,
-    0.00021298013655806717,
-    -3.1807718033555474e-05,
-    0.0006998924235742438,
-    0.0010171082699423472,
-    0.0006762181801441149,
-    -0.0005764240986393881
+    -0.0001779993905977944,
+    -0.0008724757739307489,
+    -0.001118162319803943,
+    -0.0006860645758418378,
+    0.00021299093579353512,
+    -3.1790016691073266e-05,
+    0.0006999207079429356,
+    0.0010171486232147153,
+    0.00067625749451637,
+    -0.000576374579917328
    ],
-   "kick_energy_eV": 0.00013143744717227085,
-   "energy_drift": 0.005513994797168663,
+   "kick_energy_eV": 0.00013143740811586815,
+   "energy_drift": 0.005514005261830061,
    "builds": 551,
-   "width_eV": 100.43818581138272,
-   "seconds": 36.437154750106856
+   "width_eV": 100.43817650942302,
+   "seconds": 21.818034500116482
   },
   "water/pbe": {
    "along_eA": [
     0.0,
-    -0.00012730628845178366,
-    -0.0007766431568318408,
-    -0.0009737283414692651,
-    -0.0005442782430348213,
-    0.00021081576914109518,
-    0.00018027255630184564,
-    0.0013894423886620043,
-    0.0017967863719222132,
-    0.0013727398019765418,
-    0.0005828912958574626
+    -0.00012854381268059744,
+    -0.0007762280915991162,
+    -0.0009752445553750376,
+    -0.0005425876569525027,
+    0.00021888912255313566,
+    0.00018878517320772948,
+    0.0014027296599688716,
+    0.0018055680912288522,
+    0.00136667700334191,
+    0.000570045889387514
    ],
-   "kick_energy_eV": 0.00013143879432814156,
-   "energy_drift": 0.005441771724008201,
-   "builds": 550,
-   "width_eV": 100.69446646083063,
-   "seconds": 33.37009704206139
+   "kick_energy_eV": 0.000131375999366524,
+   "energy_drift": 0.00543423484135669,
+   "builds": 552,
+   "width_eV": 100.66378673842303,
+   "seconds": 22.24477208312601
   },
   "water/hse06": {
    "along_eA": [
     0.0,
-    -3.805539430151918e-06,
-    -5.7413323653729435e-05,
-    -6.585469223180295e-05,
-    -2.602835447467639e-05,
-    -5.356967737375108e-06,
-    2.285538766725052e-05,
-    0.00010170668173800206,
-    0.0001249339217347771,
-    0.00013820565949195163,
-    0.00018153340153160478
+    -3.944274694410234e-06,
+    -5.745500720223322e-05,
+    -6.614134111443531e-05,
+    -2.606708663257042e-05,
+    -4.8925600490476115e-06,
+    2.3005600427550118e-05,
+    0.00010298917808288034,
+    0.00012728122154472089,
+    0.0001389711623585025,
+    0.00018126458581059447
    ],
-   "kick_energy_eV": 1.1757833361773775e-06,
-   "energy_drift": 0.005769705122049083,
-   "builds": 572,
-   "width_eV": 105.53161713293531,
-   "seconds": 342.0375921248924
+   "kick_energy_eV": 1.175219725217469e-06,
+   "energy_drift": 0.005761860537046467,
+   "builds": 570,
+   "width_eV": 105.50060843900535,
+   "seconds": 308.9139265420381
   },
   "NH2/lda": {
    "along_eA": [
     0.0,
-    -0.0008576031373102783,
-    -0.0016431670943838758,
-    -1.5375847444782734e-06,
-    0.0007251137040061291,
-    0.001315629123366697,
-    0.0006452961886612519,
-    4.1234093827757215e-05,
-    -0.0015961447151110258,
-    -0.0003567830953768263,
-    -0.0008119212911069331
+    -0.0008576025836984672,
+    -0.001643167430481698,
+    -1.540212381444982e-06,
+    0.0007251106640780875,
+    0.0013156284229106651,
+    0.0006452992563007163,
+    4.123963011883007e-05,
+    -0.0015961413900636519,
+    -0.00035678449693937514,
+    -0.0008119281062895685
    ],
-   "kick_energy_eV": 0.00011164001195497945,
-   "energy_drift": 0.0033217876298475553,
+   "kick_energy_eV": 0.00011164000750796331,
+   "energy_drift": 0.0033218189362369953,
    "builds": 454,
-   "width_eV": 83.58202951017178,
-   "seconds": 21.600491999881342
+   "width_eV": 83.58203041882224,
+   "seconds": 29.981985792052
   },
   "CuH+U/lda": {
    "along_eA": [
     0.0,
-    0.00017719289729167248,
-    -0.0013120969422027184,
-    0.0019013568605096153,
-    -0.0007849332026097298,
-    0.0003284398491537332,
-    -0.00060911619299678,
-    0.00019369147045954685,
-    0.0006511726819038724,
-    -0.0006128962722808674,
-    0.00017387430062551441
+    0.00011242769575542513,
+    -0.0011827243256554978,
+    0.0018455447817134038,
+    -0.0008103545423798108,
+    0.0003463275759133907,
+    -0.0007186200676917991,
+    0.0005353376539118781,
+    0.00027378358130102483,
+    -0.00022390645582138406,
+    -0.00039650729966214004
    ],
-   "kick_energy_eV": 6.998151218322172e-05,
-   "energy_drift": 0.0016963024304815994,
+   "kick_energy_eV": 7.426595857069084e-05,
+   "energy_drift": 0.001523222559885331,
    "builds": 403,
-   "width_eV": 162.27020246414213,
-   "seconds": 17.034478332847357
+   "width_eV": 162.69127140014132,
+   "seconds": 13.225240499945357
   },
   "Si/lda": {
    "corrected": [
-    -0.00599579886429265,
-    -0.004508268301890341,
-    -0.0013274112796072188,
-    0.0016765130369543197,
-    0.00325210550653309,
-    0.0031023645637945165,
-    0.0022540285194173476,
-    0.0016412281076912004,
-    0.001488077777457022,
-    0.0012349815583014832,
-    6.113708669336146e-06
+    -0.00591848938645676,
+    -0.0044226246530168455,
+    -0.0012388833171418827,
+    0.00173617980344867,
+    0.003253775976829696,
+    0.003027587204745796,
+    0.0021261152223757437,
+    0.0015157114637361295,
+    0.0014059500460482295,
+    0.0011890872331265525,
+    -5.3727678514890956e-05
    ],
    "electrons": 8.0,
-   "diamagnetic": 10.365002038835737,
+   "diamagnetic": 10.23135631229585,
    "epsilon_re": [
-    31.128282564920063,
-    12.812251830619639,
-    -5.075273805149387,
-    -6.053961694238521
+    30.167177830536506,
+    12.837850065293521,
+    -4.654651228517227,
+    -5.991037829022887
    ],
    "epsilon_im": [
-    -1.4189262781247844,
-    26.636174240337308,
-    16.57347242736828,
-    4.314091266540088
+    -1.5276029307905528,
+    25.74131651467362,
+    16.41029742346581,
+    4.346519988266828
    ],
    "kick_energy_eV": 0.00012191942771622231,
-   "energy_drift": 1.0907028491320557e-05,
+   "energy_drift": 1.0758551285526423e-05,
    "builds": 403,
-   "width_eV": 22.206562347346235,
-   "seconds": 6.963959125103429
+   "width_eV": 22.35624199870365,
+   "seconds": 9.77767845778726
   }
  },
  "refrozen": {
@@ -212,7 +212,549 @@
       0.00018153340153160478
      ]
     }
+   },
+   {
+    "reason": "2026-11-16: the PAW-LCAO library was regenerated (file format 3, mandacaru-paw 8a6e977); a self-pin of the production route on the installed library (the earlier 2026-11-12 water/hse06 re-freeze stays in the history)",
+    "old": {
+     "kick_energy_eV": 1.1757833361773775e-06,
+     "energy_drift": 0.005769705122049083,
+     "builds": 572,
+     "along_eA": [
+      0.0,
+      -3.805539430151918e-06,
+      -5.7413323653729435e-05,
+      -6.585469223180295e-05,
+      -2.602835447467639e-05,
+      -5.356967737375108e-06,
+      2.285538766725052e-05,
+      0.00010170668173800206,
+      0.0001249339217347771,
+      0.00013820565949195163,
+      0.00018153340153160478
+     ]
+    },
+    "new": {
+     "kick_energy_eV": 1.1752235921880346e-06,
+     "energy_drift": 0.005759949590878318,
+     "builds": 570,
+     "along_eA": [
+      0.0,
+      -3.944336231065001e-06,
+      -5.745517507254293e-05,
+      -6.614145060651566e-05,
+      -2.6067327184264504e-05,
+      -4.892749016886949e-06,
+      2.3005415746145244e-05,
+      0.00010298917875968578,
+      0.0001272809138915273,
+      0.00013897099273601872,
+      0.00018126419885460327
+     ]
+    }
+   },
+   {
+    "reason": "2026-11-16: the radial rule of the local-potential spheres has a panel edge on every corner of the potential (local cutoff, compensation radius, projector radii, partial-core radius, start of the ionic tail) and 64 nodes per panel (molecular sphere: the same edges; crystal sphere: the same, 32 nodes before) instead of one edge at the cutoff: the old rule's error moved the water pbe-sr energy by 5.6e-5 eV against a converged rule (-467.3379173823 old, -467.3379746990 new, -467.3379736501 at 256 nodes per panel; DECISIONS 2026-11-16 arthur quadrature panels); a self-pin of the production route on the installed library",
+    "old": {
+     "kick_energy_eV": 1.1752235921880346e-06,
+     "energy_drift": 0.005759949590878318,
+     "builds": 570,
+     "along_eA": [
+      0.0,
+      -3.944336231065001e-06,
+      -5.745517507254293e-05,
+      -6.614145060651566e-05,
+      -2.6067327184264504e-05,
+      -4.892749016886949e-06,
+      2.3005415746145244e-05,
+      0.00010298917875968578,
+      0.0001272809138915273,
+      0.00013897099273601872,
+      0.00018126419885460327
+     ]
+    },
+    "new": {
+     "kick_energy_eV": 1.175219725217469e-06,
+     "energy_drift": 0.005761860537046467,
+     "builds": 570,
+     "along_eA": [
+      0.0,
+      -3.944274694410234e-06,
+      -5.745500720223322e-05,
+      -6.614134111443531e-05,
+      -2.606708663257042e-05,
+      -4.8925600490476115e-06,
+      2.3005600427550118e-05,
+      0.00010298917808288034,
+      0.00012728122154472089,
+      0.0001389711623585025,
+      0.00018126458581059447
+     ]
+    }
+   }
+  ],
+  "water/lda": [
+   {
+    "reason": "2026-11-16: the PAW-LCAO library was regenerated (file format 3, mandacaru-paw 8a6e977); a self-pin of the production route on the installed library (the earlier 2026-11-12 water/hse06 re-freeze stays in the history)",
+    "old": {
+     "kick_energy_eV": 0.00013143744717227085,
+     "energy_drift": 0.005513994797168663,
+     "builds": 551,
+     "along_eA": [
+      0.0,
+      -0.0001780026244606753,
+      -0.0008724836251897145,
+      -0.0011181689635893603,
+      -0.0006860762389818517,
+      0.00021298013655806717,
+      -3.1807718033555474e-05,
+      0.0006998924235742438,
+      0.0010171082699423472,
+      0.0006762181801441149,
+      -0.0005764240986393881
+     ]
+    },
+    "new": {
+     "kick_energy_eV": 0.00013143740656907993,
+     "energy_drift": 0.005513671402633776,
+     "builds": 551,
+     "along_eA": [
+      0.0,
+      -0.00017799939062411463,
+      -0.0008724757751339585,
+      -0.0011181623186496137,
+      -0.0006860645748905501,
+      0.00021299093573713465,
+      -3.179001708211641e-05,
+      0.0006999207130640968,
+      0.0010171486298436486,
+      0.0006762574976071149,
+      -0.0005763745779997126
+     ]
+    }
+   },
+   {
+    "reason": "2026-11-16 (lda-sr keys, the same panel-edge quadrature as the other keys of quadrature_refreeze): the lda-sr water and NH2 records move by at most 1.1e-8 eV in the excitation energies and 4.4e-7 eV in the real-time width, inside the replay tolerances; the old layout (a scratch hook on the current sources) reproduces their previous records bit for bit, so the shift is the quadrature's; re-frozen so that every key reproduces bit for bit on the current sources (DECISIONS 2026-11-16 arthur quadrature panels)",
+    "old": {
+     "kick_energy_eV": 0.00013143740656907993,
+     "energy_drift": 0.005513671402633776,
+     "builds": 551,
+     "along_eA": [
+      0.0,
+      -0.00017799939062411463,
+      -0.0008724757751339585,
+      -0.0011181623186496137,
+      -0.0006860645748905501,
+      0.00021299093573713465,
+      -3.179001708211641e-05,
+      0.0006999207130640968,
+      0.0010171486298436486,
+      0.0006762574976071149,
+      -0.0005763745779997126
+     ],
+     "width_eV": 100.43817651240329
+    },
+    "new": {
+     "kick_energy_eV": 0.00013143740811586815,
+     "energy_drift": 0.005514005261830061,
+     "builds": 551,
+     "along_eA": [
+      0.0,
+      -0.0001779993905977944,
+      -0.0008724757739307489,
+      -0.001118162319803943,
+      -0.0006860645758418378,
+      0.00021299093579353512,
+      -3.1790016691073266e-05,
+      0.0006999207079429356,
+      0.0010171486232147153,
+      0.00067625749451637,
+      -0.000576374579917328
+     ],
+     "width_eV": 100.43817650942302
+    }
+   }
+  ],
+  "water/pbe": [
+   {
+    "reason": "2026-11-16: the PAW-LCAO library was regenerated (file format 3, mandacaru-paw 8a6e977); a self-pin of the production route on the installed library (the earlier 2026-11-12 water/hse06 re-freeze stays in the history)",
+    "old": {
+     "kick_energy_eV": 0.00013143879432814156,
+     "energy_drift": 0.005441771724008201,
+     "builds": 550,
+     "along_eA": [
+      0.0,
+      -0.00012730628845178366,
+      -0.0007766431568318408,
+      -0.0009737283414692651,
+      -0.0005442782430348213,
+      0.00021081576914109518,
+      0.00018027255630184564,
+      0.0013894423886620043,
+      0.0017967863719222132,
+      0.0013727398019765418,
+      0.0005828912958574626
+     ]
+    },
+    "new": {
+     "kick_energy_eV": 0.0001313760103873901,
+     "energy_drift": 0.005434166686430622,
+     "builds": 552,
+     "along_eA": [
+      0.0,
+      -0.0001285444677869046,
+      -0.0007762298176823543,
+      -0.0009752457533281895,
+      -0.0005425901865993215,
+      0.0002188865501058927,
+      0.00018878141588847988,
+      0.0014027260353448488,
+      0.0018055640736741503,
+      0.0013666729864865738,
+      0.0005700379072042956
+     ]
+    }
+   },
+   {
+    "reason": "2026-11-16: the radial rule of the local-potential spheres has a panel edge on every corner of the potential (local cutoff, compensation radius, projector radii, partial-core radius, start of the ionic tail) and 64 nodes per panel (molecular sphere: the same edges; crystal sphere: the same, 32 nodes before) instead of one edge at the cutoff: the old rule's error moved the water pbe-sr energy by 5.6e-5 eV against a converged rule (-467.3379173823 old, -467.3379746990 new, -467.3379736501 at 256 nodes per panel; DECISIONS 2026-11-16 arthur quadrature panels); a self-pin of the production route on the installed library",
+    "old": {
+     "kick_energy_eV": 0.0001313760103873901,
+     "energy_drift": 0.005434166686430622,
+     "builds": 552,
+     "along_eA": [
+      0.0,
+      -0.0001285444677869046,
+      -0.0007762298176823543,
+      -0.0009752457533281895,
+      -0.0005425901865993215,
+      0.0002188865501058927,
+      0.00018878141588847988,
+      0.0014027260353448488,
+      0.0018055640736741503,
+      0.0013666729864865738,
+      0.0005700379072042956
+     ]
+    },
+    "new": {
+     "kick_energy_eV": 0.000131375999366524,
+     "energy_drift": 0.00543423484135669,
+     "builds": 552,
+     "along_eA": [
+      0.0,
+      -0.00012854381268059744,
+      -0.0007762280915991162,
+      -0.0009752445553750376,
+      -0.0005425876569525027,
+      0.00021888912255313566,
+      0.00018878517320772948,
+      0.0014027296599688716,
+      0.0018055680912288522,
+      0.00136667700334191,
+      0.000570045889387514
+     ]
+    }
+   }
+  ],
+  "NH2/lda": [
+   {
+    "reason": "2026-11-16: the PAW-LCAO library was regenerated (file format 3, mandacaru-paw 8a6e977); a self-pin of the production route on the installed library (the earlier 2026-11-12 water/hse06 re-freeze stays in the history)",
+    "old": {
+     "kick_energy_eV": 0.00011164001195497945,
+     "energy_drift": 0.0033217876298475553,
+     "builds": 454,
+     "along_eA": [
+      0.0,
+      -0.0008576031373102783,
+      -0.0016431670943838758,
+      -1.5375847444782734e-06,
+      0.0007251137040061291,
+      0.001315629123366697,
+      0.0006452961886612519,
+      4.1234093827757215e-05,
+      -0.0015961447151110258,
+      -0.0003567830953768263,
+      -0.0008119212911069331
+     ]
+    },
+    "new": {
+     "kick_energy_eV": 0.00011164000557447802,
+     "energy_drift": 0.0033218363126959155,
+     "builds": 454,
+     "along_eA": [
+      0.0,
+      -0.0008576025849054369,
+      -0.0016431674318729092,
+      -1.540215212747746e-06,
+      0.0007251106607918211,
+      0.0013156284198161602,
+      0.0006452992553607088,
+      4.12396296375462e-05,
+      -0.001596141392827274,
+      -0.0003567845016356529,
+      -0.0008119281152346804
+     ]
+    }
+   },
+   {
+    "reason": "2026-11-16 (lda-sr keys, the same panel-edge quadrature as the other keys of quadrature_refreeze): the lda-sr water and NH2 records move by at most 1.1e-8 eV in the excitation energies and 4.4e-7 eV in the real-time width, inside the replay tolerances; the old layout (a scratch hook on the current sources) reproduces their previous records bit for bit, so the shift is the quadrature's; re-frozen so that every key reproduces bit for bit on the current sources (DECISIONS 2026-11-16 arthur quadrature panels)",
+    "old": {
+     "kick_energy_eV": 0.00011164000557447802,
+     "energy_drift": 0.0033218363126959155,
+     "builds": 454,
+     "along_eA": [
+      0.0,
+      -0.0008576025849054369,
+      -0.0016431674318729092,
+      -1.540215212747746e-06,
+      0.0007251106607918211,
+      0.0013156284198161602,
+      0.0006452992553607088,
+      4.12396296375462e-05,
+      -0.001596141392827274,
+      -0.0003567845016356529,
+      -0.0008119281152346804
+     ],
+     "width_eV": 83.58203085481968
+    },
+    "new": {
+     "kick_energy_eV": 0.00011164000750796331,
+     "energy_drift": 0.0033218189362369953,
+     "builds": 454,
+     "along_eA": [
+      0.0,
+      -0.0008576025836984672,
+      -0.001643167430481698,
+      -1.540212381444982e-06,
+      0.0007251106640780875,
+      0.0013156284229106651,
+      0.0006452992563007163,
+      4.123963011883007e-05,
+      -0.0015961413900636519,
+      -0.00035678449693937514,
+      -0.0008119281062895685
+     ],
+     "width_eV": 83.58203041882224
+    }
+   }
+  ],
+  "CuH+U/lda": [
+   {
+    "reason": "2026-11-16: the PAW-LCAO library was regenerated (file format 3, mandacaru-paw 8a6e977); a self-pin of the production route on the installed library (the earlier 2026-11-12 water/hse06 re-freeze stays in the history)",
+    "old": {
+     "kick_energy_eV": 6.998151218322172e-05,
+     "energy_drift": 0.0016963024304815994,
+     "builds": 403,
+     "along_eA": [
+      0.0,
+      0.00017719289729167248,
+      -0.0013120969422027184,
+      0.0019013568605096153,
+      -0.0007849332026097298,
+      0.0003284398491537332,
+      -0.00060911619299678,
+      0.00019369147045954685,
+      0.0006511726819038724,
+      -0.0006128962722808674,
+      0.00017387430062551441
+     ]
+    },
+    "new": {
+     "kick_energy_eV": 7.42660506045903e-05,
+     "energy_drift": 0.0015232935690562338,
+     "builds": 403,
+     "along_eA": [
+      0.0,
+      0.00011242737326515224,
+      -0.0011827237184406957,
+      0.001845544591440834,
+      -0.0008103547986333911,
+      0.00034632716761922797,
+      -0.0007186194101677925,
+      0.0005353390821668816,
+      0.00027378255069177856,
+      -0.00022390710349411147,
+      -0.0003965078482655909
+     ]
+    }
+   },
+   {
+    "reason": "2026-11-16: the radial rule of the local-potential spheres has a panel edge on every corner of the potential (local cutoff, compensation radius, projector radii, partial-core radius, start of the ionic tail) and 64 nodes per panel (molecular sphere: the same edges; crystal sphere: the same, 32 nodes before) instead of one edge at the cutoff: the old rule's error moved the water pbe-sr energy by 5.6e-5 eV against a converged rule (-467.3379173823 old, -467.3379746990 new, -467.3379736501 at 256 nodes per panel; DECISIONS 2026-11-16 arthur quadrature panels); a self-pin of the production route on the installed library",
+    "old": {
+     "kick_energy_eV": 7.42660506045903e-05,
+     "energy_drift": 0.0015232935690562338,
+     "builds": 403,
+     "along_eA": [
+      0.0,
+      0.00011242737326515224,
+      -0.0011827237184406957,
+      0.001845544591440834,
+      -0.0008103547986333911,
+      0.00034632716761922797,
+      -0.0007186194101677925,
+      0.0005353390821668816,
+      0.00027378255069177856,
+      -0.00022390710349411147,
+      -0.0003965078482655909
+     ]
+    },
+    "new": {
+     "kick_energy_eV": 7.426595857069084e-05,
+     "energy_drift": 0.001523222559885331,
+     "builds": 403,
+     "along_eA": [
+      0.0,
+      0.00011242769575542513,
+      -0.0011827243256554978,
+      0.0018455447817134038,
+      -0.0008103545423798108,
+      0.0003463275759133907,
+      -0.0007186200676917991,
+      0.0005353376539118781,
+      0.00027378358130102483,
+      -0.00022390645582138406,
+      -0.00039650729966214004
+     ]
+    }
+   }
+  ],
+  "Si/lda": [
+   {
+    "reason": "2026-11-16: the PAW-LCAO library was regenerated (file format 3, mandacaru-paw 8a6e977); a self-pin of the production route on the installed library (the earlier 2026-11-12 water/hse06 re-freeze stays in the history)",
+    "old": {
+     "kick_energy_eV": 0.00012191942771622231,
+     "energy_drift": 1.0907028491320557e-05,
+     "builds": 403,
+     "corrected": [
+      -0.00599579886429265,
+      -0.004508268301890341,
+      -0.0013274112796072188,
+      0.0016765130369543197,
+      0.00325210550653309,
+      0.0031023645637945165,
+      0.0022540285194173476,
+      0.0016412281076912004,
+      0.001488077777457022,
+      0.0012349815583014832,
+      6.113708669336146e-06
+     ]
+    },
+    "new": {
+     "kick_energy_eV": 0.00012191942771622231,
+     "energy_drift": 1.0764300069195354e-05,
+     "builds": 403,
+     "corrected": [
+      -0.005918489356581336,
+      -0.004422624618185709,
+      -0.0012388832755166738,
+      0.0017361798405586654,
+      0.0032537759921737294,
+      0.0030275871907663988,
+      0.0021261151868386145,
+      0.0015157114171564148,
+      0.0014059499895496248,
+      0.0011890871594148463,
+      -5.372776534608237e-05
+     ]
+    }
+   },
+   {
+    "reason": "2026-11-16: the radial rule of the local-potential spheres has a panel edge on every corner of the potential (local cutoff, compensation radius, projector radii, partial-core radius, start of the ionic tail) and 64 nodes per panel (molecular sphere: the same edges; crystal sphere: the same, 32 nodes before) instead of one edge at the cutoff: the old rule's error moved the water pbe-sr energy by 5.6e-5 eV against a converged rule (-467.3379173823 old, -467.3379746990 new, -467.3379736501 at 256 nodes per panel; DECISIONS 2026-11-16 arthur quadrature panels); a self-pin of the production route on the installed library",
+    "old": {
+     "kick_energy_eV": 0.00012191942771622231,
+     "energy_drift": 1.0764300069195354e-05,
+     "builds": 403,
+     "corrected": [
+      -0.005918489356581336,
+      -0.004422624618185709,
+      -0.0012388832755166738,
+      0.0017361798405586654,
+      0.0032537759921737294,
+      0.0030275871907663988,
+      0.0021261151868386145,
+      0.0015157114171564148,
+      0.0014059499895496248,
+      0.0011890871594148463,
+      -5.372776534608237e-05
+     ]
+    },
+    "new": {
+     "kick_energy_eV": 0.00012191942771622231,
+     "energy_drift": 1.0758551285526423e-05,
+     "builds": 403,
+     "corrected": [
+      -0.00591848938645676,
+      -0.0044226246530168455,
+      -0.0012388833171418827,
+      0.00173617980344867,
+      0.003253775976829696,
+      0.003027587204745796,
+      0.0021261152223757437,
+      0.0015157114637361295,
+      0.0014059500460482295,
+      0.0011890872331265525,
+      -5.3727678514890956e-05
+     ]
+    }
    }
   ]
+ },
+ "library_refreeze": {
+  "date": "2026-11-16",
+  "what": "every case: the traces, drift and builds (also listed under 'refrozen' with the old and new summaries)",
+  "why": "the library was regenerated (file format 3): the traces of CuH+U/lda, Si/lda and water/pbe moved by 0.6 to 3 percent of their scale, water/lda and NH2/lda by 1.6e-6 (above the 1e-6 tolerance)",
+  "cases": [
+   "water/lda",
+   "water/pbe",
+   "water/hse06",
+   "NH2/lda",
+   "CuH+U/lda",
+   "Si/lda"
+  ],
+  "route": "self-pin of the production routine on the installed library (Rust through the public Python API of the module under test); the old Python outputs of these cases are no longer reproducible because the library was regenerated",
+  "library": {
+   "checkout": "mandacaru-paw 8a6e977 (v3 with tail, installed 2026-11-16 02:21)",
+   "files": {
+    "lda-sr/H": "730c4c02d4e03748",
+    "lda-sr/N": "9f99e3e145f25c6f",
+    "lda-sr/O": "bc52e9b75d5a1bd6",
+    "lda-sr/Si": "714b6c27a854d26f",
+    "lda-sr/Cu": "a6633882cb635038",
+    "pbe-sr/H": "8f08e5ab434c6cc5",
+    "pbe-sr/N": "ec2d6bcd40aa0e0e",
+    "pbe-sr/O": "17424877612e7946",
+    "pbe-sr/Si": "3358d5a6d81ae3ee",
+    "pbe-sr/Cu": "dfb247f31ea7e237"
+   }
+  },
+  "extension_sha256_prefix": "00e4d7ff"
+ },
+ "quadrature_refreeze": {
+  "date": "2026-11-16",
+  "cases": [
+   "water/pbe",
+   "water/hse06",
+   "CuH+U/lda",
+   "Si/lda",
+   "water/lda",
+   "NH2/lda"
+  ],
+  "why": "2026-11-16: the radial rule of the local-potential spheres has a panel edge on every corner of the potential (local cutoff, compensation radius, projector radii, partial-core radius, start of the ionic tail) and 64 nodes per panel (molecular and crystal spheres; the crystal sphere had 32 per panel before) instead of one edge at the cutoff. The old rule's error: the water pbe-sr ground state of these replays (DZP, grid_spacing 0.25 A, 4 A vacuum) is -467.3379173823 eV with it, -467.3379746990 eV with the new rule, and -467.3379736485 / -467.3379736484 eV with 512 nodes per panel on the new / old edges (the converged value both rules reach): the old error 5.63e-5 eV, the new 1.05e-6 eV (DECISIONS 2026-11-16 arthur quadrature panels); a self-pin of the production route on the installed library",
+  "route": "self-pin of the production routine on the installed library (Rust through the public Python API of the module under test, freeze_real_time.case unchanged), scratch extension built from the quadrature fix",
+  "library": {
+   "checkout": "mandacaru-paw installed 2026-11-16 (format 3)",
+   "files": {
+    "pbe-sr/H": "8f08e5ab434c6cc5",
+    "pbe-sr/O": "17424877612e7946",
+    "pbe-sr/N": "ec2d6bcd40aa0e0e",
+    "pbe-sr/Cu": "dfb247f31ea7e237",
+    "lda-sr/H": "730c4c02d4e03748",
+    "lda-sr/O": "bc52e9b75d5a1bd6",
+    "lda-sr/N": "9f99e3e145f25c6f",
+    "lda-sr/Cu": "a6633882cb635038",
+    "pbe-sr/Si": "3358d5a6d81ae3ee",
+    "lda-sr/Si": "714b6c27a854d26f"
+   }
+  },
+  "extension_sha256_prefix": "984e94bc",
+  "reproduced": "the keys frozen at 20:01 on extension ed02711e reproduce bit for bit on 984e94bc (scratch extension of the main sources of 22:32); the lda-sr keys were added on it"
  }
 }

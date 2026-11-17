@@ -311,7 +311,7 @@ impl RdmMeasurement {
 
     /// The measurement of `problem`'s RDMs on its register. A tapered problem is refused: its
     /// circuits live on the tapered register, and the RDM strings would need mapping there.
-    pub fn of_problem(problem: &super::CachedProblem, limit: Option<usize>) -> Result<Self> {
+    pub fn of_problem(problem: &super::QuantumProblem, limit: Option<usize>) -> Result<Self> {
         if problem.taper.is_some() {
             return Err(Error::Unsupported(
                 "measured reduced density matrices of a tapered problem are not implemented: \

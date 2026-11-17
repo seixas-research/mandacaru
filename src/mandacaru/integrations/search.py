@@ -10,7 +10,7 @@ import uuid
 from .. import _native
 
 
-def configure(driver, *, max_steps, min_length, max_length, move_weights,
+def configure(calculation, *, max_steps, min_length, max_length, move_weights,
               temperature, length_penalty, warm_start, replace_start,
               screen_insertions, proposal_temperature, proposal, record, seed,
               proposal_model=None, replicas=1, replica_spacing=2.0):
@@ -38,7 +38,7 @@ def configure(driver, *, max_steps, min_length, max_length, move_weights,
     if temperature is None:
         temperatures = [_native.energy_to_hartree(.1, "eV"), _native.energy_to_hartree(.001, "eV")]
     else:
-        unit = "Ha" if driver._atomic_units else "eV"
+        unit = "Ha" if calculation._atomic_units else "eV"
         if isinstance(temperature, dict):
             if set(temperature) != {"initial", "final"}:
                 raise ValueError("an annealed temperature needs initial and final values")
@@ -57,32 +57,34 @@ def configure(driver, *, max_steps, min_length, max_length, move_weights,
         raise ValueError("replica exchange needs a nonzero temperature and no screen_insertions")
     if replicas == 1 and replica_spacing != 2.0:
         raise ValueError("replica_spacing requires replicas > 1")
-    driver._search_record = None if destination is None else Path(destination)
-    if proposal_model is not None and driver.method != "valsqa":
-        raise ValueError("proposal_model requires valsqa")
-    driver._proposal_model = proposal_model
-    driver._search = dict(max_steps=max_steps, max_length=max_length,
-                          move_weights=weights, temperatures=temperatures,
-                          length_penalty=_native.convert_energy(
-                              float(length_penalty), "Ha" if driver._atomic_units else "eV", "Ha"),
-                          warm_start=warm_start, replace_start=replace_start,
-                          screen_insertions=screen_insertions,
-                          proposal_temperature=proposal_temperature,
-                          proposal=proposal, record=destination is not None,
-                          seed=secrets.randbits(64) if seed is None else seed,
-                          replicas=replicas, replica_spacing=float(replica_spacing))
+    calculation._search_record = None if destination is None else Path(destination)
+    if proposal_model is not None and calculation.method not in ("valsqa", "subspace-valsqa"):
+        raise ValueError("proposal_model requires valsqa or subspace-valsqa")
+    calculation._proposal_model = proposal_model
+    calculation._search = dict(
+        max_steps=max_steps, max_length=max_length, move_weights=weights, temperatures=temperatures,
+        length_penalty=_native.convert_energy(float(length_penalty), "Ha" if calculation._atomic_units else "eV", "Ha"),
+        warm_start=warm_start, replace_start=replace_start, screen_insertions=screen_insertions,
+        proposal_temperature=proposal_temperature, proposal=proposal, record=destination is not None,
+        seed=secrets.randbits(64) if seed is None else seed, replicas=replicas, replica_spacing=float(replica_spacing))
 
 
-def run(driver, initial_parameters):
-    if driver._execute_circuits or driver._resume_path is not None:
-        raise NotImplementedError("native architecture search currently uses local state vectors and fresh chains")
-    model = None
-    reason = None
-    if driver.method == "valsqa":
+def run(calculation, initial_parameters, *, executor=None, resume=None):
+    is_subspace = calculation.method.startswith("subspace-")
+    if is_subspace and (calculation._execute_circuits or executor is not None):
+        raise NotImplementedError("subspace architecture search requires local state vectors")
+    resume_json = None
+    if resume is not None:
+        chain_state = (json.loads(resume.json).get("status") or {}).get("search_chain")
+        if chain_state is None:
+            raise ValueError("checkpoint does not contain a saved VASQA chain state")
+        resume_json = json.dumps(chain_state)
+    model, reason = None, None
+    if calculation.method in ("valsqa", "subspace-valsqa"):
         from ..analysis.proposals import MODEL_FILE, ProposalModel
-        candidate = driver._proposal_model
+        candidate = calculation._proposal_model
         if candidate is None:
-            store = driver._search_record or os.environ.get("MANDACARU_PROPOSAL_DATA")
+            store = calculation._search_record or os.environ.get("MANDACARU_PROPOSAL_DATA")
             if store is not None and (Path(store) / MODEL_FILE).exists():
                 candidate = Path(store) / MODEL_FILE
         if candidate is not None and candidate is not False:
@@ -90,52 +92,46 @@ def run(driver, initial_parameters):
             reason = model.report["reason"]
         else:
             reason = "no trained proposal model supplied; using gradient proposals"
-    carried = driver._transfer_info
+    carried = calculation._transfer_info
     carry = carried is not None and carried["accepted"]
     if carry and initial_parameters is not None:
         raise ValueError("choose transferred or explicit initial parameters")
-    raw = driver.problem.search(
-        **driver._search, optimizer=driver._optimizer["method"],
-        max_iterations=driver._optimizer.get("maxiter", 300),
-        max_evaluations=driver._optimizer.get("maxfev", 5000),
-        tolerance=driver._optimizer.get("tol", 1e-9),
-        initial_indices=carried["indices"] if carry else None,
-        initial_parameters=carried["parameters"] if carry else initial_parameters,
-        transfer_steps=driver._transfer_steps,
-        proposal_model=None if model is None else model.native_json)
-    if driver.method == "valsqa":
-        raw.update(proposal_ready=model is not None and model.ready,
-                   proposal_reason=reason)
-        if driver._update_between_geometries:
-            raw["model_update"] = (
-                "none (no proposal model)" if model is None else
+    common = dict(**calculation._search, optimizer=calculation._optimizer["method"],
+                  max_iterations=calculation._optimizer.get("maxiter", 300), max_evaluations=calculation._optimizer.get("maxfev", 5000),
+                  tolerance=calculation._optimizer.get("tol", 1e-9), initial_indices=carried["indices"] if carry else None,
+                  initial_parameters=carried["parameters"] if carry else initial_parameters, transfer_steps=calculation._transfer_steps,
+                  proposal_model=None if model is None else model.native_json, resume_json=resume_json)
+    if is_subspace:
+        weights = [2.0, 1.0] if calculation._weights is None else list(calculation._weights)
+        raw = calculation.problem.search_subspace(weights, **common)
+    else:
+        raw = calculation.problem.search(**common, executor=executor, shots=calculation._shots or 0)
+    if calculation.method in ("valsqa", "subspace-valsqa"):
+        raw.update(proposal_ready=model is not None and model.ready, proposal_reason=reason)
+        if calculation._update_between_geometries:
+            raw["model_update"] = ("none (no proposal model)" if model is None else
                 "none (model is not ready)" if not model.ready else
                 "graph model carried unchanged; graph training is offline")
     details = json.loads(raw.pop("search_json"))
     records = details.pop("records")
     details["chain_steps"] = details.pop("steps")
-    details["acceptance_by_move"] = dict(zip(
-        ("insert", "delete", "replace"), details["acceptance_by_move"]))
+    details["acceptance_by_move"] = dict(zip(("insert", "delete", "replace"), details["acceptance_by_move"]))
     raw.update(details)
-    if driver._search_record is not None:
-        save_records(driver, records)
+    if calculation._search_record is not None:
+        save_records(calculation, records)
     return raw
 
 
-def save_records(driver, records):
-    problem = driver.problem
-    payload = dict(format="mandacaru-search-problem", version=1,
-                   hamiltonian=problem.hamiltonian_terms,
-                   pool=problem.pool_terms, labels=problem.pool_labels,
-                   mapping=problem.mapping, num_particles=problem.num_particles,
-                   spatial_orbitals=problem.n_spatial_orbitals,
-                   num_qubits=problem.num_qubits)
-    geometry = driver._search_geometry
-    if geometry is not None:
-        payload["composition"] = sorted(Counter(geometry.numbers).items())
+def save_records(calculation, records):
+    problem = calculation.problem
+    payload = dict(format="mandacaru-search-problem", version=1, hamiltonian=problem.hamiltonian_terms,
+                   pool=problem.pool_terms, labels=problem.pool_labels, mapping=problem.mapping,
+                   num_particles=problem.num_particles, spatial_orbitals=problem.n_spatial_orbitals, num_qubits=problem.num_qubits)
+    if calculation._search_geometry is not None:
+        payload["composition"] = sorted(Counter(calculation._search_geometry.numbers).items())
     encoded = json.dumps(payload, sort_keys=True, allow_nan=False)
     identity = hashlib.sha256(encoded.encode()).hexdigest()
-    store = driver._search_record
+    store = calculation._search_record
     problems, chains = store / "problems", store / "chains"
     problems.mkdir(parents=True, exist_ok=True)
     chains.mkdir(parents=True, exist_ok=True)

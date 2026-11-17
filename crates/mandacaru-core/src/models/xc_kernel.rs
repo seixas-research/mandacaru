@@ -232,16 +232,32 @@ pub fn second_change(
         || delta.len() != 2 * n
         || densities.iter().chain(delta).any(|v| !v.is_finite())
     {
-        return Err(invalid("the third-order XC kernel needs two finite densities and changes"));
+        return Err(invalid(
+            "the third-order XC kernel needs two finite densities and changes",
+        ));
     }
     let size = if gradient { product(&[6, n])? } else { 0 };
-    let (mut g, mut dg, mut flux) = (ctx.allocate::<f64>(size)?, ctx.allocate::<f64>(size)?, ctx.allocate::<f64>(size)?);
+    let (mut g, mut dg, mut flux) = (
+        ctx.allocate::<f64>(size)?,
+        ctx.allocate::<f64>(size)?,
+        ctx.allocate::<f64>(size)?,
+    );
     if gradient {
         for s in 0..2 {
             for a in 0..3 {
                 let at = (s * 3 + a) * n..(s * 3 + a + 1) * n;
-                xc::derivative(grid, &densities[s * n..(s + 1) * n], a, &mut g.as_mut_slice()[at.clone()])?;
-                xc::derivative(grid, &delta[s * n..(s + 1) * n], a, &mut dg.as_mut_slice()[at])?;
+                xc::derivative(
+                    grid,
+                    &densities[s * n..(s + 1) * n],
+                    a,
+                    &mut g.as_mut_slice()[at.clone()],
+                )?;
+                xc::derivative(
+                    grid,
+                    &delta[s * n..(s + 1) * n],
+                    a,
+                    &mut dg.as_mut_slice()[at],
+                )?;
             }
         }
     }
@@ -289,7 +305,12 @@ pub fn second_change(
         let mut work = ctx.allocate::<f64>(n)?;
         for s in 0..2 {
             for a in 0..3 {
-                xc::derivative(grid, &flux.as_slice()[(s * 3 + a) * n..(s * 3 + a + 1) * n], a, work.as_mut_slice())?;
+                xc::derivative(
+                    grid,
+                    &flux.as_slice()[(s * 3 + a) * n..(s * 3 + a + 1) * n],
+                    a,
+                    work.as_mut_slice(),
+                )?;
                 for k in 0..n {
                     out.as_mut_slice()[s * n + k] -= work.as_slice()[k];
                 }
@@ -669,7 +690,11 @@ impl NoncollinearKernel {
         let mut spins = ctx.allocate::<f64>(2 * n)?;
         if !self.isotropic {
             let (axes, norms) = (self.axes.as_slice(), self.norms.as_slice());
-            let along = |k: usize| (0..3).map(|a| axes[a * n + k] * delta[(a + 1) * n + k]).sum::<f64>();
+            let along = |k: usize| {
+                (0..3)
+                    .map(|a| axes[a * n + k] * delta[(a + 1) * n + k])
+                    .sum::<f64>()
+            };
             let perp = |k: usize, a: usize| delta[(a + 1) * n + k] - axes[a * n + k] * along(k);
             let squared = |k: usize| (0..3).map(|a| perp(k, a).powi(2)).sum::<f64>();
             let mut curve = ctx.allocate::<f64>(2 * n)?;
@@ -677,7 +702,11 @@ impl NoncollinearKernel {
                 let s = along(k);
                 spins.as_mut_slice()[k] = 0.5 * (delta[k] + s);
                 spins.as_mut_slice()[n + k] = 0.5 * (delta[k] - s);
-                let bend = if norms[k] > 0. { 0.25 * squared(k) / norms[k] } else { 0. };
+                let bend = if norms[k] > 0. {
+                    0.25 * squared(k) / norms[k]
+                } else {
+                    0.
+                };
                 curve.as_mut_slice()[k] = bend;
                 curve.as_mut_slice()[n + k] = -bend;
             }
@@ -691,13 +720,21 @@ impl NoncollinearKernel {
             )?;
             let mut scratch = self.collinear.scratch(ctx)?;
             let mut response = ctx.allocate::<f64>(2 * n)?;
-            self.collinear
-                .apply(grid, curve.as_slice(), response.as_mut_slice(), &mut scratch)?;
+            self.collinear.apply(
+                grid,
+                curve.as_slice(),
+                response.as_mut_slice(),
+                &mut scratch,
+            )?;
             for (a, b) in v2.as_mut_slice().iter_mut().zip(response.as_slice()) {
                 *a += b;
             }
-            self.collinear
-                .apply(grid, spins.as_slice(), response.as_mut_slice(), &mut scratch)?;
+            self.collinear.apply(
+                grid,
+                spins.as_slice(),
+                response.as_mut_slice(),
+                &mut scratch,
+            )?;
             let (v2, v1) = (v2.as_slice(), response.as_slice());
             let transverse = self.transverse.as_slice();
             let mut out = ctx.allocate::<f64>(4 * n)?;
@@ -706,7 +743,11 @@ impl NoncollinearKernel {
                 o[k] = 0.5 * (v2[k] + v2[n + k]);
                 if norms[k] > 0. {
                     let (s, p2, norm) = (along(k), squared(k), norms[k]);
-                    let (w2, w1, w0) = (0.5 * (v2[k] - v2[n + k]), 0.5 * (v1[k] - v1[n + k]), transverse[k] * norm);
+                    let (w2, w1, w0) = (
+                        0.5 * (v2[k] - v2[n + k]),
+                        0.5 * (v1[k] - v1[n + k]),
+                        transverse[k] * norm,
+                    );
                     for a in 0..3 {
                         let (u, d) = (axes[a * n + k], perp(k, a));
                         o[(a + 1) * n + k] =

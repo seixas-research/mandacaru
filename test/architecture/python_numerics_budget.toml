@@ -28,7 +28,7 @@ zero_sloc = 3103
 "analysis/berry.py" = { addsub = 2, nloops = 2, sloc = 222 }
 "analysis/bloch.py" = { sloc = 25 }
 "analysis/correlation.py" = { cmp = 1, sloc = 33 }
-"analysis/excitations.py" = { cmp = 2, sloc = 102 }
+"analysis/excitations.py" = { cmp = 2, sloc = 115 }
 "analysis/expressibility.py" = { sloc = 15 }
 "analysis/fields.py" = { sloc = 90 }
 "analysis/kspace.py" = { cmp = 1, tern = 1, sloc = 69 }
@@ -46,7 +46,7 @@ zero_sloc = 3103
 "basis/filtering.py" = { cmp = 4, nloops = 1, sloc = 116, category = "hand-off" }
 "basis/multizeta.py" = { addsub = 2, cmp = 1, sloc = 32, category = "hand-off" }
 "basis/relativity.py" = { sloc = 108, category = "hand-off" }
-"calculation.py" = { bi = 3, imp = 1, addsub = 3, cmp = 26, nloops = 4, sloc = 1860 }
+"calculation.py" = { bi = 3, imp = 1, addsub = 3, cmp = 26, nloops = 4, sloc = 1825 }
 "circuits/profiling.py" = { imp = 5, sloc = 89 }
 "cli.py" = { arith = 1, arithmax = 1, sloc = 108 }
 "core/__init__.py" = { bi = 1, sloc = 41 }
@@ -62,14 +62,14 @@ zero_sloc = 3103
 "integrals/__init__.py" = { sloc = 2, category = "hand-off" }
 "integrals/grid.py" = { sloc = 70, category = "result-view" }
 "integrations/ase.py" = { sloc = 45 }
-"integrations/ase_properties.py" = { bi = 1, acomp = 1, arith = 1, arithmax = 1, cmp = 5, tern = 1, sloc = 299 }
+"integrations/ase_properties.py" = { bi = 1, acomp = 1, arith = 1, arithmax = 1, cmp = 5, tern = 1, sloc = 302 }
 "integrations/basis_recipe.py" = { cmp = 1, sloc = 73 }
 "integrations/basis_report.py" = { bi = 7, sloc = 155 }
 "integrations/berry.py" = { arith = 1, arithmax = 1, addsub = 2, cmp = 7, tern = 1, nloops = 1, sloc = 148 }
-"integrations/bloch.py" = { acomp = 1, arith = 1, arithmax = 1, cmp = 6, nloops = 1, sloc = 218 }
+"integrations/bloch.py" = { acomp = 1, arith = 1, arithmax = 1, cmp = 6, nloops = 1, sloc = 215 }
 "integrations/circuits.py" = { cmp = 6, nloops = 2, sloc = 256 }
 "integrations/device_forces.py" = { cmp = 1, sloc = 107 }
-"integrations/excitations.py" = { sloc = 39 }
+"integrations/excitations.py" = { sloc = 41 }
 "integrations/history.py" = { addsub = 4, cmp = 8, nloops = 1, sloc = 92 }
 "integrations/kspace.py" = { cmp = 5, nloops = 2, sloc = 86 }
 "integrations/measurement_scheme.py" = { sloc = 50 }
@@ -78,10 +78,10 @@ zero_sloc = 3103
 "integrations/real_time.py" = { addsub = 1, sloc = 47 }
 "integrations/reporting.py" = { addsub = 1, cmp = 2, tern = 2, sloc = 235 }
 "integrations/run_log_fields.py" = { addsub = 2, cmp = 5, tern = 2, sloc = 271 }
-"integrations/search.py" = { bi = 1, arith = 2, arithmax = 2, cmp = 7, nloops = 1, sloc = 138 }
+"integrations/search.py" = { bi = 1, arith = 2, arithmax = 2, cmp = 7, nloops = 1, sloc = 133 }
 "integrations/setup_block.py" = { bi = 2, addsub = 1, sloc = 96 }
 "integrations/tapering.py" = { cmp = 1, tern = 1, nloops = 1, sloc = 32 }
-"integrations/transfer.py" = { cmp = 2, sloc = 54 }
+"integrations/transfer.py" = { cmp = 2, sloc = 51 }
 "integrations/wannier.py" = { bi = 1, cmp = 8, tern = 1, nloops = 1, sloc = 210 }
 "models/basis.py" = { sloc = 228, category = "validation" }
 "models/datasets.py" = { cmp = 2, tern = 1, sloc = 32, category = "validation" }
@@ -109,16 +109,16 @@ zero_sloc = 3103
 "pseudopotentials/record.py" = { addsub = 1, nloops = 1, sloc = 193, category = "hand-off" }
 "resources.py" = { bi = 2, cmp = 3, nloops = 1, sloc = 116 }
 "results.py" = { imp = 1, cmp = 7, tern = 3, nloops = 1, sloc = 558 }
-"specifications.py" = { cmp = 1, sloc = 110 }
+"specifications.py" = { cmp = 1, sloc = 105 }
 "structure.py" = { cmp = 2, sloc = 92 }
 "units.py" = { cmp = 1, tern = 1, sloc = 47 }
 "utils/__init__.py" = { bi = 1, sloc = 35 }
 "utils/banner.py" = { addsub = 2, tern = 1, nloops = 2, sloc = 71 }
 "utils/bibliography.py" = { bi = 2, addsub = 5, nloops = 1, sloc = 2287 }
 "utils/bxsf.py" = { sloc = 17 }
-"utils/citations.py" = { addsub = 6, nloops = 2, sloc = 297 }
+"utils/citations.py" = { addsub = 6, nloops = 2, sloc = 287 }
 "utils/cube.py" = { bi = 2, cmp = 1, sloc = 57 }
-"utils/logging.py" = { bi = 14, aloops = 1, arith = 9, arithmax = 6, addsub = 47, neg = 1, cmp = 23, tern = 3, nloops = 5, sloc = 1312 }
+"utils/logging.py" = { bi = 14, aloops = 1, arith = 9, arithmax = 6, addsub = 47, neg = 1, cmp = 23, tern = 3, nloops = 5, sloc = 1318 }
 "utils/memory.py" = { bi = 4, aloops = 1, arith = 3, arithmax = 2, addsub = 1, cmp = 2, nloops = 1, sloc = 68 }
 "utils/profiling.py" = { bi = 4, arith = 2, arithmax = 2, addsub = 5, sloc = 104 }
 "utils/shell_config.py" = { arith = 1, arithmax = 1, sloc = 102 }

@@ -23,7 +23,8 @@ pub fn int_nullvector(w: &Matrix3<i32>) -> Option<[i32; 3]> {
     let pairs = [(0, 1), (0, 2), (1, 2)];
     for (i, j) in pairs {
         let v0 = (a[(i, 1)] as i64) * (a[(j, 2)] as i64) - (a[(i, 2)] as i64) * (a[(j, 1)] as i64);
-        let v1 = -((a[(i, 0)] as i64) * (a[(j, 2)] as i64) - (a[(i, 2)] as i64) * (a[(j, 0)] as i64));
+        let v1 =
+            -((a[(i, 0)] as i64) * (a[(j, 2)] as i64) - (a[(i, 2)] as i64) * (a[(j, 0)] as i64));
         let v2 = (a[(i, 0)] as i64) * (a[(j, 1)] as i64) - (a[(i, 1)] as i64) * (a[(j, 0)] as i64);
         let g = gcd(gcd(v0.abs(), v1.abs()), v2.abs());
         if g > 0 {
@@ -139,9 +140,8 @@ fn row_hnf_3d(mut rows: Vec<[i64; 3]>) -> Matrix3<i64> {
         }
     }
     Matrix3::new(
-        rows[0][0], rows[0][1], rows[0][2],
-        rows[1][0], rows[1][1], rows[1][2],
-        rows[2][0], rows[2][1], rows[2][2],
+        rows[0][0], rows[0][1], rows[0][2], rows[1][0], rows[1][1], rows[1][2], rows[2][0],
+        rows[2][1], rows[2][2],
     )
 }
 
@@ -170,9 +170,15 @@ pub fn primitive_matrices_from_pure_taus(
     }
 
     let mut p = Matrix3::new(
-        h_mat[(0, 0)] as f64 / m_scale as f64, h_mat[(1, 0)] as f64 / m_scale as f64, h_mat[(2, 0)] as f64 / m_scale as f64,
-        h_mat[(0, 1)] as f64 / m_scale as f64, h_mat[(1, 1)] as f64 / m_scale as f64, h_mat[(2, 1)] as f64 / m_scale as f64,
-        h_mat[(0, 2)] as f64 / m_scale as f64, h_mat[(1, 2)] as f64 / m_scale as f64, h_mat[(2, 2)] as f64 / m_scale as f64,
+        h_mat[(0, 0)] as f64 / m_scale as f64,
+        h_mat[(1, 0)] as f64 / m_scale as f64,
+        h_mat[(2, 0)] as f64 / m_scale as f64,
+        h_mat[(0, 1)] as f64 / m_scale as f64,
+        h_mat[(1, 1)] as f64 / m_scale as f64,
+        h_mat[(2, 1)] as f64 / m_scale as f64,
+        h_mat[(0, 2)] as f64 / m_scale as f64,
+        h_mat[(1, 2)] as f64 / m_scale as f64,
+        h_mat[(2, 2)] as f64 / m_scale as f64,
     );
 
     let c00 = h_mat[(1, 1)] * h_mat[(2, 2)] - h_mat[(1, 2)] * h_mat[(2, 1)];
@@ -185,11 +191,7 @@ pub fn primitive_matrices_from_pure_taus(
     let c21 = -(h_mat[(0, 0)] * h_mat[(2, 1)] - h_mat[(0, 1)] * h_mat[(2, 0)]);
     let c22 = h_mat[(0, 0)] * h_mat[(1, 1)] - h_mat[(0, 1)] * h_mat[(1, 0)];
 
-    let adj_h_t = Matrix3::new(
-        c00, c10, c20,
-        c01, c11, c21,
-        c02, c12, c22,
-    );
+    let adj_h_t = Matrix3::new(c00, c10, c20, c01, c11, c21, c02, c12, c22);
 
     let mut q = Matrix3::from_fn(|r, c| {
         let num = m_scale * adj_h_t[(r, c)];
@@ -237,9 +239,12 @@ pub fn primitive_cell_from_pure_translations(
 
     for (p_in, &l) in cell.fractional.iter().zip(cell.labels.iter()) {
         let p_raw = [
-            (q[(0, 0)] as f64 * p_in[0] + q[(0, 1)] as f64 * p_in[1] + q[(0, 2)] as f64 * p_in[2]).rem_euclid(1.0),
-            (q[(1, 0)] as f64 * p_in[0] + q[(1, 1)] as f64 * p_in[1] + q[(1, 2)] as f64 * p_in[2]).rem_euclid(1.0),
-            (q[(2, 0)] as f64 * p_in[0] + q[(2, 1)] as f64 * p_in[1] + q[(2, 2)] as f64 * p_in[2]).rem_euclid(1.0),
+            (q[(0, 0)] as f64 * p_in[0] + q[(0, 1)] as f64 * p_in[1] + q[(0, 2)] as f64 * p_in[2])
+                .rem_euclid(1.0),
+            (q[(1, 0)] as f64 * p_in[0] + q[(1, 1)] as f64 * p_in[1] + q[(1, 2)] as f64 * p_in[2])
+                .rem_euclid(1.0),
+            (q[(2, 0)] as f64 * p_in[0] + q[(2, 1)] as f64 * p_in[1] + q[(2, 2)] as f64 * p_in[2])
+                .rem_euclid(1.0),
         ];
 
         let mut already_present = false;
@@ -251,9 +256,15 @@ pub fn primitive_cell_from_pure_translations(
             let dy = p_raw[1] - q_pos[1];
             let dz = p_raw[2] - q_pos[2];
             let d = [dx - dx.round(), dy - dy.round(), dz - dz.round()];
-            let vx = d[0] * prim_lattice[(0, 0)] + d[1] * prim_lattice[(1, 0)] + d[2] * prim_lattice[(2, 0)];
-            let vy = d[0] * prim_lattice[(0, 1)] + d[1] * prim_lattice[(1, 1)] + d[2] * prim_lattice[(2, 1)];
-            let vz = d[0] * prim_lattice[(0, 2)] + d[1] * prim_lattice[(1, 2)] + d[2] * prim_lattice[(2, 2)];
+            let vx = d[0] * prim_lattice[(0, 0)]
+                + d[1] * prim_lattice[(1, 0)]
+                + d[2] * prim_lattice[(2, 0)];
+            let vy = d[0] * prim_lattice[(0, 1)]
+                + d[1] * prim_lattice[(1, 1)]
+                + d[2] * prim_lattice[(2, 1)];
+            let vz = d[0] * prim_lattice[(0, 2)]
+                + d[1] * prim_lattice[(1, 2)]
+                + d[2] * prim_lattice[(2, 2)];
             let dist = (vx * vx + vy * vy + vz * vz).sqrt();
             if dist < tol.max(1e-4) {
                 already_present = true;
@@ -325,10 +336,7 @@ fn identify_centering_char(vecs: &[[i32; 3]]) -> char {
 }
 
 /// Standardize operations to the crystallographic conventional frame.
-pub fn standardize_operations(
-    ops: &Operations,
-    cell: &Cell,
-) -> Result<StandardFrame> {
+pub fn standardize_operations(ops: &Operations, cell: &Cell) -> Result<StandardFrame> {
     let system = ops.point_group.crystal_system;
 
     // 1. Extract pure translations and distinct rotation representatives
@@ -342,9 +350,15 @@ pub fn standardize_operations(
             pure_taus.push(*t);
         }
         let key = [
-            w[(0, 0)], w[(0, 1)], w[(0, 2)],
-            w[(1, 0)], w[(1, 1)], w[(1, 2)],
-            w[(2, 0)], w[(2, 1)], w[(2, 2)],
+            w[(0, 0)],
+            w[(0, 1)],
+            w[(0, 2)],
+            w[(1, 0)],
+            w[(1, 1)],
+            w[(1, 2)],
+            w[(2, 0)],
+            w[(2, 1)],
+            w[(2, 2)],
         ];
         if seen_rots.insert(key) {
             reps_in.push((*w, *t));
@@ -373,9 +387,12 @@ pub fn standardize_operations(
         let num_w = q * win * adj_q;
         let w_prim = Matrix3::from_fn(|r, c| num_w[(r, c)] / det_q);
         let t_prim = [
-            (q[(0, 0)] as f64 * tin[0] + q[(0, 1)] as f64 * tin[1] + q[(0, 2)] as f64 * tin[2]).rem_euclid(1.0),
-            (q[(1, 0)] as f64 * tin[0] + q[(1, 1)] as f64 * tin[1] + q[(1, 2)] as f64 * tin[2]).rem_euclid(1.0),
-            (q[(2, 0)] as f64 * tin[0] + q[(2, 1)] as f64 * tin[1] + q[(2, 2)] as f64 * tin[2]).rem_euclid(1.0),
+            (q[(0, 0)] as f64 * tin[0] + q[(0, 1)] as f64 * tin[1] + q[(0, 2)] as f64 * tin[2])
+                .rem_euclid(1.0),
+            (q[(1, 0)] as f64 * tin[0] + q[(1, 1)] as f64 * tin[1] + q[(1, 2)] as f64 * tin[2])
+                .rem_euclid(1.0),
+            (q[(2, 0)] as f64 * tin[0] + q[(2, 1)] as f64 * tin[1] + q[(2, 2)] as f64 * tin[2])
+                .rem_euclid(1.0),
         ];
         let mut t_snapped = t_prim;
         for c in 0..3 {
@@ -411,7 +428,10 @@ pub fn standardize_operations(
             let r_plus_i = r2 + Matrix3::identity();
             let mut n_row = [0i32; 3];
             for r in 0..3 {
-                let g = gcd(gcd(r_plus_i[(r, 0)].abs() as i64, r_plus_i[(r, 1)].abs() as i64), r_plus_i[(r, 2)].abs() as i64);
+                let g = gcd(
+                    gcd(r_plus_i[(r, 0)].abs() as i64, r_plus_i[(r, 1)].abs() as i64),
+                    r_plus_i[(r, 2)].abs() as i64,
+                );
                 if g > 0 {
                     n_row = [
                         (r_plus_i[(r, 0)] as i64 / g) as i32,
@@ -461,7 +481,10 @@ pub fn standardize_operations(
                 if (det == 1 && tr == -1) || (det == -1 && tr == 1) {
                     let r_proper = if det == 1 { *r } else { -*r };
                     if let Some(v) = int_nullvector(&r_proper) {
-                        if !axes.iter().any(|a: &[i32; 3]| a[0] == v[0] && a[1] == v[1] && a[2] == v[2]) {
+                        if !axes
+                            .iter()
+                            .any(|a: &[i32; 3]| a[0] == v[0] && a[1] == v[1] && a[2] == v[2])
+                        {
                             axes.push(v);
                         }
                     }
@@ -473,20 +496,28 @@ pub fn standardize_operations(
                 let mut v0 = axes[0];
                 let v1 = axes[1];
                 let v2 = axes[2];
-                let mut m = Matrix3::new(v0[0], v1[0], v2[0], v0[1], v1[1], v2[1], v0[2], v1[2], v2[2]);
+                let mut m = Matrix3::new(
+                    v0[0], v1[0], v2[0], v0[1], v1[1], v2[1], v0[2], v1[2], v2[2],
+                );
                 if det3(&m) < 0 {
                     v0 = [-v0[0], -v0[1], -v0[2]];
-                    m = Matrix3::new(v0[0], v1[0], v2[0], v0[1], v1[1], v2[1], v0[2], v1[2], v2[2]);
+                    m = Matrix3::new(
+                        v0[0], v1[0], v2[0], v0[1], v1[1], v2[1], v0[2], v1[2], v2[2],
+                    );
                 }
                 // For mmm and 222, if index 2 with 'A' or 'B' centering, permute to 'C'
                 if ops.point_group.symbol != "mm2" && det3(&m).abs() == 2 {
                     let cents = compute_centering_vectors(&m);
                     if cents.contains(&[0, 12, 12]) {
                         // Permute (y, z, x) -> (x, y, z)
-                        m = Matrix3::new(v1[0], v2[0], v0[0], v1[1], v2[1], v0[1], v1[2], v2[2], v0[2]);
+                        m = Matrix3::new(
+                            v1[0], v2[0], v0[0], v1[1], v2[1], v0[1], v1[2], v2[2], v0[2],
+                        );
                     } else if cents.contains(&[12, 0, 12]) {
                         // Permute (z, x, y) -> (x, y, z)
-                        m = Matrix3::new(v2[0], v0[0], v1[0], v2[1], v0[1], v1[1], v2[2], v0[2], v1[2]);
+                        m = Matrix3::new(
+                            v2[0], v0[0], v1[0], v2[1], v0[1], v1[1], v2[2], v0[2], v1[2],
+                        );
                     }
                 }
                 m
@@ -513,7 +544,13 @@ pub fn standardize_operations(
             let r2_plus_i = r2 + Matrix3::identity();
             let mut n_row = [0i32; 3];
             for r in 0..3 {
-                let g = gcd(gcd(r2_plus_i[(r, 0)].abs() as i64, r2_plus_i[(r, 1)].abs() as i64), r2_plus_i[(r, 2)].abs() as i64);
+                let g = gcd(
+                    gcd(
+                        r2_plus_i[(r, 0)].abs() as i64,
+                        r2_plus_i[(r, 1)].abs() as i64,
+                    ),
+                    r2_plus_i[(r, 2)].abs() as i64,
+                );
                 if g > 0 {
                     n_row = [
                         (r2_plus_i[(r, 0)] as i64 / g) as i32,
@@ -532,12 +569,22 @@ pub fn standardize_operations(
             let mut best_det = i32::MAX;
 
             let test_coeffs = [
-                (1, 0), (0, 1), (1, 1), (1, -1),
-                (2, 1), (1, 2), (-1, 1), (2, -1),
+                (1, 0),
+                (0, 1),
+                (1, 1),
+                (1, -1),
+                (2, 1),
+                (1, 2),
+                (-1, 1),
+                (2, -1),
             ];
 
             for (c1, c2) in test_coeffs {
-                let a = [c1 * u1[0] + c2 * u2[0], c1 * u1[1] + c2 * u2[1], c1 * u1[2] + c2 * u2[2]];
+                let a = [
+                    c1 * u1[0] + c2 * u2[0],
+                    c1 * u1[1] + c2 * u2[1],
+                    c1 * u1[2] + c2 * u2[2],
+                ];
                 let b = [
                     r4[(0, 0)] * a[0] + r4[(0, 1)] * a[1] + r4[(0, 2)] * a[2],
                     r4[(1, 0)] * a[0] + r4[(1, 1)] * a[1] + r4[(1, 2)] * a[2],
@@ -609,7 +656,10 @@ pub fn standardize_operations(
             let sum_r = Matrix3::identity() + r3 + r3_sq;
             let mut n_row = [0i32; 3];
             for r in 0..3 {
-                let g = gcd(gcd(sum_r[(r, 0)].abs() as i64, sum_r[(r, 1)].abs() as i64), sum_r[(r, 2)].abs() as i64);
+                let g = gcd(
+                    gcd(sum_r[(r, 0)].abs() as i64, sum_r[(r, 1)].abs() as i64),
+                    sum_r[(r, 2)].abs() as i64,
+                );
                 if g > 0 {
                     n_row = [
                         (sum_r[(r, 0)] as i64 / g) as i32,
@@ -628,12 +678,22 @@ pub fn standardize_operations(
             let mut best_det = i32::MAX;
 
             let test_coeffs = [
-                (1, 0), (0, 1), (1, 1), (1, -1),
-                (2, 1), (1, 2), (-1, 1), (2, -1),
+                (1, 0),
+                (0, 1),
+                (1, 1),
+                (1, -1),
+                (2, 1),
+                (1, 2),
+                (-1, 1),
+                (2, -1),
             ];
 
             for (c1, c2) in test_coeffs {
-                let mut a = [c1 * u1[0] + c2 * u2[0], c1 * u1[1] + c2 * u2[1], c1 * u1[2] + c2 * u2[2]];
+                let mut a = [
+                    c1 * u1[0] + c2 * u2[0],
+                    c1 * u1[1] + c2 * u2[1],
+                    c1 * u1[2] + c2 * u2[2],
+                ];
                 let mut b = [
                     r3[(0, 0)] * a[0] + r3[(0, 1)] * a[1] + r3[(0, 2)] * a[2],
                     r3[(1, 0)] * a[0] + r3[(1, 1)] * a[1] + r3[(1, 2)] * a[2],
@@ -699,7 +759,10 @@ pub fn standardize_operations(
                 if (det == 1 && tr == 1) || (det == -1 && tr == -1) {
                     let r_proper = if det == 1 { *r } else { -*r };
                     if let Some(v) = int_nullvector(&r_proper) {
-                        if !axes_4fold.iter().any(|a: &[i32; 3]| a[0] == v[0] && a[1] == v[1] && a[2] == v[2]) {
+                        if !axes_4fold
+                            .iter()
+                            .any(|a: &[i32; 3]| a[0] == v[0] && a[1] == v[1] && a[2] == v[2])
+                        {
                             axes_4fold.push(v);
                         }
                     }
@@ -714,7 +777,10 @@ pub fn standardize_operations(
                     let tr = r[(0, 0)] + r[(1, 1)] + r[(2, 2)];
                     if det == 1 && tr == -1 {
                         if let Some(v) = int_nullvector(r) {
-                            if !axes_2fold.iter().any(|a: &[i32; 3]| a[0] == v[0] && a[1] == v[1] && a[2] == v[2]) {
+                            if !axes_2fold
+                                .iter()
+                                .any(|a: &[i32; 3]| a[0] == v[0] && a[1] == v[1] && a[2] == v[2])
+                            {
                                 axes_2fold.push(v);
                             }
                         }
@@ -729,10 +795,14 @@ pub fn standardize_operations(
                 let mut v0 = axes[0];
                 let v1 = axes[1];
                 let v2 = axes[2];
-                let mut m = Matrix3::new(v0[0], v1[0], v2[0], v0[1], v1[1], v2[1], v0[2], v1[2], v2[2]);
+                let mut m = Matrix3::new(
+                    v0[0], v1[0], v2[0], v0[1], v1[1], v2[1], v0[2], v1[2], v2[2],
+                );
                 if det3(&m) < 0 {
                     v0 = [-v0[0], -v0[1], -v0[2]];
-                    m = Matrix3::new(v0[0], v1[0], v2[0], v0[1], v1[1], v2[1], v0[2], v1[2], v2[2]);
+                    m = Matrix3::new(
+                        v0[0], v1[0], v2[0], v0[1], v1[1], v2[1], v0[2], v1[2], v2[2],
+                    );
                 }
                 m
             }
@@ -759,9 +829,21 @@ pub fn standardize_operations(
         let w_conv = Matrix3::from_fn(|r, c| (num_w[(r, c)] as f64 / det_f64).round() as i32);
 
         let t_conv = [
-            ((adj_m[(0, 0)] as f64 * t_prim[0] + adj_m[(0, 1)] as f64 * t_prim[1] + adj_m[(0, 2)] as f64 * t_prim[2]) / det_f64).rem_euclid(1.0),
-            ((adj_m[(1, 0)] as f64 * t_prim[0] + adj_m[(1, 1)] as f64 * t_prim[1] + adj_m[(1, 2)] as f64 * t_prim[2]) / det_f64).rem_euclid(1.0),
-            ((adj_m[(2, 0)] as f64 * t_prim[0] + adj_m[(2, 1)] as f64 * t_prim[1] + adj_m[(2, 2)] as f64 * t_prim[2]) / det_f64).rem_euclid(1.0),
+            ((adj_m[(0, 0)] as f64 * t_prim[0]
+                + adj_m[(0, 1)] as f64 * t_prim[1]
+                + adj_m[(0, 2)] as f64 * t_prim[2])
+                / det_f64)
+                .rem_euclid(1.0),
+            ((adj_m[(1, 0)] as f64 * t_prim[0]
+                + adj_m[(1, 1)] as f64 * t_prim[1]
+                + adj_m[(1, 2)] as f64 * t_prim[2])
+                / det_f64)
+                .rem_euclid(1.0),
+            ((adj_m[(2, 0)] as f64 * t_prim[0]
+                + adj_m[(2, 1)] as f64 * t_prim[1]
+                + adj_m[(2, 2)] as f64 * t_prim[2])
+                / det_f64)
+                .rem_euclid(1.0),
         ];
 
         let t24 = [
@@ -776,9 +858,17 @@ pub fn standardize_operations(
         ];
 
         let key = (
-            [w_conv[(0, 0)], w_conv[(0, 1)], w_conv[(0, 2)],
-             w_conv[(1, 0)], w_conv[(1, 1)], w_conv[(1, 2)],
-             w_conv[(2, 0)], w_conv[(2, 1)], w_conv[(2, 2)]],
+            [
+                w_conv[(0, 0)],
+                w_conv[(0, 1)],
+                w_conv[(0, 2)],
+                w_conv[(1, 0)],
+                w_conv[(1, 1)],
+                w_conv[(1, 2)],
+                w_conv[(2, 0)],
+                w_conv[(2, 1)],
+                w_conv[(2, 2)],
+            ],
             t24_pos,
         );
 

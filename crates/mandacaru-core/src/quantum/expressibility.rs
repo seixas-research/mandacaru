@@ -1,5 +1,5 @@
 //! Random circuit fidelities and the binned Haar KL divergence.
-use super::{amplitude::State, evolution, CachedProblem};
+use super::{amplitude::State, evolution, QuantumProblem};
 use crate::{product, Buffer, Context, Error, Result};
 pub fn dimension(qubits: usize, particles: Option<[usize; 2]>) -> Result<usize> {
     if qubits > 62 {
@@ -62,7 +62,7 @@ pub fn kl(ctx: &Context, fidelities: &[f64], bins: usize, dimension: usize) -> R
     }
     Ok(value.max(0.))
 }
-impl CachedProblem {
+impl QuantumProblem {
     pub fn sample_fidelities(
         &self,
         indices: &[usize],

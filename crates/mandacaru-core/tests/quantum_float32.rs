@@ -8,7 +8,7 @@ use mandacaru_core::{
         dynamics::{qpe, Propagator},
         evolution, optimizer,
         sparse::SparseMatrix,
-        Basis, CachedProblem, Encoding, Operator, SolveOptions, C64,
+        Basis, Encoding, Operator, QuantumProblem, SolveOptions, C64,
     },
     Context, Error,
 };
@@ -17,7 +17,7 @@ fn context(megabytes: usize) -> Context {
     Context::new(Some(1), megabytes << 20).unwrap()
 }
 /// Half-filled Hubbard chain (t = 1, U = 2), `n` spatial orbitals, Jordan-Wigner.
-fn hubbard(ctx: &Context, n: usize, sector: bool, precision: Precision) -> CachedProblem {
+fn hubbard(ctx: &Context, n: usize, sector: bool, precision: Precision) -> QuantumProblem {
     let encoding = Encoding::new("jordan_wigner", 2 * n, [n / 2, n / 2]).unwrap();
     let mut h = Operator::new(ctx, 2 * n, &[]).unwrap();
     let mut add = |ladders: &[(usize, bool)], value: f64| {
@@ -34,7 +34,7 @@ fn hubbard(ctx: &Context, n: usize, sector: bool, precision: Precision) -> Cache
     for i in 0..n {
         add(&[(i, true), (i, false), (i + n, true), (i + n, false)], 2.);
     }
-    CachedProblem::new(
+    QuantumProblem::new(
         ctx,
         Encoding::new("jordan_wigner", 2 * n, [n / 2, n / 2]).unwrap(),
         h,
@@ -109,11 +109,22 @@ fn sparse_dense_and_matrix_free_hamiltonians_agree_in_float32() {
         for storage in 0..3 {
             let mut problem = hubbard(&ctx, 4, true, Precision::Float32);
             if storage == 1 {
-                problem.dense = Some(problem.hamiltonian.dense(&ctx, problem.register("test").unwrap()).unwrap());
+                problem.dense = Some(
+                    problem
+                        .hamiltonian
+                        .dense(&ctx, problem.register("test").unwrap())
+                        .unwrap(),
+                );
             }
             if storage == 2 {
-                problem.sparse =
-                    Some(SparseMatrix::new(&ctx, problem.register("test").unwrap(), &problem.hamiltonian).unwrap());
+                problem.sparse = Some(
+                    SparseMatrix::new(
+                        &ctx,
+                        problem.register("test").unwrap(),
+                        &problem.hamiltonian,
+                    )
+                    .unwrap(),
+                );
             }
             let value = problem
                 .evaluate(&[0, 1, 2], &[0.2, -0.1, 0.15], false)

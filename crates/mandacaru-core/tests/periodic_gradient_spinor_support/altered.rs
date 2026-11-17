@@ -182,7 +182,8 @@ impl Derivatives for SpinorAltered<'_> {
         if let Some((crystal, without, options)) = &self.scalar {
             let densities = scf::densities(crystal, &state.bands)?;
             let output = scf::output_fields(crystal, &densities, q)?;
-            *self.spectrum.lock().unwrap() = scf::rediagonalize(without, &output, options, &[], &[])?;
+            *self.spectrum.lock().unwrap() =
+                scf::rediagonalize(without, &output, options, &[], &[])?;
         }
         self.inner.fields(state, q)
     }

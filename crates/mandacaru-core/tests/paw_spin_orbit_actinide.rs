@@ -1,10 +1,7 @@
-//! An actinide through the Dirac chain. The freeze holds no actinide `fr` dataset (the sample is
-//! Na, Fe, Ce, Au, Pb and Si), so there is no oracle to match: this checks what does not need
-//! one, on uranium (5f, 6d, 7s with the 6s and 6p semicore, 138,000 points): the Dirac atom
+//! An actinide through the Dirac chain. There is no oracle to match: this checks what does not
+//! need one, on uranium (5f, 6d, 7s with the 6s and 6p semicore, 138,000 points): the Dirac atom
 //! converges, every `j` is recovered from the stored pair, each branch pair is ordered as the
 //! `L.S` coupling says, the level errors are finite, and the generation stays inside a gigabyte.
-mod paw_assemble_support;
-mod paw_generate_support;
 mod paw_spin_orbit_support;
 
 use mandacaru_core::models::relativity::Treatment;
@@ -23,7 +20,7 @@ fn matrix(a: &Array) -> DMatrix<f64> {
 }
 
 #[test]
-#[ignore = "minutes (no freeze, a 138,000-point Dirac atom): cargo test --release -p mandacaru-core --test paw_spin_orbit_actinide -- --ignored --nocapture"]
+#[ignore = "minutes (a 138,000-point Dirac atom): cargo test --release -p mandacaru-core --test paw_spin_orbit_actinide -- --ignored --nocapture"]
 fn uranium_has_a_consistent_spin_orbit_block() {
     let ctx = context();
     let recipe = Recipe::for_dataset("U", "lda", Treatment::Dirac).unwrap();

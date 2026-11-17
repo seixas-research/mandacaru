@@ -11,8 +11,8 @@ pub mod mpc;
 pub mod two_body;
 
 pub use ccmh::{
-    ccmh_extrapolate, structure_factor, Ccmh, CcmhShell, StructureFactor,
-    DEFAULT_SHELLS, QUADRATIC_REGIME_SPREAD,
+    ccmh_extrapolate, structure_factor, Ccmh, CcmhShell, StructureFactor, DEFAULT_SHELLS,
+    QUADRATIC_REGIME_SPREAD,
 };
 pub use kzk::{kzk, kzk_flexible, Fit, Kzk, Vacuum, DENSITY_FLOOR, HARTREE_PER_RYDBERG};
 pub use mpc::{mpc_from_hole_energies, mpc_hole_contraction, verify_hole_trace, Mpc};

@@ -2,7 +2,7 @@ use mandacaru_core::{
     math::autodiff::Tape,
     quantum::{
         search::learning::{
-            graph::{Candidates, Graph, Matrix},
+            graph::{BipartiteGraph, Candidates, Matrix},
             network::{self, Parameters},
         },
         C64,
@@ -10,8 +10,8 @@ use mandacaru_core::{
     Context,
 };
 
-fn graph(context: &Context) -> Graph {
-    Graph::new(
+fn graph(context: &Context) -> BipartiteGraph {
+    BipartiteGraph::new(
         context,
         4,
         0b1001,
@@ -119,4 +119,69 @@ fn message_passing_parameter_gradients_and_serialization_match_independent_displ
         assert!((loss(&restored) - loss(&parameters)).abs() < 1e-14);
     }
     assert_eq!(context.memory_used(), 0);
+}
+
+#[test]
+fn bipartite_graph_is_invariant_under_mo_sign_gauge() {
+    let context = Context::new(Some(1), 64 << 20).unwrap();
+    let base = graph(&context);
+    let flipped = BipartiteGraph::new(
+        &context,
+        4,
+        0b1001,
+        &[
+            ("ZIII".into(), C64::new(-0.3, 0.)),
+            ("XXII".into(), C64::new(-0.2, 0.)),
+            ("IYYI".into(), C64::new(-0.1, 0.)),
+            ("IIIZ".into(), C64::new(0.4, 0.)),
+        ],
+        &[
+            vec![
+                ("XIXI".into(), C64::new(0., -1.)),
+                ("YIYI".into(), C64::new(0., -0.5)),
+            ],
+            vec![
+                ("IYIZ".into(), C64::new(0., -1.)),
+                ("ZIXI".into(), C64::new(0., 0.2)),
+            ],
+        ],
+    )
+    .unwrap();
+    assert!((&base.term - &flipped.term).amax() < 1e-14);
+    assert!((&base.descriptors - &flipped.descriptors).amax() < 1e-14);
+    assert!((&base.overlap - &flipped.overlap).amax() < 1e-14);
+    for s in 0..3 {
+        assert!((&base.weighted[s] - &flipped.weighted[s]).amax() < 1e-14);
+        assert!((&base.pool[s] - &flipped.pool[s]).amax() < 1e-14);
+    }
+    let rows_a = Candidates::new(&context, &base, &[0, 1], &[0, 1], &[0.3, 0.2], 0.05).unwrap();
+    let rows_b = Candidates::new(&context, &flipped, &[0, 1], &[0, 1], &[0.3, 0.2], 0.05).unwrap();
+    assert!((&rows_a.descriptors - &rows_b.descriptors).amax() < 1e-14);
+    assert_eq!(rows_a.sequence_overlap, rows_b.sequence_overlap);
+}
+
+#[test]
+fn bipartite_graph_overlap_and_sequence_overlap_capture_anticommuting_support() {
+    let context = Context::new(Some(1), 64 << 20).unwrap();
+    let bg = BipartiteGraph::new(
+        &context,
+        4,
+        0b1001,
+        &[("ZIII".into(), C64::new(-0.3, 0.))],
+        &[
+            vec![("XIII".into(), C64::new(0., 1.))],
+            vec![("IYII".into(), C64::new(0., 1.))],
+            vec![("YIII".into(), C64::new(0., 1.))],
+        ],
+    )
+    .unwrap();
+    assert!((bg.overlap[(0, 0)] - 0.).abs() < 1e-14);
+    assert!((bg.overlap[(0, 2)] - 1.).abs() < 1e-14);
+    assert!((bg.overlap[(2, 0)] - 1.).abs() < 1e-14);
+    assert!((bg.overlap[(1, 2)] - 0.).abs() < 1e-14);
+
+    let early = Candidates::new(&context, &bg, &[0, 1], &[2], &[0., 0., 0.1], 0.01).unwrap();
+    let late = Candidates::new(&context, &bg, &[1, 0], &[2], &[0., 0., 0.1], 0.01).unwrap();
+    assert!((early.sequence_overlap[0] - 1. / 3.).abs() < 1e-14);
+    assert!((late.sequence_overlap[0] - 2. / 3.).abs() < 1e-14);
 }

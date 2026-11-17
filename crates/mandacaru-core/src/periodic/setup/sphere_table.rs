@@ -24,7 +24,7 @@ use super::{
     images::Images,
     pulay::Matrix,
     shells::Shells,
-    spheres::{Sphere, CHUNK_POINTS, SHORT_RANGE_AZIMUTHAL, SHORT_RANGE_POLAR, SHORT_RANGE_RADIAL},
+    spheres::{Sphere, CHUNK_POINTS},
 };
 use crate::{
     kernels::{self, ShellImages},
@@ -58,15 +58,8 @@ impl SphereTable {
         lattice: &Matrix3<f64>,
         sphere: &ShortRange<'_>,
     ) -> Result<Self> {
-        let rule = Sphere::rule(
-            ctx,
-            sphere.center,
-            sphere.potential.reach(sphere.sigma)?,
-            SHORT_RANGE_RADIAL,
-            SHORT_RANGE_POLAR,
-            SHORT_RANGE_AZIMUTHAL,
-            sphere.potential.cutoff,
-        )?;
+        let rule =
+            Sphere::short_range(ctx, lattice, sphere.center, sphere.potential, sphere.sigma)?;
         let all = 0..rule.len();
         let radii = rule.radii(all.clone());
         let sampled: Vec<f64> = radii.iter().map(|r| sphere.potential.value(*r)).collect();

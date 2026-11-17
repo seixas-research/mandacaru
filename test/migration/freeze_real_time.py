@@ -46,11 +46,10 @@ CRYSTAL = dict(method="dft", basis={"name": "PAW-LCAO", "size": "SZ"}, grid_spac
 CRYSTAL_ENERGIES = (1.0, 3.0, 5.0, 8.0)
 #: Dated re-freezes: a key here is recomputed and replaced once, the old and new summaries kept in
 #: the file's ``refrozen`` history; after that it is compared bitwise again like every other key.
-REFREEZE = {
-    "water/hse06": "2026-11-12: the ETRS corrector tolerance scales with the kick (owner decision "
-                   "Q18c); at 1e-4 / Bohr the absolute 1e-6 cost 1.1e-3 of the trace (frozen the "
-                   "same day)",
-}
+LIBRARY_V3 = ("2026-11-16: the PAW-LCAO library was regenerated (file format 3, mandacaru-paw 8a6e977); "
+              "a self-pin of the production route on the installed library (the earlier 2026-11-12 "
+              "water/hse06 re-freeze stays in the history)")
+REFREEZE = {key: LIBRARY_V3 for key in CASES}
 
 
 def system(key):

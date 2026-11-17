@@ -122,7 +122,11 @@ fn compare(
                 parameters: &solved.parameters,
                 product_form: true,
             }),
-            directions: Some(&nalgebra::DMatrix::from_column_slice(direction.len(), 1, direction)),
+            directions: Some(&nalgebra::DMatrix::from_column_slice(
+                direction.len(),
+                1,
+                direction,
+            )),
             ..Default::default()
         },
     )
@@ -194,8 +198,10 @@ fn the_unrestricted_force_gap_of_a_protected_pair_and_of_the_empty_block() {
         // The end atoms moved apart along the axis (a breathing step).
         let breathing = [0., 0., -1., 0., 0., 0., 0., 0., 1.];
         let uhf = Method::Hf("uhf");
-        let (a_analytic, a_numeric, a_oracle) = compare(&base, &state, uhf, [2, 1], &pair, &breathing);
-        let (b_analytic, b_numeric, b_oracle) = compare(&base, &state, uhf, [2, 1], &cut, &breathing);
+        let (a_analytic, a_numeric, a_oracle) =
+            compare(&base, &state, uhf, [2, 1], &pair, &breathing);
+        let (b_analytic, b_numeric, b_oracle) =
+            compare(&base, &state, uhf, [2, 1], &cut, &breathing);
         println!(
             "(a) protected pair: analytic {a_analytic:.3} meV/A, finite difference {a_numeric:.3}, gap {:.3}",
             (a_analytic - a_numeric).abs()
@@ -213,7 +219,10 @@ fn the_unrestricted_force_gap_of_a_protected_pair_and_of_the_empty_block() {
         // (a) A symmetry-protected pair: the analytic force is the derivative of the production
         // energy.
         assert!((a_analytic - a_numeric).abs() < 0.1, "protected pair");
-        assert!((a_analytic - a_oracle).abs() < 0.1, "protected pair, oracle");
+        assert!(
+            (a_analytic - a_oracle).abs() < 0.1,
+            "protected pair, oracle"
+        );
         // (b) Two orbitals cut out of the exact zero-occupation cluster: inside the cluster the
         // frame orbitals are eigenvectors of the lab-frame quadrupole, so they rotate with the
         // geometry (`frame::frame_response`). Without that response the analytic force missed by
@@ -258,7 +267,10 @@ fn the_restricted_force_of_a_cut_pi_pair_follows_the_production_energy() {
         let pair = (2..eps.len() - 1)
             .find(|&p| (eps[p + 1] - eps[p]).abs() < response::DEGENERACY_TOLERANCE)
             .expect("an exactly degenerate empty pair");
-        println!("levels {eps:?}; pair {pair}, splitting {:.3e} Ha", eps[pair + 1] - eps[pair]);
+        println!(
+            "levels {eps:?}; pair {pair}, splitting {:.3e} Ha",
+            eps[pair + 1] - eps[pair]
+        );
         let breathing = [0., 0., -1., 0., 0., 0., 0., 0., 0., 0., 0., 1.];
         let mut worst = (0f64, 0f64);
         for spec in [
@@ -268,17 +280,30 @@ fn the_restricted_force_of_a_cut_pi_pair_follows_the_production_energy() {
             r#"{"orbitals": [0, 1, 2]}"#.to_string(),
             format!(r#"{{"orbitals": [0, 1, 2, {pair}, {}]}}"#, pair + 1),
         ] {
-            let (analytic, numeric, oracle) = compare(&base, &state, rhf, [2, 2], &spec, &breathing);
+            let (analytic, numeric, oracle) =
+                compare(&base, &state, rhf, [2, 2], &spec, &breathing);
             println!(
                 "{spec}: analytic {analytic:.6} meV/A, finite difference {numeric:.6}, oracle {oracle:.6}; gaps {:.3e}, {:.3e}",
                 analytic - numeric,
                 oracle - numeric
             );
-            worst = (worst.0.max((analytic - numeric).abs()), worst.1.max((oracle - numeric).abs()));
+            worst = (
+                worst.0.max((analytic - numeric).abs()),
+                worst.1.max((oracle - numeric).abs()),
+            );
         }
-        println!("worst gaps: analytic {:.3e} meV/A, oracle {:.3e}", worst.0, worst.1);
-        assert!(worst.1 < 0.1, "the oracle against the production finite difference");
-        assert!(worst.0 < 0.1, "the analytic force against the production finite difference");
+        println!(
+            "worst gaps: analytic {:.3e} meV/A, oracle {:.3e}",
+            worst.0, worst.1
+        );
+        assert!(
+            worst.1 < 0.1,
+            "the oracle against the production finite difference"
+        );
+        assert!(
+            worst.0 < 0.1,
+            "the analytic force against the production finite difference"
+        );
     }
     assert_eq!(ctx.memory_used(), 0);
 }

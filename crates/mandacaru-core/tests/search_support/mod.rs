@@ -3,7 +3,7 @@
 //! with singles has eight operators, so `max_length = 2` gives exactly 73 sequences.
 #![allow(dead_code)]
 use mandacaru_core::{
-    quantum::{CachedProblem, Encoding, Operator, C64},
+    quantum::{Encoding, Operator, QuantumProblem, C64},
     Context,
 };
 use std::collections::BTreeMap;
@@ -78,8 +78,8 @@ pub fn architectures(pool: usize, maximum: usize) -> Vec<Vec<usize>> {
 }
 
 /// The model as a cached problem (Jordan-Wigner, the fermionic pool with singles).
-pub fn problem(context: &Context) -> CachedProblem {
-    let problem = CachedProblem::new(
+pub fn problem(context: &Context) -> QuantumProblem {
+    let problem = QuantumProblem::new(
         context,
         Encoding::new("jordan_wigner", MODES, [1, 1]).unwrap(),
         hamiltonian(context),

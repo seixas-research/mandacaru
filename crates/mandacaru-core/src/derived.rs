@@ -20,14 +20,26 @@ pub struct ForceSummary {
 /// [`ForceSummary`] of `forces`, one `[x, y, z]` per atom (at least one atom).
 pub fn force_summary(forces: &[[f64; 3]]) -> Result<ForceSummary> {
     if forces.is_empty() || forces.iter().flatten().any(|v| !v.is_finite()) {
-        return Err(Error::Invalid("forces must be finite, one vector per atom".into()));
+        return Err(Error::Invalid(
+            "forces must be finite, one vector per atom".into(),
+        ));
     }
-    let norms: Vec<f64> = forces.iter().map(|f| (f[0] * f[0] + f[1] * f[1] + f[2] * f[2]).sqrt()).collect();
+    let norms: Vec<f64> = forces
+        .iter()
+        .map(|f| (f[0] * f[0] + f[1] * f[1] + f[2] * f[2]).sqrt())
+        .collect();
     let max = norms.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
     let rms = (norms.iter().map(|n| n * n).sum::<f64>() / norms.len() as f64).sqrt();
-    let total = forces.iter().fold([0.; 3], |acc, f| [acc[0] + f[0], acc[1] + f[1], acc[2] + f[2]]);
+    let total = forces.iter().fold([0.; 3], |acc, f| {
+        [acc[0] + f[0], acc[1] + f[1], acc[2] + f[2]]
+    });
     let net = total.iter().map(|v| v.abs()).fold(0., f64::max);
-    Ok(ForceSummary { norms, max, rms, net })
+    Ok(ForceSummary {
+        norms,
+        max,
+        rms,
+        net,
+    })
 }
 
 /// What one row of the ADAPT iteration table reports beside the energy.
@@ -53,7 +65,9 @@ pub fn iteration_values(
     energy_threshold: Option<f64>,
 ) -> Result<IterationValues> {
     if !energy.is_finite() || !gradient_ha.is_finite() || previous.is_some_and(|p| !p.is_finite()) {
-        return Err(Error::Invalid("iteration energies and gradients must be finite".into()));
+        return Err(Error::Invalid(
+            "iteration energies and gradients must be finite".into(),
+        ));
     }
     let delta = previous.map(|p| energy - p);
     Ok(IterationValues {
@@ -81,7 +95,14 @@ pub fn cell_parameters(cell: [[f64; 3]; 3]) -> Result<[f64; 6]> {
         cosine.acos().to_degrees()
     };
     let [a, b, c] = &cell;
-    Ok([norm(a), norm(b), norm(c), angle(b, c), angle(a, c), angle(a, b)])
+    Ok([
+        norm(a),
+        norm(b),
+        norm(c),
+        angle(b, c),
+        angle(a, c),
+        angle(a, b),
+    ])
 }
 
 /// `values[i] - values[0]`: the energies of excited states above the first.
@@ -91,23 +112,49 @@ pub fn relative_to_first(values: &[f64]) -> Vec<f64> {
 }
 
 /// `(a - b)` in user units: the correlation energy of a result, its energy above its reference.
-pub fn difference_to_user(a: f64, b: f64, quantity: crate::units::Quantity, atomic: bool) -> Result<f64> {
+pub fn difference_to_user(
+    a: f64,
+    b: f64,
+    quantity: crate::units::Quantity,
+    atomic: bool,
+) -> Result<f64> {
     Ok(crate::units::to_user(&[a - b], quantity, atomic, 1)?[0])
 }
 
 /// The electrons of each spin of a crystal: `sum_k w_k sum_n f_snk` per spin channel, from the
 /// occupations `(spins, kpoints, bands)` (row-major) and the k-point weights. A restricted
 /// (one-channel) crystal splits its total evenly between the two spins.
-pub fn electron_counts(occupations: &[f64], spins: usize, kpoints: usize, bands: usize, weights: &[f64]) -> Result<[f64; 2]> {
-    if !(1..=2).contains(&spins) || weights.len() != kpoints || occupations.len() != spins * kpoints * bands {
-        return Err(Error::Invalid("occupations must be (spins, kpoints, bands) with one weight per k-point".into()));
+pub fn electron_counts(
+    occupations: &[f64],
+    spins: usize,
+    kpoints: usize,
+    bands: usize,
+    weights: &[f64],
+) -> Result<[f64; 2]> {
+    if !(1..=2).contains(&spins)
+        || weights.len() != kpoints
+        || occupations.len() != spins * kpoints * bands
+    {
+        return Err(Error::Invalid(
+            "occupations must be (spins, kpoints, bands) with one weight per k-point".into(),
+        ));
     }
     let count = |s: usize| -> f64 {
         (0..kpoints)
-            .map(|k| weights[k] * occupations[(s * kpoints + k) * bands..(s * kpoints + k + 1) * bands].iter().sum::<f64>())
+            .map(|k| {
+                weights[k]
+                    * occupations[(s * kpoints + k) * bands..(s * kpoints + k + 1) * bands]
+                        .iter()
+                        .sum::<f64>()
+            })
             .sum()
     };
-    Ok(if spins == 2 { [count(0), count(1)] } else { let half = count(0) / 2.; [half, half] })
+    Ok(if spins == 2 {
+        [count(0), count(1)]
+    } else {
+        let half = count(0) / 2.;
+        [half, half]
+    })
 }
 
 /// The sum of `values` as Python's `sum` of floats computes it (a run's wall times, for one): the
@@ -124,9 +171,15 @@ pub fn norm(vector: &[f64]) -> f64 {
 /// The distance between two points of the same dimension.
 pub fn distance(a: &[f64], b: &[f64]) -> Result<f64> {
     if a.len() != b.len() {
-        return Err(Error::Invalid("the two points must have the same dimension".into()));
+        return Err(Error::Invalid(
+            "the two points must have the same dimension".into(),
+        ));
     }
-    Ok(a.iter().zip(b).map(|(x, y)| (x - y) * (x - y)).sum::<f64>().sqrt())
+    Ok(a.iter()
+        .zip(b)
+        .map(|(x, y)| (x - y) * (x - y))
+        .sum::<f64>()
+        .sqrt())
 }
 
 /// `values[i + 1] - values[i]`: the gaps between consecutive levels.
@@ -146,14 +199,18 @@ pub fn uniform_weights(n: usize) -> Result<Vec<f64>> {
 /// of each channel holding electrons (`levels` row-major `(spins, bands)`, Hartree).
 pub fn highest_occupied(levels: &[f64], bands: usize, particles: &[usize]) -> Result<f64> {
     if levels.len() != particles.len() * bands || particles.iter().any(|&p| p > bands) {
-        return Err(Error::Invalid("levels must be (spins, bands) with at most one electron per level".into()));
+        return Err(Error::Invalid(
+            "levels must be (spins, bands) with at most one electron per level".into(),
+        ));
     }
     particles
         .iter()
         .enumerate()
         .filter(|(_, &p)| p > 0)
         .map(|(s, &p)| levels[s * bands + p - 1])
-        .fold(None, |best: Option<f64>, v| Some(best.map_or(v, |b| b.max(v))))
+        .fold(None, |best: Option<f64>, v| {
+            Some(best.map_or(v, |b| b.max(v)))
+        })
         .ok_or_else(|| Error::Invalid("an empty molecule has no occupied Fermi level".into()))
 }
 
@@ -163,10 +220,13 @@ pub fn highest_occupied(levels: &[f64], bands: usize, particles: &[usize]) -> Re
 pub fn energy_axis(levels_ha: &[f64], npoints: usize, margin: f64, scale: f64) -> Result<Vec<f64>> {
     let margin = scale * margin;
     if levels_ha.is_empty() || npoints == 0 || !margin.is_finite() {
-        return Err(Error::Invalid("an energy axis needs levels, points and a finite margin".into()));
+        return Err(Error::Invalid(
+            "an energy axis needs levels, points and a finite margin".into(),
+        ));
     }
     let low = levels_ha.iter().cloned().fold(f64::INFINITY, f64::min) * crate::units::HARTREE_TO_EV;
-    let high = levels_ha.iter().cloned().fold(f64::NEG_INFINITY, f64::max) * crate::units::HARTREE_TO_EV;
+    let high =
+        levels_ha.iter().cloned().fold(f64::NEG_INFINITY, f64::max) * crate::units::HARTREE_TO_EV;
     let (start, stop) = (low - margin, high + margin);
     if npoints == 1 {
         return Ok(vec![start]);
@@ -179,7 +239,11 @@ pub fn energy_axis(levels_ha: &[f64], npoints: usize, margin: f64, scale: f64) -
 
 /// The columns of `values` (row-major `(rows, labels.len())`) summed per label, the labels in
 /// their first-occurrence order: the shells of a projected density of states.
-pub fn column_groups(values: &[f64], rows: usize, labels: &[String]) -> Result<(Vec<String>, Vec<Vec<f64>>)> {
+pub fn column_groups(
+    values: &[f64],
+    rows: usize,
+    labels: &[String],
+) -> Result<(Vec<String>, Vec<Vec<f64>>)> {
     let cols = labels.len();
     if values.len() != rows * cols {
         return Err(Error::Invalid("values must be (rows, labels)".into()));
@@ -203,9 +267,17 @@ pub fn column_groups(values: &[f64], rows: usize, labels: &[String]) -> Result<(
 }
 
 /// `positions` with atom `index` moved by `sign * step` along `axis`.
-pub fn displaced(mut positions: Vec<[f64; 3]>, index: usize, axis: usize, sign: f64, step: f64) -> Result<Vec<[f64; 3]>> {
+pub fn displaced(
+    mut positions: Vec<[f64; 3]>,
+    index: usize,
+    axis: usize,
+    sign: f64,
+    step: f64,
+) -> Result<Vec<[f64; 3]>> {
     if index >= positions.len() || axis >= 3 {
-        return Err(Error::Invalid("the displaced atom and axis must exist".into()));
+        return Err(Error::Invalid(
+            "the displaced atom and axis must exist".into(),
+        ));
     }
     positions[index][axis] += sign * step;
     Ok(positions)
@@ -214,13 +286,16 @@ pub fn displaced(mut positions: Vec<[f64; 3]>, index: usize, axis: usize, sign: 
 /// `a / b`, refused for a zero `b`: a total per cell or per electron.
 pub fn ratio(a: f64, b: f64) -> Result<f64> {
     if b == 0. || !b.is_finite() {
-        return Err(Error::Invalid("the divisor must be finite and nonzero".into()));
+        return Err(Error::Invalid(
+            "the divisor must be finite and nonzero".into(),
+        ));
     }
     Ok(a / b)
 }
 
 fn determinant(m: &[[f64; 3]; 3]) -> f64 {
-    m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
+    m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
+        - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
         + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0])
 }
 
@@ -233,7 +308,9 @@ pub fn grid_cell(step: [[f64; 3]; 3], shape: [usize; 3]) -> Result<(f64, [[f64; 
     }
     let dv = determinant(&step).abs();
     if dv <= 0. {
-        return Err(Error::Invalid("the voxel has zero volume (degenerate step)".into()));
+        return Err(Error::Invalid(
+            "the voxel has zero volume (degenerate step)".into(),
+        ));
     }
     let cell = std::array::from_fn(|a| std::array::from_fn(|b| step[a][b] * shape[b] as f64));
     Ok((dv, cell, determinant(&cell).abs()))
@@ -262,7 +339,9 @@ pub fn grid_coordinates(origin: [f64; 3], step: [[f64; 3]; 3], shape: [usize; 3]
 /// The decimal digits a tolerance resolves, `max(0, round(-log10(atol)))` with ties to even.
 pub fn decimal_digits(atol: f64) -> Result<u32> {
     if !atol.is_finite() || atol <= 0. {
-        return Err(Error::Invalid("the tolerance must be finite and positive".into()));
+        return Err(Error::Invalid(
+            "the tolerance must be finite and positive".into(),
+        ));
     }
     Ok((-atol.log10()).round_ties_even().max(0.) as u32)
 }
@@ -270,14 +349,19 @@ pub fn decimal_digits(atol: f64) -> Result<u32> {
 /// `values` rounded to `decimals` places as numpy does: `rint(x * 10^d) / 10^d`, ties to even.
 pub fn rounded(values: &[f64], decimals: i32) -> Vec<f64> {
     let scale = 10f64.powi(decimals);
-    values.iter().map(|v| (v * scale).round_ties_even() / scale).collect()
+    values
+        .iter()
+        .map(|v| (v * scale).round_ties_even() / scale)
+        .collect()
 }
 
 /// The wavevector (1/Bohr) of a free electron of kinetic energy `energy_ev`:
 /// `sqrt(2 * energy_ev * EV_TO_HARTREE)`, as `(2 E) * (1/H)` under the root.
 pub fn free_wavevector(energy_ev: f64) -> Result<f64> {
     if !(energy_ev.is_finite() && energy_ev > 0.) {
-        return Err(Error::Invalid("the kinetic energy must be finite and positive (eV)".into()));
+        return Err(Error::Invalid(
+            "the kinetic energy must be finite and positive (eV)".into(),
+        ));
     }
     Ok((2.0 * energy_ev * crate::units::EV_TO_HARTREE).sqrt())
 }
@@ -299,10 +383,14 @@ pub fn energy_shift_radius(shift_ev: f64) -> Result<f64> {
 /// A fraction of the grid's Nyquist wavevector, `fraction * pi / spacing` (1/Bohr).
 pub fn nyquist_wavevector(fraction: f64, spacing_bohr: f64) -> Result<f64> {
     if !(spacing_bohr.is_finite() && spacing_bohr > 0.) {
-        return Err(Error::Invalid("the grid spacing must be finite and positive".into()));
+        return Err(Error::Invalid(
+            "the grid spacing must be finite and positive".into(),
+        ));
     }
     if !(fraction.is_finite() && fraction > 0.) {
-        return Err(Error::Invalid("the Nyquist fraction must be finite and positive".into()));
+        return Err(Error::Invalid(
+            "the Nyquist fraction must be finite and positive".into(),
+        ));
     }
     Ok(fraction * std::f64::consts::PI / spacing_bohr)
 }
@@ -338,7 +426,10 @@ pub fn nyquist_frequency(dt: f64) -> f64 {
 
 /// `np.abs` of complex128 values (see [`numpy_rules::complex_abs`]).
 pub fn magnitudes(values: &[crate::quantum::C64]) -> Vec<f64> {
-    values.iter().map(|&z| numpy_rules::complex_abs(z)).collect()
+    values
+        .iter()
+        .map(|&z| numpy_rules::complex_abs(z))
+        .collect()
 }
 
 /// `x ** 2` as Python evaluates it for a float, through the C library's `pow`: it can differ
@@ -360,9 +451,15 @@ pub fn pulse_bound(tau: f64, norm_bound: f64) -> f64 {
 /// `numerators[i] / denominators[i]`, element by element (a reduced radial function over `r`).
 pub fn quotients(numerators: &[f64], denominators: &[f64]) -> Result<Vec<f64>> {
     if numerators.len() != denominators.len() {
-        return Err(Error::Invalid("numerators and denominators must have the same length".into()));
+        return Err(Error::Invalid(
+            "numerators and denominators must have the same length".into(),
+        ));
     }
-    Ok(numerators.iter().zip(denominators).map(|(a, b)| a / b).collect())
+    Ok(numerators
+        .iter()
+        .zip(denominators)
+        .map(|(a, b)| a / b)
+        .collect())
 }
 
 /// The sum of `values` as Python's `sum` computes it, rounded half to even like Python's `round`.
@@ -376,7 +473,11 @@ pub fn python_sum(values: &[f64]) -> f64 {
     let (mut total, mut compensation) = (0.0f64, 0.0f64);
     for &x in values {
         let t = total + x;
-        compensation += if total.abs() >= x.abs() { (total - t) + x } else { (x - t) + total };
+        compensation += if total.abs() >= x.abs() {
+            (total - t) + x
+        } else {
+            (x - t) + total
+        };
         total = t;
     }
     if compensation != 0. && compensation.is_finite() {
@@ -406,7 +507,11 @@ pub fn human_bytes(bytes: u128) -> String {
     let mut value = bytes as f64;
     for (i, unit) in units.iter().enumerate() {
         if value < 1024. || i == units.len() - 1 {
-            return if i == 0 { format!("{} B", value as u128) } else { format!("{value:.2} {unit}") };
+            return if i == 0 {
+                format!("{} B", value as u128)
+            } else {
+                format!("{value:.2} {unit}")
+            };
         }
         value /= 1024.;
     }
@@ -416,13 +521,19 @@ pub fn human_bytes(bytes: u128) -> String {
 /// The sum of `values` ([`python_sum`]) rounded to `digits` decimals as Python's `round` does: the
 /// correctly rounded decimal, ties to even on the exact binary value.
 pub fn round_total(values: &[f64], digits: usize) -> f64 {
-    format!("{:.digits$}", python_sum(values)).parse().unwrap_or(f64::NAN)
+    format!("{:.digits$}", python_sum(values))
+        .parse()
+        .unwrap_or(f64::NAN)
 }
 
 /// The spin facts of `alpha` and `beta` electrons: the moment `alpha - beta`, the multiplicity
 /// `|alpha - beta| + 1` and whether the two differ.
 pub fn spin_summary(alpha: u64, beta: u64) -> (f64, u64, bool) {
-    (alpha as f64 - beta as f64, alpha.abs_diff(beta) + 1, alpha != beta)
+    (
+        alpha as f64 - beta as f64,
+        alpha.abs_diff(beta) + 1,
+        alpha != beta,
+    )
 }
 
 /// Whether `value <= limit`: a converged relaxation's largest force against its threshold.

@@ -141,7 +141,9 @@ concurrent ledger accounting and independent volumetric readers passed their tes
 
 Later work is recorded on [the cutover page](native_cutover.md), which carries the live
 coverage table. In outline: the six exchange-correlation choices (including HSE06,
-r2SCAN and the rVV10 pairings), molecular PAW-LCAO with its forces, native VASQA
+r2SCAN and the rVV10 pairings), molecular PAW-LCAO with its forces, native generation
+of the PAW library (dataset format 3, the only format), DFT+U, linear-response and
+real-time TD-DFT with the energy and forces of one excited state, native VASQA
 and VALSQA, native measured-gradient ADAPT-VQE, the run budget, and the removal of the
 `engine` option and of JAX as a dependency. Several features that existed in the
 Python implementation are not yet ported; they are in the

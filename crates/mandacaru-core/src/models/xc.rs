@@ -106,7 +106,10 @@ impl<S: Scalar> Scalar for Jet<S> {
         self.pow(0.5)
     }
     fn asinh(self) -> Self {
-        self.unary(self.v.asinh(), (S::constant(1.) + self.v * self.v).sqrt().recip())
+        self.unary(
+            self.v.asinh(),
+            (S::constant(1.) + self.v * self.v).sqrt().recip(),
+        )
     }
     fn erfc(self) -> Self {
         Jet::erfc(self)
@@ -116,7 +119,10 @@ impl<S: Scalar> Scalar for Jet<S> {
     }
     fn erfcx(self) -> Self {
         let value = self.v.erfcx();
-        self.unary(value, S::constant(2.) * self.v * value - S::constant(2. / PI.sqrt()))
+        self.unary(
+            value,
+            S::constant(2.) * self.v * value - S::constant(2. / PI.sqrt()),
+        )
     }
 }
 
@@ -138,32 +144,46 @@ impl Taylor2 {
     fn unary(self, g0: f64, g1: f64, g2: f64) -> Self {
         let [_, a1, a2] = self.c;
         let times = |g: f64, a: f64| if a == 0. { 0. } else { g * a };
-        Self { c: [g0, times(g1, a1), times(g1, a2) + times(0.5 * g2 * a1, a1)] }
+        Self {
+            c: [g0, times(g1, a1), times(g1, a2) + times(0.5 * g2 * a1, a1)],
+        }
     }
 }
 impl Add for Taylor2 {
     type Output = Self;
     fn add(self, b: Self) -> Self {
-        Self { c: std::array::from_fn(|i| self.c[i] + b.c[i]) }
+        Self {
+            c: std::array::from_fn(|i| self.c[i] + b.c[i]),
+        }
     }
 }
 impl Sub for Taylor2 {
     type Output = Self;
     fn sub(self, b: Self) -> Self {
-        Self { c: std::array::from_fn(|i| self.c[i] - b.c[i]) }
+        Self {
+            c: std::array::from_fn(|i| self.c[i] - b.c[i]),
+        }
     }
 }
 impl Neg for Taylor2 {
     type Output = Self;
     fn neg(self) -> Self {
-        Self { c: self.c.map(|v| -v) }
+        Self {
+            c: self.c.map(|v| -v),
+        }
     }
 }
 impl Mul for Taylor2 {
     type Output = Self;
     fn mul(self, b: Self) -> Self {
         let (a, b) = (self.c, b.c);
-        Self { c: [a[0] * b[0], a[0] * b[1] + a[1] * b[0], a[0] * b[2] + a[1] * b[1] + a[2] * b[0]] }
+        Self {
+            c: [
+                a[0] * b[0],
+                a[0] * b[1] + a[1] * b[0],
+                a[0] * b[2] + a[1] * b[1] + a[2] * b[0],
+            ],
+        }
     }
 }
 impl Div for Taylor2 {

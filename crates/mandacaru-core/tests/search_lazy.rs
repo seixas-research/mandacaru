@@ -11,12 +11,12 @@
 use mandacaru_core::{
     math::random::Rng,
     quantum::{
-        search::{
-            driver::Options,
-            kernel::{self, Kernel},
-        },
         evolution::Work,
-        CachedProblem, Encoding, Operator, C64,
+        search::{
+            kernel::{self, Kernel},
+            vasqa::SearchOptions,
+        },
+        Encoding, Operator, QuantumProblem, C64,
     },
     Context,
 };
@@ -85,7 +85,11 @@ fn the_matched_only_reverse_probability_is_bit_equal_to_the_full_one() {
                 let by_halves = kernel
                     .log_q_matched(target, source, Some(&p), Some(&w))
                     .unwrap();
-                assert_eq!(by_halves.to_bits(), full.to_bits(), "{source:?} -> {target:?}");
+                assert_eq!(
+                    by_halves.to_bits(),
+                    full.to_bits(),
+                    "{source:?} -> {target:?}"
+                );
                 let own = match (target.len() as isize - source.len() as isize).abs() {
                     1 if target.len() > source.len() => Some((Some(&p[..]), None)),
                     1 => Some((None, Some(&w[..]))),
@@ -93,7 +97,9 @@ fn the_matched_only_reverse_probability_is_bit_equal_to_the_full_one() {
                     _ => None,
                 };
                 if let Some((p_only, w_only)) = own {
-                    let own = kernel.log_q_matched(target, source, p_only, w_only).unwrap();
+                    let own = kernel
+                        .log_q_matched(target, source, p_only, w_only)
+                        .unwrap();
                     assert_eq!(own.to_bits(), full.to_bits(), "{source:?} -> {target:?}");
                 }
                 if full.is_finite() {
@@ -114,11 +120,13 @@ fn the_matched_only_reverse_probability_is_bit_equal_to_the_full_one() {
     // A half that the kind reads must be given.
     let kernel = Kernel::new(3, 3, [1.; 3]).unwrap();
     assert!(kernel.log_q_matched(&[0], &[], None, Some(&[])).is_err());
-    assert!(kernel.log_q_matched(&[], &[0], Some(&probabilities(&[0], 3)), None).is_err());
+    assert!(kernel
+        .log_q_matched(&[], &[0], Some(&probabilities(&[0], 3)), None)
+        .is_err());
     assert_eq!(context.memory_used(), 0);
 }
 
-fn problem(context: &Context) -> CachedProblem {
+fn problem(context: &Context) -> QuantumProblem {
     let operator = Operator::new(
         context,
         4,
@@ -131,7 +139,7 @@ fn problem(context: &Context) -> CachedProblem {
         ],
     )
     .unwrap();
-    CachedProblem::new(
+    QuantumProblem::new(
         context,
         Encoding::new("jordan_wigner", 4, [1, 0]).unwrap(),
         operator,
@@ -143,11 +151,21 @@ fn problem(context: &Context) -> CachedProblem {
 }
 
 fn floats(value: &Value) -> Vec<f64> {
-    value.as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect()
+    value
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_f64().unwrap())
+        .collect()
 }
 
 fn indices(value: &Value) -> Vec<usize> {
-    value.as_array().unwrap().iter().map(|v| v.as_u64().unwrap() as usize).collect()
+    value
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_u64().unwrap() as usize)
+        .collect()
 }
 
 /// The work a chain with `warm_start = true` does, from its rows: the reference is screened once,
@@ -158,22 +176,28 @@ fn a_warm_chain_screens_and_weighs_only_what_a_decision_reads() {
     let context = Context::new(Some(1), 64 << 20).unwrap();
     {
         let problem = problem(&context);
-        let options = Options {
+        let options = SearchOptions {
             max_steps: 120,
             max_length: 4,
             seed: 7,
             record: true,
             screen_insertions: 1,
+            memoize_warm: false,
             ..Default::default()
         };
         let result = problem.search(&options, &[], &[]).unwrap();
-        let (mut screens, mut weighed, mut naive_screens, mut naive_weighed) = (1usize, 0usize, 1usize, 0usize);
+        let (mut screens, mut weighed, mut naive_screens, mut naive_weighed) =
+            (1usize, 0usize, 1usize, 0usize);
         // The importances of a state of `l` operators: one prefix and sweep per position.
         let (mut work, mut separate) = (Work::default(), Work::default());
         let mut weigh = |length: usize| {
             separate += Work::separate_evaluations(length);
             work += Work {
-                rotations: if length == 0 { 0 } else { (length - 1) + length * (length - 1) / 2 },
+                rotations: if length == 0 {
+                    0
+                } else {
+                    (length - 1) + length * (length - 1) / 2
+                },
                 adjoint_steps: length * (length + 1) / 2,
                 expectations: length,
             };
@@ -210,7 +234,11 @@ fn a_warm_chain_screens_and_weighs_only_what_a_decision_reads() {
             }
         }
         // A screened insertion is only recorded: it reads the relaxation alone.
-        let screened_rows: Vec<_> = result.records.iter().filter(|r| r["screened"] == true).collect();
+        let screened_rows: Vec<_> = result
+            .records
+            .iter()
+            .filter(|r| r["screened"] == true)
+            .collect();
         assert!(!screened_rows.is_empty());
         for row in &screened_rows {
             naive_screens += 1;
@@ -257,10 +285,11 @@ fn a_chain_computes_a_gradient_only_where_its_optimizer_reads_one() {
     let context = Context::new(Some(1), 64 << 20).unwrap();
     {
         let problem = problem(&context);
-        let options = Options {
+        let options = SearchOptions {
             max_steps: 120,
             max_length: 4,
             seed: 7,
+            memoize_warm: false,
             optimizer: mandacaru_core::quantum::optimizer::Options {
                 method: mandacaru_core::quantum::optimizer::Method::Slsqp,
                 tolerance: Some(1e-10),
@@ -269,13 +298,23 @@ fn a_chain_computes_a_gradient_only_where_its_optimizer_reads_one() {
             ..Default::default()
         };
         let result = problem.search(&options, &[], &[]).unwrap();
-        let relaxed = result.steps.iter().filter(|row| !row["proposed"].as_array().unwrap().is_empty()).count();
-        assert_eq!(result.num_gradient_evaluations, relaxed + result.solution.optimizer_steps);
+        let relaxed = result
+            .steps
+            .iter()
+            .filter(|row| !row["proposed"].as_array().unwrap().is_empty())
+            .count();
+        assert_eq!(
+            result.num_gradient_evaluations,
+            relaxed + result.solution.optimizer_steps
+        );
         // This model is quadratic enough that SLSQP's first trial is always accepted: the count
         // can only meet the evaluations here (the strict inequality is `optimizers.rs`' Rosenbrock).
         let evaluations = result.solution.history.len();
         assert!(result.num_gradient_evaluations <= evaluations);
-        println!("gradients {} of {evaluations} optimizer evaluations", result.num_gradient_evaluations);
+        println!(
+            "gradients {} of {evaluations} optimizer evaluations",
+            result.num_gradient_evaluations
+        );
     }
     assert_eq!(context.memory_used(), 0);
 }
@@ -290,7 +329,7 @@ fn a_lazily_completed_state_equals_a_fully_evaluated_one() {
     {
         let problem = problem(&context);
         for uniform in [false, true] {
-            let options = Options {
+            let options = SearchOptions {
                 max_steps: 200,
                 max_length: 3,
                 seed: 5,
@@ -301,7 +340,8 @@ fn a_lazily_completed_state_equals_a_fully_evaluated_one() {
                 ..Default::default()
             };
             let result = problem.search(&options, &[], &[]).unwrap();
-            let kernel = Kernel::new(problem.pool.len(), options.max_length, options.move_weights).unwrap();
+            let kernel =
+                Kernel::new(problem.pool.len(), options.max_length, options.move_weights).unwrap();
             let mut first: BTreeMap<Vec<usize>, &Value> = BTreeMap::new();
             for row in &result.records {
                 let source = indices(&row["source"]);
@@ -325,20 +365,34 @@ fn a_lazily_completed_state_equals_a_fully_evaluated_one() {
                 }
                 assert_eq!(
                     floats(&row["source_removal"]),
-                    kernel::removal(&floats(&row["source_importances"]), options.proposal_temperature).unwrap()
+                    kernel::removal(
+                        &floats(&row["source_importances"]),
+                        options.proposal_temperature
+                    )
+                    .unwrap()
                 );
                 if !uniform {
                     assert_eq!(
                         floats(&row["source_probabilities"]),
-                        kernel::softmax(&floats(&row["source_gradients"]), options.proposal_temperature).unwrap()
+                        kernel::softmax(
+                            &floats(&row["source_gradients"]),
+                            options.proposal_temperature
+                        )
+                        .unwrap()
                     );
                 }
             }
-            assert!(first.len() > 3, "the chain sourced only {} states", first.len());
+            assert!(
+                first.len() > 3,
+                "the chain sourced only {} states",
+                first.len()
+            );
             let mut checked = 0;
             for row in result.records.iter().filter(|r| r["screened"] == false) {
                 let (source, target) = (indices(&row["source"]), indices(&row["proposed"]));
-                let Some(to) = first.get(&target) else { continue };
+                let Some(to) = first.get(&target) else {
+                    continue;
+                };
                 let reverse = kernel
                     .log_q(
                         &context,
@@ -372,18 +426,33 @@ fn the_early_rejection_bound_agrees_with_every_decision_it_covers() {
     {
         let problem = problem(&context);
         for (seed, uniform) in [(7u64, false), (3, false), (11, true)] {
-            let options = Options { max_steps: 300, max_length: 4, seed, uniform, ..Default::default() };
+            let options = SearchOptions {
+                max_steps: 300,
+                max_length: 4,
+                seed,
+                uniform,
+                ..Default::default()
+            };
             let result = problem.search(&options, &[], &[]).unwrap();
             let mut random = Rng(seed);
             let (mut covered, mut rejected, mut tight) = (0, 0, 0);
             for row in &result.steps {
                 let _draw = random.uniform();
-                let (temperature, forward) = (row["temperature"].as_f64().unwrap(), row["log_q_forward"].as_f64().unwrap());
-                let (current, proposed) = (row["source_cost"].as_f64().unwrap(), row["cost"].as_f64().unwrap());
+                let (temperature, forward) = (
+                    row["temperature"].as_f64().unwrap(),
+                    row["log_q_forward"].as_f64().unwrap(),
+                );
+                let (current, proposed) = (
+                    row["source_cost"].as_f64().unwrap(),
+                    row["cost"].as_f64().unwrap(),
+                );
                 let ratio = row["log_acceptance"].as_f64().unwrap();
                 let accepted = row["accepted"].as_bool().unwrap();
                 let bound = kernel::log_acceptance(temperature, current, proposed, forward, 0.);
-                assert!(ratio <= bound + 1e-12, "ratio {ratio} above its bound {bound}");
+                assert!(
+                    ratio <= bound + 1e-12,
+                    "ratio {ratio} above its bound {bound}"
+                );
                 let log_u = (ratio < 0.).then(|| random.uniform().ln());
                 // The replay is aligned with the chain's stream: it reproduces every recorded decision.
                 assert_eq!(accepted, ratio >= 0. || log_u.is_some_and(|u| u < ratio));

@@ -257,7 +257,8 @@ impl Pairs {
         cell: &Cell,
     ) -> Result<(DMatrix<C64>, DMatrix<C64>)> {
         let (n, points) = (self.n, self.points);
-        let metric = self.corrected_overlap(setup, |a, b| self.smooth.as_slice()[(a * n + b) * points]);
+        let metric =
+            self.corrected_overlap(setup, |a, b| self.smooth.as_slice()[(a * n + b) * points]);
         let mut origin = vec![C64::default(); n * n];
         self.compact(setup, cell, &[0], &mut origin)?;
         let charge = DMatrix::from_fn(n, n, |a, b| {
@@ -451,7 +452,9 @@ pub(in crate::periodic) fn coulomb(
     second: &Pairs,
     grid_only: bool,
 ) -> Result<Integrals> {
-    coulomb_rows(ctx, setup, cell, kernel_of, first, second, grid_only, true, None, false)
+    coulomb_rows(
+        ctx, setup, cell, kernel_of, first, second, grid_only, true, None, false,
+    )
 }
 
 /// [`coulomb`] for the left pairs `rows` only (`p * n1 + q`; `None`: every pair), in that order:
@@ -520,7 +523,9 @@ fn coulomb_engine(
         Right::Pairs { .. } => None,
     };
     if diagonal && n1 != n2 {
-        return Err(invalid("the Coulomb diagonal pairs one set of pair densities with itself"));
+        return Err(invalid(
+            "the Coulomb diagonal pairs one set of pair densities with itself",
+        ));
     }
     let all: Vec<usize>;
     let rows = match rows {
@@ -609,7 +614,10 @@ fn coulomb_engine(
                     if weight.norm_sqr() == 0. {
                         continue;
                     }
-                    let (rr, rc) = (&right[rs * count..][..count], &right_compact[rs * count..][..count]);
+                    let (rr, rc) = (
+                        &right[rs * count..][..count],
+                        &right_compact[rs * count..][..count],
+                    );
                     for g in 0..count {
                         d[g] += weight * rr[g];
                         dc[g] += weight * rc[g];
@@ -622,7 +630,10 @@ fn coulomb_engine(
                 let l = &left[swapped * count..][..count];
                 let lc = &left_compact[swapped * count..][..count];
                 for f in 0..forms {
-                    let (d, dc) = (&density[f * count..][..count], &density_compact[f * count..][..count]);
+                    let (d, dc) = (
+                        &density[f * count..][..count],
+                        &density_compact[f * count..][..count],
+                    );
                     let mut sum = C64::default();
                     for g in 0..count {
                         sum += l[g].conj() * d[g] * kernel[g] - lc[g].conj() * dc[g] * outside[g];
@@ -699,7 +710,16 @@ fn coulomb_engine(
         }
     }
     if with_onsite {
-        onsite(ctx, setup, cell, first, second, rows, right_side, &mut values)?;
+        onsite(
+            ctx,
+            setup,
+            cell,
+            first,
+            second,
+            rows,
+            right_side,
+            &mut values,
+        )?;
     }
     Ok(values)
 }
@@ -756,7 +776,8 @@ fn onsite(
                 for (ic, &jc) in own.iter().enumerate() {
                     let cc = second.coefficients[(r * cell.cells + t) * p + jc].conj();
                     for (id, &jd) in own.iter().enumerate() {
-                        right[ic * m + id] = cc * second.coefficients[(s * cell.cells + t) * p + jd];
+                        right[ic * m + id] =
+                            cc * second.coefficients[(s * cell.cells + t) * p + jd];
                     }
                 }
                 right
@@ -817,7 +838,16 @@ pub(in crate::periodic) fn onsite_contracted(
     weights: &[Vec<C64>],
     values: &mut [C64],
 ) -> Result<()> {
-    onsite(ctx, setup, cell, pairs, pairs, rows, Right::Contracted(weights), values)
+    onsite(
+        ctx,
+        setup,
+        cell,
+        pairs,
+        pairs,
+        rows,
+        Right::Contracted(weights),
+        values,
+    )
 }
 
 /// The projectors (columns of the `p` of the layout) of every atom that has any, with its species,

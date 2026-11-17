@@ -60,7 +60,10 @@ fn the_complex_magnitude_is_larger_times_the_root_of_one_plus_the_ratio_squared(
     assert_eq!(np::complex_abs(Complex64::new(-4., 3.)), 5.);
     assert_eq!(np::complex_abs(Complex64::new(0., 0.)), 0.);
     assert_eq!(np::complex_abs(Complex64::new(0., -2.)), 2.);
-    assert_eq!(np::complex_abs(Complex64::new(f64::INFINITY, f64::NAN)), f64::INFINITY);
+    assert_eq!(
+        np::complex_abs(Complex64::new(f64::INFINITY, f64::NAN)),
+        f64::INFINITY
+    );
     assert!(np::complex_abs(Complex64::new(f64::NAN, 1.)).is_nan());
 }
 
@@ -77,7 +80,9 @@ fn a_complex_number_over_a_real_one_is_the_number_times_the_reciprocal() {
     // complex64: the divisor is rounded to f32 and the quotient is f32 throughout.
     let single = np::divide_by_real_single(Complex32::new(7., 0.), 3.);
     assert_eq!(single.re, 7.0f32 * (1.0f32 / 3.0f32));
-    assert!(np::divide_by_real(Complex64::new(1., 1.), 0.).re.is_infinite());
+    assert!(np::divide_by_real(Complex64::new(1., 1.), 0.)
+        .re
+        .is_infinite());
 }
 
 #[test]
@@ -89,13 +94,16 @@ fn argsort_is_numpys_introsort_with_its_order_among_equal_keys() {
     // NaN sorts last.
     assert_eq!(np::argsort(&[f64::NAN, 1., 0.]), vec![2, 1, 0]);
     // From sixteen the partitioning reorders equal keys; these orders are what NumPy returns.
-    let a = [1., 0., 1., 0., 0., 1., 0., 1., 1., 1., 0., 0., 1., 1., 1., 1., 1.];
+    let a = [
+        1., 0., 1., 0., 0., 1., 0., 1., 1., 1., 0., 0., 1., 1., 1., 1., 1.,
+    ];
     assert_eq!(
         np::argsort(&a),
         vec![1, 3, 4, 6, 11, 10, 0, 14, 13, 12, 8, 15, 7, 5, 2, 9, 16]
     );
     let b = [
-        0.3, 0.1, 0.3, 0.3, 0.2, 0.1, 0.3, 0.0, 0.2, 0.3, 0.1, 0.2, 0.3, 0.0, 0.1, 0.2, 0.3, 0.1, 0.2, 0.3, 0.1, 0.2,
+        0.3, 0.1, 0.3, 0.3, 0.2, 0.1, 0.3, 0.0, 0.2, 0.3, 0.1, 0.2, 0.3, 0.0, 0.1, 0.2, 0.3, 0.1,
+        0.2, 0.3, 0.1, 0.2,
     ];
     assert_eq!(
         np::argsort(&b),
@@ -105,9 +113,9 @@ fn argsort_is_numpys_introsort_with_its_order_among_equal_keys() {
     assert_eq!(
         np::argsort(&c),
         vec![
-            0, 25, 30, 15, 35, 40, 45, 10, 5, 55, 60, 50, 20, 46, 51, 21, 41, 36, 56, 26, 61, 31, 1, 6, 16, 11, 22, 2,
-            57, 52, 7, 47, 12, 37, 42, 27, 32, 62, 17, 3, 48, 18, 8, 58, 63, 28, 23, 38, 33, 13, 53, 43, 59, 24, 4, 14,
-            34, 29, 9, 44, 19, 39, 54, 49
+            0, 25, 30, 15, 35, 40, 45, 10, 5, 55, 60, 50, 20, 46, 51, 21, 41, 36, 56, 26, 61, 31,
+            1, 6, 16, 11, 22, 2, 57, 52, 7, 47, 12, 37, 42, 27, 32, 62, 17, 3, 48, 18, 8, 58, 63,
+            28, 23, 38, 33, 13, 53, 43, 59, 24, 4, 14, 34, 29, 9, 44, 19, 39, 54, 49
         ]
     );
 }
@@ -120,10 +128,16 @@ fn argsort_reaches_numpys_heapsort_on_an_organ_pipe() {
     let order = np::argsort(&v);
     assert_eq!(
         order[..24],
-        [0, 255, 1, 2, 254, 3, 253, 4, 252, 5, 251, 250, 6, 249, 7, 248, 8, 247, 9, 246, 10, 245, 11, 244]
+        [
+            0, 255, 1, 2, 254, 3, 253, 4, 252, 5, 251, 250, 6, 249, 7, 248, 8, 247, 9, 246, 10,
+            245, 11, 244
+        ]
     );
     assert_eq!(order[248..], [124, 131, 125, 126, 130, 127, 129, 128]);
-    assert_eq!(order.iter().enumerate().map(|(i, &x)| i * x).sum::<usize>(), 4177914);
+    assert_eq!(
+        order.iter().enumerate().map(|(i, &x)| i * x).sum::<usize>(),
+        4177914
+    );
 }
 
 #[test]

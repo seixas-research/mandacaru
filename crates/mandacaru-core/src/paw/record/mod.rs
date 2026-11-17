@@ -42,18 +42,16 @@ use crate::paw::invalid;
 use crate::{Buffer, Context, Reservation, Result};
 
 pub use files::{
-    reload_errors, reload_shift, tree_cost, Parts, WriteSpec, RELOAD_LEVEL_TOLERANCE, TREE_BYTES_PER_MEMBER,
-    TREE_BYTES_PER_VALUE,
+    reload_errors, reload_shift, tree_cost, Parts, WriteSpec, RELOAD_LEVEL_TOLERANCE,
+    TREE_BYTES_PER_MEMBER, TREE_BYTES_PER_VALUE,
 };
 pub use values::LocalPotential;
 
 /// `format` of every dataset file.
 pub const FORMAT_TAG: &str = "mandacaru-pseudopotential";
-/// Newest `version` this build reads, and the one it writes for a record that carries its
-/// core states ([`PawDataset::core_states`]).
+/// The only `version` this build reads and writes. Every record carries its core states
+/// ([`PawDataset::core_states`]); an older version is refused by name.
 pub const FORMAT_VERSION: u64 = 3;
-/// The version of a record without core states: what a version-2 file read back is written as.
-pub const CORE_FREE_VERSION: u64 = 2;
 /// The most core states a record may declare: every `(n, l)` with `n <= 7` and `l < n`.
 pub const MAX_CORE_STATES: usize = 28;
 /// The radial exchange-correlation schemes a record's core states may name as the one its
@@ -257,12 +255,10 @@ pub struct PawDataset {
     pub core_density: Buffer<f64>,
     pub smooth_core_density: Buffer<f64>,
     /// The occupied core subshells of the reference atom, in the order the core density is
-    /// summed (format version 3). `None` for a version-2 file, which never had them: it is not a
-    /// default and is not listed in `defaults_applied`.
+    /// summed. Every file carries them; a record without them cannot be written.
     pub core_states: Option<Vec<CoreState>>,
     /// The radial exchange-correlation scheme the core states were solved with, one of
-    /// [`CORE_SCHEMES`], when the record says (an upgraded format-2 file: the scheme identified
-    /// by its own stored core density, owner Q22). Bookkeeping like `core_states`: not part of the
+    /// [`CORE_SCHEMES`], when the record says. Bookkeeping like `core_states`: not part of the
     /// content digest.
     pub core_scheme: Option<String>,
     /// The keys the file did not carry and a default filled in (a file written
@@ -293,8 +289,7 @@ impl PawDataset {
     /// `version` and `core_states` (`emit::content_text`, stride 1, unrounded: the record as it
     /// is held), then every radial table except the core states, each as its name, its length
     /// and its values' little-endian bytes. Two records with the same physics content have the
-    /// same digest whatever file, codec or format version they came from: a version-2 dataset
-    /// and its version-3 upgrade, which only adds the core states, share it.
+    /// same digest whatever file or codec they came from.
     pub fn content_sha256(&self, ctx: &Context) -> Result<String> {
         let (text, _memory) = emit::content_text(ctx, self)?;
         let mut hasher = crate::paw::digest::Hasher::new();
@@ -314,14 +309,9 @@ impl PawDataset {
         Ok(hasher.finish())
     }
 
-    /// The format version the record is written as: 3 when it carries its core states, 2 when
-    /// it does not (a version-2 file read back is written unchanged).
+    /// The format version the record is written as: always [`FORMAT_VERSION`].
     pub fn format_version(&self) -> u64 {
-        if self.core_states.is_some() {
-            FORMAT_VERSION
-        } else {
-            CORE_FREE_VERSION
-        }
+        FORMAT_VERSION
     }
 
     /// Every radial table with the name of its Parquet column, in file order:

@@ -9,9 +9,7 @@
 use super::{
     ions::LocalPotential,
     shells::{Shell, Shells},
-    spheres::{
-        weighted_cross, Sphere, SHORT_RANGE_AZIMUTHAL, SHORT_RANGE_POLAR, SHORT_RANGE_RADIAL,
-    },
+    spheres::{weighted_cross, Sphere},
 };
 use crate::{
     basis::table,
@@ -126,16 +124,7 @@ pub fn short_range_cross(
 ) -> Result<Buffer<Complex64>> {
     let (nk, nb, nc) = (kpoints.len(), bra.functions(), ket.functions());
     let mut out = ctx.allocate::<Complex64>(product(&[nk, nb, nc])?)?;
-    let radius = sphere.potential.reach(sphere.sigma)?;
-    let rule = Sphere::rule(
-        ctx,
-        sphere.center,
-        radius,
-        SHORT_RANGE_RADIAL,
-        SHORT_RANGE_POLAR,
-        SHORT_RANGE_AZIMUTHAL,
-        sphere.potential.cutoff,
-    )?;
+    let rule = Sphere::short_range(ctx, lattice, sphere.center, sphere.potential, sphere.sigma)?;
     let all = 0..rule.len();
     let radii = rule.radii(all.clone());
     let sampled: Vec<f64> = radii.iter().map(|r| sphere.potential.value(*r)).collect();

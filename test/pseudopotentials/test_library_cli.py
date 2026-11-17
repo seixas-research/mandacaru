@@ -142,8 +142,10 @@ def test_both_libraries_and_the_status_in_one_call(home, capsys, monkeypatch):
     # Recorded absolute, so it means the same thing from anywhere.
     assert f"MANDACARU_PAW_PATH={home}/mandacaru-paw" in text
     assert f"MANDACARU_UPAW_PATH={home}/mandacaru-upaw" in text
-    # The status ran after the writes, so it already sees both.
-    assert out.index("added to") < out.index("Library")
+    # The status ran after the writes, so it already sees both. The anchor is the
+    # table's header cell: the bare word "Library" also sits in the folders of a
+    # path (the home of a macOS user, say) that the first lines print.
+    assert out.index("added to") < out.index("│ Library")
     assert "paw-lcao" in out and "upaw-lcao" in out
 
 

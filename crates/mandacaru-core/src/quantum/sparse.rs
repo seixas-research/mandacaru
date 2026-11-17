@@ -89,8 +89,11 @@ impl SparseMatrix {
         self.add_into(state, C64::new(1., 0.), out);
     }
     fn add_into<A: Amplitude>(&self, state: &[A], scale: C64, out: &mut [C64]) {
-        let (offsets, columns, values) =
-            (self.offsets.as_slice(), self.columns.as_slice(), self.values.as_slice());
+        let (offsets, columns, values) = (
+            self.offsets.as_slice(),
+            self.columns.as_slice(),
+            self.values.as_slice(),
+        );
         let rows = out.len();
         parallel_rows(&self.context, rows, values.len(), out, |start, block| {
             for (offset, value) in block.iter_mut().enumerate() {
@@ -99,7 +102,11 @@ impl SparseMatrix {
                 // on one another, and the result does not depend on the thread split.
                 let mut partial = [C64::default(); 4];
                 let (first, last) = (offsets[row], offsets[row + 1]);
-                for (k, (&column, &entry)) in columns[first..last].iter().zip(&values[first..last]).enumerate() {
+                for (k, (&column, &entry)) in columns[first..last]
+                    .iter()
+                    .zip(&values[first..last])
+                    .enumerate()
+                {
                     partial[k % 4] += entry * state[column].widen();
                 }
                 *value += scale * ((partial[0] + partial[1]) + (partial[2] + partial[3]));

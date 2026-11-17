@@ -12,7 +12,7 @@
 //! of the smearing. Atomic units, Bohr^-3 Hartree^-1.
 use super::{
     bloch::Bloch,
-    transitions::{Augmentation, Engine, Remainders, Scratch},
+    transitions::{components_of, Augmentation, Engine, Remainders, Scratch},
     Options, Polarizability, State,
 };
 use crate::{
@@ -114,9 +114,19 @@ impl<'a> Medium<'a> {
         for (left, right) in pairs {
             left.check()?;
             right.check()?;
-            let n = left.points;
-            let l = left.samples.read_range(ctx, 0, left.bands() * n)?;
-            let r = right.samples.read_range(ctx, 0, right.bands() * n)?;
+            if left.components != right.components {
+                return Err(invalid(
+                    "a transition pairs states of different component counts",
+                ));
+            }
+            let (n, components) = (left.points, left.components);
+            let l = left
+                .samples
+                .read_range(ctx, 0, components * left.bands() * n)?;
+            let r = right
+                .samples
+                .read_range(ctx, 0, components * right.bands() * n)?;
+            let (lb, rb) = (left.bands(), right.bands());
             let state = |bloch: &Bloch<'_>, a: usize| State {
                 energy: bloch.energies[a],
                 target: bloch.target[a],
@@ -140,9 +150,20 @@ impl<'a> Medium<'a> {
                                rows: &mut [C64]|
                  -> Result<()> {
                     for (&(a, b), row) in pieces.iter().zip(rows.chunks_mut(nv)) {
-                        engine.smooth(own, &l[a * n..(a + 1) * n], &r[b * n..(b + 1) * n], row)?;
+                        engine.smooth_components(
+                            own,
+                            &components_of(&l, lb, n, components, a),
+                            &components_of(&r, rb, n, components, b),
+                            row,
+                        )?;
                         if let Some(augmentation) = &augmentation {
-                            augmentation.add(&left.projection(a), &right.projection(b), row);
+                            for c in 0..components {
+                                augmentation.add(
+                                    &left.component_projection(a, c),
+                                    &right.component_projection(b, c),
+                                    row,
+                                );
+                            }
                         }
                     }
                     Ok(())
@@ -226,6 +247,7 @@ pub fn gamma_polarizability(
         samples: &frame.samples,
         projections: Some(&frame.projections),
         points,
+        components: frame.components,
     };
     let lattice = crate::periodic::wannier::sampling::lattice(&crystal.grid);
     let medium = Medium {

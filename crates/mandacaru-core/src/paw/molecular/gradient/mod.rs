@@ -20,9 +20,9 @@ mod spinor_screened;
 
 pub use densities::{DensityTerms, Forms};
 pub use hubbard::imaginary_force as hubbard_imaginary_force;
+pub use radial::{core_slope, local_slope, long_range_slope, multipole_gradient, potential_slope};
 pub use screened::HybridResponse;
 pub use spinor_screened::{pseudo_index, SpinorExchange};
-pub use radial::{core_slope, local_slope, long_range_slope, multipole_gradient, potential_slope};
 
 use super::Setup;
 use crate::{molecular::MolecularIntegrals, Buffer, Result};
@@ -84,7 +84,12 @@ impl Setup {
         hf: bool,
         unrestricted: bool,
     ) -> Result<Response<'a>> {
-        if hf && integrals.corrections.as_ref().is_some_and(|c| c.hubbard.is_some()) {
+        if hf
+            && integrals
+                .corrections
+                .as_ref()
+                .is_some_and(|c| c.hubbard.is_some())
+        {
             // The Hartree-Fock energy has no +U term: a +U force would not be its derivative.
             return Err(crate::Error::Unsupported(
                 "DFT+U is a Kohn-Sham correction: the Hartree-Fock gradient of a molecule with hubbard_u is not defined"
@@ -104,9 +109,10 @@ impl Setup {
         let channels = compensation::channels(self);
         let (_, projected) = projections::project(self, integrals, occupied)?;
         // The bare channels match the calculation's cached electrostatic matrices.
-        let cached = integrals.corrections.as_ref().and_then(|c| {
-            Some((c.electrostatic.as_ref()?, c.ionic.as_deref()?))
-        });
+        let cached = integrals
+            .corrections
+            .as_ref()
+            .and_then(|c| Some((c.electrostatic.as_ref()?, c.ionic.as_deref()?)));
         let moments = compensation::moments(
             self, integrals, &channels, cached, occupied, &projected, grid.psi, grid.rho, hf,
         )?;
@@ -228,9 +234,13 @@ impl Response<'_> {
             name: "pairs_coulomb/projection",
             gradient: contract(&pi.coulomb),
         });
-        if let Some(pi) =
-            hubbard::derivatives(setup, integrals, self.occupied, &self.projected, self.unrestricted)?
-        {
+        if let Some(pi) = hubbard::derivatives(
+            setup,
+            integrals,
+            self.occupied,
+            &self.projected,
+            self.unrestricted,
+        )? {
             out.push(Contribution {
                 name: "hubbard/projection",
                 gradient: contract(&pi),

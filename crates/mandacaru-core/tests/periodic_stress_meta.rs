@@ -39,7 +39,11 @@ struct Case {
 
 impl Case {
     fn library(&self) -> &'static str {
-        if self.spinor { "pbe-fr" } else { "pbe-sr" }
+        if self.spinor {
+            "pbe-fr"
+        } else {
+            "pbe-sr"
+        }
     }
 }
 
@@ -66,7 +70,11 @@ fn input(case: &Case, files: Vec<(String, String)>, eps: Matrix3<f64>) -> SetupI
         grid_shape: SHAPE,
         atoms: (0..2)
             .map(|i| AtomSpec {
-                species: if case.symbols[i] == case.symbols[0] { 0 } else { 1 },
+                species: if case.symbols[i] == case.symbols[0] {
+                    0
+                } else {
+                    1
+                },
                 symbol: case.symbols[i].into(),
                 fractional: case.fractional[i],
                 moment: case.moments[i],
@@ -97,27 +105,46 @@ fn check(case: &Case, entries: &[(usize, usize)]) {
     if case.symbols[1] != case.symbols[0] {
         species.push(case.symbols[1]);
     }
-    let root = std::path::PathBuf::from(std::env::var_os("MANDACARU_PAW_PATH").unwrap()).join(case.library());
+    let root = std::path::PathBuf::from(std::env::var_os("MANDACARU_PAW_PATH").unwrap())
+        .join(case.library());
     let files: Vec<_> = species
         .iter()
         .map(|symbol| {
             let path = root.join(format!("{symbol}.parquet"));
-            (path.to_string_lossy().into_owned(), dataset_content_sha256(&ctx, &path).unwrap())
+            (
+                path.to_string_lossy().into_owned(),
+                dataset_content_sha256(&ctx, &path).unwrap(),
+            )
         })
         .collect();
-    let datasets: Vec<_> = species.iter().map(|s| Arc::new(dataset(&ctx, case.library(), s))).collect();
+    let datasets: Vec<_> = species
+        .iter()
+        .map(|s| Arc::new(dataset(&ctx, case.library(), s)))
+        .collect();
     let options = Options {
         tolerance: 1e-12,
         density_tolerance: 1e-10,
         ..Options::default()
     };
-    let crystal = create_setup(&ctx, input(case, files.clone(), Matrix3::zeros()), datasets.clone())
-        .unwrap()
-        .build(&ctx)
-        .unwrap();
-    assert_eq!(crystal.spinor, case.spinor, "{}: the crystal's spinor flag", case.label);
+    let crystal = create_setup(
+        &ctx,
+        input(case, files.clone(), Matrix3::zeros()),
+        datasets.clone(),
+    )
+    .unwrap()
+    .build(&ctx)
+    .unwrap();
+    assert_eq!(
+        crystal.spinor, case.spinor,
+        "{}: the crystal's spinor flag",
+        case.label
+    );
     let result = crystal.solve(&options).unwrap();
-    assert!(result.converged, "{}: the reference SCF did not converge", case.label);
+    assert!(
+        result.converged,
+        "{}: the reference SCF did not converge",
+        case.label
+    );
     let stress = response::stress_all_entries(&crystal, &result).unwrap();
     let b = &stress.breakdown;
     for &(a, c) in entries {
@@ -129,7 +156,11 @@ fn check(case: &Case, entries: &[(usize, usize)]) {
                 .build(&ctx)
                 .unwrap();
             let state = strained.solve(&options).unwrap();
-            assert!(state.converged, "{}: a strained SCF did not converge", case.label);
+            assert!(
+                state.converged,
+                "{}: a strained SCF did not converge",
+                case.label
+            );
             state.free_energy
         };
         let h = case.step;
@@ -147,14 +178,31 @@ fn check(case: &Case, entries: &[(usize, usize)]) {
         );
         // The entry is resolved (a small shear entry of H2 is 76 gates); the meta-GGA terms below
         // carry the 100-gate floor.
-        assert!(oracle.abs() > 10. * GATE, "{}: the oracle {oracle:e} is not above its gate", case.label);
+        assert!(
+            oracle.abs() > 10. * GATE,
+            "{}: the oracle {oracle:e} is not above its gate",
+            case.label
+        );
         if case.functional.starts_with("r2scan") {
             // S-6 is not vacuous: dropping it alone would miss the oracle by far more than the gate.
-            assert!(b.kinetic_density[a][c].abs() > 100. * GATE, "{}: S-6 is too small to be tested", case.label);
+            assert!(
+                b.kinetic_density[a][c].abs() > 100. * GATE,
+                "{}: S-6 is too small to be tested",
+                case.label
+            );
         } else {
-            assert_eq!((b.kinetic_density[a][c], b.xc_core_kinetic[a][c]), (0., 0.), "{}: a GGA has no meta-GGA term", case.label);
+            assert_eq!(
+                (b.kinetic_density[a][c], b.xc_core_kinetic[a][c]),
+                (0., 0.),
+                "{}: a GGA has no meta-GGA term",
+                case.label
+            );
         }
-        assert!(miss < GATE, "{} g_{a}{c}: {miss:e} against {GATE:e}", case.label);
+        assert!(
+            miss < GATE,
+            "{} g_{a}{c}: {miss:e} against {GATE:e}",
+            case.label
+        );
     }
 }
 
@@ -172,13 +220,26 @@ const LIH: Case = Case {
 #[test]
 #[ignore = "slow: 13 s (measured 2026-11-09); run: cargo test --profile release-test -p mandacaru-core --test periodic_stress_meta -- --ignored the_pbe_control_stress_is_the_reconverged_finite_difference"]
 fn the_pbe_control_stress_is_the_reconverged_finite_difference() {
-    check(&Case { label: "LiH PBE", functional: "pbe", ..LIH }, &[(0, 0), (0, 1)]);
+    check(
+        &Case {
+            label: "LiH PBE",
+            functional: "pbe",
+            ..LIH
+        },
+        &[(0, 0), (0, 1)],
+    );
 }
 
 #[test]
 #[ignore = "slow: 15 s (measured 2026-11-09); run: cargo test --profile release-test -p mandacaru-core --test periodic_stress_meta -- --ignored an_r2scan_crystal_stress_is_the_reconverged_finite_difference"]
 fn an_r2scan_crystal_stress_is_the_reconverged_finite_difference() {
-    check(&Case { label: "LiH r2SCAN", ..LIH }, &[(0, 0), (0, 1)]);
+    check(
+        &Case {
+            label: "LiH r2SCAN",
+            ..LIH
+        },
+        &[(0, 0), (0, 1)],
+    );
 }
 
 const H2: Case = Case {
@@ -195,7 +256,13 @@ const H2: Case = Case {
 #[test]
 #[ignore = "slow: 8 s (measured 2026-11-09); run: cargo test --profile release-test -p mandacaru-core --test periodic_stress_meta -- --ignored a_spin_polarized_r2scan_crystal_stress_is_the_reconverged_finite_difference"]
 fn a_spin_polarized_r2scan_crystal_stress_is_the_reconverged_finite_difference() {
-    check(&Case { label: "H2 ferromagnetic UKS-r2SCAN", ..H2 }, &[(0, 0), (0, 1)]);
+    check(
+        &Case {
+            label: "H2 ferromagnetic UKS-r2SCAN",
+            ..H2
+        },
+        &[(0, 0), (0, 1)],
+    );
 }
 
 #[test]
@@ -203,7 +270,15 @@ fn a_spin_polarized_r2scan_crystal_stress_is_the_reconverged_finite_difference()
 fn a_magnetic_spinor_r2scan_crystal_stress_is_the_reconverged_finite_difference() {
     // Four live Pauli channels of v_tau (no time reversal): S-6 is their Pauli sum. Hydrogen has
     // only s channels, so the spin-orbit term vanishes and the moment stays collinear.
-    check(&Case { label: "H2 ferromagnetic spinor r2SCAN", spin: false, spinor: true, ..H2 }, &[(0, 0), (0, 1)]);
+    check(
+        &Case {
+            label: "H2 ferromagnetic spinor r2SCAN",
+            spin: false,
+            spinor: true,
+            ..H2
+        },
+        &[(0, 0), (0, 1)],
+    );
 }
 
 #[test]
@@ -244,25 +319,45 @@ fn triangle_stress(core: bool, largest_step: f64) {
     let ctx = context();
     let species = triangle_species(&ctx, core);
     let (files, datasets) = (species.files.clone(), species.datasets.clone());
-    let options = Options { tolerance: 1e-12, density_tolerance: 1e-9, max_iterations: 1000, ..Options::default() };
-    let crystal = textured_triangle(&ctx, &triangle_input(files.clone(), Matrix3::zeros()), &datasets);
+    let options = Options {
+        tolerance: 1e-12,
+        density_tolerance: 1e-9,
+        max_iterations: 1000,
+        ..Options::default()
+    };
+    let crystal = textured_triangle(
+        &ctx,
+        &triangle_input(files.clone(), Matrix3::zeros()),
+        &datasets,
+    );
     let result = crystal.solve(&options).unwrap();
     assert!(result.converged, "the reference SCF did not converge");
     let turn = frame_turn(result.density.as_slice());
-    eprintln!("H3{}: the magnetization axis turns by {turn:.3} rad, {} iterations", if core { " with a core" } else { "" }, result.history.len());
-    assert!(turn > 1., "the magnetization axis turns by {turn:e} rad: not a noncollinear texture");
+    eprintln!(
+        "H3{}: the magnetization axis turns by {turn:.3} rad, {} iterations",
+        if core { " with a core" } else { "" },
+        result.history.len()
+    );
+    assert!(
+        turn > 1.,
+        "the magnetization axis turns by {turn:e} rad: not a noncollinear texture"
+    );
     let stress = response::stress_all_entries(&crystal, &result).unwrap();
     let b = &stress.breakdown;
     if core {
         let peak = crystal.core.as_slice().iter().cloned().fold(0., f64::max);
-        assert!(peak > 0.035, "the synthetic core is not in the crystal: peak {peak:e}");
+        assert!(
+            peak > 0.035,
+            "the synthetic core is not in the crystal: peak {peak:e}"
+        );
     }
     let mut worst = 0f64;
     for (a, c) in [(0, 0), (1, 1), (2, 2), (0, 1), (1, 2), (2, 0)] {
         let energy = |step: f64| {
             let mut eps = Matrix3::zeros();
             eps[(a, c)] = step;
-            let mut strained = textured_triangle(&ctx, &triangle_input(files.clone(), eps), &datasets);
+            let mut strained =
+                textured_triangle(&ctx, &triangle_input(files.clone(), eps), &datasets);
             restart(&mut strained, result.density.as_slice());
             let state = strained.solve(&options).unwrap();
             assert!(state.converged, "a strained SCF did not converge");
@@ -280,13 +375,26 @@ fn triangle_stress(core: bool, largest_step: f64) {
             b.xc_core_kinetic[a][c],
             started.elapsed().as_secs_f64()
         );
-        assert!(oracle.abs() > 10. * GATE, "the oracle {oracle:e} is not above its gate");
-        assert!(b.kinetic_density[a][c].abs() > 100. * GATE, "S-6 is too small to be tested");
+        assert!(
+            oracle.abs() > 10. * GATE,
+            "the oracle {oracle:e} is not above its gate"
+        );
+        assert!(
+            b.kinetic_density[a][c].abs() > 100. * GATE,
+            "S-6 is too small to be tested"
+        );
         if core {
             // The shear entries are small (X-4 of g20 is 1.1e-4), so the floor is ten gates.
-            assert!(b.xc_core[a][c].abs() > 10. * GATE && b.xc_core_kinetic[a][c].abs() > 10. * GATE, "X-4 or X-5 is too small to be tested");
+            assert!(
+                b.xc_core[a][c].abs() > 10. * GATE && b.xc_core_kinetic[a][c].abs() > 10. * GATE,
+                "X-4 or X-5 is too small to be tested"
+            );
         } else {
-            assert_eq!((b.xc_core[a][c], b.xc_core_kinetic[a][c]), (0., 0.), "no core, no X-4 or X-5");
+            assert_eq!(
+                (b.xc_core[a][c], b.xc_core_kinetic[a][c]),
+                (0., 0.),
+                "no core, no X-4 or X-5"
+            );
         }
         worst = worst.max(miss);
         // Every entry is printed before the first failure stops the test.
@@ -299,12 +407,14 @@ fn triangle_stress(core: bool, largest_step: f64) {
 
 #[test]
 #[ignore = "slow: 261 s (measured 2026-11-16 on a loaded machine); run: cargo test --profile release-test -p mandacaru-core --test periodic_stress_meta -- --ignored a_hydrogen_triangle"]
-fn a_hydrogen_triangle_noncollinear_spinor_r2scan_crystal_stress_is_the_reconverged_finite_difference() {
+fn a_hydrogen_triangle_noncollinear_spinor_r2scan_crystal_stress_is_the_reconverged_finite_difference(
+) {
     triangle_stress(false, 1e-4);
 }
 
 #[test]
 #[ignore = "slow: 254 s (measured 2026-11-16 on a loaded machine); run: cargo test --profile release-test -p mandacaru-core --test periodic_stress_meta -- --ignored a_cored_hydrogen_triangle"]
-fn a_cored_hydrogen_triangle_noncollinear_spinor_r2scan_crystal_stress_is_the_reconverged_finite_difference() {
+fn a_cored_hydrogen_triangle_noncollinear_spinor_r2scan_crystal_stress_is_the_reconverged_finite_difference(
+) {
     triangle_stress(true, 5e-5);
 }

@@ -1,7 +1,7 @@
 //! Sequential variational deflation with analytic overlap-penalty gradients.
 use super::amplitude::{inner_wide, stack, Amplitude, State};
 use super::solver::by_precision;
-use super::{evolution, optimizer, CachedProblem, SolveOptions, C64};
+use super::{evolution, optimizer, QuantumProblem, SolveOptions, C64};
 use crate::{Buffer, Error, Reservation, Result};
 use std::time::Instant;
 pub struct Levels {
@@ -15,7 +15,7 @@ pub struct Levels {
     pub elapsed_seconds: f64,
     _memory: Reservation,
 }
-impl CachedProblem {
+impl QuantumProblem {
     pub fn energy_levels(
         &self,
         options: &SolveOptions,
@@ -95,40 +95,49 @@ impl CachedProblem {
                             }
                         })
                         .collect();
-                    let out = optimizer::minimize(ctx, &initial, &options.optimizer, |theta| {
-                        let sequence = self.sequence(&indices, theta)?;
-                        let data = evolution::state_from::<A>(
-                            ctx,
-                            basis,
-                            &sequence.operators,
-                            &sequence.parameters,
-                            options.trotter || self.hva.is_some(),
-                            true,
-                            None,
-                        )?;
-                        let psi = &data.as_slice()[..d];
-                        let mut action = ctx.allocate::<C64>(d)?;
-                        self.hamiltonian
-                            .apply_into(basis, psi, action.as_mut_slice());
-                        for previous in states.as_slice()[..level * d].chunks_exact(d) {
-                            let overlap = evolution::inner(previous, psi);
-                            for (h, s) in action.as_mut_slice().iter_mut().zip(previous) {
-                                *h += beta * overlap * s.widen();
+                    let out = optimizer::minimize_deferred_from(
+                        ctx,
+                        &initial,
+                        &options.optimizer,
+                        None,
+                        |theta| {
+                            let sequence = self.sequence(&indices, theta)?;
+                            let data = evolution::state_from::<A>(
+                                ctx,
+                                basis,
+                                &sequence.operators,
+                                &sequence.parameters,
+                                options.trotter || self.hva.is_some(),
+                                true,
+                                None,
+                            )?;
+                            let psi = &data.as_slice()[..d];
+                            let mut action = ctx.allocate::<C64>(d)?;
+                            self.hamiltonian
+                                .apply_into(basis, psi, action.as_mut_slice());
+                            for previous in states.as_slice()[..level * d].chunks_exact(d) {
+                                let overlap = evolution::inner(previous, psi);
+                                for (h, s) in action.as_mut_slice().iter_mut().zip(previous) {
+                                    *h += beta * overlap * s.widen();
+                                }
                             }
-                        }
-                        let energy = inner_wide(psi, action.as_slice()).re;
-                        let mut gradient = vec![0.; n];
-                        for (i, (logical, weight)) in sequence.links.iter().enumerate() {
-                            gradient[*logical] += weight
-                                * 2.
-                                * inner_wide(
-                                    &data.as_slice()[(i + 1) * d..(i + 2) * d],
-                                    action.as_slice(),
-                                )
-                                .re
-                        }
-                        Ok((energy, gradient))
-                    })?;
+                            let energy = inner_wide(psi, action.as_slice()).re;
+                            let links: Vec<(usize, f64)> = sequence.links;
+                            Ok(optimizer::Probe::deferred(energy, move || {
+                                let mut gradient = vec![0.; n];
+                                for (i, (logical, weight)) in links.iter().enumerate() {
+                                    gradient[*logical] += weight
+                                        * 2.
+                                        * inner_wide(
+                                            &data.as_slice()[(i + 1) * d..(i + 2) * d],
+                                            action.as_slice(),
+                                        )
+                                        .re;
+                                }
+                                Ok(gradient)
+                            }))
+                        },
+                    )?;
                     evaluations += out.history.len();
                     if best.as_ref().is_none_or(|(b, _)| out.energy < b.energy) {
                         let state =

@@ -1,6 +1,6 @@
 //! CF-4: the crystal force of the Rust setup on a REAL converged SCF crystal, against the
 //! reconverged free-energy finite difference of the same discretized energy (the frozen Richardson
-//! oracle of `freeze_periodic_gradients.py`, 14.4 item 1), plus the translation sum rule, the
+//! oracle of `periodic_freeze_snapshot.rs`, 14.4 item 1), plus the translation sum rule, the
 //! mesh-free terms, the egg-box floor and the SCF-tolerance sensitivity. Collinear scalar LDA,
 //! whole k mesh, no Python. Needs `MANDACARU_PAW_PATH`.
 mod periodic_gradient_crystals_support;

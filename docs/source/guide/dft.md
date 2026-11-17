@@ -218,14 +218,22 @@ owns them; for geometry work use a PAW-LCAO basis.
 
 ## Excited states
 
-After a converged molecular `dft` run with `xc="lda"`, `"pbe"` or `"hse06"`,
+After a converged molecular `dft` run with `xc="lda"`, `"pbe"`, `"r2scan"` or `"hse06"`, with or
+without `hubbard_u`,
 `calc.get_excitations(num_states, approximation="tda"|"casida", spin=None|"singlet"|"triplet")`
 solves the adiabatic linear-response (TD-DFT) equations for the lowest excitations, with
 oscillator strengths, transition dipoles and natural transition orbitals. An open shell
 (unrestricted Kohn-Sham) gives the spin-conserving excitations of both spins, with `<S^2>`
-of each root, and leaves `spin` unset. `r2scan`, the rVV10 pairings, DFT+U, spin-orbit
-datasets and crystals raise. The guide [Excited states of molecules](excited_states.md)
-owns the method, the limits of an adiabatic kernel in a confined basis and the refusals.
+of each root, and leaves `spin` unset. A spinor reference (a spin-orbit dataset or
+noncollinear initial moments) has its own two-component response with `lda` and `pbe`. The
+rVV10 pairings raise, and so does a spinor reference with `r2scan` or `hse06`. An insulating
+`lda` or `pbe` crystal, closed shell, spin-polarized or spinor (with or without spin-orbit
+coupling), solves the Bethe-Salpeter equation instead, in the Tamm-Dancoff form or, with
+`approximation="casida"`, in the coupling form. `excited_state=` makes the
+energy and the forces of the calculation those of one root, and `calc.get_real_time(...)` propagates
+the orbitals in time after a kick ([Real-time TD-DFT of molecules](real_time.md)). The guide
+[Excited states of molecules](excited_states.md) owns the method, the limits of an adiabatic
+kernel in a confined basis and the refusals.
 
 (dft-periodic)=
 ## Periodic calculations
@@ -271,7 +279,7 @@ the stress you want to resolve.
 A hybrid crystal is built from its PAW spheres. The setup records the atom centers,
 the projector basis and, per atom, the dataset file with the SHA-256 digest of the
 dataset's physics content (`content_sha256`, the digest the `[BASIS]` run-log table
-shows; it does not change when the file is re-encoded or upgraded to a newer format, and
+shows; it does not change when the file is re-encoded with another compression codec, and
 it changes with any stored number); Rust reads each file again when it builds the crystal.
 A saved crystal (`load_crystal=`) therefore needs its dataset files at load time, and a
 file whose content digest differs from the recorded one raises. A hybrid setup without

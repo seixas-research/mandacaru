@@ -133,9 +133,7 @@ fn paw_local_value<'py>(
     let (v, _v) = copy(ctx, &v_local)?;
     let (radius, _x) = copy(ctx, &radius)?;
     let (values, slopes) = py
-        .detach(|| {
-            LocalPotential::from_table(ctx, &r, &v, charge)?.evaluate(ctx, &radius)
-        })
+        .detach(|| LocalPotential::from_table(ctx, &r, &v, charge)?.evaluate(ctx, &radius))
         .map_err(error)?;
     Ok((
         array(py, &[radius.len()], values.as_slice().to_vec())?,
@@ -144,7 +142,10 @@ fn paw_local_value<'py>(
 }
 
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add("RELOAD_LEVEL_TOLERANCE", mandacaru_core::paw::record::RELOAD_LEVEL_TOLERANCE)?;
+    m.add(
+        "RELOAD_LEVEL_TOLERANCE",
+        mandacaru_core::paw::record::RELOAD_LEVEL_TOLERANCE,
+    )?;
     m.add_function(wrap_pyfunction!(paw_record_read, m)?)?;
     m.add_function(wrap_pyfunction!(paw_content_sha256, m)?)?;
     m.add_function(wrap_pyfunction!(paw_record_write, m)?)?;

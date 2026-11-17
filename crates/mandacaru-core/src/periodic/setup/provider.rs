@@ -35,11 +35,11 @@ use super::{
         short_range_ion_compensation_gradient, DenseGradients,
     },
     ions::LocalPotential,
+    projection_table::{ProjectionTable, SetupTables},
     pulay::{
         core_gradient, core_kinetic_gradient, cross_streamed, kinetic_setup, mesh_dot, tau_cross,
         KSamples, Ket, Matrix, Mesh,
     },
-    projection_table::{SetupTables, ProjectionTable},
     shapes::{Shapes, Sites},
     shells::Shells,
     spheres::Projector,
@@ -452,7 +452,9 @@ impl<'a> SetupDerivatives<'a> {
         )?;
         drop(kets);
         drop(kinetic);
-        let kinetic = rows.pop().ok_or_else(|| invalid("the kinetic cross is missing"))?;
+        let kinetic = rows
+            .pop()
+            .ok_or_else(|| invalid("the kinetic cross is missing"))?;
         let overlap = rows.remove(0);
         let grid = Arc::new(GridCross {
             overlap,
@@ -708,7 +710,10 @@ impl Derivatives for SetupDerivatives<'_> {
         // E6's potential, `output_fields`'s `core_kinetic`: the spin average of the frame's
         // `v_tau` (the core tau is unpolarized).
         fields.kinetic = kinetic.zip(core_kinetic).map(|(v, average)| {
-            (v.as_slice().chunks(n).map(<[f64]>::to_vec).collect(), average.as_slice().to_vec())
+            (
+                v.as_slice().chunks(n).map(<[f64]>::to_vec).collect(),
+                average.as_slice().to_vec(),
+            )
         });
         fields.bands = bands;
         fields._held = Some(held);

@@ -638,7 +638,9 @@ pub fn overlap_mesh(
                 .collect::<Result<Vec<_>>>()
         })?;
         for matrix in chunk.into_iter().flatten() {
-            links.push(crate::math::storage::StoredMatrix::new(ctx, matrix, archive)?);
+            links.push(crate::math::storage::StoredMatrix::new(
+                ctx, matrix, archive,
+            )?);
         }
     }
     let out = Mesh {

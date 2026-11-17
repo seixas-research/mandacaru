@@ -2,7 +2,7 @@
 //! the spin-orbit force is large enough to be resolved (on Si it is a fraction of a plan gate).
 //!
 //! * the converged force equals the Richardson reconverged central difference of the same
-//!   discretized spinor free energy on the frozen (transverse) coordinates;
+//!   discretized spinor free energy on the frozen coordinates (Au x and z, the bond axis; H x, y, z);
 //! * the spin-orbit term is not vacuous: damaging it in the breakdown (dropped, sign flipped, rows
 //!   only, projector columns only) moves the force by more than 100 gates;
 //! * each provider-level variant (a whole gradient with one thing wrong: kinetic replaced by
@@ -62,10 +62,12 @@ fn the_heavy_spinor_force_and_its_spin_orbit_term_are_resolved() {
         breakdown.spin_orbit_columns
     );
     // Free controls: the breakdown with the spin-orbit term damaged, against the oracle. The
-    // whole term is 219 plan gates, so dropping or flipping it bites 100 gates; either of its two
-    // shares alone is smaller (the projector columns are 15 gates on these coordinates) and is a
-    // named report that must still exceed 10 gates, the same shape as the hat and phase controls
-    // of the scalar and hybrid forces. The gate was not tightened to manufacture a bite.
+    // whole term peaks at 1129 plan gates (2026-11-16 library; the oracle holds the Au bond axis),
+    // so dropping or flipping it bites 100 gates (3.6e3 and 7.1e3 measured). Its two shares cancel
+    // each other on Au (the projector columns are nearly minus the basis rows), so either one
+    // alone bites more (5e4); each is a named report that must still exceed 10 gates, the same
+    // shape as the hat and phase controls of the scalar and hybrid forces. The gate was not
+    // tightened to manufacture a bite.
     for (name, rows, columns, floor) in [
         ("spin-orbit term dropped", 1.0, 1.0, 100.),
         ("spin-orbit sign flipped", 2.0, 2.0, 100.),

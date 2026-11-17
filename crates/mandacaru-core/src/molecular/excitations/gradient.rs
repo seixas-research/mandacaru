@@ -292,7 +292,9 @@ fn check(
             return unsupported("Hartree-Fock excited-state forces with hubbard_u are not implemented (the ground-state Hartree-Fock gradient has no +U term)");
         }
         if reference.method == "ghf" {
-            return Err(invalid("two-component Hartree-Fock (method='ghf') has no response yet"));
+            return Err(invalid(
+                "two-component Hartree-Fock (method='ghf') has no response yet",
+            ));
         }
         return Ok(Model::HartreeFock);
     };
@@ -1405,7 +1407,10 @@ pub fn pick(
                 None => (found.channels.len(), m),
             };
             if previous.transition.len() != parts
-                || previous.transition.iter().any(|t| t.shape() != (size, size))
+                || previous
+                    .transition
+                    .iter()
+                    .any(|t| t.shape() != (size, size))
             {
                 return Err(invalid(
                     "the state followed from the previous geometry has a different basis",
@@ -1481,12 +1486,21 @@ impl Picked {
         let (found, model, root, spin) = (&self.found, self.model, self.root, self.spin);
         let (omega, separation) = (self.excitation, self.separation);
         if model == Model::Spinor {
-            let mut state =
-                super::spinor::gradient::state_gradient(integrals, reference, found, self.group[0])?.0;
+            let mut state = super::spinor::gradient::state_gradient(
+                integrals,
+                reference,
+                found,
+                self.group[0],
+            )?
+            .0;
             for &j in &self.group[1..] {
-                let other = super::spinor::gradient::state_gradient(integrals, reference, found, j)?.0;
+                let other =
+                    super::spinor::gradient::state_gradient(integrals, reference, found, j)?.0;
                 let total = state.gradient.total.as_mut_slice();
-                total.iter_mut().zip(other.gradient.total.as_slice()).for_each(|(a, b)| *a += b);
+                total
+                    .iter_mut()
+                    .zip(other.gradient.total.as_slice())
+                    .for_each(|(a, b)| *a += b);
                 for ((_, a), (_, b)) in state.parts.iter_mut().zip(&other.parts) {
                     a.iter_mut().zip(b).for_each(|(x, y)| *x += y);
                 }
@@ -1500,8 +1514,16 @@ impl Picked {
             }
             if self.group.len() > 1 {
                 let share = 1. / self.group.len() as f64;
-                state.gradient.total.as_mut_slice().iter_mut().for_each(|a| *a *= share);
-                state.parts.iter_mut().for_each(|(_, a)| a.iter_mut().for_each(|x| *x *= share));
+                state
+                    .gradient
+                    .total
+                    .as_mut_slice()
+                    .iter_mut()
+                    .for_each(|a| *a *= share);
+                state
+                    .parts
+                    .iter_mut()
+                    .for_each(|(_, a)| a.iter_mut().for_each(|x| *x *= share));
                 state.relaxed *= share;
                 state.transition.iter_mut().for_each(|a| *a *= share);
                 state.energy_weighted *= share;
@@ -1881,7 +1903,11 @@ pub mod seams {
         reference: &MeanField,
         found: &crate::molecular::excitations::Excitations,
         state: usize,
-    ) -> Result<(Vec<f64>, Vec<(&'static str, Vec<f64>)>, super::super::spinor::gradient::Diagnostics)> {
+    ) -> Result<(
+        Vec<f64>,
+        Vec<(&'static str, Vec<f64>)>,
+        super::super::spinor::gradient::Diagnostics,
+    )> {
         let (g, diagnostics) =
             super::super::spinor::gradient::state_gradient(integrals, reference, found, state)?;
         Ok((g.gradient.total.as_slice().to_vec(), g.parts, diagnostics))
@@ -2074,7 +2100,7 @@ pub mod seams {
             };
             let screening = integrals.screening(functional)?;
             let (mut total, mut hartree) = (ctx.allocate::<C64>(n)?, ctx.allocate::<C64>(n)?);
-            let (fock, _) = dft::fock_and_energy(
+            let (fock, _, _) = dft::fock_and_energy(
                 integrals,
                 &integrals.kohn_sham_core(),
                 d,
@@ -2083,6 +2109,7 @@ pub mod seams {
                 gradients.as_ref(),
                 screening.as_ref(),
                 (total.as_mut_slice(), hartree.as_mut_slice()),
+                None,
             )?;
             Ok(fock)
         })

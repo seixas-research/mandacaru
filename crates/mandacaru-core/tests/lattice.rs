@@ -49,9 +49,15 @@ fn test_lattice_rotations_hexagonal() {
     let a = 3.0;
     let c = 5.2;
     let hex = Matrix3::new(
-        a, 0.0, 0.0,
-        -a / 2.0, a * 3.0f64.sqrt() / 2.0, 0.0,
-        0.0, 0.0, c,
+        a,
+        0.0,
+        0.0,
+        -a / 2.0,
+        a * 3.0f64.sqrt() / 2.0,
+        0.0,
+        0.0,
+        0.0,
+        c,
     );
     let rots = input_lattice_rotations(&hex, 1e-5).unwrap();
     assert_eq!(rots.len(), 24);

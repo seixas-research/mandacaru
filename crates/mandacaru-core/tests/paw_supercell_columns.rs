@@ -9,7 +9,8 @@ mod paw_supercell_support;
 mod setup_shells_support;
 
 use paw_supercell_support::{
-    cells_of, cells_with_basis, hydrogen_chain_cell, lithium_hydride_cell, nitrogen_chain_cell, silicon_cell, Primitive,
+    cells_of, cells_with_basis, hydrogen_chain_cell, lithium_hydride_cell, nitrogen_chain_cell,
+    silicon_cell, Primitive,
 };
 
 use mandacaru_core::{
@@ -26,23 +27,45 @@ use std::sync::Arc;
 /// The largest `|streamed - stored|` over the diagonal, the columns of every `stride`-th pivot
 /// and (with `factored`) every Cholesky-factored integral, and the largest diagonal entry. The
 /// stored columns cost a pass over every pair's compensation charge, so a larger cell samples.
-fn compare(name: &str, cell: &Primitive, mesh: [usize; 3], stride: usize, factored: bool) -> (f64, f64) {
+fn compare(
+    name: &str,
+    cell: &Primitive,
+    mesh: [usize; 3],
+    stride: usize,
+    factored: bool,
+) -> (f64, f64) {
     let ctx = Context::new(Some(2), 1 << 30).unwrap();
     let setup = Arc::new(cells_of(&ctx, "lda-sr", false, cell, 1, [0.; 3]));
     let integrals = MolecularIntegrals::paw_supercell(&ctx, setup.clone(), mesh, None).unwrap();
     let cells = PawSupercell::new(&ctx, &setup, mesh).unwrap();
-    let args = (&cells.crystal, mesh, &cells.points[..], &cells.harmonics, &integrals.lowdin);
+    let args = (
+        &cells.crystal,
+        mesh,
+        &cells.points[..],
+        &cells.harmonics,
+        &integrals.lowdin,
+    );
     let streamed = BasisCoulomb::new(args.0, args.1, args.2, args.3, args.4).unwrap();
     let stored = StoredColumns::new(args.0, args.1, args.2, args.3, args.4).unwrap();
     let m = streamed.m();
     let pairs = m * (m + 1) / 2;
     let (a, b) = (streamed.diagonal().unwrap(), stored.diagonal().unwrap());
     let largest = b.iter().fold(0f64, |x, v| x.max(v.abs()));
-    let mut columns = a.iter().zip(&b).fold(0f64, |x, (u, v)| x.max((u - v).abs()));
+    let mut columns = a
+        .iter()
+        .zip(&b)
+        .fold(0f64, |x, (u, v)| x.max((u - v).abs()));
     let diagonal = columns;
     for pivot in (0..pairs).step_by(stride) {
-        let (a, b) = (streamed.column(pivot).unwrap(), stored.column(pivot).unwrap());
-        columns = columns.max(a.iter().zip(&b).fold(0f64, |x, (u, v)| x.max((u - v).abs())));
+        let (a, b) = (
+            streamed.column(pivot).unwrap(),
+            stored.column(pivot).unwrap(),
+        );
+        columns = columns.max(
+            a.iter()
+                .zip(&b)
+                .fold(0f64, |x, (u, v)| x.max((u - v).abs())),
+        );
     }
     let mut energies = 0f64;
     let mut ranks = (None, None);
@@ -55,12 +78,16 @@ fn compare(name: &str, cell: &Primitive, mesh: [usize; 3], stride: usize, factor
             for q in 0..m {
                 for r in 0..m {
                     for s in 0..m {
-                        energies = energies.max((fast.value(p, q, r, s) - slow.value(p, q, r, s)).abs());
+                        energies =
+                            energies.max((fast.value(p, q, r, s) - slow.value(p, q, r, s)).abs());
                     }
                 }
             }
         }
-        ranks = (fast.report().cholesky.map(|c| c.0), slow.report().cholesky.map(|c| c.0));
+        ranks = (
+            fast.report().cholesky.map(|c| c.0),
+            slow.report().cholesky.map(|c| c.0),
+        );
     }
     println!(
         "{name} {mesh:?}: m {m}, largest (pr|pr) {largest:.3e}; max |streamed - stored| diagonal {diagonal:.2e}, \
@@ -106,17 +133,42 @@ fn the_streamed_columns_are_the_stored_ones_for_a_nitrogen_chain() {
 /// the representative pivots and kept counts at the same geometry gives the same integrals.
 /// Returns (worst miss over the reported residual, rank, plain rank, stored, cells, orbits
 /// whose block dropped eigenvalues).
-fn orbits(name: &str, cell: &Primitive, basis: &str, mesh: [usize; 3], tolerance: f64, stride: usize) -> (f64, usize, usize, usize, usize, usize) {
+fn orbits(
+    name: &str,
+    cell: &Primitive,
+    basis: &str,
+    mesh: [usize; 3],
+    tolerance: f64,
+    stride: usize,
+) -> (f64, usize, usize, usize, usize, usize) {
     let ctx = Context::new(Some(2), 2 << 30).unwrap();
-    let setup = Arc::new(cells_with_basis(&ctx, "lda-sr", false, cell, 1, [0.; 3], basis));
-    let integrals = MolecularIntegrals::paw_supercell(&ctx, setup.clone(), mesh, Some(tolerance)).unwrap();
+    let setup = Arc::new(cells_with_basis(
+        &ctx, "lda-sr", false, cell, 1, [0.; 3], basis,
+    ));
+    let integrals =
+        MolecularIntegrals::paw_supercell(&ctx, setup.clone(), mesh, Some(tolerance)).unwrap();
     let eri = integrals.eri().unwrap();
-    let Eri::Augmented { base, .. } = eri.as_ref() else { panic!("a PAW supercell is augmented") };
-    let Eri::Translated { stored, residual, kept, .. } = base.as_ref() else { panic!("stored per orbit") };
+    let Eri::Augmented { base, .. } = eri.as_ref() else {
+        panic!("a PAW supercell is augmented")
+    };
+    let Eri::Translated {
+        stored,
+        residual,
+        kept,
+        ..
+    } = base.as_ref()
+    else {
+        panic!("stored per orbit")
+    };
     let (stored, residual) = (*stored, residual.unwrap());
     let rank = base.report().cholesky.unwrap().0;
     let factors = base.factor_count().unwrap();
-    let truncated = kept.len() - kept.iter().zip(0..).filter(|&(&k, o)| k == base_orbit_size(base, o)).count();
+    let truncated = kept.len()
+        - kept
+            .iter()
+            .zip(0..)
+            .filter(|&(&k, o)| k == base_orbit_size(base, o))
+            .count();
     let cells = mesh.iter().product::<usize>();
     let source = integrals.paw_supercell.as_ref().unwrap();
     let m = integrals.m();
@@ -152,7 +204,9 @@ fn orbits(name: &str, cell: &Primitive, basis: &str, mesh: [usize; 3], tolerance
 
 /// How many factors stored vector `o` of `eri` carries (the size of its pivot's orbit).
 fn base_orbit_size(eri: &Eri, o: usize) -> usize {
-    let Eri::Translated { columns, .. } = eri else { unreachable!() };
+    let Eri::Translated { columns, .. } = eri else {
+        unreachable!()
+    };
     columns.iter().filter(|&&(v, _)| v == o).count()
 }
 
@@ -161,17 +215,25 @@ const DEFECT: f64 = 1e-12;
 
 #[test]
 fn the_factors_stored_per_orbit_give_every_pair_integral_of_lithium_hydride() {
-    let (over, rank, plain, stored, cells, _) = orbits("LiH", &lithium_hydride_cell(), "SZ", [3, 1, 1], 1e-10, 1);
+    let (over, rank, plain, stored, cells, _) =
+        orbits("LiH", &lithium_hydride_cell(), "SZ", [3, 1, 1], 1e-10, 1);
     assert!(over < DEFECT, "{over:e}");
-    assert!(rank * 20 < plain * 21 && plain * 20 < rank * 21, "rank {rank} plain {plain}");
+    assert!(
+        rank * 20 < plain * 21 && plain * 20 < rank * 21,
+        "rank {rank} plain {plain}"
+    );
     assert!(stored * cells < rank * 2, "stored {stored}");
 }
 
 #[test]
 fn the_factors_stored_per_orbit_give_every_pair_integral_of_silicon_four_cells() {
-    let (over, rank, plain, stored, cells, _) = orbits("Si", &silicon_cell(), "SZ", [2, 2, 1], 1e-10, 7);
+    let (over, rank, plain, stored, cells, _) =
+        orbits("Si", &silicon_cell(), "SZ", [2, 2, 1], 1e-10, 7);
     assert!(over < DEFECT, "{over:e}");
-    assert!(rank * 20 < plain * 21 && plain * 20 < rank * 21, "rank {rank} plain {plain}");
+    assert!(
+        rank * 20 < plain * 21 && plain * 20 < rank * 21,
+        "rank {rank} plain {plain}"
+    );
     assert!(stored * cells < rank * 2, "stored {stored}");
 }
 
@@ -179,9 +241,13 @@ fn the_factors_stored_per_orbit_give_every_pair_integral_of_silicon_four_cells()
 /// there): the same bound holds with the truncated orbits.
 #[test]
 fn the_factors_stored_per_orbit_give_every_pair_integral_of_silicon_dzp_when_blocks_truncate() {
-    let (over, rank, plain, stored, cells, truncated) = orbits("Si", &silicon_cell(), "DZP", [2, 1, 1], 1e-8, 13);
+    let (over, rank, plain, stored, cells, truncated) =
+        orbits("Si", &silicon_cell(), "DZP", [2, 1, 1], 1e-8, 13);
     assert!(truncated > 0);
     assert!(over < DEFECT, "{over:e}");
-    assert!(rank * 20 < plain * 21 && plain * 20 < rank * 21, "rank {rank} plain {plain}");
+    assert!(
+        rank * 20 < plain * 21 && plain * 20 < rank * 21,
+        "rank {rank} plain {plain}"
+    );
     assert!(stored * cells < rank * 2, "stored {stored}");
 }

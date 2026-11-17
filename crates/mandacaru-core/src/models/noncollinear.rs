@@ -59,7 +59,12 @@ pub struct Rotated {
 }
 
 /// The polarizations `(zeta, eta)` of point `k` and the scales they divide by.
-fn polarizations(fields: &[f64], tau: &[f64], n: usize, k: usize) -> ([f64; 3], [f64; 3], f64, f64) {
+fn polarizations(
+    fields: &[f64],
+    tau: &[f64],
+    n: usize,
+    k: usize,
+) -> ([f64; 3], [f64; 3], f64, f64) {
     let (charge, kinetic) = (fields[k].max(SCALE_FLOOR), tau[k].max(SCALE_FLOOR));
     (
         std::array::from_fn(|a| fields[(a + 1) * n + k] / charge),
@@ -84,16 +89,29 @@ fn frame(zeta: &[f64; 3], eta: &[f64; 3]) -> [f64; FRAME] {
         return [0., 0., 1., 1., 0., 0., 0., 0.];
     }
     // The Gram eigenvector of `first`, from the better conditioned of its two forms.
-    let w = if a >= b { [first - b, c] } else { [c, first - a] };
-    let combine = |w: [f64; 2]| -> [f64; 3] { std::array::from_fn(|i| w[0] * zeta[i] + w[1] * eta[i]) };
+    let w = if a >= b {
+        [first - b, c]
+    } else {
+        [c, first - a]
+    };
+    let combine =
+        |w: [f64; 2]| -> [f64; 3] { std::array::from_fn(|i| w[0] * zeta[i] + w[1] * eta[i]) };
     let mut u = combine(w);
     let length = dot(&u, &u).sqrt();
     u.iter_mut().for_each(|x| *x /= length);
-    let reference = if dot(zeta, zeta) > 0. { dot(&u, zeta) } else { dot(&u, eta) };
+    let reference = if dot(zeta, zeta) > 0. {
+        dot(&u, zeta)
+    } else {
+        dot(&u, eta)
+    };
     if reference < 0. {
         u.iter_mut().for_each(|x| *x = -*x);
     }
-    let mut v = if second > FRAME_FLOOR { combine([-w[1], w[0]]) } else { [0.; 3] };
+    let mut v = if second > FRAME_FLOOR {
+        combine([-w[1], w[0]])
+    } else {
+        [0.; 3]
+    };
     // Orthogonal to `u` by construction up to roundoff; made exact.
     let along = dot(&v, &u);
     v.iter_mut().zip(&u).for_each(|(x, y)| *x -= along * y);
@@ -113,7 +131,11 @@ fn turn(f: &[f64], q: &[f64; 3]) -> [f64; 3] {
     let (along, across) = (dot(&u, q), dot(&v, q));
     // A meeting of the two leading eigenvalues leaves the frame undefined; the gap is floored.
     let gap = (first - second).max(1e-12 * first);
-    let pair = if second > 0. { second / (first * gap) } else { 0. };
+    let pair = if second > 0. {
+        second / (first * gap)
+    } else {
+        0.
+    };
     std::array::from_fn(|i| (q[i] - along * u[i]) / first + pair * across * v[i])
 }
 
@@ -150,24 +172,41 @@ fn add_turn(
 }
 
 /// Rotates `fields` (`4 x points`: `n, m_x, m_y, m_z`) and `tau` (likewise) into the local frame.
-pub fn rotate(ctx: &Context, points: usize, fields: &[f64], tau: Option<&[f64]>) -> Result<Rotated> {
+pub fn rotate(
+    ctx: &Context,
+    points: usize,
+    fields: &[f64],
+    tau: Option<&[f64]>,
+) -> Result<Rotated> {
     let n = points;
     if fields.len() != 4 * n || fields.iter().any(|v| !v.is_finite()) {
-        return Err(invalid("a spinor state needs charge and three finite magnetization fields"));
+        return Err(invalid(
+            "a spinor state needs charge and three finite magnetization fields",
+        ));
     }
     if tau.is_some_and(|t| t.len() != 4 * n) {
-        return Err(invalid("a spinor meta-GGA needs four kinetic-density channels"));
+        return Err(invalid(
+            "a spinor meta-GGA needs four kinetic-density channels",
+        ));
     }
     let mut densities = ctx.allocate::<f64>(2 * n)?;
     let mut norms = ctx.allocate::<f64>(n)?;
     for k in 0..n {
-        let norm = (1..4).map(|a| fields[a * n + k].powi(2)).sum::<f64>().sqrt();
+        let norm = (1..4)
+            .map(|a| fields[a * n + k].powi(2))
+            .sum::<f64>()
+            .sqrt();
         norms.as_mut_slice()[k] = norm;
         densities.as_mut_slice()[k] = 0.5 * (fields[k] + norm);
         densities.as_mut_slice()[n + k] = 0.5 * (fields[k] - norm);
     }
     let Some(t) = tau else {
-        return Ok(Rotated { densities, norms, tau: None, frames: None });
+        return Ok(Rotated {
+            densities,
+            norms,
+            tau: None,
+            frames: None,
+        });
     };
     if t.iter().any(|v| !v.is_finite()) {
         return Err(invalid("a spinor meta-GGA needs finite kinetic densities"));
@@ -186,7 +225,12 @@ pub fn rotate(ctx: &Context, points: usize, fields: &[f64], tau: Option<&[f64]>)
         out.as_mut_slice()[k] = 0.5 * (t[k] + along);
         out.as_mut_slice()[n + k] = 0.5 * (t[k] - along);
     }
-    Ok(Rotated { densities, norms, tau: Some(out), frames: Some(frames) })
+    Ok(Rotated {
+        densities,
+        norms,
+        tau: Some(out),
+        frames: Some(frames),
+    })
 }
 
 /// The Pauli-channel potentials (`4 x points`) of the frame potentials `potential`
@@ -213,7 +257,11 @@ pub fn unrotate(
     let meta = match (&mut kinetic_out, kinetic, tau, rotated.frames.as_ref()) {
         (Some(to), Some(v), Some(t), Some(frames)) => Some((to, v, t, frames)),
         (None, None, None, None) | (None, None, Some(_), None) => None,
-        _ => return Err(invalid("a meta-GGA frame needs its kinetic densities and potentials")),
+        _ => {
+            return Err(invalid(
+                "a meta-GGA frame needs its kinetic densities and potentials",
+            ))
+        }
     };
     let Some((to, v, t, frames)) = meta else {
         for k in 0..n {
@@ -232,7 +280,10 @@ pub fn unrotate(
     for k in 0..n {
         let f = &frames.as_slice()[FRAME * k..FRAME * (k + 1)];
         let u = [f[0], f[1], f[2]];
-        let (spin, kinetic_spin) = (0.5 * (potential[k] - potential[n + k]), 0.5 * (v[k] - v[n + k]));
+        let (spin, kinetic_spin) = (
+            0.5 * (potential[k] - potential[n + k]),
+            0.5 * (v[k] - v[n + k]),
+        );
         out.as_mut_slice()[k] = 0.5 * (potential[k] + potential[n + k]);
         to.as_mut_slice()[k] = 0.5 * (v[k] + v[n + k]);
         for a in 0..3 {
@@ -240,8 +291,18 @@ pub fn unrotate(
             to.as_mut_slice()[(a + 1) * n + k] = kinetic_spin * u[a];
         }
         // dE/du of the two projections, `u . m` and `u . tau_vec`.
-        let q: [f64; 3] = std::array::from_fn(|a| spin * fields[(a + 1) * n + k] + kinetic_spin * t[(a + 1) * n + k]);
-        add_turn(f, &q, (fields, t), n, k, out.as_mut_slice(), to.as_mut_slice());
+        let q: [f64; 3] = std::array::from_fn(|a| {
+            spin * fields[(a + 1) * n + k] + kinetic_spin * t[(a + 1) * n + k]
+        });
+        add_turn(
+            f,
+            &q,
+            (fields, t),
+            n,
+            k,
+            out.as_mut_slice(),
+            to.as_mut_slice(),
+        );
     }
     Ok((out, kinetic_out))
 }
@@ -253,21 +314,37 @@ pub fn unrotate(
 /// in its own frame (module docs). A caller that supplies its own density
 /// gradient (the molecular product rule, the crystal's spectral gradients of a meta-GGA) needs
 /// these instead of differentiating the rotated densities on the grid.
-pub fn rotate_gradients(ctx: &Context, points: usize, fields: &[f64], rotated: &Rotated, gradients: &[f64]) -> Result<Buffer<f64>> {
+pub fn rotate_gradients(
+    ctx: &Context,
+    points: usize,
+    fields: &[f64],
+    rotated: &Rotated,
+    gradients: &[f64],
+) -> Result<Buffer<f64>> {
     let n = points;
     if fields.len() != 4 * n || gradients.len() != 12 * n {
-        return Err(invalid("frame gradients need four fields and their three derivatives each"));
+        return Err(invalid(
+            "frame gradients need four fields and their three derivatives each",
+        ));
     }
     let mut out = ctx.allocate::<f64>(6 * n)?;
     for k in 0..n {
         let norm = rotated.norms.as_slice()[k];
-        let frame = rotated.frames.as_ref().map(|f| &f.as_slice()[FRAME * k..FRAME * k + 3]);
+        let frame = rotated
+            .frames
+            .as_ref()
+            .map(|f| &f.as_slice()[FRAME * k..FRAME * k + 3]);
         for axis in 0..3 {
             let charge = gradients[axis * n + k];
             let along = if let Some(u) = frame {
-                (0..3).map(|a| u[a] * gradients[((a + 1) * 3 + axis) * n + k]).sum::<f64>()
+                (0..3)
+                    .map(|a| u[a] * gradients[((a + 1) * 3 + axis) * n + k])
+                    .sum::<f64>()
             } else if norm > NORM_FLOOR {
-                (1..4).map(|a| fields[a * n + k] * gradients[(a * 3 + axis) * n + k]).sum::<f64>() / norm
+                (1..4)
+                    .map(|a| fields[a * n + k] * gradients[(a * 3 + axis) * n + k])
+                    .sum::<f64>()
+                    / norm
             } else {
                 0.
             };
@@ -296,16 +373,26 @@ pub fn unrotate_gradients(
     kinetic: Option<(&[f64], &mut [f64])>,
 ) -> Result<Buffer<f64>> {
     let n = points;
-    if fields.len() != 4 * n || gradients.len() != 12 * n || flux.len() != 6 * n || potential.len() != 4 * n {
-        return Err(invalid("frame fluxes are two spins of three axes of the grid"));
+    if fields.len() != 4 * n
+        || gradients.len() != 12 * n
+        || flux.len() != 6 * n
+        || potential.len() != 4 * n
+    {
+        return Err(invalid(
+            "frame fluxes are two spins of three axes of the grid",
+        ));
     }
     let mut out = ctx.allocate::<f64>(12 * n)?;
     if let Some(frames) = rotated.frames.as_ref() {
         let Some((tau, kinetic)) = kinetic else {
-            return Err(invalid("a meta-GGA frame needs its kinetic densities and potentials"));
+            return Err(invalid(
+                "a meta-GGA frame needs its kinetic densities and potentials",
+            ));
         };
         if tau.len() != 4 * n || kinetic.len() != 4 * n {
-            return Err(invalid("a spinor meta-GGA needs four kinetic-density channels"));
+            return Err(invalid(
+                "a spinor meta-GGA needs four kinetic-density channels",
+            ));
         }
         for k in 0..n {
             let f = &frames.as_slice()[FRAME * k..FRAME * (k + 1)];
@@ -330,11 +417,15 @@ pub fn unrotate_gradients(
             out.as_mut_slice()[axis * n + k] = 0.5 * (up + down);
             if norm > NORM_FLOOR {
                 let half = 0.5 * (up - down);
-                let along = (1..4).map(|a| fields[a * n + k] * gradients[(a * 3 + axis) * n + k]).sum::<f64>() / norm;
+                let along = (1..4)
+                    .map(|a| fields[a * n + k] * gradients[(a * 3 + axis) * n + k])
+                    .sum::<f64>()
+                    / norm;
                 for a in 1..4 {
                     let direction = fields[a * n + k] / norm;
                     out.as_mut_slice()[(a * 3 + axis) * n + k] = half * direction;
-                    potential[a * n + k] += half * (gradients[(a * 3 + axis) * n + k] - along * direction) / norm;
+                    potential[a * n + k] +=
+                        half * (gradients[(a * 3 + axis) * n + k] - along * direction) / norm;
                 }
             }
         }

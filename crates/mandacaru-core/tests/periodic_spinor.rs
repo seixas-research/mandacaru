@@ -170,10 +170,22 @@ fn meta_state(ctx: &Context) -> (Crystal, Vec<f64>, Vec<f64>) {
     c.core_tau = Some(ctx.allocate::<f64>(n).unwrap());
     c.functional = "r2scan".into();
     let rho = (0..4 * n)
-        .map(|i| if i < n { 0.04 + 0.003 * (i as f64 * 0.2).sin() } else { 0.002 * (i as f64 * 0.4).cos() })
+        .map(|i| {
+            if i < n {
+                0.04 + 0.003 * (i as f64 * 0.2).sin()
+            } else {
+                0.002 * (i as f64 * 0.4).cos()
+            }
+        })
         .collect();
     let tau = (0..4 * n)
-        .map(|i| if i < n { 0.05 + 0.004 * (i as f64 * 0.7).cos() } else { 0.003 * (i as f64 * 0.9).sin() })
+        .map(|i| {
+            if i < n {
+                0.05 + 0.004 * (i as f64 * 0.7).cos()
+            } else {
+                0.003 * (i as f64 * 0.9).sin()
+            }
+        })
         .collect();
     (c, rho, tau)
 }
@@ -190,7 +202,10 @@ fn spinor_meta_gga_xc_is_the_derivative_in_every_density_and_kinetic_component()
         let direction: Vec<_> = (0..n).map(|i| 0.01 * (i as f64 * 0.3).cos()).collect();
         let mut fft = Fft3::new(&ctx, c.grid.index.shape()).unwrap();
         let terms = spinor::exchange_correlation(&c, &mut fft, &rho, Some(&tau)).unwrap();
-        let kinetic = terms.kinetic_potential.as_ref().expect("a meta-GGA returns v_tau");
+        let kinetic = terms
+            .kinetic_potential
+            .as_ref()
+            .expect("a meta-GGA returns v_tau");
         for (which, field) in [("density", 0), ("kinetic density", 1)] {
             for axis in 0..4 {
                 let energy = |sign: f64| {
@@ -200,13 +215,26 @@ fn spinor_meta_gga_xc_is_the_derivative_in_every_density_and_kinetic_component()
                         target[axis * n + k] += sign * 1e-5 * direction[k];
                     }
                     let mut fft = Fft3::new(&ctx, c.grid.index.shape()).unwrap();
-                    spinor::exchange_correlation(&c, &mut fft, &r, Some(&t)).unwrap().energy
+                    spinor::exchange_correlation(&c, &mut fft, &r, Some(&t))
+                        .unwrap()
+                        .energy
                 };
                 let fd = (energy(1.) - energy(-1.)) / (2e-5);
-                let potential = if field == 0 { terms.potential.as_slice() } else { kinetic.as_slice() };
-                let analytic = (0..n).map(|k| potential[axis * n + k] * direction[k]).sum::<f64>();
-                eprintln!("r2SCAN {which}, component {axis}: fd {fd:+.10e}, analytic {analytic:+.10e}");
-                assert!((fd - analytic).abs() < 2e-9, "{which}, component {axis}: {fd} vs {analytic}");
+                let potential = if field == 0 {
+                    terms.potential.as_slice()
+                } else {
+                    kinetic.as_slice()
+                };
+                let analytic = (0..n)
+                    .map(|k| potential[axis * n + k] * direction[k])
+                    .sum::<f64>();
+                eprintln!(
+                    "r2SCAN {which}, component {axis}: fd {fd:+.10e}, analytic {analytic:+.10e}"
+                );
+                assert!(
+                    (fd - analytic).abs() < 2e-9,
+                    "{which}, component {axis}: {fd} vs {analytic}"
+                );
             }
         }
     }
@@ -226,15 +254,30 @@ fn spinor_meta_gga_core_potentials_are_the_derivatives_in_the_core_and_its_kinet
         let (mut c, rho, tau) = meta_state(&ctx);
         let n = c.grid.index.points();
         let (core, core_tau): (Vec<f64>, Vec<f64>) = (0..n)
-            .map(|k| (0.01 + 0.002 * (k as f64 * 0.5).sin(), 0.012 + 0.002 * (k as f64 * 0.8).cos()))
+            .map(|k| {
+                (
+                    0.01 + 0.002 * (k as f64 * 0.5).sin(),
+                    0.012 + 0.002 * (k as f64 * 0.8).cos(),
+                )
+            })
             .unzip();
         c.core.as_mut_slice().copy_from_slice(&core);
-        c.core_tau.as_mut().unwrap().as_mut_slice().copy_from_slice(&core_tau);
+        c.core_tau
+            .as_mut()
+            .unwrap()
+            .as_mut_slice()
+            .copy_from_slice(&core_tau);
         let direction: Vec<_> = (0..n).map(|i| 0.01 * (i as f64 * 0.3).cos()).collect();
         let mut fft = Fft3::new(&ctx, c.grid.index.shape()).unwrap();
         let terms = spinor::exchange_correlation(&c, &mut fft, &rho, Some(&tau)).unwrap();
-        let sources = terms.core.as_ref().expect("a spinor meta-GGA returns its core sources");
-        let pauli_kinetic = terms.kinetic_potential.as_ref().expect("a meta-GGA returns v_tau");
+        let sources = terms
+            .core
+            .as_ref()
+            .expect("a spinor meta-GGA returns its core sources");
+        let pauli_kinetic = terms
+            .kinetic_potential
+            .as_ref()
+            .expect("a meta-GGA returns v_tau");
         for which in ["core", "core kinetic density"] {
             let mut energy = |sign: f64| {
                 let (target, base) = if which == "core" {
@@ -246,7 +289,9 @@ fn spinor_meta_gga_core_potentials_are_the_derivatives_in_the_core_and_its_kinet
                     target[k] = base[k] + sign * 1e-5 * direction[k];
                 }
                 let mut fft = Fft3::new(&ctx, c.grid.index.shape()).unwrap();
-                spinor::exchange_correlation(&c, &mut fft, &rho, Some(&tau)).unwrap().energy
+                spinor::exchange_correlation(&c, &mut fft, &rho, Some(&tau))
+                    .unwrap()
+                    .energy
             };
             let fd = (energy(1.) - energy(-1.)) / 2e-5;
             energy(0.);
@@ -259,7 +304,10 @@ fn spinor_meta_gga_core_potentials_are_the_derivatives_in_the_core_and_its_kinet
             let (analytic, charge) = (contract(exact), contract(&pauli[..n]));
             eprintln!("r2SCAN {which}: fd {fd:+.10e}, exact {analytic:+.10e} ({:.2e}), Pauli charge channel {charge:+.10e} ({:.2e})", (fd - analytic).abs(), (fd - charge).abs());
             assert!((fd - analytic).abs() < 2e-9, "{which}: {fd} vs {analytic}");
-            assert!((fd - charge).abs() > 1e-8, "{which}: the frame does not turn here, the Pauli channel is as good: {charge}");
+            assert!(
+                (fd - charge).abs() > 1e-8,
+                "{which}: the frame does not turn here, the Pauli channel is as good: {charge}"
+            );
         }
     }
     assert_eq!(ctx.memory_used(), 0);
@@ -286,20 +334,44 @@ fn spinor_meta_gga_gradients_are_the_projections_of_the_pauli_gradients() {
             fft.transform(&mut work, true).unwrap();
             work.iter().map(|v| v.re).collect()
         };
-        let pauli: Vec<f64> = (0..12).flat_map(|row| derivative(&rho[(row / 3) * n..(row / 3 + 1) * n], row % 3)).collect();
+        let pauli: Vec<f64> = (0..12)
+            .flat_map(|row| derivative(&rho[(row / 3) * n..(row / 3 + 1) * n], row % 3))
+            .collect();
         let rotated = rotate(&ctx, n, &rho, Some(&tau)).unwrap();
         let projected = rotate_gradients(&ctx, n, &rho, &rotated, &pauli).unwrap();
         let of_rotated: Vec<f64> = (0..6)
-            .flat_map(|row| derivative(&rotated.densities.as_slice()[(row / 3) * n..(row / 3 + 1) * n], row % 3))
+            .flat_map(|row| {
+                derivative(
+                    &rotated.densities.as_slice()[(row / 3) * n..(row / 3 + 1) * n],
+                    row % 3,
+                )
+            })
             .collect();
         let mut fft = Fft3::new(&ctx, c.grid.index.shape()).unwrap();
         let terms = spinor::exchange_correlation(&c, &mut fft, &rho, Some(&tau)).unwrap();
-        let seen = terms.gradients.as_ref().expect("a meta-GGA returns its gradients");
-        let gap = |a: &[f64], b: &[f64]| a.iter().zip(b).map(|(x, y)| (x - y).abs()).fold(0., f64::max);
-        let (to_projection, to_rotated) = (gap(seen.as_slice(), projected.as_slice()), gap(seen.as_slice(), &of_rotated));
+        let seen = terms
+            .gradients
+            .as_ref()
+            .expect("a meta-GGA returns its gradients");
+        let gap = |a: &[f64], b: &[f64]| {
+            a.iter()
+                .zip(b)
+                .map(|(x, y)| (x - y).abs())
+                .fold(0., f64::max)
+        };
+        let (to_projection, to_rotated) = (
+            gap(seen.as_slice(), projected.as_slice()),
+            gap(seen.as_slice(), &of_rotated),
+        );
         eprintln!("frame gradients: to the projections {to_projection:.2e}, to the gradients of the rotated densities {to_rotated:.2e}");
-        assert!(to_projection < 1e-14, "the gradients the functional saw are not the projections: {to_projection:e}");
-        assert!(to_rotated > 1e-6, "this state does not turn its frame: {to_rotated:e}");
+        assert!(
+            to_projection < 1e-14,
+            "the gradients the functional saw are not the projections: {to_projection:e}"
+        );
+        assert!(
+            to_rotated > 1e-6,
+            "this state does not turn its frame: {to_rotated:e}"
+        );
     }
     assert_eq!(ctx.memory_used(), 0);
 }
@@ -316,7 +388,10 @@ fn spinor_meta_gga_spectral_gradient_strain_is_the_flux_contraction() {
         let dv = c.grid.index.dv();
         let mut fft = Fft3::new(&ctx, c.grid.index.shape()).unwrap();
         let terms = spinor::exchange_correlation(&c, &mut fft, &rho, Some(&tau)).unwrap();
-        let (g, f) = (terms.gradients.as_ref().unwrap(), terms.flux.as_ref().unwrap());
+        let (g, f) = (
+            terms.gradients.as_ref().unwrap(),
+            terms.flux.as_ref().unwrap(),
+        );
         let reference = c.xc_wave.as_slice().to_vec();
         for axis in 0..3 {
             let mut energy = |eps: f64| {
@@ -325,7 +400,9 @@ fn spinor_meta_gga_spectral_gradient_strain_is_the_flux_contraction() {
                     c.xc_wave.as_mut_slice()[axis * n + k] *= 1. - eps;
                 }
                 let mut fft = Fft3::new(&ctx, c.grid.index.shape()).unwrap();
-                spinor::exchange_correlation(&c, &mut fft, &rho, Some(&tau)).unwrap().energy
+                spinor::exchange_correlation(&c, &mut fft, &rho, Some(&tau))
+                    .unwrap()
+                    .energy
             };
             let h = 1e-4;
             let fd = (energy(h) - energy(-h)) / (2. * h);
@@ -333,11 +410,16 @@ fn spinor_meta_gga_spectral_gradient_strain_is_the_flux_contraction() {
                 * (0..2)
                     .map(|s| {
                         let row = 3 * s + axis;
-                        (0..n).map(|k| f.as_slice()[row * n + k] * g.as_slice()[row * n + k]).sum::<f64>()
+                        (0..n)
+                            .map(|k| f.as_slice()[row * n + k] * g.as_slice()[row * n + k])
+                            .sum::<f64>()
                     })
                     .sum::<f64>();
             eprintln!("strain of axis {axis}: fd {fd:+.10e}, X-3 {analytic:+.10e}");
-            assert!((fd - analytic).abs() < 1e-8 * fd.abs().max(1e-3), "axis {axis}: {fd} vs {analytic}");
+            assert!(
+                (fd - analytic).abs() < 1e-8 * fd.abs().max(1e-3),
+                "axis {axis}: {fd} vs {analytic}"
+            );
         }
     }
     assert_eq!(ctx.memory_used(), 0);

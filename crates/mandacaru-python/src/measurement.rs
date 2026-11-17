@@ -38,7 +38,13 @@ pub fn budget_check(
 ) -> PyResult<((u64, u64), Vec<(String, u64, u64)>)> {
     let (after, exceeded) =
         execution::budget_check(used, per, times, (job_limit, shot_limit)).map_err(error)?;
-    Ok((after, exceeded.into_iter().map(|(name, total, limit)| (name.to_owned(), total, limit)).collect()))
+    Ok((
+        after,
+        exceeded
+            .into_iter()
+            .map(|(name, total, limit)| (name.to_owned(), total, limit))
+            .collect(),
+    ))
 }
 
 /// `1 / sqrt(shots)`, zero without shots (`execution::estimator_precision`).
@@ -56,7 +62,12 @@ pub fn mps_job_gigabytes(bases: u64) -> f64 {
 
 /// `(rdm_circuits, instances, total_shots)` of a device force (`execution::device_force_cost`).
 #[pyfunction]
-fn device_force_cost(rotations: u64, circuits: u64, bases: u64, shots: u64) -> PyResult<(u64, u64, u64)> {
+fn device_force_cost(
+    rotations: u64,
+    circuits: u64,
+    bases: u64,
+    shots: u64,
+) -> PyResult<(u64, u64, u64)> {
     execution::device_force_cost(rotations, circuits, bases, shots).map_err(error)
 }
 

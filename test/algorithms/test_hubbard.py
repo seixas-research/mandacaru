@@ -128,7 +128,9 @@ def test_a_molecule_calculates_dft_plus_u():
     shell = calc.result.hubbard[0]
     assert shell["symbol"] == "Cu"
     assert shell["l"] == "d"
-    assert np.allclose(shell["trace"], [4.886], atol=1e-2)
+    # Re-pinned 2026-11-16 (was 4.886 on the library before its regeneration, file format 3):
+    # 4.84975 on mandacaru-paw 8a6e977, extension sha256 00e4d7ff.
+    assert np.allclose(shell["trace"], [4.850], atol=1e-2)
 
 
 def frozen_cuh(spec, shift=0.0, *, spin=False):

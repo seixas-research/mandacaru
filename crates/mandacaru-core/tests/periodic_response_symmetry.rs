@@ -1,6 +1,6 @@
 //! CF-6: the force and the stress on a k mesh reduced by the cell's space group equal those of
-//! the whole mesh. The pairs of snapshots are written by the setup (`freeze_periodic_gradients.py
-//! symmetry`): the same crystal solved on the whole mesh and on the irreducible one, each carrying
+//! the whole mesh. The pairs of snapshots are written by the setup (`periodic_freeze_symmetry.rs`):
+//! the same crystal solved on the whole mesh and on the irreducible one, each carrying
 //! its `setup` block (the reduced one lists the kept operations). Controls: the unaveraged
 //! reduced-mesh k-sum (the symmetrizer is not vacuous), a wrong atom map, and a snapshot that
 //! lists no operations (raises). Needs `MANDACARU_PAW_PATH`.

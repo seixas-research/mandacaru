@@ -597,7 +597,12 @@ class TestFrozenPythonOutputs:
     step, ``h = r[1] - r[0]``, for the whole grid while the stored radial table
     is rounded to twelve decimals (its steps differ from the mean by up to
     1.5e-7 relative), which moves the integral by about 1e-9; its missing last
-    interval for an odd number of points matters 100 times less (4e-12)."""
+    interval for an odd number of points matters 100 times less (4e-12).
+
+    Since 2026-11-16 the keys that read the shipped library are self-pins of the production
+    routine on the regenerated library (file format 3): the ``library_refreeze`` entry of the
+    JSON beside the reference lists them with the library digests and the extension; the other
+    keys keep their Python-era values."""
 
     @staticmethod
     def own(dataset, symbol, basis, real=True, only=None):

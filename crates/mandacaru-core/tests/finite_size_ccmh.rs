@@ -6,9 +6,7 @@
 //! - Quadratic regime detection and `reliable` flag.
 //! - Index ordering $\Gamma_{prqs}$ from `ccmh_index.json`.
 
-use mandacaru_core::periodic::finite_size::{
-    ccmh_extrapolate, CcmhShell, StructureFactor,
-};
+use mandacaru_core::periodic::finite_size::{ccmh_extrapolate, CcmhShell, StructureFactor};
 use serde_json::Value;
 
 fn load(name: &str) -> Value {
@@ -137,11 +135,23 @@ fn structure_factor_shells_grouping() {
 #[test]
 fn input_validation_and_errors() {
     assert!(ccmh_extrapolate(&[], 1000.0, 1, 2.0).is_err());
-    let bad_shell = [CcmhShell { k: 0.0, s: 0.1, count: 1 }];
+    let bad_shell = [CcmhShell {
+        k: 0.0,
+        s: 0.1,
+        count: 1,
+    }];
     assert!(ccmh_extrapolate(&bad_shell, 1000.0, 1, 2.0).is_err());
-    let bad_s = [CcmhShell { k: 1.0, s: f64::NAN, count: 1 }];
+    let bad_s = [CcmhShell {
+        k: 1.0,
+        s: f64::NAN,
+        count: 1,
+    }];
     assert!(ccmh_extrapolate(&bad_s, 1000.0, 1, 2.0).is_err());
-    let valid_shell = [CcmhShell { k: 1.0, s: 0.1, count: 1 }];
+    let valid_shell = [CcmhShell {
+        k: 1.0,
+        s: 0.1,
+        count: 1,
+    }];
     assert!(ccmh_extrapolate(&valid_shell, -10.0, 1, 2.0).is_err());
     assert!(ccmh_extrapolate(&valid_shell, 1000.0, 0, 2.0).is_err());
     assert!(ccmh_extrapolate(&valid_shell, 1000.0, 1, -2.0).is_err());
@@ -170,9 +180,23 @@ fn a_uniform_orbital_has_no_structure_at_finite_k() {
 
 #[test]
 fn the_rpa_correction_is_pi_over_volume_times_the_plasma_frequency() {
-    let shells = [CcmhShell { k: 1.0, s: 0.4, count: 1 }, CcmhShell { k: 2.0, s: 1.7, count: 1 }];
+    let shells = [
+        CcmhShell {
+            k: 1.0,
+            s: 0.4,
+            count: 1,
+        },
+        CcmhShell {
+            k: 2.0,
+            s: 1.7,
+            count: 1,
+        },
+    ];
     let out = ccmh_extrapolate(&shells, 800.0, 1, 4.0).unwrap();
-    assert_eq!(out.rpa_correction, 2.0 * std::f64::consts::PI * out.rpa_limit / 800.0);
+    assert_eq!(
+        out.rpa_correction,
+        2.0 * std::f64::consts::PI * out.rpa_limit / 800.0
+    );
     let by_frequency = std::f64::consts::PI / (800.0 * out.plasma_frequency);
     assert!((out.rpa_correction - by_frequency).abs() < 1e-15 * by_frequency);
 }

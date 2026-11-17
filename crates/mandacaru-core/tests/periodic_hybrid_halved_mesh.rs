@@ -243,9 +243,15 @@ fn the_setup_halves_a_hybrid_mesh_by_time_reversal_and_keeps_its_energy() {
         let listed = build(&ctx, &cell, whole());
         let reduced = build(&ctx, &cell, Points::Mesh([3, 1, 1]));
         let weights: Vec<f64> = reduced.points.iter().map(|p| p.weight).collect();
-        println!("{label}: the setup lists {} points, weights {weights:?}", weights.len());
+        println!(
+            "{label}: the setup lists {} points, weights {weights:?}",
+            weights.len()
+        );
         if reduced.points.len() != 2 {
-            failures.push(format!("{label}: {} points, not the half", reduced.points.len()));
+            failures.push(format!(
+                "{label}: {} points, not the half",
+                reduced.points.len()
+            ));
         }
         let (w, h) = (solve(&listed, &options), solve(&reduced, &options));
         let gap = (w.free_energy - h.free_energy).abs();
@@ -313,7 +319,10 @@ fn the_forces_and_stress_of_a_halved_hybrid_mesh_are_those_of_the_whole_mesh_and
     let (fw, forces_whole, g_whole) = derivatives(whole());
     let (fh, forces_half, g_half) = derivatives(half());
     let mut failures = Vec::new();
-    println!("free energy: whole {fw:.12} Ha, half {fh:.12} Ha, difference {:.3e}", (fw - fh).abs());
+    println!(
+        "free energy: whole {fw:.12} Ha, half {fh:.12} Ha, difference {:.3e}",
+        (fw - fh).abs()
+    );
     failures.extend(((fw - fh).abs() >= 1e-10).then(|| format!("energy {:e}", (fw - fh).abs())));
     let force_gap = forces_whole
         .iter()
@@ -325,7 +334,10 @@ fn the_forces_and_stress_of_a_halved_hybrid_mesh_are_those_of_the_whole_mesh_and
         .flatten()
         .zip(g_half.iter().flatten())
         .fold(0f64, |a, (x, y)| a.max((x - y).abs()));
-    let force_peak = forces_half.iter().flatten().fold(0f64, |a, x| a.max(x.abs()));
+    let force_peak = forces_half
+        .iter()
+        .flatten()
+        .fold(0f64, |a, x| a.max(x.abs()));
     let stress_peak = g_half.iter().flatten().fold(0f64, |a, x| a.max(x.abs()));
     println!(
         "half vs whole: forces {force_gap:.3e} Ha/Bohr (peak {force_peak:.3e}), stress gradient \

@@ -13,7 +13,7 @@ use mandacaru_core::{
             FactorizedMeasurement,
         },
         solver::Execution,
-        Basis, CachedProblem, Operator, Space, C64,
+        Basis, Operator, QuantumProblem, Space, C64,
     },
     Context,
 };
@@ -271,7 +271,7 @@ struct Asked {
 /// once per request of a batch.
 fn device<'a>(
     ctx: &'a Context,
-    problem: &'a CachedProblem,
+    problem: &'a QuantumProblem,
     asked: &'a Asked,
 ) -> impl FnMut(&[Request]) -> mandacaru_core::Result<Response> + 'a {
     let n = problem.hamiltonian.n;
@@ -298,7 +298,12 @@ fn device<'a>(
 }
 
 /// `<observable_b>` of each basis on the frozen state, measured on the state-vector device.
-fn basis_values(ctx: &Context, problem: &CachedProblem, case: &Value, drop_below: f64) -> Vec<f64> {
+fn basis_values(
+    ctx: &Context,
+    problem: &QuantumProblem,
+    case: &Value,
+    drop_below: f64,
+) -> Vec<f64> {
     let thetas = floats(&case["state"]["thetas"]);
     let mut labels = Vec::new();
     let mut angles = Vec::new();
@@ -356,7 +361,7 @@ fn basis_values(ctx: &Context, problem: &CachedProblem, case: &Value, drop_below
         .collect()
 }
 
-fn problem_of(ctx: &Context, model: &Model, factorized: bool) -> CachedProblem {
+fn problem_of(ctx: &Context, model: &Model, factorized: bool) -> QuantumProblem {
     let mut problem = model
         .problem(ctx, "jordan_wigner", false, false, true)
         .unwrap();
@@ -580,7 +585,16 @@ fn a_paw_leaf_the_bare_qr_iteration_gets_wrong_is_decomposed_to_rounding() {
     let factors: Vec<f64> = (0..n * n).map(|k| matrix[(k / n, k % n)]).collect();
     let h = vec![0.; n * n];
     let data = mandacaru_core::quantum::factorization::spatial_double_factorization(
-        &h, n, None, None, Some((&factors, 1, n)), None, 0., 0., None, 0.,
+        &h,
+        n,
+        None,
+        None,
+        Some((&factors, 1, n)),
+        None,
+        0.,
+        0.,
+        None,
+        0.,
     )
     .unwrap();
     let mut worst = 0f64;

@@ -180,11 +180,8 @@ for basis in ['HAO','STO-3G']:
 
 
 def test_parquet_and_json_caches_need_no_python_parquet_package(tmp_path):
-    """Hamiltonian and pseudopotential files round-trip with ``pandas``,
-    ``pyarrow`` and ``fastparquet`` unimportable.  (The pseudopotential codec
-    still imports SciPy, so only the retired packages are blocked here.)"""
-    fixture = (Path(__file__).parents[1]
-               / "migration/reference/parquet/pseudopotential/fastparquet_zstd.parquet")
+    """Hamiltonian files round-trip, and the pseudopotential I/O module
+    imports, with ``pandas``, ``pyarrow`` and ``fastparquet`` unimportable."""
     script = """
 import importlib.abc, sys
 class Block(importlib.abc.MetaPathFinder):
@@ -194,18 +191,15 @@ class Block(importlib.abc.MetaPathFinder):
 sys.meta_path.insert(0,Block())
 from mandacaru.core import PauliSum
 from mandacaru.core.serialization import load_hamiltonian, save_hamiltonian
-from mandacaru.pseudopotentials.io import load_pseudopotential, save_pseudopotential
+import mandacaru.pseudopotentials.io
 pauli=PauliSum({'IZ':.5,'ZI':-.25,'XX':.125j})
 for extension in ('.parquet','.json'):
     path=save_hamiltonian('h'+extension,pauli,num_particles=(1,1),n_spatial_orbitals=1)
     record=load_hamiltonian(path)
     assert record.hamiltonian.terms==pauli.terms and record.num_particles==(1,1)
-loaded=load_pseudopotential(sys.argv[1])
-again=save_pseudopotential(loaded,'pp.parquet',stride=1)
-assert load_pseudopotential(again).symbol==loaded.symbol
 """
     completed = subprocess.run(
-        [sys.executable, "-I", "-c", script, str(fixture)],
+        [sys.executable, "-I", "-c", script],
         cwd=tmp_path,
         capture_output=True,
         text=True,

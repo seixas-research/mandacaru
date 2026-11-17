@@ -8,14 +8,14 @@ use mandacaru_core::{
     molecular::MolecularIntegrals,
     quantum::{
         lagrangian::{Ansatz, Options, Residual},
-        CachedProblem, SolveOptions,
+        QuantumProblem, SolveOptions,
     },
     Context, Geometry, LengthUnit,
 };
 use nalgebra::DMatrix;
 
 /// H2 on a coarse all-electron grid, with its ADAPT pool.
-fn h2(context: &Context) -> CachedProblem {
+fn h2(context: &Context) -> QuantumProblem {
     let geometry = Geometry::new(
         vec![1, 1],
         vec![[4., 4., 3.3], [4., 4., 4.7]],
@@ -46,7 +46,7 @@ fn h2(context: &Context) -> CachedProblem {
 }
 
 /// A product-form ansatz of every pool generator twice, off any optimum.
-fn sequence(problem: &CachedProblem) -> (Vec<usize>, Vec<f64>) {
+fn sequence(problem: &QuantumProblem) -> (Vec<usize>, Vec<f64>) {
     let n = problem.pool.len();
     assert!(n >= 2, "the fixture needs at least two generators");
     let indices: Vec<usize> = (0..2 * n).map(|k| k % n).collect();
@@ -167,7 +167,7 @@ fn the_exact_z_vector_matches_the_differenced_hessian_and_its_tangent_gives_z_do
 }
 
 /// The register-free H2 of the migration fixture (4 qubits, singles and doubles pool).
-fn h2_register_free(context: &Context) -> CachedProblem {
+fn h2_register_free(context: &Context) -> QuantumProblem {
     use mandacaru_core::persistence::{Document, HAMILTONIAN};
     let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../test/migration/reference/h2_hamiltonian.json");
@@ -215,7 +215,11 @@ fn prepared(
         .map(|label| {
             let p = Operator::new(context, n, &[(label.clone(), C64::new(1., 0.))]).unwrap();
             let action = p.apply(context, &basis, &state).unwrap();
-            state.iter().zip(action.as_slice()).map(|(a, b)| (a.conj() * b).re).sum()
+            state
+                .iter()
+                .zip(action.as_slice())
+                .map(|(a, b)| (a.conj() * b).re)
+                .sum()
         })
         .collect();
     let masks = request
@@ -231,25 +235,36 @@ fn prepared(
         })
         .collect();
     let kets = basis.indices.as_slice().to_vec();
-    (state.iter().map(|a| a.norm_sqr()).collect(), kets, masks, exact)
+    (
+        state.iter().map(|a| a.norm_sqr()).collect(),
+        kets,
+        masks,
+        exact,
+    )
 }
 
 fn parity(ket: u64, mask: u64) -> f64 {
-    if (ket & mask).count_ones() % 2 == 0 { 1. } else { -1. }
+    if (ket & mask).count_ones() % 2 == 0 {
+        1.
+    } else {
+        -1.
+    }
 }
 
 /// The device's answer to `requests`: `shots` sampled bit strings per request (`Some`), or the
 /// exact expectations (`None`).
 fn answer(
     context: &Context,
-    problem: &CachedProblem,
+    problem: &QuantumProblem,
     requests: &[mandacaru_core::quantum::execution::Request],
     shots: Option<u64>,
     seed: &mut u64,
 ) -> Vec<Vec<f64>> {
     let (n, reference) = (problem.hamiltonian.n, problem.register_reference());
     let mut uniform = || {
-        *seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        *seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         (*seed >> 11) as f64 / (1u64 << 53) as f64
     };
     requests
@@ -260,7 +275,10 @@ fn answer(
                 None => exact,
                 Some(shots) => {
                     assert!(
-                        request.observables.iter().all(|l| l.chars().all(|c| c == 'I' || c == 'Z')),
+                        request
+                            .observables
+                            .iter()
+                            .all(|l| l.chars().all(|c| c == 'I' || c == 'Z')),
                         "a sampled request reads Z strings"
                     );
                     let cumulative: Vec<f64> = probabilities
@@ -289,20 +307,32 @@ fn answer(
 /// and the readings sampled with that many shots (`sampled`) or exact.
 fn device_z(
     context: &Context,
-    problem: &CachedProblem,
+    problem: &QuantumProblem,
     indices: &[usize],
     parameters: &[f64],
     declared: u64,
     sampled: bool,
     seed: &mut u64,
-) -> mandacaru_core::Result<(mandacaru_core::quantum::execution::DeviceHessian, mandacaru_core::quantum::lagrangian::MeasuredZ)> {
+) -> mandacaru_core::Result<(
+    mandacaru_core::quantum::execution::DeviceHessian,
+    mandacaru_core::quantum::lagrangian::MeasuredZ,
+)> {
     use mandacaru_core::quantum::execution::{CircuitExecution, Request, Response};
     let mut call = |requests: &[Request]| -> mandacaru_core::Result<Response> {
-        Ok(Response::Expectations(answer(context, problem, requests, sampled.then_some(declared), seed)))
+        Ok(Response::Expectations(answer(
+            context,
+            problem,
+            requests,
+            sampled.then_some(declared),
+            seed,
+        )))
     };
     let mut execution = CircuitExecution::new(&mut call).with_shots(declared);
     let measured = execution.gradient_and_hessian(problem, indices, parameters)?;
-    let options = Options { floor: 0., ..Default::default() };
+    let options = Options {
+        floor: 0.,
+        ..Default::default()
+    };
     let solved = mandacaru_core::quantum::lagrangian::measured_z(
         &measured.gradient,
         &measured.hessian,
@@ -323,8 +353,16 @@ fn a_sampled_device_z_vector_scatters_as_its_propagated_covariance() {
         let (mut zs, mut covariances) = (Vec::new(), Vec::new());
         let mut significance = f64::INFINITY;
         for _ in 0..runs {
-            let (measured, solved) =
-                device_z(&context, &problem, &indices, &parameters, shots, true, &mut seed).unwrap();
+            let (measured, solved) = device_z(
+                &context,
+                &problem,
+                &indices,
+                &parameters,
+                shots,
+                true,
+                &mut seed,
+            )
+            .unwrap();
             assert!(measured.energies.iter().all(|e| e.error > 0.));
             let solution = solved.solution.as_ref().unwrap();
             for (v, e) in solution.eigenvalues.iter().zip(&solved.curvature_errors) {
@@ -334,9 +372,14 @@ fn a_sampled_device_z_vector_scatters_as_its_propagated_covariance() {
             covariances.push(solved.z_covariance.unwrap());
         }
         let n = parameters.len();
-        let mean: Vec<f64> = (0..n).map(|k| zs.iter().map(|z| z[k]).sum::<f64>() / runs as f64).collect();
+        let mean: Vec<f64> = (0..n)
+            .map(|k| zs.iter().map(|z| z[k]).sum::<f64>() / runs as f64)
+            .collect();
         let sample = DMatrix::from_fn(n, n, |k, l| {
-            zs.iter().map(|z| (z[k] - mean[k]) * (z[l] - mean[l])).sum::<f64>() / (runs - 1) as f64
+            zs.iter()
+                .map(|z| (z[k] - mean[k]) * (z[l] - mean[l]))
+                .sum::<f64>()
+                / (runs - 1) as f64
         });
         let propagated = covariances.iter().fold(DMatrix::zeros(n, n), |a, c| a + c) / runs as f64;
         eprintln!("smallest |lambda| / sigma {significance:.1}\nsample {sample:.3e}\npropagated {propagated:.3e}");
@@ -344,12 +387,19 @@ fn a_sampled_device_z_vector_scatters_as_its_propagated_covariance() {
         // three of its own errors.
         for k in 0..n {
             let ratio = (sample[(k, k)] / propagated[(k, k)]).sqrt();
-            assert!((ratio - 1.).abs() < 0.2, "z[{k}]: observed / propagated {ratio:.3}");
+            assert!(
+                (ratio - 1.).abs() < 0.2,
+                "z[{k}]: observed / propagated {ratio:.3}"
+            );
         }
         // The correlations too: the variance of a mixed direction.
         let u = nalgebra::DVector::from_vec(vec![1., -1., 1.]);
-        let ratio = ((u.transpose() * &sample * &u)[0] / (u.transpose() * &propagated * &u)[0]).sqrt();
-        assert!((ratio - 1.).abs() < 0.2, "mixed direction: observed / propagated {ratio:.3}");
+        let ratio =
+            ((u.transpose() * &sample * &u)[0] / (u.transpose() * &propagated * &u)[0]).sqrt();
+        assert!(
+            (ratio - 1.).abs() < 0.2,
+            "mixed direction: observed / propagated {ratio:.3}"
+        );
     }
     assert_eq!(context.memory_used(), 0);
 }
@@ -364,22 +414,31 @@ fn a_curvature_within_five_of_its_shot_errors_is_refused_by_name() {
         // Hartree-Fock point and a quarter turn; bisect to just inside the convex side.
         let double = (0..problem.pool.len())
             .find(|&k| {
-                let (m, _) = device_z(&context, &problem, &[k], &[0.], 0, false, &mut seed).unwrap();
+                let (m, _) =
+                    device_z(&context, &problem, &[k], &[0.], 0, false, &mut seed).unwrap();
                 m.gradient[0].abs() > 1e-6
             })
             .expect("a pool generator with a gradient at the reference");
         let curvature = |theta: f64, seed: &mut u64| {
             use mandacaru_core::quantum::execution::{CircuitExecution, Request, Response};
             let mut call = |requests: &[Request]| -> mandacaru_core::Result<Response> {
-                Ok(Response::Expectations(answer(&context, &problem, requests, None, seed)))
+                Ok(Response::Expectations(answer(
+                    &context, &problem, requests, None, seed,
+                )))
             };
             let mut execution = CircuitExecution::new(&mut call);
-            let m = execution.gradient_and_hessian(&problem, &[double], &[theta]).unwrap();
+            let m = execution
+                .gradient_and_hessian(&problem, &[double], &[theta])
+                .unwrap();
             m.hessian[(0, 0)]
         };
         let at_reference = curvature(0., &mut seed);
         assert!(at_reference > 0.);
-        let direction = if curvature(0.05, &mut seed) < at_reference { 1. } else { -1. };
+        let direction = if curvature(0.05, &mut seed) < at_reference {
+            1.
+        } else {
+            -1.
+        };
         let (mut convex, mut concave) = (0., 0.);
         for step in 1..40 {
             let theta = direction * 0.05 * step as f64;
@@ -392,23 +451,43 @@ fn a_curvature_within_five_of_its_shot_errors_is_refused_by_name() {
         assert!(concave != 0., "no inflection within the scan");
         while curvature(convex, &mut seed) > 1e-3 * at_reference {
             let middle = 0.5 * (convex + concave);
-            if curvature(middle, &mut seed) > 0. { convex = middle } else { concave = middle }
+            if curvature(middle, &mut seed) > 0. {
+                convex = middle
+            } else {
+                concave = middle
+            }
         }
         let small = curvature(convex, &mut seed);
         assert!(small > 0. && small < 1e-3 * at_reference);
         // Exact readings with a declared 2000 shots per basis: the errors are the exact ones of
         // that many shots, and the curvature is deterministic.
-        let refused = device_z(&context, &problem, &[double], &[convex], 2000, false, &mut seed)
-            .err()
-            .expect("a curvature under five sigma refuses")
-            .to_string();
+        let refused = device_z(
+            &context,
+            &problem,
+            &[double],
+            &[convex],
+            2000,
+            false,
+            &mut seed,
+        )
+        .err()
+        .expect("a curvature under five sigma refuses")
+        .to_string();
         eprintln!("{refused}");
-        assert!(refused.contains("curvature") && refused.contains("standard error") && refused.contains("Raise shots"));
+        assert!(
+            refused.contains("curvature")
+                && refused.contains("standard error")
+                && refused.contains("Raise shots")
+        );
         // The same shots at the Hartree-Fock point, where the curvature is large, pass.
-        let (_, solved) = device_z(&context, &problem, &[double], &[0.], 2000, false, &mut seed).unwrap();
+        let (_, solved) =
+            device_z(&context, &problem, &[double], &[0.], 2000, false, &mut seed).unwrap();
         let solution = solved.solution.unwrap();
         let ratio = solution.eigenvalues[0] / solved.curvature_errors[0];
-        assert!(ratio > mandacaru_core::quantum::lagrangian::CURVATURE_SIGNIFICANCE, "{ratio}");
+        assert!(
+            ratio > mandacaru_core::quantum::lagrangian::CURVATURE_SIGNIFICANCE,
+            "{ratio}"
+        );
     }
     assert_eq!(context.memory_used(), 0);
 }
@@ -429,7 +508,9 @@ fn a_basis_past_the_product_limit_measures_the_hessian_without_an_error() {
         let mut terms = Vec::new();
         for i in 0..n {
             for j in i..n {
-                let label: String = (0..n).map(|k| if k == i || k == j { 'Z' } else { 'I' }).collect();
+                let label: String = (0..n)
+                    .map(|k| if k == i || k == j { 'Z' } else { 'I' })
+                    .collect();
                 terms.push(serde_json::json!([label, 0.01 * (i + j + 1) as f64, 0.0]));
             }
         }
@@ -442,7 +523,9 @@ fn a_basis_past_the_product_limit_measures_the_hessian_without_an_error() {
             .unwrap()
             .problem_in(
                 &context,
-                mandacaru_core::quantum::Space::Pauli { number_conserving: true },
+                mandacaru_core::quantum::Space::Pauli {
+                    number_conserving: true,
+                },
                 false,
                 true,
             )
@@ -453,18 +536,33 @@ fn a_basis_past_the_product_limit_measures_the_hessian_without_an_error() {
                 requests
                     .iter()
                     .map(|r| {
-                        assert_eq!(r.priced, r.observables.len(), "no product string is measured");
+                        assert_eq!(
+                            r.priced,
+                            r.observables.len(),
+                            "no product string is measured"
+                        );
                         vec![-0.2 * r.angles[0].cos(); r.observables.len()]
                     })
                     .collect(),
             ))
         };
         let mut execution = CircuitExecution::new(&mut call).with_shots(1000);
-        let measured = execution.gradient_and_hessian(&problem, &[0], &[0.3]).unwrap();
-        let reason = measured.error_unavailable.as_deref().expect("the reason is reported");
-        assert!(reason.contains("not reported") && reason.contains("20000"), "{reason}");
+        let measured = execution
+            .gradient_and_hessian(&problem, &[0], &[0.3])
+            .unwrap();
+        let reason = measured
+            .error_unavailable
+            .as_deref()
+            .expect("the reason is reported");
+        assert!(
+            reason.contains("not reported") && reason.contains("20000"),
+            "{reason}"
+        );
         assert!(measured.energies.iter().all(|e| e.error == 0.));
-        let options = Options { floor: 0., ..Default::default() };
+        let options = Options {
+            floor: 0.,
+            ..Default::default()
+        };
         let solved = mandacaru_core::quantum::lagrangian::measured_z(
             &measured.gradient,
             &measured.hessian,

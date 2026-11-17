@@ -19,6 +19,12 @@
 //! Triplets drop `K^x`. With the direct term written this way `H` is Hermitian by the symmetry
 //! of `W` alone; the assembled matrix's anti-Hermitian residual is reported.
 //!
+//! **Spinor crystals** (T8, with or without spin-orbit coupling): the transitions are spinor
+//! pairs, `g = 1`, every pair density is the charge density `psi_a^dagger psi_b`, summed over the
+//! two components, and the dipoles carry the spin-orbit velocity ([`super::momentum`]). There is
+//! no triplet apart: `spin='singlet'` is the whole operator, and on a Kramers-unpolarized crystal
+//! without the term its roots are the collinear singlets once and the triplets three times.
+//!
 //! **The `q = 0` head.** The `G = G' = 0` element of `W(0)` is the mean of
 //! `4 pi / (q . eps_M . q)` over the mesh's mini-zone ([`head_average`]), with `eps_M` the static
 //! macroscopic tensor of the same states with local fields (T5a, every band, the screening
@@ -35,17 +41,41 @@
 //! ```
 //!
 //! `s = g / (N_k Omega)`: with `K^d = 0` it is T5a's local-field tensor in the Tamm-Dancoff
-//! approximation, and with `K^x = 0` too its independent-particle tensor. The full (coupling)
-//! form with the exchange alone, [`coupled_tensor`], is T5a's Dyson equation by the Woodbury
-//! identity (gate E1), a dense check and not a route to results. Below [`DENSE_LIMIT`]
+//! approximation, and with `K^x = 0` too its independent-particle tensor.
+//!
+//! **The coupling form** (`Request::coupling`, `approximation="casida"`): the resonant
+//! transitions `(v c)` couple to the antiresonant ones `(c v)` of the same mesh point through
+//!
+//! ```text
+//! B_{vck, v'c'k'} = s sum_G rho_vc(G)^* v(G) rho_c'v'(G)
+//!                 - (1 / (N_k Omega)) sum_{G G'} M_{vk, c'k'}(G')^* W_{G'G}(p) M_{ck, v'k'}(G),
+//! A'_{tt'}        = D_t delta + s sum_G rho_cv(G)^* v(G) rho_c'v'(G) - conj(K^d_{tt'})
+//! ```
+//!
+//! (the exchange from both orders of T5a's columns, the direct term from the screening code's
+//! pair densities across `k' = k + p`). `M = [[A, B], [B^dagger, A']]` is Hermitian and the
+//! operator is `diag(1, -1) M`; with `M` positive definite (`M = L L^dagger`) its eigenvalues are
+//! those of the Hermitian `L^dagger diag(1, -1) L`, `n` positive and `n` negative, with
+//! eigenvectors `Z = diag(1, -1) L u / sqrt|E|` (`Z^dagger diag(1, -1) Z = sign E`). Every
+//! eigenpair enters the tensor, `chi^{ab}(z) = s sum_l sign(E_l) o^a_l o^b_l^* / (z - E_l)` with
+//! `o_l = sum_t (h_t Z_tl + h~_t Z_{n+t,l})` and `h~` the head rows of `rho_cv`. Dense only, up
+//! to [`COUPLING_LIMIT`] transitions. With the exchange alone it is T5a's Dyson equation (gate
+//! E1, against [`coupled_tensor`], the Woodbury form of the same equation). Below [`DENSE_LIMIT`]
 //! transitions `H` is diagonalized whole; above it the lowest excitons come from Davidson on the
 //! real form `[[Re H, -Im H], [Im H, Re H]]` (each root twice, then a complex Rayleigh-Ritz step),
 //! and the spectrum from the Lanczos recursion of [`crate::math::lanczos`] from each dipole
 //! vector (Haydock), the off-diagonal elements by polarization (the tensor of a crystal with time
 //! reversal is symmetric).
 //!
-//! Refused here besides T5a's refusals: spin-polarized crystals (the two-channel exchange is not
-//! built), a window wider than the memory budget for the explicit `H`.
+//! **Spin-polarized crystals**: the transitions are the spin-conserving ones of both channels
+//! (`g = 1`), ordered mesh point, channel, valence, conduction. The exchange `K^x` couples every
+//! pair of them (the Hartree kernel of the charge), the direct term keeps the channel, and `W`
+//! screens with the transitions of both. There is no triplet apart (`spin='singlet'` is the whole
+//! operator); on an unpolarized crystal solved spin-polarized its roots are the singlets and the
+//! triplets, each once. Each channel takes its own default window (every band).
+//!
+//! Refused here besides T5a's refusals: `spin='triplet'` on a spinor or spin-polarized crystal, a
+//! window wider than the memory budget for the explicit `H`.
 use super::{
     super::{
         bloch_mesh::{MeshIndex, Sampler},
@@ -55,12 +85,12 @@ use super::{
             bloch::Bloch,
             interaction::{self, Block},
             medium::{Medium, Paw},
-            transitions::{Augmentation, Engine, Remainders},
+            transitions::{components_of, Augmentation, Engine, Remainders, Scratch},
         },
         spectrum::Smearing,
         wannier::sampling::Frame,
     },
-    dielectric::{columns, Dielectric, Kernel, Pairs, Request as Optical},
+    dielectric::{columns, largest_window, Dielectric, Kernel, Pairs, Request as Optical},
 };
 use crate::{
     math::{
@@ -68,6 +98,7 @@ use crate::{
         gemm::complex_product,
         lanczos,
         linalg::eigen,
+        storage::ComplexRead,
     },
     product,
     quantum::C64,
@@ -78,6 +109,8 @@ use std::f64::consts::PI;
 
 /// The largest number of transitions whose `H` is diagonalized whole.
 pub const DENSE_LIMIT: usize = 3000;
+/// The largest number of transitions of the coupling form (dense, `2n x 2n`).
+pub const COUPLING_LIMIT: usize = 1500;
 /// Lanczos vectors of one Haydock spectrum when none are given.
 pub const KRYLOV: usize = 300;
 /// Gauss-Legendre points per direction of each cell of the head average.
@@ -123,6 +156,8 @@ pub struct Request {
     pub scissor: f64,
     /// The largest `|q + G|` of the exchange and the screened interaction (Bohr^-1).
     pub cutoff: f64,
+    /// `false`: the Tamm-Dancoff operator; `true`: the coupling form (module documentation).
+    pub coupling: bool,
 }
 
 impl Request {
@@ -133,6 +168,7 @@ impl Request {
             window: None,
             scissor: 0.,
             cutoff: super::dielectric::LOCAL_FIELD_CUTOFF,
+            coupling: false,
         }
     }
 }
@@ -142,6 +178,8 @@ impl Request {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Transition {
     pub k: usize,
+    /// The spin channel (0 unless the crystal is spin-polarized).
+    pub channel: usize,
     pub valence: usize,
     pub conduction: usize,
 }
@@ -177,7 +215,29 @@ pub struct Operator {
     pub volume: f64,
     /// The largest anti-Hermitian residual of `P` over the mesh.
     pub residual: f64,
+    /// The blocks of the coupling form, when requested.
+    pub coupling: Option<Coupling>,
     _memory: crate::Reservation,
+}
+
+/// The blocks of the coupling form beside `hamiltonian` (`A`; module documentation).
+pub struct Coupling {
+    /// `B`, resonant rows by antiresonant columns.
+    pub resonant: DMatrix<C64>,
+    /// `A'`, Hermitized.
+    pub antiresonant: DMatrix<C64>,
+    /// `h~^a_t`, the head rows of `rho_cv` (Bohr).
+    pub dipoles: Vec<[C64; 3]>,
+    /// `max |B - B^T| / max |B|` (zero by time reversal and the symmetry of `W`).
+    pub symmetry: f64,
+}
+
+/// Every eigenpair of the coupling form: `E` ascending (`n` negative, then `n` positive) and the
+/// columns `Z` (`2n x 2n`, `Z^dagger diag(1, -1) Z = sign E`).
+#[derive(Clone, Debug)]
+pub struct Branches {
+    pub energies: Vec<f64>,
+    pub vectors: DMatrix<C64>,
 }
 
 /// The lowest excitons of an [`Operator`].
@@ -190,16 +250,26 @@ pub struct Excitons {
     /// The residual norm of each root (zero for a dense solve).
     pub residuals: Vec<f64>,
     pub converged: bool,
-    /// `"dense"` or `"davidson"`.
+    /// `"dense"`, `"davidson"` or `"coupling"`.
     pub solver: &'static str,
+    /// The antiresonant amplitudes `Y` of the coupling form (columns beside `vectors`, the `X`,
+    /// with `X^dagger X - Y^dagger Y = 1`); `None` in the Tamm-Dancoff approximation.
+    pub antiresonant: Option<DMatrix<C64>>,
+    /// Every eigenpair of the coupling form, which its tensor sums.
+    pub branches: Option<Branches>,
 }
 
 fn check(sampler: &Sampler<'_>, request: &Request) -> Result<()> {
-    if sampler.channels() != 1 {
-        return Err(Error::Unsupported(
-            "the Bethe-Salpeter equation of a spin-polarized crystal is not built (its \
-             exchange couples the two spin channels)"
-                .into(),
+    if sampler.channels() == 2 && request.spin == Spin::Triplet {
+        return Err(invalid(
+            "a spin-polarized crystal's excitons are the spin-conserving ones of both channels, \
+             coupled by the exchange: none is a triplet apart, and its operator is spin='singlet'",
+        ));
+    }
+    if sampler.crystal.spinor && request.spin == Spin::Triplet {
+        return Err(invalid(
+            "a spinor crystal's excitons mix the spins, so none is a triplet apart: its operator \
+             (exchange and direct terms on every spinor transition) is spin='singlet'",
         ));
     }
     if request.kernel == Kernel::LongRange {
@@ -218,15 +288,17 @@ fn check(sampler: &Sampler<'_>, request: &Request) -> Result<()> {
 }
 
 /// The Fermi level and width that make the static weights of an insulator's frames integral:
-/// the middle of the gap and a 80th of it.
-fn midgap(frames: &[Frame], occupied: usize) -> Result<(f64, f64)> {
-    let top = frames
-        .iter()
-        .map(|f| f.energies.as_slice()[occupied - 1])
+/// the middle of the gap over every channel (`frames[s]`, `occupied[s]` bands) and a 80th of it.
+fn midgap(frames: &[Vec<Frame>], occupied: &[usize]) -> Result<(f64, f64)> {
+    let edge =
+        |s: usize, f: &Frame, above: bool| f.energies.as_slice()[occupied[s] - usize::from(!above)];
+    let top = (0..frames.len())
+        .flat_map(|s| frames[s].iter().map(move |f| (s, f)))
+        .map(|(s, f)| edge(s, f, false))
         .fold(f64::NEG_INFINITY, f64::max);
-    let bottom = frames
-        .iter()
-        .map(|f| f.energies.as_slice()[occupied])
+    let bottom = (0..frames.len())
+        .flat_map(|s| frames[s].iter().map(move |f| (s, f)))
+        .map(|(s, f)| edge(s, f, true))
         .fold(f64::INFINITY, f64::min);
     if !(bottom > top) {
         return Err(invalid(
@@ -244,7 +316,7 @@ pub fn operator(sampler: &Sampler<'_>, mesh: &MeshIndex, request: &Request) -> R
     let ctx = &crystal.context;
     let bands = crystal.bands();
     let all: Vec<usize> = (0..bands).collect();
-    let frames = sampler.frames(mesh, &[all], |_, _| Ok(()))?;
+    let frames = sampler.frames(mesh, &vec![all; sampler.channels()], |_, _| Ok(()))?;
     let mut optical = Optical::new(vec![0.], 0., request.kernel);
     if request.kernel == Kernel::Bse {
         optical.kernel = Kernel::Hartree;
@@ -254,35 +326,65 @@ pub fn operator(sampler: &Sampler<'_>, mesh: &MeshIndex, request: &Request) -> R
     optical.cutoff = request.cutoff;
     let pairs = columns(sampler, mesh, &optical, Some(&frames))?;
     let (valence, conduction) = pairs.window[0];
+    let windows = pairs.window.clone();
     let n = pairs.energies.len();
     let nk = mesh.points();
-    let memory = ctx.reserve(product(&[n, n, 16, 3])?).map_err(|_| {
+    if request.coupling && n > COUPLING_LIMIT {
+        return Err(Error::Unsupported(format!(
+            "the coupling form of {n} transitions ({valence} valence x {conduction} conduction \
+             bands x {nk} k-points) is above its dense limit of {COUPLING_LIMIT}: pass a smaller \
+             bands=(valence, conduction) or approximation='tda'"
+        )));
+    }
+    let bytes = |n: usize| -> Result<usize> {
+        let tda = product(&[n, n, 16, 3])?;
+        if request.coupling {
+            tda.checked_add(product(&[2 * n, 2 * n, 16, 6])?)
+                .ok_or(Error::Overflow)
+        } else {
+            Ok(tda)
+        }
+    };
+    let memory = ctx.reserve(bytes(n)?).map_err(|_| {
+        let per_point: Vec<usize> = pairs.window.iter().map(|w| w.0 * w.1).collect();
+        let largest = largest_window(valence, conduction, |v, c| {
+            let count = per_point.iter().map(|_| v * c).sum::<usize>() * nk;
+            bytes(count)
+                .ok()
+                .and_then(|b| ctx.reserve(b).ok())
+                .is_some()
+        });
         Error::Unsupported(format!(
             "the Bethe-Salpeter operator of {n} transitions ({valence} valence x {conduction} \
-             conduction bands x {nk} k-points) does not fit the memory budget: pass a smaller \
-             bands=(valence, conduction)"
+             conduction bands x {nk} k-points) does not fit the memory budget: {}",
+            match largest {
+                Some((v, c)) => format!("the largest window that fits is bands=({v}, {c})"),
+                None => "not even bands=(1, 1) fits".into(),
+            }
         ))
     })?;
-    // The channel's occupied bands: the window ends at the last of them.
-    let occupied = sampler
-        .manifold(
-            super::super::berry::Bands::Occupied,
-            super::super::berry::Metal::Undefined,
-        )?
-        .ranges[0]
-        .1;
-    let lowest = occupied - valence;
-    let transitions: Vec<Transition> = (0..nk)
-        .flat_map(|k| {
-            (0..valence).flat_map(move |v| {
-                (0..conduction).map(move |c| Transition {
-                    k,
-                    valence: lowest + v,
-                    conduction: occupied + c,
-                })
-            })
-        })
-        .collect();
+    // Each channel's occupied bands: its window ends at the last of them. The transitions are in
+    // the order of the columns: mesh point, channel, valence, conduction.
+    let occupied = occupied_bands(sampler)?;
+    let per_point: usize = windows.iter().map(|(v, c)| v * c).sum();
+    let offset = |k: usize, s: usize| -> usize {
+        k * per_point + windows[..s].iter().map(|(v, c)| v * c).sum::<usize>()
+    };
+    let mut transitions: Vec<Transition> = Vec::with_capacity(n);
+    for k in 0..nk {
+        for (s, &(nv, nc)) in windows.iter().enumerate() {
+            for v in 0..nv {
+                for c in 0..nc {
+                    transitions.push(Transition {
+                        k,
+                        channel: s,
+                        valence: occupied[s] - nv + v,
+                        conduction: occupied[s] + c,
+                    });
+                }
+            }
+        }
+    }
     let dipoles: Vec<[C64; 3]> = (0..n)
         .map(|t| {
             let column = pairs.column(t, false);
@@ -293,92 +395,72 @@ pub fn operator(sampler: &Sampler<'_>, mesh: &MeshIndex, request: &Request) -> R
         n,
         pairs.energies.iter().map(|e| C64::new(*e, 0.)),
     ));
-    if request.kernel != Kernel::Independent && request.spin == Spin::Singlet {
-        hamiltonian += exchange(&pairs, &(0..n).collect::<Vec<_>>())?;
+    let exchanged = request.kernel != Kernel::Independent && request.spin == Spin::Singlet;
+    // The coupling blocks before the direct term: `B` and `A'` of the exchange.
+    let mut coupled = if request.coupling {
+        let zero = || DMatrix::<C64>::zeros(n, n);
+        let (resonant, antiresonant) = if exchanged {
+            (
+                exchange(&pairs, false, true)?,
+                exchange(&pairs, true, true)? - exchange(&pairs, false, false)?.map(|v| v.conj()),
+            )
+        } else {
+            (zero(), zero())
+        };
+        Some((resonant, antiresonant))
+    } else {
+        None
+    };
+    if exchanged {
+        hamiltonian += exchange(&pairs, false, false)?;
     }
     let mut head = 0.;
     let mut static_tensor = [[0.; 3]; 3];
     if request.kernel == Kernel::Bse {
-        // eps_M(0) of every band with local fields: the screening of the head.
-        let mut screening = Optical::new(vec![0.], 0., Kernel::Hartree);
-        screening.cutoff = request.cutoff;
-        let macroscopic = columns(sampler, mesh, &screening, Some(&frames))?;
-        static_tensor = macroscopic
-            .tensor(C64::new(0., 0.))?
-            .map(|row| row.map(|v| v.re));
-        let eps = Matrix3::from_fn(|a, b| static_tensor[a][b]);
-        head = interaction::head_average(&sampler.reciprocal, mesh, &eps, HEAD_ORDER)?;
         let setup = Setup::new(crystal)?;
         let remainders = Remainders::new(ctx, &setup)?;
-        let (fermi, width) = midgap(&frames[0], occupied)?;
-        let medium = Medium {
-            ctx,
-            grid: &crystal.grid,
-            volume: pairs.volume,
-            fermi,
-            width,
-            degeneracy: sampler.degeneracy(),
-            smearing: Smearing::FermiDirac,
-            constrained: false,
-            paw: Some(Paw {
-                crystal,
-                setup: &setup,
-                remainders: &remainders,
-            }),
-            workers: None,
-        };
-        let points = crystal.grid.index.points();
-        let states: Vec<Vec<Bloch<'_>>> = frames
-            .iter()
-            .map(|channel| {
-                channel
-                    .iter()
-                    .map(|frame| Bloch {
-                        fractional: frame.fractional,
-                        energies: frame.energies.as_slice(),
-                        target: vec![0.; frame.energies.as_slice().len()],
-                        samples: &frame.samples,
-                        projections: Some(&frame.projections),
-                        points,
-                    })
-                    .collect()
-            })
-            .collect();
-        let mut blocks = interaction::screened(
-            &medium,
-            &states,
+        let blocks;
+        (blocks, head, static_tensor) = screening(
+            sampler,
             mesh,
-            &sampler.lattice,
-            &sampler.reciprocal,
+            &frames,
+            &occupied,
+            &setup,
+            &remainders,
             request.cutoff,
         )?;
-        let origin = blocks[0]
-            .g
-            .iter()
-            .position(|g| *g == [0, 0, 0])
-            .ok_or_else(|| invalid("the screened vectors of q = 0 lack G = 0"))?;
-        blocks[0].screened[(origin, origin)] = C64::new(head, 0.);
-        let window = Window {
-            lowest,
-            valence,
-            occupied,
-            conduction,
-        };
         let scale = 1. / (nk as f64 * pairs.volume);
-        let direct = direct(
-            sampler,
-            &frames[0],
-            mesh,
-            &blocks,
-            &window,
-            &paw_parts(&setup, &remainders),
-        )?;
-        for (k, row_block) in direct.into_iter().enumerate() {
-            for (kp, block) in row_block {
-                let (r0, c0) = (k * valence * conduction, kp * valence * conduction);
-                for i in 0..valence * conduction {
-                    for j in 0..valence * conduction {
-                        hamiltonian[(r0 + i, c0 + j)] -= block[(i, j)] * scale;
+        // The direct term keeps the spin: one block of each channel's transitions per pair.
+        for (s, &(nv, nc)) in windows.iter().enumerate() {
+            let window = Window {
+                lowest: occupied[s] - nv,
+                valence: nv,
+                occupied: occupied[s],
+                conduction: nc,
+            };
+            let direct = direct(
+                sampler,
+                &frames[s],
+                mesh,
+                &blocks,
+                &window,
+                &paw_parts(&setup, &remainders),
+                request.coupling,
+            )?;
+            for (k, row_block) in direct.into_iter().enumerate() {
+                for (kp, block, across) in row_block {
+                    let (r0, c0) = (offset(k, s), offset(kp, s));
+                    for i in 0..nv * nc {
+                        for j in 0..nv * nc {
+                            hamiltonian[(r0 + i, c0 + j)] -= block[(i, j)] * scale;
+                        }
+                    }
+                    if let (Some((resonant, _)), Some(across)) = (coupled.as_mut(), across) {
+                        for i in 0..nv * nc {
+                            for j in 0..nv * nc {
+                                resonant[(r0 + i, c0 + j)] -= across[(i, j)] * scale;
+                            }
+                        }
                     }
                 }
             }
@@ -390,10 +472,36 @@ pub fn operator(sampler: &Sampler<'_>, mesh: &MeshIndex, request: &Request) -> R
         .map(|v| v.norm())
         .fold(0f64, f64::max)
         / largest.max(f64::MIN_POSITIVE);
+    // `A' = conj(A) + K^x_cv - conj(K^x_vc)`: the direct term's `conj(K^d)` with the exchange of
+    // the antiresonant order (the unhermitized `A`, so `A'` reads the same direct blocks).
+    let coupling = coupled
+        .map(|(resonant, correction)| -> Result<Coupling> {
+            let antiresonant = hamiltonian.map(|v| v.conj()) + correction;
+            let largest = resonant.iter().map(|v| v.norm()).fold(0f64, f64::max);
+            let symmetry = (&resonant - resonant.transpose())
+                .iter()
+                .map(|v| v.norm())
+                .fold(0f64, f64::max)
+                / largest.max(f64::MIN_POSITIVE);
+            Ok(Coupling {
+                antiresonant: (&antiresonant + antiresonant.adjoint()) * C64::new(0.5, 0.),
+                resonant,
+                dipoles: (0..n)
+                    .map(|t| {
+                        let column = pairs.column(t, true);
+                        [column[0], column[1], column[2]]
+                    })
+                    .collect(),
+                symmetry,
+            })
+        })
+        .transpose()?;
     let hamiltonian = (&hamiltonian + hamiltonian.adjoint()) * C64::new(0.5, 0.);
-    if hamiltonian
-        .iter()
-        .any(|v| !v.re.is_finite() || !v.im.is_finite())
+    let finite = |m: &DMatrix<C64>| m.iter().all(|v| v.re.is_finite() && v.im.is_finite());
+    if !finite(&hamiltonian)
+        || coupling
+            .as_ref()
+            .is_some_and(|c| !(finite(&c.resonant) && finite(&c.antiresonant)))
     {
         return Err(invalid("the Bethe-Salpeter operator is not finite"));
     }
@@ -417,19 +525,192 @@ pub fn operator(sampler: &Sampler<'_>, mesh: &MeshIndex, request: &Request) -> R
         electrons: pairs.electrons,
         volume: pairs.volume,
         residual: pairs.residual,
+        coupling,
         _memory: memory,
     })
 }
 
-/// `K^x` on the transitions `rows` x `rows` of `pairs`: `s (V R)^dagger (V R)`, `R` the
-/// local-field rows of each `rho_vc` column, `V` the square root of `v(G)`.
-fn exchange(pairs: &Pairs, rows: &[usize]) -> Result<DMatrix<C64>> {
+/// The statically screened interaction of the direct term (module documentation): `W(p)` of
+/// every mesh vector, the `q = 0` head (returned beside it) in place, and the static
+/// macroscopic tensor with local fields of every band that screens the head.
+fn screening(
+    sampler: &Sampler<'_>,
+    mesh: &MeshIndex,
+    frames: &[Vec<Frame>],
+    occupied: &[usize],
+    setup: &Setup,
+    remainders: &Remainders,
+    cutoff: f64,
+) -> Result<(Vec<Block>, f64, [[f64; 3]; 3])> {
+    let crystal = sampler.crystal;
+    let ctx = &crystal.context;
+    // eps_M(0) of every band with local fields: the screening of the head.
+    let mut optical = Optical::new(vec![0.], 0., Kernel::Hartree);
+    optical.cutoff = cutoff;
+    let macroscopic = columns(sampler, mesh, &optical, Some(frames))?;
+    let static_tensor = macroscopic
+        .tensor(C64::new(0., 0.))?
+        .map(|row| row.map(|v| v.re));
+    let eps = Matrix3::from_fn(|a, b| static_tensor[a][b]);
+    let head = interaction::head_average(&sampler.reciprocal, mesh, &eps, HEAD_ORDER)?;
+    let (fermi, width) = midgap(frames, occupied)?;
+    let medium = Medium {
+        ctx,
+        grid: &crystal.grid,
+        volume: macroscopic.volume,
+        fermi,
+        width,
+        degeneracy: sampler.degeneracy(),
+        smearing: Smearing::FermiDirac,
+        constrained: false,
+        paw: Some(Paw {
+            crystal,
+            setup,
+            remainders,
+        }),
+        workers: None,
+    };
+    let points = crystal.grid.index.points();
+    let states: Vec<Vec<Bloch<'_>>> = frames
+        .iter()
+        .map(|channel| {
+            channel
+                .iter()
+                .map(|frame| Bloch {
+                    fractional: frame.fractional,
+                    energies: frame.energies.as_slice(),
+                    target: vec![0.; frame.energies.as_slice().len()],
+                    samples: &frame.samples,
+                    projections: Some(&frame.projections),
+                    points,
+                    components: frame.components,
+                })
+                .collect()
+        })
+        .collect();
+    let mut blocks = interaction::screened(
+        &medium,
+        &states,
+        mesh,
+        &sampler.lattice,
+        &sampler.reciprocal,
+        cutoff,
+    )?;
+    let origin = blocks[0]
+        .g
+        .iter()
+        .position(|g| *g == [0, 0, 0])
+        .ok_or_else(|| invalid("the screened vectors of q = 0 lack G = 0"))?;
+    blocks[0].screened[(origin, origin)] = C64::new(head, 0.);
+    Ok((blocks, head, static_tensor))
+}
+
+/// Each channel's occupied bands.
+fn occupied_bands(sampler: &Sampler<'_>) -> Result<Vec<usize>> {
+    Ok(sampler
+        .manifold(
+            super::super::berry::Bands::Occupied,
+            super::super::berry::Metal::Undefined,
+        )?
+        .ranges
+        .iter()
+        .map(|r| r.1)
+        .collect())
+}
+
+/// The pieces of the direct term, for an oracle that reads none of the operator's bookkeeping:
+/// `W(p)` of every mesh vector (the `q = 0` head in place) and the pair densities of every pair
+/// of bands across `k' = k + p`.
+pub struct DirectParts {
+    /// The screened interaction, one block per mesh vector `p` (`Block::steps`).
+    pub blocks: Vec<Block>,
+    /// `densities[s][t]`, channel `s` and block `t`: for each mesh point `k`, `(k, k', M)` with
+    /// `M` the vectors of the block by `a * bands + b`, `M_{ak, bk'}(p + G)` with the complete
+    /// augmentation (a spinor's summed over its components).
+    pub densities: Vec<Vec<Vec<(usize, usize, DMatrix<C64>)>>>,
+    /// The bands of every frame (every band of the crystal).
+    pub bands: usize,
+    /// Each channel's occupied bands.
+    pub occupied: Vec<usize>,
+}
+
+/// The [`DirectParts`] of the insulator `sampler` on `mesh` with the screening `cutoff`, the
+/// `W` and pair densities [`operator`] builds its direct term from. Every band pair of every
+/// mesh pair is kept: a check for small cells, not a route to results.
+pub fn direct_parts(sampler: &Sampler<'_>, mesh: &MeshIndex, cutoff: f64) -> Result<DirectParts> {
+    let crystal = sampler.crystal;
+    let ctx = &crystal.context;
+    let bands = crystal.bands();
+    let all: Vec<usize> = (0..bands).collect();
+    let frames = sampler.frames(mesh, &vec![all; sampler.channels()], |_, _| Ok(()))?;
+    let occupied = occupied_bands(sampler)?;
+    let setup = Setup::new(crystal)?;
+    let remainders = Remainders::new(ctx, &setup)?;
+    let (blocks, _, _) = screening(
+        sampler,
+        mesh,
+        &frames,
+        &occupied,
+        &setup,
+        &remainders,
+        cutoff,
+    )?;
+    let mut densities = Vec::with_capacity(frames.len());
+    for channel in &frames {
+        let mut per_block = Vec::with_capacity(blocks.len());
+        for block in &blocks {
+            let engine = Engine::new(ctx, &crystal.grid, block.q, &block.g)?;
+            let augmentation = Augmentation::new(crystal, &setup, &remainders, &engine.vectors)?;
+            let mut scratch = engine.scratch(ctx)?;
+            let mut row = vec![C64::default(); block.g.len()];
+            let mut per_k = Vec::with_capacity(mesh.points());
+            for k in 0..mesh.points() {
+                let kp = mesh.shift(k, block.steps);
+                let (left, right) = (&channel[k], &channel[kp]);
+                let (l, r) = (values(ctx, left)?, values(ctx, right)?);
+                let mut m = DMatrix::<C64>::zeros(block.g.len(), bands * bands);
+                for a in 0..bands {
+                    for b in 0..bands {
+                        let (left, right) = ((left, &l[..]), (right, &r[..]));
+                        pair_density(
+                            &engine,
+                            &augmentation,
+                            &mut scratch,
+                            left,
+                            right,
+                            a,
+                            b,
+                            &mut row,
+                        )?;
+                        m.column_mut(a * bands + b).copy_from_slice(&row);
+                    }
+                }
+                per_k.push((k, kp, m));
+            }
+            per_block.push(per_k);
+        }
+        densities.push(per_block);
+    }
+    Ok(DirectParts {
+        blocks,
+        densities,
+        bands,
+        occupied,
+    })
+}
+
+/// `K^x` between the orders `backward` of the rows and of the columns of every transition of
+/// `pairs`: `s (V R_rows)^dagger (V R_columns)`, `R` the local-field rows of each `rho_vc`
+/// (`false`) or `rho_cv` (`true`) column, `V` the square root of `v(G)`.
+fn exchange(pairs: &Pairs, rows: bool, columns: bool) -> Result<DMatrix<C64>> {
     let coulomb = pairs.coulomb();
     let nb = coulomb.len();
-    let weighted = DMatrix::from_fn(nb, rows.len(), |g, i| {
-        pairs.column(rows[i], false)[3 + g] * coulomb[g]
-    });
-    let product = complex_product(weighted.as_view(), true, weighted.as_view())?;
+    let n = pairs.energies.len();
+    let weighted = |backward: bool| {
+        DMatrix::from_fn(nb, n, |g, i| pairs.column(i, backward)[3 + g] * coulomb[g])
+    };
+    let (left, right) = (weighted(rows), weighted(columns));
+    let product = complex_product(left.as_view(), true, right.as_view())?;
     Ok(product * C64::new(pairs.scale(), 0.))
 }
 
@@ -453,6 +734,8 @@ fn paw_parts<'a>(setup: &'a Setup, remainders: &'a Remainders) -> PawParts<'a> {
 
 /// The unscaled direct blocks `sum M_v^* W M_c` (rows `(v, c)`, columns `(v', c')`), for every
 /// pair `(k, k')` grouped by `k`: one task per mesh vector `p`, every `k` with `k' = k + p`.
+/// With `coupling`, beside each its block of `B`: `sum M_{vc'}^* W M_{cv'}` on the same rows and
+/// columns.
 #[allow(clippy::type_complexity)]
 fn direct(
     sampler: &Sampler<'_>,
@@ -461,17 +744,14 @@ fn direct(
     blocks: &[Block],
     window: &Window,
     paw: &PawParts<'_>,
-) -> Result<Vec<Vec<(usize, DMatrix<C64>)>>> {
+    coupling: bool,
+) -> Result<Vec<Vec<(usize, DMatrix<C64>, Option<DMatrix<C64>>)>>> {
     let crystal = sampler.crystal;
     let ctx = &crystal.context;
     let nk = mesh.points();
-    let points = crystal.grid.index.points();
     let (nv, nc) = (window.valence, window.conduction);
-    let p = crystal.p;
-    let projection = |frame: &Frame, a: usize| -> Vec<C64> {
-        (0..p).map(|i| frame.projections[(a, i)]).collect()
-    };
-    let one = |t: usize| -> Result<Vec<(usize, usize, DMatrix<C64>)>> {
+    #[allow(clippy::type_complexity)]
+    let one = |t: usize| -> Result<Vec<(usize, usize, DMatrix<C64>, Option<DMatrix<C64>>)>> {
         let block = &blocks[t];
         let engine = Engine::new(ctx, &crystal.grid, block.q, &block.g)?;
         let augmentation = Augmentation::new(crystal, paw.setup, paw.remainders, &engine.vectors)?;
@@ -481,25 +761,18 @@ fn direct(
         for k in 0..nk {
             let kp = mesh.shift(k, block.steps);
             let (left, right) = (&frames[k], &frames[kp]);
-            let l = left.samples.read_range(
-                ctx,
-                0,
-                product(&[left.energies.as_slice().len(), points])?,
-            )?;
-            let r = right.samples.read_range(
-                ctx,
-                0,
-                product(&[right.energies.as_slice().len(), points])?,
-            )?;
+            let (l, r) = (values(ctx, left)?, values(ctx, right)?);
             let density = |scratch: &mut _, a: usize, b: usize, out: &mut [C64]| -> Result<()> {
-                engine.smooth(
+                pair_density(
+                    &engine,
+                    &augmentation,
                     scratch,
-                    &l[a * points..(a + 1) * points],
-                    &r[b * points..(b + 1) * points],
+                    (left, &l[..]),
+                    (right, &r[..]),
+                    a,
+                    b,
                     out,
-                )?;
-                augmentation.add(&projection(left, a), &projection(right, b), out);
-                Ok(())
+                )
             };
             // Columns (c c') and (v v'), each the pair density over the vectors.
             let mut conduction = DMatrix::<C64>::zeros(ng, nc * nc);
@@ -527,22 +800,99 @@ fn direct(
                     valence.column_mut(v * nv + vp).copy_from_slice(&row);
                 }
             }
+            // Columns (v c') and (c v') of the coupling block: valence at k with conduction at
+            // k', and conduction at k with valence at k'.
+            let across = if coupling {
+                let mut forward = DMatrix::<C64>::zeros(ng, nv * nc);
+                let mut backward = DMatrix::<C64>::zeros(ng, nc * nv);
+                for v in 0..nv {
+                    for c in 0..nc {
+                        density(
+                            &mut scratch,
+                            window.lowest + v,
+                            window.occupied + c,
+                            &mut row,
+                        )?;
+                        forward.column_mut(v * nc + c).copy_from_slice(&row);
+                        density(
+                            &mut scratch,
+                            window.occupied + c,
+                            window.lowest + v,
+                            &mut row,
+                        )?;
+                        backward.column_mut(c * nv + v).copy_from_slice(&row);
+                    }
+                }
+                let pairs = forward.adjoint() * (&block.screened * &backward);
+                Some(DMatrix::from_fn(nv * nc, nv * nc, |i, j| {
+                    let (v, c) = (i / nc, i % nc);
+                    let (vp, cp) = (j / nc, j % nc);
+                    pairs[(v * nc + cp, c * nv + vp)]
+                }))
+            } else {
+                None
+            };
             out.push((
                 k,
                 kp,
                 contract(&valence, &block.screened, &conduction, nv, nc)?,
+                across,
             ));
         }
         Ok(out)
     };
     let solved = ctx.map_independent(blocks.len(), one)?;
-    let mut grouped: Vec<Vec<(usize, DMatrix<C64>)>> = (0..nk).map(|_| vec![]).collect();
+    let mut grouped: Vec<Vec<(usize, DMatrix<C64>, Option<DMatrix<C64>>)>> =
+        (0..nk).map(|_| vec![]).collect();
     for list in solved {
-        for (k, kp, kernel) in list {
-            grouped[k].push((kp, kernel));
+        for (k, kp, kernel, across) in list {
+            grouped[k].push((kp, kernel, across));
         }
     }
     Ok(grouped)
+}
+
+/// Every grid value of `frame` (`[component][band][point]`).
+fn values<'a>(ctx: &crate::Context, frame: &'a Frame) -> Result<ComplexRead<'a>> {
+    frame.samples.read_range(ctx, 0, frame.samples.len())
+}
+
+/// The pair density `M_{ak, bk'}(q + G)` of band `a` of `left` and band `b` of `right` (their
+/// grid values `l` and `r`, a frame's layout) on the engine's vectors, with the complete PAW
+/// augmentation. A spinor frame's rows are `(component, band)`; its density sums the components.
+#[allow(clippy::too_many_arguments)]
+fn pair_density(
+    engine: &Engine,
+    augmentation: &Augmentation<'_>,
+    scratch: &mut Scratch,
+    (left, l): (&Frame, &[C64]),
+    (right, r): (&Frame, &[C64]),
+    a: usize,
+    b: usize,
+    out: &mut [C64],
+) -> Result<()> {
+    let components = left.components;
+    let (lb, rb) = (
+        left.energies.as_slice().len(),
+        right.energies.as_slice().len(),
+    );
+    let points = l.len() / (components * lb);
+    engine.smooth_components(
+        scratch,
+        &components_of(l, lb, points, components, a),
+        &components_of(r, rb, points, components, b),
+        out,
+    )?;
+    let projection = |frame: &Frame, band: usize, c: usize| -> Vec<C64> {
+        let row = c * frame.energies.as_slice().len() + band;
+        (0..frame.projections.ncols())
+            .map(|i| frame.projections[(row, i)])
+            .collect()
+    };
+    for c in 0..components {
+        augmentation.add(&projection(left, a, c), &projection(right, b, c), out);
+    }
+    Ok(())
 }
 
 /// The unscaled direct block of one pair `(k, k')`: `sum_{G G'} M_vv'(G')^* W_{G'G} M_cc'(G)` with
@@ -580,6 +930,8 @@ pub fn solve_dense(h: &DMatrix<C64>) -> Result<Excitons> {
         vectors,
         converged: true,
         solver: "dense",
+        antiresonant: None,
+        branches: None,
     })
 }
 
@@ -639,6 +991,8 @@ pub fn solve_davidson(
         vectors,
         residuals,
         solver: "davidson",
+        antiresonant: None,
+        branches: None,
     })
 }
 
@@ -684,6 +1038,14 @@ impl Operator {
                 "num_states must be between 1 and the {n} transitions of the window"
             )));
         }
+        if self.coupling.is_some() {
+            let mut all = self.coupled()?;
+            all.energies.truncate(roots);
+            all.vectors = all.vectors.columns(0, roots).into_owned();
+            all.antiresonant = all.antiresonant.map(|y| y.columns(0, roots).into_owned());
+            all.residuals.truncate(roots);
+            return Ok(all);
+        }
         if n > DENSE_LIMIT {
             return solve_davidson(&self.hamiltonian, roots, tolerance, max_iterations);
         }
@@ -694,26 +1056,127 @@ impl Operator {
             residuals: vec![0.; roots],
             converged: true,
             solver: "dense",
+            antiresonant: None,
+            branches: None,
         })
     }
 
-    /// `o^a_l = sum_t h^a_t A^l_t` of each exciton (Bohr).
+    /// Every exciton of the coupling form (module documentation): the `n` positive roots with
+    /// their `X` and `Y`, and every eigenpair for the tensor. Refuses an operator built without
+    /// the coupling blocks, and an `M` that is not positive definite (an unstable reference).
+    pub fn coupled(&self) -> Result<Excitons> {
+        let Some(coupling) = &self.coupling else {
+            return Err(invalid(
+                "the operator was built in the Tamm-Dancoff approximation (Request::coupling)",
+            ));
+        };
+        let n = self.energies.len();
+        let (a, b, a2) = (
+            &self.hamiltonian,
+            &coupling.resonant,
+            &coupling.antiresonant,
+        );
+        let m = DMatrix::from_fn(2 * n, 2 * n, |i, j| match (i < n, j < n) {
+            (true, true) => a[(i, j)],
+            (true, false) => b[(i, j - n)],
+            (false, true) => b[(j, i - n)].conj(),
+            (false, false) => a2[(i - n, j - n)],
+        });
+        // A complex Cholesky takes the square root of a negative pivot without failing, so the
+        // pivots are checked: real and positive for a positive definite `M`.
+        let unstable = || {
+            Error::Unsupported(
+                "the coupling form needs [[A, B], [B^dagger, A']] positive definite, and it is \
+                 not: the reference is unstable against the coupling (approximation='tda' keeps \
+                 the resonant block)"
+                    .into(),
+            )
+        };
+        let lower = m.cholesky().ok_or_else(unstable)?.l();
+        if (0..2 * n).any(|i| {
+            let pivot = lower[(i, i)];
+            !(pivot.re > 0. && pivot.im.abs() <= 1e-12 * pivot.re)
+        }) {
+            return Err(unstable());
+        }
+        let mut signed = lower.clone();
+        for i in n..2 * n {
+            signed.row_mut(i).neg_mut();
+        }
+        let w = lower.adjoint() * &signed;
+        let (energies, u) = eigen((&w + w.adjoint()) * C64::new(0.5, 0.))?;
+        if energies[n - 1] >= 0. || energies[n] <= 0. {
+            return Err(invalid(
+                "the coupling form's roots do not split into n negative and n positive ones",
+            ));
+        }
+        let mut vectors = &signed * u;
+        for (l, e) in energies.iter().enumerate() {
+            vectors.column_mut(l).unscale_mut(e.abs().sqrt());
+        }
+        Ok(Excitons {
+            energies: energies[n..].to_vec(),
+            vectors: vectors.view((0, n), (n, n)).into_owned(),
+            residuals: vec![0.; n],
+            converged: true,
+            solver: "coupling",
+            antiresonant: Some(vectors.view((n, n), (n, n)).into_owned()),
+            branches: Some(Branches { energies, vectors }),
+        })
+    }
+
+    /// `o^a_l` of each exciton (Bohr): `sum_t h^a_t X^l_t`, plus `sum_t h~^a_t Y^l_t` in the
+    /// coupling form.
     pub fn dipoles_of(&self, excitons: &Excitons) -> Vec<[C64; 3]> {
-        (0..excitons.energies.len())
+        self.amplitude_dipoles(&excitons.vectors, excitons.antiresonant.as_ref())
+    }
+
+    fn amplitude_dipoles(&self, x: &DMatrix<C64>, y: Option<&DMatrix<C64>>) -> Vec<[C64; 3]> {
+        (0..x.ncols())
             .map(|l| {
                 std::array::from_fn(|a| {
-                    self.dipoles
+                    let resonant: C64 = self
+                        .dipoles
                         .iter()
                         .enumerate()
-                        .map(|(t, h)| h[a] * excitons.vectors[(t, l)])
-                        .sum()
+                        .map(|(t, h)| h[a] * x[(t, l)])
+                        .sum();
+                    let antiresonant: C64 = match (y, &self.coupling) {
+                        (Some(y), Some(c)) => c
+                            .dipoles
+                            .iter()
+                            .enumerate()
+                            .map(|(t, h)| h[a] * y[(t, l)])
+                            .sum(),
+                        _ => C64::new(0., 0.),
+                    };
+                    resonant + antiresonant
                 })
             })
             .collect()
     }
 
-    /// `eps^{ab}(z)` from excitons (module documentation): exact with every exciton.
+    /// `eps^{ab}(z)` from excitons (module documentation): exact with every exciton, and in the
+    /// coupling form from every eigenpair of [`Operator::coupled`].
     pub fn tensor(&self, excitons: &Excitons, z: C64) -> [[C64; 3]; 3] {
+        if let Some(branches) = &excitons.branches {
+            let n = self.energies.len();
+            let x = branches.vectors.rows(0, n).into_owned();
+            let y = branches.vectors.rows(n, n).into_owned();
+            let o = self.amplitude_dipoles(&x, Some(&y));
+            return std::array::from_fn(|a| {
+                std::array::from_fn(|b| {
+                    let chi: C64 = branches
+                        .energies
+                        .iter()
+                        .zip(&o)
+                        .map(|(e, o)| o[a] * o[b].conj() * e.signum() / (z - e))
+                        .sum::<C64>()
+                        * self.scale;
+                    C64::new(f64::from(a == b), 0.) - chi * (4. * PI)
+                })
+            });
+        }
         let o = self.dipoles_of(excitons);
         std::array::from_fn(|a| {
             std::array::from_fn(|b| {
@@ -801,8 +1264,8 @@ impl Haydock {
 /// The full (coupling) form of the exchange-only equation, dense: `eps^{ab}(z)` from
 /// `R (Lambda0(z) - K)^-1 R^dagger s` over both orders of every transition of `pairs`, with
 /// `Lambda0 = diag(z - D, -(z + D))` and `K = s R^dagger v R` on the local-field rows. By the
-/// Woodbury identity this is the Dyson equation of `pairs.tensor` (gate E1); it is a check, not
-/// a route to results.
+/// Woodbury identity this is the Dyson equation of `pairs.tensor` (gate E1): the oracle of the
+/// coupling form's exchange, one linear solve per frequency, not a route to results.
 pub fn coupled_tensor(pairs: &Pairs, z: C64) -> Result<[[C64; 3]; 3]> {
     let n = pairs.energies.len();
     let coulomb = pairs.coulomb();

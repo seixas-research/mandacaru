@@ -390,7 +390,8 @@ pub fn evaluate(
             for g in 0..spectrum {
                 let kernel = table.kernel(a, b, s.wave.as_slice()[g]).0;
                 let full_index = (g / half) * padded[2] + g % half;
-                s.work.as_mut_slice()[full_index] += kernel * s.transforms.as_slice()[b * spectrum + g];
+                s.work.as_mut_slice()[full_index] +=
+                    kernel * s.transforms.as_slice()[b * spectrum + g];
             }
         }
         // Reconstruct negative z frequencies from Hermitian symmetry. Real

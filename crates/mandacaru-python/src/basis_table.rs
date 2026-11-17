@@ -76,7 +76,14 @@ fn radial_orbital_sample<'py>(
     let n = x.len();
     let sampled = py
         .detach(|| {
-            let orbital = Orbital { r: &r, values: &values, l, m, center, real };
+            let orbital = Orbital {
+                r: &r,
+                values: &values,
+                l,
+                m,
+                center,
+                real,
+            };
             if gradient {
                 sampling::gradient(&ctx, &orbital, &x, &y, &z)
             } else {
@@ -101,7 +108,11 @@ fn nao_ae_wall_radii(onset: f64, width: f64) -> (f64, f64, f64) {
 /// The shell ladder of `cc-pVXZ` (`cc-pCVXZ` with `core_correlating`) for `zeta = X`:
 /// `{"core", "valence", "polarization", "polarization_h", "tight"}` (`ladders::dunning`).
 #[pyfunction]
-fn dunning_ladder<'py>(py: Python<'py>, zeta: usize, core_correlating: bool) -> PyResult<Bound<'py, PyDict>> {
+fn dunning_ladder<'py>(
+    py: Python<'py>,
+    zeta: usize,
+    core_correlating: bool,
+) -> PyResult<Bound<'py, PyDict>> {
     let ladder = ladders::dunning(zeta, core_correlating).ok_or_else(|| {
         pyo3::exceptions::PyValueError::new_err("a Dunning basis has zeta 2 (D) to 6")
     })?;

@@ -18,9 +18,8 @@ use super::{
 };
 use crate::models::{atom::Atom, xc_scheme::Variational};
 use crate::paw::{
-    engine_spin_orbit,
     diagnose::{self, reference::AeLogs, spectrum::ghost_levels, view::Smooth, Diagnosis},
-    invalid,
+    engine_spin_orbit, invalid,
     record::{
         digits::LIBRARY_STRIDE, reload_errors, reload_shift, PawDataset, WriteSpec,
         RELOAD_LEVEL_TOLERANCE,
@@ -285,7 +284,8 @@ pub fn recalibrate(
         &record.xc,
         crate::models::relativity::Treatment::Dirac,
     )?;
-    let atom = solve_reference(ctx, &recipe).map_err(|e| Error::Search(search::Error::Failed(e)))?;
+    let atom =
+        solve_reference(ctx, &recipe).map_err(|e| Error::Search(search::Error::Failed(e)))?;
     let how = Release {
         format,
         stride,
@@ -320,7 +320,8 @@ pub fn reionize(
     super::ionic_tail::enforce(&r, record.v_local.as_mut_slice(), zv, r_local);
     let treatment = crate::models::relativity::Treatment::parse(&record.relativity)?;
     let recipe = Recipe::for_dataset(&record.symbol, &record.xc, treatment)?;
-    let atom = solve_reference(ctx, &recipe).map_err(|e| Error::Search(search::Error::Failed(e)))?;
+    let atom =
+        solve_reference(ctx, &recipe).map_err(|e| Error::Search(search::Error::Failed(e)))?;
     let how = Release {
         format,
         stride,
@@ -477,12 +478,7 @@ fn write_and_check(
     })
 }
 
-fn write_record(
-    ctx: &Context,
-    ds: &PawDataset,
-    path: &Path,
-    how: Release,
-) -> crate::Result<()> {
+fn write_record(ctx: &Context, ds: &PawDataset, path: &Path, how: Release) -> crate::Result<()> {
     match how.format {
         Format::Parquet => ds.write(
             ctx,

@@ -2,7 +2,7 @@ use mandacaru_core::{
     molecular::correlation,
     quantum::{
         dynamics::{qpe, Propagator},
-        evolution, optimizer, Basis, CachedProblem, Encoding, Operator, SolveOptions, C64,
+        evolution, optimizer, Basis, Encoding, Operator, QuantumProblem, SolveOptions, C64,
     },
     Context,
 };
@@ -155,7 +155,7 @@ fn subspace_weights_sorting_and_one_state_limit() {
             4,
             &[("ZIII", 0.3, 0.), ("XXII", 0.2, 0.), ("YYII", 0.2, 0.)],
         );
-        let p = CachedProblem::new(
+        let p = QuantumProblem::new(
             &ctx,
             Encoding::new("jordan_wigner", 4, [1, 0]).unwrap(),
             h,
@@ -195,7 +195,7 @@ fn adaptive_growth_continues_after_an_inner_budget_failure_without_false_converg
             4,
             &[("ZIII", 0.3, 0.), ("XXII", 0.2, 0.), ("YYII", 0.2, 0.)],
         );
-        let p = CachedProblem::new(
+        let p = QuantumProblem::new(
             &ctx,
             Encoding::new("jordan_wigner", 4, [1, 0]).unwrap(),
             h,

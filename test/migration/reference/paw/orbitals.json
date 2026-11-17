@@ -674,17 +674,17 @@
    "tables": [
     [
      0,
-     "orbital",
+     "zeta",
      1,
      3,
-     5250
+     10500
     ],
     [
      1,
-     "orbital",
+     "zeta",
      1,
      3,
-     5250
+     10500
     ]
    ],
    "n_functions": 4
@@ -703,28 +703,28 @@
      "zeta",
      1,
      3,
-     5250
+     10500
     ],
     [
      0,
      "zeta",
      2,
      3,
-     5250
+     10500
     ],
     [
      1,
      "zeta",
      1,
      3,
-     5250
+     10500
     ],
     [
      1,
      "zeta",
      2,
      3,
-     5250
+     10500
     ]
    ],
    "n_functions": 8
@@ -743,35 +743,35 @@
      "zeta",
      1,
      3,
-     5250
+     10500
     ],
     [
      0,
      "zeta",
      2,
      3,
-     5250
+     10500
     ],
     [
      1,
      "zeta",
      1,
      3,
-     5250
+     10500
     ],
     [
      1,
      "zeta",
      2,
      3,
-     5250
+     10500
     ],
     [
      2,
      "polarization",
      1,
      3,
-     5250
+     10500
     ]
    ],
    "n_functions": 13
@@ -790,49 +790,49 @@
      "zeta",
      1,
      3,
-     5250
+     10500
     ],
     [
      0,
      "zeta",
      2,
      3,
-     5250
+     10500
     ],
     [
      0,
      "zeta",
      3,
      3,
-     5250
+     10500
     ],
     [
      1,
      "zeta",
      1,
      3,
-     5250
+     10500
     ],
     [
      1,
      "zeta",
      2,
      3,
-     5250
+     10500
     ],
     [
      1,
      "zeta",
      3,
      3,
-     5250
+     10500
     ],
     [
      2,
      "polarization",
      1,
      3,
-     5250
+     10500
     ]
    ],
    "n_functions": 17
@@ -848,28 +848,28 @@
    "tables": [
     [
      0,
-     "orbital",
+     "zeta",
      1,
      3,
      10875
     ],
     [
      0,
-     "orbital",
+     "zeta",
      1,
      4,
      10875
     ],
     [
      1,
-     "orbital",
+     "zeta",
      1,
      3,
      10875
     ],
     [
      2,
-     "orbital",
+     "zeta",
      1,
      3,
      10875
@@ -1078,28 +1078,28 @@
    "tables": [
     [
      0,
-     "orbital",
+     "zeta",
      1,
      5,
      29625
     ],
     [
      0,
-     "orbital",
+     "zeta",
      1,
      6,
      29625
     ],
     [
      1,
-     "orbital",
+     "zeta",
      1,
      5,
      29625
     ],
     [
      2,
-     "orbital",
+     "zeta",
      1,
      5,
      29625
@@ -2013,5 +2013,55 @@
    ],
    "n_functions": 17
   }
- ]
+ ],
+ "library_refreeze": {
+  "date": "2026-11-16",
+  "what": "tables, n_functions and the arrays <tag>_<i>_r, _v of the cases listed in 'cases'; level_, bound_, bound_<>_n of the empty channels listed in 'levels'",
+  "why": "the library regeneration (file format 3) moved every pseudo wave, projector, grid and core density the basis reads; the 2026-10-29 Python tables no longer describe them",
+  "cases": {
+   "cases": [
+    "b_Si_SZ",
+    "b_Si_DZ",
+    "b_Si_DZP",
+    "b_Si_TZP",
+    "b_Cu_SZ",
+    "b_Cu_DZ",
+    "b_Cu_DZP",
+    "b_Cu_TZP",
+    "b_Au_SZ",
+    "b_Au_DZ",
+    "b_Au_DZP",
+    "b_Au_TZP",
+    "nofilter_Cu_DZP",
+    "unconf_H_DZP",
+    "unconf_C_DZP",
+    "unconf_Cu_DZP",
+    "unconf_C_TZ2P",
+    "unconf_O_TZ2P"
+   ],
+   "levels": [
+    "Ca_2",
+    "H_1",
+    "K_2",
+    "Li_1"
+   ]
+  },
+  "route": "self-pin of the production routine on the installed library (Rust through the public Python API of the module under test); the old Python outputs of these cases are no longer reproducible because the library was regenerated",
+  "library": {
+   "checkout": "mandacaru-paw 8a6e977 (v3 with tail, installed 2026-11-16 02:21)",
+   "files": {
+    "lda-sr/H": "730c4c02d4e03748",
+    "lda-sr/C": "2d6371c74a9046d6",
+    "lda-sr/N": "9f99e3e145f25c6f",
+    "lda-sr/O": "bc52e9b75d5a1bd6",
+    "lda-sr/Si": "714b6c27a854d26f",
+    "lda-sr/Cu": "a6633882cb635038",
+    "lda-sr/Au": "769fc057b0a4e22e",
+    "lda-sr/Li": "9e72ab810917f2fb",
+    "lda-sr/Ca": "27b58ada7be3a4c6",
+    "lda-sr/K": "9e22e6fd3a7ccb90"
+   }
+  },
+  "extension_sha256_prefix": "00e4d7ff"
+ }
 }

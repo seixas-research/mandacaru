@@ -316,15 +316,17 @@ pub(crate) fn header_from_footer(
         .map(String::len)
         .try_fold(0usize, usize::checked_add)
         .ok_or(Error::Overflow)?;
-    let memory = ctx.reserve(
-        product(&[metadata_bytes, KV_FACTOR])?.max(256),
-    )?;
+    let memory = ctx.reserve(product(&[metadata_bytes, KV_FACTOR])?.max(256))?;
 
     let num_particles = match footer.metadata.get(KEY_NUM_PARTICLES).map(String::as_str) {
         Some(text) => small_json_key(source, KEY_NUM_PARTICLES, text)?,
         None => Value::Null,
     };
-    let n_spatial_orbitals = match footer.metadata.get(KEY_N_SPATIAL_ORBITALS).map(String::as_str) {
+    let n_spatial_orbitals = match footer
+        .metadata
+        .get(KEY_N_SPATIAL_ORBITALS)
+        .map(String::as_str)
+    {
         Some(text) => small_json_key(source, KEY_N_SPATIAL_ORBITALS, text)?,
         None => Value::Null,
     };
@@ -1262,9 +1264,8 @@ mod tests {
             .err()
             .expect("wrong snapshot kind should fail");
         assert!(
-            err.to_string().contains(
-                "is a Parquet file; only a qubit Hamiltonian is stored as Parquet"
-            ),
+            err.to_string()
+                .contains("is a Parquet file; only a qubit Hamiltonian is stored as Parquet"),
             "{err}"
         );
 

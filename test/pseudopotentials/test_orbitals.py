@@ -16,6 +16,12 @@ filter on), the unconfined and orbital-polarization variants, and the bound
 levels and orbitals of the empty channels.  The confined orbitals sit behind
 the cutoff-radius root search, so the tables agree to 1e-8 of their largest
 entry (measured: 3e-11); the levels to 1e-9.
+
+Since 2026-11-16 the keys that read the shipped library are self-pins of the production
+routine on the regenerated library (file format 3): the ``library_refreeze`` entry of the
+JSON beside the reference lists the keys, the library digests and the extension; the other
+keys keep their Python-era values. Here that is ``orbitals.json`` and ``radial_table.json``; the
+synthetic spline cases are untouched.
 """
 
 import json

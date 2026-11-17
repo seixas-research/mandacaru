@@ -1,5 +1,5 @@
 //! Two term/qubit message-passing layers and a first-choice scoring head.
-use super::graph::{Candidates, Graph, Matrix};
+use super::graph::{BipartiteGraph, Candidates, Matrix};
 use crate::{
     math::{
         autodiff::{Id, Tape},
@@ -115,7 +115,11 @@ impl Parameters {
             .collect()
     }
 }
-pub fn embed(tape: &mut Tape, p: &BTreeMap<String, Id>, graph: &Graph) -> Result<(Id, Id)> {
+pub fn embed(
+    tape: &mut Tape,
+    p: &BTreeMap<String, Id>,
+    graph: &BipartiteGraph,
+) -> Result<(Id, Id)> {
     let q = tape.constant(&graph.qubit)?;
     let h = tape.constant(&graph.term)?;
     let mut hq = tape.matmul(q, p["qubit_in"])?;
@@ -205,7 +209,7 @@ pub fn embed(tape: &mut Tape, p: &BTreeMap<String, Id>, graph: &Graph) -> Result
 pub fn scores(
     tape: &mut Tape,
     p: &BTreeMap<String, Id>,
-    graph: &Graph,
+    graph: &BipartiteGraph,
     rows: &Candidates,
     mean: &[f64; 9],
     std: &[f64; 9],

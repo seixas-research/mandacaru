@@ -126,14 +126,16 @@ fn place_by_support(
         .iter()
         .map(|v| v.abs())
         .fold(0f64, f64::max);
-    let support = explicit_support.unwrap_or_else(|| radial
-        .knots
-        .as_slice()
-        .iter()
-        .zip(radial.values.as_slice())
-        .filter_map(|(&r, &v)| (v.abs() > 1e-14 * peak).then_some(r))
-        .next_back()
-        .unwrap_or(0.));
+    let support = explicit_support.unwrap_or_else(|| {
+        radial
+            .knots
+            .as_slice()
+            .iter()
+            .zip(radial.values.as_slice())
+            .filter_map(|(&r, &v)| (v.abs() > 1e-14 * peak).then_some(r))
+            .next_back()
+            .unwrap_or(0.)
+    });
     let shape = grid.index.shape();
     let origin = Vector3::from(grid.origin);
     let step_inverse = grid

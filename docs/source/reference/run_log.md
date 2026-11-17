@@ -6,7 +6,8 @@ A calculation can describe itself in a plain-text log: a fixed set of blocks of
 blocks that the calculator writes, with a real excerpt of each, and says which
 block owns which fact. Everything below, except the layout excerpts of
 `[EXCITED STATES]` and `[REAL TIME]`, was produced by running the calculator on
-H2, LiH and a PAW-LCAO H2, with `txt=` and `trace=True`. [What is still not
+H2, LiH, a PAW-LCAO H2 and a PAW-LCAO water, with `txt=` and
+`trace=True`. [What is still not
 written](#run-log-not-written) is listed at the end.
 
 ## Turning the log on
@@ -198,10 +199,10 @@ the dataset files with the digest of their physics content (`content_sha256`).
 ```
 
 `content_sha256` is the SHA-256 of what a dataset says, not of the bytes of its file: the
-scalar record and the radial tables, without the format version and the core states of a
-version-3 file. A dataset file, its upgrade to a newer format and a re-encoding with another
-compression codec therefore share one digest, and any change of a stored number changes it. It is
-the digest a saved crystal pins each dataset by ([the DFT guide](../guide/dft.md)).
+scalar record and the radial tables, without the format version and the core states that
+every dataset file (format 3, the only format) carries. A dataset file and its re-encoding with
+another compression codec therefore share one digest, and any change of a stored number changes
+it. It is the digest a saved crystal pins each dataset by ([the DFT guide](../guide/dft.md)).
 
 `datasets` and `orbitals` come first and `functions` last; between them a Gaussian
 polarization shell adds `polarization_shells`, and diffuse shells add `diffuse_shells`
@@ -710,7 +711,38 @@ orbitals. There are three values:
 
 A crystal writes no `occupation` line.
 
-A periodic run with `hubbard_u=` adds the on-site DFT+U correction to this block, and
+(run-log-scf-summary-excited-state)=
+A run with `excited_state=` ([one excited state as the calculation](#excited-states-surface))
+adds five lines after `energy_eV`, and states the followed state nowhere else. `energy_eV`
+is then the energy of the excited state, the ground state's plus the excitation. The excerpt
+is the first singlet of a PAW-LCAO DZP water with `xc="pbe"` and `excited_state={"root": 0,
+"spin": "singlet", "approximation": "tda", "track": "index"}`. The three energies are written
+as Hartree and eV together, as the excerpt shows:
+
+```text
+========================================================================
+[SCF SUMMARY]
+    converged: True
+    occupation: aufbau
+    energy_eV: -459.46265899270327
+    excited_state: root 0 of the singlet roots (tda, adiabatic kernel), picked by index (track="index")
+    excitation_energy: 0.2894104078 Ha (7.875258 eV)
+    ground_state_energy: -17.1743516908 Ha (-467.337917 eV); the energy above is it plus the excitation
+    nearest_root_separation: 0.0705872079 Ha (1.920776 eV)
+    root_residual: 1.1e-11
+========================================================================
+```
+
+`root` counts from 0 among the roots of its spin, which reads `singlet`, `triplet`,
+`unrestricted` (an open shell) or `spinor`. The picking reads `picked by index
+(track="index")`; `picked by index at the first geometry (track="overlap" follows it from the
+next)` at the first geometry of a scan with `track="overlap"`; and `followed by
+transition-density overlap <number> from root <n> at the previous geometry` at the later ones.
+`nearest_root_separation` is the distance to the closest other root, and `root_residual` the
+solver's final residual for the followed root. A run without `excited_state=` writes none of
+these lines.
+
+A run with `hubbard_u=` adds the on-site DFT+U correction to this block, and
 states it nowhere else: `hubbard_energy_eV` (the correction `E_U`, already inside
 `energy_eV`) and one `hubbard_<element>_<shell>` line per element with its `U`, `J` and
 `U_eff`:
@@ -791,6 +823,7 @@ Other schemes add their own lines after `scheme`:
 | --- | --- | --- |
 | `Analytic-Hellmann-Feynman-Pulay` | all-electron HF and Kohn-Sham | none |
 | `analytic` (mean field) | PAW-LCAO RHF, UHF and Kohn-Sham | `stationarity` |
+| `analytic excited-state Lagrangian (relaxed Z-vector) gradient of root <n> (<spin>, <approximation>)` | `excited_state=` ([one excited state as the calculation](#excited-states-surface)) | `excitation_ha`, `z_vector_residual`, `z_vector_iterations`, `nearest_root_separation_ha` (the two energies in Hartree, as the key names say) |
 | `analytic` (variational) | quantum methods, PAW-LCAO | `energy_ha`, `directions`, `orbital_response` (`CPHF-and-natural-orbital-Lagrangian`), `reference_stationarity`, `cphf_residual`, `coulomb_forms`, `stationarity`, `parameter_gradient_norm` (a variational state) and, for a corrected one, `z_vector_norm` and the Hessian solve (`hessian_parameters`, `hessian_exact`, `hessian_hamiltonian_actions`, `hessian_noise`, `hessian_cutoff`, the curvature extremes, `z_vector_dropped` and what it left out; see [the Z-vector correction](#forces-lagrangian)) |
 
 `net_force` is the sum of the force vectors, which a free molecule should not feel:
@@ -818,10 +851,11 @@ layout; `<...>` stands for a number the run determines:
     iterations: <n>
     operator_applications: <n>
     orbitals: 0-based indices of the reference in ascending energy
-    one_center_eV: first-order shift of each root from the one-center Hartree kernel the linearized PAW one-center energy omits; the one-center exchange-correlation part is not estimated
+    one_center_eV: first-order shift of each root from the one-center Hartree kernel the linearized PAW one-center energy omits
+    one_center_xc_eV: the same from its one-center exchange-correlation kernel, at the spherical reference atom
     roots:
-        root            energy_eV        wavelength_nm  oscillator_strength           f_velocity             residual         one_center_eV transitions
-           1             <number>             <number>             <number>             <number>             <number>              <number> <i>-><a>(<weight>),...
+        root            energy_eV        wavelength_nm  oscillator_strength           f_velocity             residual         one_center_eV      one_center_xc_eV transitions
+           1             <number>             <number>             <number>             <number>             <number>              <number>              <number> <i>-><a>(<weight>),...
 ========================================================================
 ```
 
@@ -840,8 +874,8 @@ key after `orbitals` and a `spin_squared` column between `residual` and `one_cen
     reference_spin_squared: <number>
     ...
     roots:
-        root            energy_eV        wavelength_nm  oscillator_strength           f_velocity             residual         spin_squared         one_center_eV transitions
-           1             <number>             <number>             <number>             <number>             <number>              <number>              <number> <transitions>
+        root            energy_eV        wavelength_nm  oscillator_strength           f_velocity             residual         spin_squared         one_center_eV      one_center_xc_eV transitions
+           1             <number>             <number>             <number>             <number>             <number>              <number>              <number>              <number> <transitions>
 ========================================================================
 ```
 
@@ -870,10 +904,15 @@ key after `orbitals` and a `spin_squared` column between `residual` and `one_cen
   doublet. They are absent on a closed shell, whose roots are pure singlets or triplets.
   `reference_spin_squared` is written by this block alone and is not repeated in
   `[SCF SUMMARY]`.
-- The energy unit is in the key names (`energy_eV`, `one_center_eV`; `Ha` with
-  `atomic_units=True`). `wavelength_nm` is always nm. The `one_center_*` key and column
-  appear only on a PAW-LCAO Kohn-Sham state; the key line describes the column, and the
-  numbers are in the table. For a triplet the column is zero.
+- The energy unit is in the key names (`energy_eV`, `one_center_eV`, `one_center_xc_eV`;
+  `Ha` with `atomic_units=True`). `wavelength_nm` is always nm. The `one_center_*` key and
+  column appear only on a PAW-LCAO Kohn-Sham state; the key line describes the column, and
+  the numbers are in the table. For a triplet the `one_center_eV` (Hartree) column is zero.
+  The `one_center_xc_*` key and column come after it and appear only with `xc="lda"` or
+  `"pbe"` (the excerpts above are `lda`): an `r2scan` or `hse06` block has the Hartree column
+  alone. The exchange-correlation column is not zero for a triplet, whose change moves the
+  magnetization of the spheres. Both columns are shifts the roots do not carry; they are not
+  added to `energy_eV`.
 
 `parse_output` returns the block under `excited_states`: the keys as strings, and `roots`
 as a list of rows keyed by their column heading. It keeps only the last block of a step,
@@ -1020,10 +1059,11 @@ owner.
 | Per-proposal energy and decision | `[MARKOV CHAIN]` |
 | Final variational energy, operator and parameter counts, termination reason | `[VARIATIONAL QUANTUM SUMMARY]` |
 | A search's final chain energy, acceptance by move, number of architectures | `[VARIATIONAL QUANTUM SUMMARY]` |
-| Final mean-field energy and convergence | `[SCF SUMMARY]` |
+| Final mean-field energy (the excited state's with `excited_state=`) and convergence | `[SCF SUMMARY]` |
 | The DFT+U correction (`hubbard_u=`): its energy, and `U`, `J` and `U_eff` per element | `[SCF SUMMARY]` |
+| The state followed by `excited_state=`: its root, how it was picked, excitation energy, ground-state energy, distance to the nearest other root, solver residual | `[SCF SUMMARY]` |
 | Force vectors and their convention | `[FORCES]` |
-| An excited-state request: approximation, spin, kernel, roots, solver work, energies, strengths in both gauges, dominant transitions (with their spin on an open shell), `<S^2>` of the roots and of the reference on an open shell, the one-center Hartree diagnostic | `[EXCITED STATES]` |
+| An excited-state request: approximation, spin, kernel, roots, solver work, energies, strengths in both gauges, dominant transitions (with their spin on an open shell), `<S^2>` of the roots and of the reference on an open shell, the one-center Hartree diagnostic and, for `lda` and `pbe`, its exchange-correlation part | `[EXCITED STATES]` |
 | A real-time request: propagator, time step, steps, corrector tolerance requested and applied, Fock builds, kick, reference, basis width and `dt W` with its bound, aliased weight, kick energy, energy drift, worst norm error | `[REAL TIME]` |
 | Stage timings, wall times, peak memory | `[PERFORMANCE]` |
 | Trajectory, relaxed geometry, verdict | `[GEOMETRY OPTIMIZATION SUMMARY]`, `[RELAXATION COMPLETE]` |

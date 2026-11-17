@@ -143,8 +143,10 @@ impl PyPropagator {
         self.same_precision(&[&butterfly, &measurement])?;
         let input = input_state(&self.context, self.precision, state)?;
         let length = input.len();
-        let (b, m): (&mandacaru_core::quantum::dynamics::Propagator, &mandacaru_core::quantum::dynamics::Propagator) =
-            (&butterfly.inner, &measurement.inner);
+        let (b, m): (
+            &mandacaru_core::quantum::dynamics::Propagator,
+            &mandacaru_core::quantum::dynamics::Propagator,
+        ) = (&butterfly.inner, &measurement.inner);
         let mut scalars = (num_complex::Complex64::new(0., 0.), 0., None);
         let out = py
             .detach(|| {
@@ -158,7 +160,12 @@ impl PyPropagator {
                 })
             })
             .map_err(error)?;
-        Ok((state_array(py, &[length], out)?, (scalars.0.re, scalars.0.im), scalars.1, scalars.2))
+        Ok((
+            state_array(py, &[length], out)?,
+            (scalars.0.re, scalars.0.im),
+            scalars.1,
+            scalars.2,
+        ))
     }
     /// `C^(2k)(j dt)`, `j < samples` (`Propagator::nested_otoc_series`).
     #[allow(clippy::too_many_arguments)]
@@ -176,8 +183,10 @@ impl PyPropagator {
     ) -> PyResult<Bound<'py, numpy::PyArray1<num_complex::Complex64>>> {
         self.same_precision(&[&butterfly, &measurement])?;
         let input = input_state(&self.context, self.precision, state)?;
-        let (b, m): (&mandacaru_core::quantum::dynamics::Propagator, &mandacaru_core::quantum::dynamics::Propagator) =
-            (&butterfly.inner, &measurement.inner);
+        let (b, m): (
+            &mandacaru_core::quantum::dynamics::Propagator,
+            &mandacaru_core::quantum::dynamics::Propagator,
+        ) = (&butterfly.inner, &measurement.inner);
         let values = py
             .detach(|| {
                 typed!(input, values => {
@@ -270,7 +279,9 @@ pub fn mp2<'py>(
     let out = py
         .detach(|| {
             // Integrals given without a lattice: a molecule's MP2, no occupied-level shift.
-            mandacaru_core::molecular::correlation::natural_orbitals(ctx, m, &one, &two, occupied, 0.)
+            mandacaru_core::molecular::correlation::natural_orbitals(
+                ctx, m, &one, &two, occupied, 0.,
+            )
         })
         .map_err(error)?;
     mp2_result(py, out)
@@ -310,17 +321,28 @@ pub fn fourier_spectrum<'py>(
     dt: f64,
     elastic: f64,
     window: &str,
-) -> PyResult<(Bound<'py, numpy::PyArray1<f64>>, Bound<'py, numpy::PyArray1<num_complex::Complex64>>)> {
+) -> PyResult<(
+    Bound<'py, numpy::PyArray1<f64>>,
+    Bound<'py, numpy::PyArray1<num_complex::Complex64>>,
+)> {
     let hann = match window {
         "hann" => true,
         "none" => false,
-        _ => return Err(pyo3::exceptions::PyValueError::new_err("window must be 'hann' or 'none'")),
+        _ => {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "window must be 'hann' or 'none'",
+            ))
+        }
     };
     let signal = signal.as_slice()?.to_vec();
     let ctx = mandacaru_core::Context::new(Some(1), 1 << 28).map_err(error)?;
     let (energies, amplitudes) = py
-        .detach(|| mandacaru_core::quantum::dynamics::fourier_spectrum(&ctx, &signal, dt, elastic, hann))
+        .detach(|| {
+            mandacaru_core::quantum::dynamics::fourier_spectrum(&ctx, &signal, dt, elastic, hann)
+        })
         .map_err(error)?;
-    Ok((numpy::PyArray1::from_vec(py, energies), numpy::PyArray1::from_vec(py, amplitudes)))
+    Ok((
+        numpy::PyArray1::from_vec(py, energies),
+        numpy::PyArray1::from_vec(py, amplitudes),
+    ))
 }
-

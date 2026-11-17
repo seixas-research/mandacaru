@@ -6,9 +6,7 @@
 //! - T5: Hole trace relation $\sum_q (\Gamma_{pqrq} - D_{pr} D_{qq}) = -D_{pr}$.
 //! - Input validation on non-finite, degenerate, or negative inputs.
 
-use mandacaru_core::periodic::finite_size::{
-    mpc_from_hole_energies, verify_hole_trace,
-};
+use mandacaru_core::periodic::finite_size::{mpc_from_hole_energies, verify_hole_trace};
 use serde_json::Value;
 
 fn load(name: &str) -> Value {
@@ -37,15 +35,9 @@ fn mpc_from_hole_energies_matches_formula_and_freeze() {
         let n_electrons = 1.0;
         let n_cells = 1;
 
-        let res = mpc_from_hole_energies(
-            hole_model,
-            hole_periodic,
-            v_m,
-            n_electrons,
-            n_cells,
-            volume,
-        )
-        .unwrap();
+        let res =
+            mpc_from_hole_energies(hole_model, hole_periodic, v_m, n_electrons, n_cells, volume)
+                .unwrap();
 
         let old_correction = num(&case["old_correction"]);
         let corrected_by_formula = num(&case["corrected_by_formula"]);
@@ -59,10 +51,7 @@ fn mpc_from_hole_energies_matches_formula_and_freeze() {
             "{name}: corrected by formula mismatch"
         );
         assert_eq!(res.correction_per_cell(), res.correction);
-        assert_eq!(
-            res.corrected_energy_per_cell(-1.0),
-            -1.0 + res.correction
-        );
+        assert_eq!(res.corrected_energy_per_cell(-1.0), -1.0 + res.correction);
     }
 }
 

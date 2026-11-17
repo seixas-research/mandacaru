@@ -74,6 +74,69 @@ pub fn solve_sized(cell: &Cell, projector_basis: &str, size: &str) -> Solved {
 
 /// [`solve_sized`] on the context `ctx` (a parallel layout of its own).
 pub fn solve_on(cell: &Cell, projector_basis: &str, size: &str, ctx: Context) -> Solved {
+    solve_edited(cell, projector_basis, size, ctx, false, |_| {})
+}
+
+/// [`solve`] of a `-fr` `cell` without its spin-orbit coupling: a spinor cell with the couplings
+/// scaled to zero in the setup (two-component states; a spinor setup needs the datasets'
+/// spin-orbit projectors, and the term's matrix and velocity both vanish), a collinear one on
+/// the same datasets with their spin-orbit tables removed (the scalar part the spinor setup holds
+/// twice).
+pub fn solve_without_spin_orbit(cell: &Cell) -> Solved {
+    if cell.spinor {
+        return solve_scaled_spin_orbit(cell, "SZ", 0.);
+    }
+    solve_edited(
+        cell,
+        "raw",
+        "SZ",
+        Context::new(Some(2), 1 << 30).unwrap(),
+        true,
+        |_| {},
+    )
+}
+
+/// [`solve_sized`] of a spinor `-fr` `cell` with its spin-orbit couplings scaled by `scale` in the
+/// setup, so the term's matrix and its velocity scale together (0 is the zero-coupling limit).
+pub fn solve_scaled_spin_orbit(cell: &Cell, size: &str, scale: f64) -> Solved {
+    solve_set(
+        cell,
+        "raw",
+        size,
+        Context::new(Some(2), 1 << 30).unwrap(),
+        false,
+        |setup| {
+            for coupling in setup.spin_orbit_couplings.values_mut() {
+                coupling.values.iter_mut().for_each(|v| *v *= scale);
+            }
+        },
+        |_| {},
+    )
+}
+
+/// [`solve_on`] with the datasets' spin-orbit tables removed when `scalar`, and `edit` applied to
+/// the built crystal before its SCF.
+pub fn solve_edited(
+    cell: &Cell,
+    projector_basis: &str,
+    size: &str,
+    ctx: Context,
+    scalar: bool,
+    edit: impl FnOnce(&mut Crystal),
+) -> Solved {
+    solve_set(cell, projector_basis, size, ctx, scalar, |_| {}, edit)
+}
+
+/// [`solve_edited`] with `prepare` applied to the setup before the crystal is built.
+fn solve_set(
+    cell: &Cell,
+    projector_basis: &str,
+    size: &str,
+    ctx: Context,
+    scalar: bool,
+    prepare: impl FnOnce(&mut PeriodicSetup),
+    edit: impl FnOnce(&mut Crystal),
+) -> Solved {
     let mut species: Vec<&str> = vec![];
     for symbol in &cell.symbols {
         if !species.contains(symbol) {
@@ -98,7 +161,13 @@ pub fn solve_on(cell: &Cell, projector_basis: &str, size: &str, ctx: Context) ->
         .collect();
     let datasets = species
         .iter()
-        .map(|symbol| Arc::new(dataset(&ctx, cell.library, symbol)))
+        .map(|symbol| {
+            let mut record = dataset(&ctx, cell.library, symbol);
+            if scalar {
+                record.spin_orbit.clear();
+            }
+            Arc::new(record)
+        })
         .collect();
     let count: usize = cell.mesh.iter().product();
     let input = SetupInput {
@@ -135,8 +204,12 @@ pub fn solve_on(cell: &Cell, projector_basis: &str, size: &str, ctx: Context) ->
         hubbard_u: cell.hubbard.map(|text| Request::parse(text).unwrap()),
         charge: None,
     };
-    let setup = Arc::new(create_setup(&ctx, input, datasets).unwrap());
-    let crystal = Arc::new(setup.build(&ctx).unwrap());
+    let mut setup = create_setup(&ctx, input, datasets).unwrap();
+    prepare(&mut setup);
+    let setup = Arc::new(setup);
+    let mut crystal = setup.build(&ctx).unwrap();
+    edit(&mut crystal);
+    let crystal = Arc::new(crystal);
     let state = Arc::new(
         crystal
             .solve(&Options {
@@ -189,6 +262,27 @@ pub fn lih(library: &'static str) -> Cell {
         spinor: false,
         functional: "lda",
         mesh: [2, 1, 1],
+        hubbard: None,
+        width: 1e-3,
+    }
+}
+
+/// Solid xenon, fcc (a = 6.13 Angstrom, one atom), solved at Gamma: a closed-shell heavy-atom
+/// insulator whose 5p valence band carries a large spin-orbit splitting (1.36 eV at Gamma, SZP).
+pub fn xenon(library: &'static str, spinor: bool) -> Cell {
+    let half = 6.13 / 2.;
+    let lattice = angstrom_cell([[0., half, half], [half, 0., half], [half, half, 0.]]);
+    Cell {
+        library,
+        symbols: vec!["Xe"],
+        lattice,
+        grid: grid_of(&lattice, 0.19),
+        fractional: vec![[0.; 3]],
+        moments: vec![0.],
+        spin: false,
+        spinor,
+        functional: "lda",
+        mesh: [1, 1, 1],
         hubbard: None,
         width: 1e-3,
     }

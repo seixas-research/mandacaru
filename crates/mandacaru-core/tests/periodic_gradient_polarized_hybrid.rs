@@ -1,6 +1,6 @@
 //! F1, HSE06: the force of a COLLINEAR SPIN-POLARIZED (`spins = 2`) hybrid crystal on a real
 //! converged SCF, against the reconverged free-energy finite difference of the same discretized
-//! energy (two step families of `freeze_periodic_gradients.py`, 14.4 item 1): the H2 triplet in a
+//! energy (two step families of `periodic_freeze_snapshot.rs`, 14.4 item 1): the H2 triplet in a
 //! box at Gamma, every coordinate of both atoms. (The LiH triplet cannot serve the hybrid: its
 //! unrestricted hybrid SCF reaches a second, higher state at some geometries; see the freeze script.) Whole k mesh, no Python. Needs
 //! `MANDACARU_PAW_PATH`.

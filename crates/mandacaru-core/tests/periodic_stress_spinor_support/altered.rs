@@ -86,7 +86,9 @@ impl<S: Strain> Strain for Altered<'_, S> {
         terms: &[Term],
         directions: &[Direction],
     ) -> Result<Vec<Vec<Vec<f64>>>> {
-        let mut out = self.inner.matrix_strain(k, fields, matrices, terms, directions)?;
+        let mut out = self
+            .inner
+            .matrix_strain(k, fields, matrices, terms, directions)?;
         if let Wrong::AlphaOnly(term) = self.wrong {
             if let Some(at) = terms.iter().position(|t| *t == term) {
                 let damaged = self.inner.matrix_strain(
@@ -127,7 +129,10 @@ impl<S: Strain> Strain for Altered<'_, S> {
     fn spin_orbit_strain(&self, k: usize, directions: &[Direction]) -> Result<Vec<Matrix>> {
         let t = self.inner.spin_orbit_strain(k, directions)?;
         Ok(match self.wrong {
-            Wrong::NoSpinOrbit => t.into_iter().map(|m| Matrix::zeros(m.nrows(), m.ncols())).collect(),
+            Wrong::NoSpinOrbit => t
+                .into_iter()
+                .map(|m| Matrix::zeros(m.nrows(), m.ncols()))
+                .collect(),
             Wrong::SpinOrbitSign => t.into_iter().map(|m| m * C64::new(-1., 0.)).collect(),
             _ => t,
         })

@@ -52,7 +52,11 @@ pub fn check(integrals: &MolecularIntegrals, name: &str) -> Result<()> {
             "spinor molecular Kohn-Sham is not available for {what}"
         )))
     };
-    if integrals.corrections.as_ref().is_some_and(|c| c.hubbard.is_some()) {
+    if integrals
+        .corrections
+        .as_ref()
+        .is_some_and(|c| c.hubbard.is_some())
+    {
         return refuse("DFT+U");
     }
     Ok(())
@@ -60,9 +64,14 @@ pub fn check(integrals: &MolecularIntegrals, name: &str) -> Result<()> {
 
 /// `n_c(x) = sum_ab M_c[a, b] phi_a(x) phi_b(x)` for real symmetric `matrices` (unclamped: a
 /// magnetization channel takes either sign), one block of the grid each.
-fn channel_densities(integrals: &MolecularIntegrals, matrices: &[DMatrix<f64>]) -> Result<Buffer<f64>> {
+fn channel_densities(
+    integrals: &MolecularIntegrals,
+    matrices: &[DMatrix<f64>],
+) -> Result<Buffer<f64>> {
     let (m, n) = (integrals.m(), integrals.grid.index.points());
-    let mut out = integrals.context.allocate::<f64>(crate::product(&[matrices.len(), n])?)?;
+    let mut out = integrals
+        .context
+        .allocate::<f64>(crate::product(&[matrices.len(), n])?)?;
     let mut blocks = SampleBlocks::new(&integrals.context, &integrals.orthonormal_samples, m, n)?;
     for start in (0..n).step_by(blocks.block()) {
         let count = blocks.load(start)?;
@@ -121,7 +130,9 @@ fn meta_matrix(
 ) -> Result<DMatrix<f64>> {
     let (m, n) = (integrals.m(), integrals.grid.index.points());
     if v.len() != n || tau.len() != n || flux.len() != 3 * n {
-        return Err(invalid("a meta-GGA channel has a potential, a kinetic potential and three fluxes per point"));
+        return Err(invalid(
+            "a meta-GGA channel has a potential, a kinetic potential and three fluxes per point",
+        ));
     }
     let ctx = &integrals.context;
     let dv = integrals.grid.index.dv();
@@ -140,7 +151,8 @@ fn meta_matrix(
                     let mut value = v[k] * phi[a * w + i] * phi[b * w + i];
                     for axis in 0..3 {
                         let (ga, gb) = (g[(axis * m + a) * w + i], g[(axis * m + b) * w + i]);
-                        value += 0.5 * tau[k] * ga * gb + flux[axis * n + k] * (phi[a * w + i] * gb + ga * phi[b * w + i]);
+                        value += 0.5 * tau[k] * ga * gb
+                            + flux[axis * n + k] * (phi[a * w + i] * gb + ga * phi[b * w + i]);
                     }
                     dot += value;
                 }
@@ -166,14 +178,17 @@ pub fn spin_orbit_term(integrals: &MolecularIntegrals) -> Result<Option<Matrix>>
     let lowdin = &integrals.lowdin;
     let (ao, m) = (lowdin.nrows(), lowdin.ncols());
     if h.shape() != (2 * ao, 2 * ao) {
-        return Err(invalid("the spin-orbit term does not match the basis of the integrals"));
+        return Err(invalid(
+            "the spin-orbit term does not match the basis of the integrals",
+        ));
     }
     let l = lowdin.map(|v| C64::new(v, 0.));
     let mut out = Matrix::zeros(2 * m, 2 * m);
     for s in 0..2 {
         for t in 0..2 {
             let block = h.view((s * ao, t * ao), (ao, ao));
-            out.view_mut((s * m, t * m), (m, m)).copy_from(&(l.transpose() * block * &l));
+            out.view_mut((s * m, t * m), (m, m))
+                .copy_from(&(l.transpose() * block * &l));
         }
     }
     Ok(Some(out))
@@ -204,7 +219,10 @@ impl Shared {
             .requires_tau
             .then(|| super::dft::orbital_gradients(integrals))
             .transpose()?;
-        Ok(Self { gradients, screening: integrals.screening(name)? })
+        Ok(Self {
+            gradients,
+            screening: integrals.screening(name)?,
+        })
     }
 }
 
@@ -264,8 +282,9 @@ pub(super) fn spinor_parts(
     let unpolarized = &fields.terms.potentials.as_slice()[..n];
     // The Pauli channels on the grid, the partial core in the charge (half per spin, as the
     // collinear evaluation adds it).
-    let channels: Vec<DMatrix<f64>> =
-        (0..4).map(|a| noncollinear::component(d, m, a).map(|v| v.re)).collect();
+    let channels: Vec<DMatrix<f64>> = (0..4)
+        .map(|a| noncollinear::component(d, m, a).map(|v| v.re))
+        .collect();
     let mut grid = channel_densities(integrals, &channels)?;
     let paw = integrals.corrections.as_ref().and_then(|c| c.dft.as_ref());
     if let Some(paw) = paw {
@@ -275,29 +294,51 @@ pub(super) fn spinor_parts(
     }
     // A meta-GGA's kinetic densities and product-rule gradients of the four channels, the
     // partial core in the charge channel (its tau, and its gradient by the grid, as the scalar).
-    let meta = shared.gradients.as_ref().map(|gradients| -> Result<_> {
-        let complex: Vec<Matrix> = channels.iter().map(|c| c.map(|v| C64::new(v, 0.))).collect();
-        let mut tau = super::dft::kinetic_channels(integrals, &complex, gradients)?;
-        let mut slopes = ctx.allocate::<f64>(12 * n)?;
-        for pair in 0..2 {
-            let half = super::dft::grid_density_gradients(integrals, &complex[2 * pair..2 * pair + 2], gradients)?;
-            slopes.as_mut_slice()[6 * pair * n..6 * (pair + 1) * n].copy_from_slice(half.as_slice());
-        }
-        if let Some(paw) = paw {
-            for k in 0..n {
-                tau.as_mut_slice()[k] += paw.core_tau.as_slice()[k];
+    let meta = shared
+        .gradients
+        .as_ref()
+        .map(|gradients| -> Result<_> {
+            let complex: Vec<Matrix> = channels
+                .iter()
+                .map(|c| c.map(|v| C64::new(v, 0.)))
+                .collect();
+            let mut tau = super::dft::kinetic_channels(integrals, &complex, gradients)?;
+            let mut slopes = ctx.allocate::<f64>(12 * n)?;
+            for pair in 0..2 {
+                let half = super::dft::grid_density_gradients(
+                    integrals,
+                    &complex[2 * pair..2 * pair + 2],
+                    gradients,
+                )?;
+                slopes.as_mut_slice()[6 * pair * n..6 * (pair + 1) * n]
+                    .copy_from_slice(half.as_slice());
             }
-            let mut core = ctx.allocate::<f64>(n)?;
-            for axis in 0..3 {
-                xc::derivative(&integrals.grid, paw.core.as_slice(), axis, core.as_mut_slice())?;
+            if let Some(paw) = paw {
                 for k in 0..n {
-                    slopes.as_mut_slice()[axis * n + k] += core.as_slice()[k];
+                    tau.as_mut_slice()[k] += paw.core_tau.as_slice()[k];
+                }
+                let mut core = ctx.allocate::<f64>(n)?;
+                for axis in 0..3 {
+                    xc::derivative(
+                        &integrals.grid,
+                        paw.core.as_slice(),
+                        axis,
+                        core.as_mut_slice(),
+                    )?;
+                    for k in 0..n {
+                        slopes.as_mut_slice()[axis * n + k] += core.as_slice()[k];
+                    }
                 }
             }
-        }
-        Ok((gradients, tau, slopes))
-    }).transpose()?;
-    let rotated = noncollinear::rotate(ctx, n, grid.as_slice(), meta.as_ref().map(|(_, t, _)| t.as_slice()))?;
+            Ok((gradients, tau, slopes))
+        })
+        .transpose()?;
+    let rotated = noncollinear::rotate(
+        ctx,
+        n,
+        grid.as_slice(),
+        meta.as_ref().map(|(_, t, _)| t.as_slice()),
+    )?;
     let relativistic = paw.is_some_and(|p| p.relativistic_exchange)
         && matches!(crate::models::functional(name)?.semilocal, "lda" | "pbe");
     // The frame densities (and kinetic densities) are nonnegative up to roundoff, as the
@@ -310,10 +351,16 @@ pub(super) fn spinor_parts(
         Ok(out)
     };
     let frame = clamp(rotated.densities.as_slice())?;
-    let frame_tau = rotated.tau.as_ref().map(|t| clamp(t.as_slice())).transpose()?;
+    let frame_tau = rotated
+        .tau
+        .as_ref()
+        .map(|t| clamp(t.as_slice()))
+        .transpose()?;
     let frame_gradients = meta
         .as_ref()
-        .map(|(_, _, slopes)| noncollinear::rotate_gradients(ctx, n, grid.as_slice(), &rotated, slopes.as_slice()))
+        .map(|(_, _, slopes)| {
+            noncollinear::rotate_gradients(ctx, n, grid.as_slice(), &rotated, slopes.as_slice())
+        })
         .transpose()?;
     let terms = xc::evaluate_fields_relativistic(
         ctx,
@@ -338,7 +385,11 @@ pub(super) fn spinor_parts(
     if let Some((gradients, tau, slopes)) = &meta {
         let (frame_flux, kinetic) = match (terms.gradient_potentials.as_ref(), kinetic.as_mut()) {
             (Some(f), Some(k)) => (f, k),
-            _ => return Err(invalid("a meta-GGA evaluation returned no kinetic or gradient potentials")),
+            _ => {
+                return Err(invalid(
+                    "a meta-GGA evaluation returned no kinetic or gradient potentials",
+                ))
+            }
         };
         let flux = noncollinear::unrotate_gradients(
             ctx,
@@ -350,11 +401,17 @@ pub(super) fn spinor_parts(
             potentials.as_mut_slice(),
             Some((tau.as_slice(), kinetic.as_mut_slice())),
         )?;
-        let restricted = (fields.terms.tau_potentials.as_ref(), fields.terms.gradient_potentials.as_ref());
+        let restricted = (
+            fields.terms.tau_potentials.as_ref(),
+            fields.terms.gradient_potentials.as_ref(),
+        );
         let (Some(restricted_tau), Some(restricted_flux)) = restricted else {
-            return Err(invalid("the restricted meta-GGA evaluation returned no kinetic or gradient potentials"));
+            return Err(invalid(
+                "the restricted meta-GGA evaluation returned no kinetic or gradient potentials",
+            ));
         };
-        let difference = |a: &[f64], b: &[f64]| -> Vec<f64> { a.iter().zip(b).map(|(x, y)| x - y).collect() };
+        let difference =
+            |a: &[f64], b: &[f64]| -> Vec<f64> { a.iter().zip(b).map(|(x, y)| x - y).collect() };
         let (p, k, f) = (potentials.as_slice(), kinetic.as_slice(), flux.as_slice());
         let charge = meta_matrix(
             integrals,
@@ -365,7 +422,13 @@ pub(super) fn spinor_parts(
         )?;
         channel_fock.push(&fock[0] + charge.map(|v| C64::new(v, 0.)));
         for a in 1..4 {
-            let matrix = meta_matrix(integrals, gradients, &p[a * n..(a + 1) * n], &k[a * n..(a + 1) * n], &f[3 * a * n..3 * (a + 1) * n])?;
+            let matrix = meta_matrix(
+                integrals,
+                gradients,
+                &p[a * n..(a + 1) * n],
+                &k[a * n..(a + 1) * n],
+                &f[3 * a * n..3 * (a + 1) * n],
+            )?;
             channel_fock.push(matrix.map(|v| C64::new(v, 0.)));
         }
         meta_potentials = Some((ctx.copy_slice(k)?, flux));
@@ -374,10 +437,14 @@ pub(super) fn spinor_parts(
         for k in 0..n {
             charge_potential.as_mut_slice()[k] = potentials.as_slice()[k] - unpolarized[k];
         }
-        channel_fock.push(&fock[0] + local_matrix(integrals, charge_potential.as_slice())?.map(|v| C64::new(v, 0.)));
+        channel_fock.push(
+            &fock[0]
+                + local_matrix(integrals, charge_potential.as_slice())?.map(|v| C64::new(v, 0.)),
+        );
         for a in 1..4 {
             channel_fock.push(
-                local_matrix(integrals, &potentials.as_slice()[a * n..(a + 1) * n])?.map(|v| C64::new(v, 0.)),
+                local_matrix(integrals, &potentials.as_slice()[a * n..(a + 1) * n])?
+                    .map(|v| C64::new(v, 0.)),
             );
         }
     }
@@ -414,7 +481,10 @@ pub(super) fn spinor_parts(
             hartree,
         },
         fields,
-        ChannelPotentials { v: potentials, meta: meta_potentials },
+        ChannelPotentials {
+            v: potentials,
+            meta: meta_potentials,
+        },
     ))
 }
 
@@ -448,7 +518,9 @@ impl MolecularIntegrals {
     ) -> Result<super::scf::MeanField> {
         let atoms = self.geometry.numbers().len();
         if moments.len() != atoms || moments.iter().flatten().any(|v| !v.is_finite()) {
-            return Err(invalid("noncollinear initial moments need one finite vector per atom"));
+            return Err(invalid(
+                "noncollinear initial moments need one finite vector per atom",
+            ));
         }
         let lengths: Vec<f64> = moments
             .iter()
@@ -489,17 +561,28 @@ impl MolecularIntegrals {
         );
         // m_k = (W_k P_m + P_m W_k) / 2, W_k = diag of the k-th direction component.
         let channel = |k: usize| {
-            Matrix::from_fn(m, m, |a, b| pm[(a, b)] * C64::new(0.5 * (directions[a][k] + directions[b][k]), 0.))
+            Matrix::from_fn(m, m, |a, b| {
+                pm[(a, b)] * C64::new(0.5 * (directions[a][k] + directions[b][k]), 0.)
+            })
         };
         let (mx, my, mz) = (channel(0), channel(1), channel(2));
         let half = C64::new(0.5, 0.);
         let mut start = Matrix::zeros(2 * m, 2 * m);
-        start.view_mut((0, 0), (m, m)).copy_from(&((&p + &mz) * half));
-        start.view_mut((m, m), (m, m)).copy_from(&((&p - &mz) * half));
+        start
+            .view_mut((0, 0), (m, m))
+            .copy_from(&((&p + &mz) * half));
+        start
+            .view_mut((m, m), (m, m))
+            .copy_from(&((&p - &mz) * half));
         let off = (&mx - &my * C64::new(0., 1.)) * half;
         start.view_mut((0, m), (m, m)).copy_from(&off);
         start.view_mut((m, 0), (m, m)).copy_from(&off.adjoint());
-        self.spinor_kohn_sham_from(functional, particles[0] + particles[1], options, Some(start))
+        self.spinor_kohn_sham_from(
+            functional,
+            particles[0] + particles[1],
+            options,
+            Some(start),
+        )
     }
     /// Spinor Kohn-Sham from the default starts, or from the orbitals of the Fock matrix of
     /// `density` (a `2m x 2m` start density) when one is given.
@@ -511,7 +594,9 @@ impl MolecularIntegrals {
         density: Option<Matrix>,
     ) -> Result<super::scf::MeanField> {
         if self.corrections.as_ref().is_some_and(|c| c.dft.is_none()) {
-            return Err(invalid("native molecular PAW Kohn-Sham augmentation is not yet implemented"));
+            return Err(invalid(
+                "native molecular PAW Kohn-Sham augmentation is not yet implemented",
+            ));
         }
         check(self, functional)?;
         let m = self.m();
@@ -521,7 +606,9 @@ impl MolecularIntegrals {
             || !options.tolerance.is_finite()
             || options.tolerance <= 0.
         {
-            return Err(invalid("invalid spinor Kohn-Sham occupation, iteration budget or tolerance"));
+            return Err(invalid(
+                "invalid spinor Kohn-Sham occupation, iteration budget or tolerance",
+            ));
         }
         self.context.run(|| {
             let ctx = &self.context;
@@ -553,7 +640,9 @@ impl MolecularIntegrals {
                 }
             }
             let shared = Shared::new(self, functional)?;
-            let evaluate = |d: &Matrix| spinor_parts(self, d, functional, spin_orbit.as_ref(), &shared).map(|p| p.0);
+            let evaluate = |d: &Matrix| {
+                spinor_parts(self, d, functional, spin_orbit.as_ref(), &shared).map(|p| p.0)
+            };
             let starts = match &density {
                 Some(d) => vec![crate::math::linalg::eigen(evaluate(d)?.fock)?.1],
                 None => vec![core, turned],
@@ -564,7 +653,8 @@ impl MolecularIntegrals {
                     let e = evaluate(&d[0])?;
                     Ok((vec![e.fock], e.energy))
                 })?;
-                let (c, d, history, converged) = (run.coefficients, run.densities, run.history, run.converged);
+                let (c, d, history, converged) =
+                    (run.coefficients, run.densities, run.history, run.converged);
                 let value = evaluate(&d[0])?;
                 let (energies, _) = crate::math::linalg::eigen(value.fock.clone())?;
                 let candidate = super::scf::Candidate {
@@ -579,7 +669,10 @@ impl MolecularIntegrals {
                     aufbau_inversion: None,
                     entropy: 0.,
                 };
-                if best.as_ref().is_none_or(|(b, _, _)| candidate.beats(b, options.tolerance)) {
+                if best
+                    .as_ref()
+                    .is_none_or(|(b, _, _)| candidate.beats(b, options.tolerance))
+                {
                     best = Some((candidate, value.hartree, value.xc));
                 }
             }
@@ -603,7 +696,11 @@ impl MolecularIntegrals {
 /// operator on the grid: `v_a`, and for a meta-GGA `- 1/2 D (v_tau,a D) + F_a . D - D (F_a .)`
 /// with `D` the grid derivative (the scalar contraction's `kinetic_density_action` and
 /// `density_gradient_action`). The charge channel is the shared contraction's, with channel 0.
-pub(super) fn magnetization_gradient(integrals: &MolecularIntegrals, d: &Matrix, potentials: &ChannelPotentials) -> Result<Vec<f64>> {
+pub(super) fn magnetization_gradient(
+    integrals: &MolecularIntegrals,
+    d: &Matrix,
+    potentials: &ChannelPotentials,
+) -> Result<Vec<f64>> {
     let (n, m) = (integrals.grid.index.points(), integrals.m());
     let ao = integrals.basis.orbitals.len();
     let atoms = integrals.geometry.numbers().len();
@@ -615,8 +712,14 @@ pub(super) fn magnetization_gradient(integrals: &MolecularIntegrals, d: &Matrix,
     let owner: Vec<usize> = (0..ao)
         .map(|mu| {
             let center = integrals.basis.orbitals[mu].center;
-            let gap = |a: usize| (0..3).map(|k| (positions[a][k] - center[k]).powi(2)).sum::<f64>();
-            (0..atoms).min_by(|&a, &b| gap(a).total_cmp(&gap(b))).expect("one atom")
+            let gap = |a: usize| {
+                (0..3)
+                    .map(|k| (positions[a][k] - center[k]).powi(2))
+                    .sum::<f64>()
+            };
+            (0..atoms)
+                .min_by(|&a, &b| gap(a).total_cmp(&gap(b)))
+                .expect("one atom")
         })
         .collect();
     // chi_nu(k) for every AO function, and T_a = D_a,ao chi (ao x n) per channel.
@@ -696,13 +799,19 @@ impl MolecularIntegrals {
     /// `Re(D_0)`, the W of the full spinor Fock, the exchange-correlation potential `v_0`), plus
     /// the magnetization channels' explicit term and the spin-orbit term's
     /// (`Setup::spin_orbit_gradient`). LDA, PBE, PBE+rVV10 and r2SCAN.
-    pub fn spinor_gradient(&self, state: &super::scf::MeanField) -> Result<super::forces::Gradient> {
+    pub fn spinor_gradient(
+        &self,
+        state: &super::scf::MeanField,
+    ) -> Result<super::forces::Gradient> {
         let name = state
             .functional
             .as_deref()
             .filter(|_| state.method == "ghf")
             .ok_or_else(|| invalid("a spinor gradient needs a spinor Kohn-Sham state"))?;
-        let d = state.densities.first().ok_or_else(|| invalid("a spinor state holds one density"))?;
+        let d = state
+            .densities
+            .first()
+            .ok_or_else(|| invalid("a spinor state holds one density"))?;
         self.spinor_gradient_of(d, name, state.electronic_energy)
     }
 
@@ -711,12 +820,20 @@ impl MolecularIntegrals {
     /// stationary), for a state that is not a `MeanField` of this crate (an embedded collinear
     /// one in the tests).
     #[doc(hidden)]
-    pub fn spinor_gradient_of(&self, d: &Matrix, name: &str, energy: f64) -> Result<super::forces::Gradient> {
+    pub fn spinor_gradient_of(
+        &self,
+        d: &Matrix,
+        name: &str,
+        energy: f64,
+    ) -> Result<super::forces::Gradient> {
         use super::paw_forces::Frozen;
         use crate::paw::molecular::gradient::Occupied;
         check(self, name)?;
         let hybrid = crate::models::functional(name)?.screened_exchange;
-        let setup = self.paw_setup.as_ref().ok_or_else(|| invalid("forces need a PAW setup"))?;
+        let setup = self
+            .paw_setup
+            .as_ref()
+            .ok_or_else(|| invalid("forces need a PAW setup"))?;
         let (m, n) = (self.m(), self.grid.index.points());
         if d.shape() != (2 * m, 2 * m) {
             return Err(invalid("a spinor state holds one 2m x 2m density"));

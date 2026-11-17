@@ -196,7 +196,7 @@ fn without_compensation_the_old_operator_is_reproduced_bit_for_bit() {
                 want["energy"].as_u64().unwrap(),
                 "{name} {label} energy"
             );
-                        for (k, (op, frozen)) in ops
+            for (k, (op, frozen)) in ops
                 .iter()
                 .zip(want["operators"].as_array().unwrap())
                 .enumerate()
@@ -209,7 +209,7 @@ fn without_compensation_the_old_operator_is_reproduced_bit_for_bit() {
                             && a.im.to_bits() == b.im.to_bits()),
                     "{name} {label} K[{k}]"
                 );
-                            }
+            }
             let mut at = 0;
             for spin in 0..c.spins {
                 for point in &c.points {

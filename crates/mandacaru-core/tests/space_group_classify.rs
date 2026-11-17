@@ -1,6 +1,4 @@
-use mandacaru_core::periodic::space_group::classify::{
-    classify_point_group, CrystalSystem,
-};
+use mandacaru_core::periodic::space_group::classify::{classify_point_group, CrystalSystem};
 use nalgebra::Matrix3;
 
 #[test]
@@ -34,9 +32,6 @@ fn test_classify_all_trivial_and_cubic() {
 #[test]
 fn test_classify_invalid() {
     // Arbitrary non-point-group set
-    let bad = vec![
-        Matrix3::identity(),
-        Matrix3::new(1, 1, 0, 0, 1, 0, 0, 0, 1),
-    ];
+    let bad = vec![Matrix3::identity(), Matrix3::new(1, 1, 0, 0, 1, 0, 0, 0, 1)];
     assert!(classify_point_group(&bad).is_err());
 }

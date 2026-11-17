@@ -1,4 +1,4 @@
-//! The deferred gradient of an evaluation (`CachedProblem::probe`) gives the bits of the evaluation
+//! The deferred gradient of an evaluation (`QuantumProblem::probe`) gives the bits of the evaluation
 //! it replaces: the energy at once and the gradient when the optimizer asks for it.
 mod product_ansatz_support;
 

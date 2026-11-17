@@ -1215,9 +1215,7 @@ fn copper_dihydride(
         (vec![copper, hydrogen], vec![0, 1, 1], arrays),
         "raw",
         &analytic_shells(&[0, 1, 2]),
-        &[
-            ("hubbard", serde_json::Value::String(request)),
-        ],
+        &[("hubbard", serde_json::Value::String(request))],
     );
     (integrals, [electrons / 2, electrons / 2])
 }
@@ -1469,6 +1467,7 @@ fn hubbard_check(
 }
 
 #[test]
+#[ignore = "slow (27.0 s alone, 57.1 s user, at load 6 to 14, 2026-11-16: five CuH2- +U SCFs in a 17 Bohr box), moved out of the fast tier so that tier stays under 120 s on a loaded machine; its case is the first of the_hubbard_excited_state_gradients_of_both_forms_follow_their_energies; run: cargo test --profile release-test -p mandacaru-core --test molecular_excited_forces -- --ignored the_hubbard_excited_state_gradient_follows_its_energy"]
 fn the_hubbard_excited_state_gradient_follows_its_energy() {
     let ctx = Context::new(Some(2), 1 << 30).unwrap();
     {
@@ -1628,7 +1627,14 @@ fn the_coupled_screened_exchange_gradient_is_its_derivative_at_fixed_orbitals() 
                 (0..m)
                     .map(|a| {
                         let x = (a * 5 + k * 3) as f64;
-                        C64::new((0.37 * x).sin(), if k % 2 == 0 { 0.2 * (0.71 * x).cos() } else { 0. })
+                        C64::new(
+                            (0.37 * x).sin(),
+                            if k % 2 == 0 {
+                                0.2 * (0.71 * x).cos()
+                            } else {
+                                0.
+                            },
+                        )
                     })
                     .collect()
             })
@@ -1637,16 +1643,23 @@ fn the_coupled_screened_exchange_gradient_is_its_derivative_at_fixed_orbitals() 
         let couplings = DMatrix::from_row_slice(
             4,
             4,
-            &[0.8, -0.3, 0., 0.5, -0.3, 0., 0.7, 0., 0., 0.7, -1.1, 0.2, 0.5, 0., 0.2, 0.],
+            &[
+                0.8, -0.3, 0., 0.5, -0.3, 0., 0.7, 0., 0., 0.7, -1.1, 0.2, 0.5, 0., 0.2, 0.,
+            ],
         );
         let (_, analytic) = seams::coupled_exchange(&base, "hse06", &orbitals, &couplings).unwrap();
         let mut worst = 0f64;
         let mut scale = 0f64;
         for (atom, axis) in [(0, 0), (1, 2), (2, 1)] {
             let e = |d: f64| {
-                seams::coupled_exchange(&displaced(&base, atom, axis, d), "hse06", &orbitals, &couplings)
-                    .unwrap()
-                    .0
+                seams::coupled_exchange(
+                    &displaced(&base, atom, axis, d),
+                    "hse06",
+                    &orbitals,
+                    &couplings,
+                )
+                .unwrap()
+                .0
             };
             let h = 1e-3;
             let coarse = (e(h) - e(-h)) / (2. * h);
@@ -1658,7 +1671,10 @@ fn the_coupled_screened_exchange_gradient_is_its_derivative_at_fixed_orbitals() 
             scale = scale.max(value.abs());
         }
         println!("coupled exchange: max |dE| {worst:.3e} of max |g| {scale:.3e} Ha/Bohr");
-        assert!(scale > 1e-4, "the coupled exchange gradient vanishes: {scale:.2e}");
+        assert!(
+            scale > 1e-4,
+            "the coupled exchange gradient vanishes: {scale:.2e}"
+        );
         assert!(worst < 1e-8, "{worst:.3e} Ha/Bohr");
     }
     assert_eq!(ctx.memory_used(), 0);
@@ -1787,15 +1803,34 @@ fn the_hse06_excited_state_gradients_of_lih_follow_their_energies() {
         for (label, particles, spin, approximation, components) in [
             // Along the bond: a displaced LiH2- across it (hydrogen along x) did not converge in
             // 400 SCF iterations at 1e-11 (measured 2026-11-15).
-            ("LiH2- HSE06 singlet TDA", [2, 2], Some(Spin::Singlet), Approximation::TammDancoff, &[(0, 2), (1, 2)][..]),
+            (
+                "LiH2- HSE06 singlet TDA",
+                [2, 2],
+                Some(Spin::Singlet),
+                Approximation::TammDancoff,
+                &[(0, 2), (1, 2)][..],
+            ),
             // LiH2- is triplet-unstable (the triplet TDA root is -4.3e-2 Ha): the spin-resolved
             // pieces (the spheres' polarization and its changes) are gated on the doublet.
-            ("LiH- HSE06 unrestricted Casida", [2, 1], None, Approximation::Casida, &[(1, 2)][..]),
+            (
+                "LiH- HSE06 unrestricted Casida",
+                [2, 1],
+                None,
+                Approximation::Casida,
+                &[(1, 2)][..],
+            ),
         ] {
             // Steps of 2e-5: the hole model's bend at t = 1 kinks the kernel, so `omega` has a
             // derivative jump wherever a grid point crosses it (TDDFT_PLAN Q17): its central
             // differences at 5e-4, 1e-3 and 2e-3 scatter by 8e-6 Ha/Bohr (measured on LiH2-).
-            hybrid_check(label, (&base, particles, 400), spin, approximation, components, 2e-5);
+            hybrid_check(
+                label,
+                (&base, particles, 400),
+                spin,
+                approximation,
+                components,
+                2e-5,
+            );
         }
     }
     assert_eq!(ctx.memory_used(), 0);
@@ -1820,8 +1855,6 @@ fn the_hse06_excited_state_gradients_of_neutral_lih_follow_their_energies() {
     }
     assert_eq!(ctx.memory_used(), 0);
 }
-
-
 
 /// r2SCAN's third-order change: the `t^2` coefficients of its three potential parts along a
 /// curve of densities, gradients and kinetic densities `tau + t dtau + t^2 tau2` (the curvature of
@@ -2372,7 +2405,8 @@ fn the_noncollinear_second_change_is_the_derivative_of_its_kernel() {
         let mut state = vec![0.; 4 * n];
         let (mut e, mut delta) = (vec![0.; 4 * n], vec![0.; 4 * n]);
         for k in 0..n {
-            state[k] = 0.3 * shape(k, [3., 3., 3.], 1.2) + 0.2 * shape(k, [3.3, 2.8, 3.1], 1.0) + 1e-3;
+            state[k] =
+                0.3 * shape(k, [3., 3., 3.], 1.2) + 0.2 * shape(k, [3.3, 2.8, 3.1], 1.0) + 1e-3;
             e[k] = 0.02 * shape(k, [3.2, 2.9, 3.1], 0.9) - 0.01 * shape(k, [2.8, 3.1, 2.9], 0.6);
             delta[k] = 0.01 * shape(k, [2.6, 3.3, 3.], 0.8);
             for a in 0..3 {
@@ -2392,14 +2426,20 @@ fn the_noncollinear_second_change_is_the_derivative_of_its_kernel() {
             let r = grid.point(k);
             let bulk = 0.3 * shape(k, [3., 3., 3.], 1.2) + 0.2 * shape(k, [3.3, 2.8, 3.1], 1.0);
             let (theta, phi) = (0.6 + 0.3 * (r[0] - 3.), 0.4 * (r[1] - 3.) + 0.2 * r[2]);
-            let axis = [theta.sin() * phi.cos(), theta.sin() * phi.sin(), theta.cos()];
+            let axis = [
+                theta.sin() * phi.cos(),
+                theta.sin() * phi.sin(),
+                theta.cos(),
+            ];
             let signed = ((r[0] - 3.05) / 0.3).tanh();
             magnetized[k] = bulk + 1e-3;
             node[k] = bulk + 1e-3;
             for a in 0..3 {
                 magnetized[(a + 1) * n + k] = 0.5 * bulk * axis[a];
                 node[(a + 1) * n + k] = 0.5 * bulk * signed * axis[a];
-                e_m[(a + 1) * n + k] = 0.004 * shape(k, [3.1, 2.8 + 0.2 * a as f64, 3.2], 0.8) * (0.7 - a as f64 * 0.6);
+                e_m[(a + 1) * n + k] = 0.004
+                    * shape(k, [3.1, 2.8 + 0.2 * a as f64, 3.2], 0.8)
+                    * (0.7 - a as f64 * 0.6);
             }
         }
         for (label, reference, e, unpolarized) in [
@@ -2414,8 +2454,12 @@ fn the_noncollinear_second_change_is_the_derivative_of_its_kernel() {
                     (0..4 * n).map(|k| e[k] + sign * x[k]).collect()
                 };
                 let (plus, minus) = (
-                    kernel.second_change(&ctx, &grid, &change(&delta, 1.)).unwrap(),
-                    kernel.second_change(&ctx, &grid, &change(&delta, -1.)).unwrap(),
+                    kernel
+                        .second_change(&ctx, &grid, &change(&delta, 1.))
+                        .unwrap(),
+                    kernel
+                        .second_change(&ctx, &grid, &change(&delta, -1.))
+                        .unwrap(),
                 );
                 let analytic: Vec<f64> = (0..4 * n)
                     .map(|k| 0.5 * (plus.as_slice()[k] - minus.as_slice()[k]))
@@ -2425,7 +2469,9 @@ fn the_noncollinear_second_change_is_the_derivative_of_its_kernel() {
                     let moved = NoncollinearKernel::new(&ctx, &grid, &at, name, false).unwrap();
                     let mut scratch = moved.scratch(&ctx).unwrap();
                     let mut out = vec![0.; 4 * n];
-                    moved.apply(&ctx, &grid, &delta, &mut out, &mut scratch).unwrap();
+                    moved
+                        .apply(&ctx, &grid, &delta, &mut out, &mut scratch)
+                        .unwrap();
                     out
                 };
                 let central = |h: f64| -> Vec<f64> {
@@ -2440,7 +2486,9 @@ fn the_noncollinear_second_change_is_the_derivative_of_its_kernel() {
                         .fold(0f64, f64::max)
                 };
                 let misses: Vec<f64> = (0..4).map(channel).collect();
-                println!("{label} {name}: second change of {scale:.3e}, misses per channel {misses:?}");
+                println!(
+                    "{label} {name}: second change of {scale:.3e}, misses per channel {misses:?}"
+                );
                 assert!(
                     scale > 0. && misses.iter().all(|&w| w < 1e-6 * scale),
                     "{label} {name}: {misses:?} of {scale:.3e}"
@@ -2489,28 +2537,60 @@ fn the_spinor_excited_state_gradient_of_a_closed_shell_is_the_collinear_one() {
                 r.num_states = 8;
                 let found = excitations(&base, &spinor, &r).unwrap();
                 for spin in [Spin::Singlet, Spin::Triplet] {
-                    let collinear = excited_state(&base, &restricted, &request(spin, approximation), 0).unwrap();
+                    let collinear =
+                        excited_state(&base, &restricted, &request(spin, approximation), 0)
+                            .unwrap();
                     let Some(state) = found
                         .energies
                         .iter()
                         .position(|w| (w - collinear.excitation).abs() < 1e-7)
                     else {
-                        failures.push(format!("{set} {}: no spinor state at the {} root {}", approximation.name(), spin.name(), collinear.excitation));
+                        failures.push(format!(
+                            "{set} {}: no spinor state at the {} root {}",
+                            approximation.name(),
+                            spin.name(),
+                            collinear.excitation
+                        ));
                         continue;
                     };
-                    let (total, parts, diagnostics) = seams::spinor_state(&base, &spinor, &found, state).unwrap();
+                    let (total, parts, diagnostics) =
+                        seams::spinor_state(&base, &spinor, &found, state).unwrap();
                     let expected = collinear.gradient.total.as_slice();
-                    let miss = total.iter().zip(expected).map(|(a, b)| (a - b).abs()).fold(0f64, f64::max);
-                    let scale = expected.iter().zip(&parts[0].1).map(|(a, b)| (a - b).abs()).fold(0f64, f64::max);
-                    let label = format!("LiH {set} {} {} (spinor state {state})", approximation.name(), spin.name());
+                    let miss = total
+                        .iter()
+                        .zip(expected)
+                        .map(|(a, b)| (a - b).abs())
+                        .fold(0f64, f64::max);
+                    let scale = expected
+                        .iter()
+                        .zip(&parts[0].1)
+                        .map(|(a, b)| (a - b).abs())
+                        .fold(0f64, f64::max);
+                    let label = format!(
+                        "LiH {set} {} {} (spinor state {state})",
+                        approximation.name(),
+                        spin.name()
+                    );
                     println!(
                         "{label}: omega {:.10} rebuilt {:.10}, asymmetry {:.1e}, odd {:.1e}, ground seam {:.1e}; excitation's gradient {scale:.3e}, max |spinor - collinear| {miss:.2e} Ha/Bohr",
                         found.energies[state], diagnostics.omega, diagnostics.asymmetry, diagnostics.odd, diagnostics.ground
                     );
                     for (name, values) in &parts {
-                        println!("  {name}: {:?}", values.iter().map(|v| format!("{v:+.6e}")).collect::<Vec<_>>());
+                        println!(
+                            "  {name}: {:?}",
+                            values
+                                .iter()
+                                .map(|v| format!("{v:+.6e}"))
+                                .collect::<Vec<_>>()
+                        );
                     }
-                    println!("  collinear: {:?}", expected.iter().map(|v| format!("{v:+.6e}")).collect::<Vec<_>>());
+                    println!(
+                        "  collinear: {:?}",
+                        expected
+                            .iter()
+                            .map(|v| format!("{v:+.6e}"))
+                            .collect::<Vec<_>>()
+                    );
                     if (diagnostics.omega - found.energies[state]).abs() > 1e-9
                         || diagnostics.asymmetry > 1e-7
                         || diagnostics.ground > 1e-9
@@ -2525,11 +2605,18 @@ fn the_spinor_excited_state_gradient_of_a_closed_shell_is_the_collinear_one() {
                         let picked = pick(&base, &spinor, &r, state, None).unwrap();
                         let again = pick(&base, &spinor, &r, 0, Some(&picked.followed)).unwrap();
                         let moved = displaced(&base, 1, 2, 2e-2);
-                        let moved_state = moved.spinor_kohn_sham(functional, 2, &options()).unwrap();
-                        let next = pick(&moved, &moved_state, &r, 0, Some(&picked.followed)).unwrap();
-                        let (same, step) = (again.overlap.unwrap_or(0.), next.overlap.unwrap_or(0.));
+                        let moved_state =
+                            moved.spinor_kohn_sham(functional, 2, &options()).unwrap();
+                        let next =
+                            pick(&moved, &moved_state, &r, 0, Some(&picked.followed)).unwrap();
+                        let (same, step) =
+                            (again.overlap.unwrap_or(0.), next.overlap.unwrap_or(0.));
                         println!("  followed: root {} overlap {same:.12} at the same geometry, root {} overlap {step:.6} after 2e-2 Bohr", again.root, next.root);
-                        if again.root != state || (same - 1.).abs() > 1e-10 || next.root != state || step < 0.99 {
+                        if again.root != state
+                            || (same - 1.).abs() > 1e-10
+                            || next.root != state
+                            || step < 0.99
+                        {
                             failures.push(format!("{label}: tracking"));
                         }
                     }
@@ -2542,98 +2629,210 @@ fn the_spinor_excited_state_gradient_of_a_closed_shell_is_the_collinear_one() {
 }
 
 /// T8: the excited-state gradient of a magnetized spinor reference without spin-orbit coupling
-/// (the synthetic H2+, one electron, LDA and PBE, Tamm-Dancoff and Casida). Its spin-conserving
+/// (the synthetic H2+, one electron, and the bent neutral H3, two up and one down; LDA, PBE
+/// refusing by name; Tamm-Dancoff and Casida, H3's Casida, where both spins flip, from the dense
+/// solve of `spinor::dense_casida`). Its spin-conserving
 /// state is the unrestricted one (the longitudinal kernel), so its gradient is the unrestricted
 /// `excited_state`'s; a spin-flip state (the transverse kernel and the turn of the spin axis) has
 /// no collinear partner and is gated against Richardson differences of reconverged `E_0 + omega`.
 /// The two global spin rotations that turn the moment are zero modes of `A + B`: the right-hand
 /// side has no share along them, and the Z-vector is solved on their complement.
 #[test]
-#[ignore = "slow; run: cargo test --profile release-test -p mandacaru-core --test molecular_excited_forces -- --ignored the_spinor_excited_state_gradient_of_a_magnetized_reference --nocapture"]
+#[ignore = "slow: 740 s (measured 2026-11-16 at load 15 to 21); run: cargo test --profile release-test -p mandacaru-core --test molecular_excited_forces -- --ignored the_spinor_excited_state_gradient_of_a_magnetized_reference --nocapture"]
 fn the_spinor_excited_state_gradient_of_a_magnetized_reference_follows_its_energy() {
     let ctx = Context::new(Some(3), 512 << 20).unwrap();
     let mut failures: Vec<String> = vec![];
     {
-        // (label, geometry, particles, functional, spin-flip components, gated): H2+'s down density
-        // vanishes everywhere, a frame density at the edge of PBE's domain (see below).
+        // (label, geometry, particles, functional, spin-flip components). PBE refuses by name:
+        // measured 2026-11-16, its spin-flip gradients missed reconverged energies by 3e-2 to
+        // 1.6e-1 on H2+ (whose down frame density vanishes) and by up to 2.6 on H3, and did not
+        // sum to zero.
         let h2: &[(usize, usize)] = &[(0, 2), (1, 2)];
         let h3: &[(usize, usize)] = &[(0, 0), (1, 2), (2, 1)];
-        for (molecule, geometry, particles, functional, components, gated) in [
-            ("H2+", &H2[..], [1usize, 0usize], "lda", h2, true),
-            ("H2+", &H2[..], [1, 0], "pbe", h2, false),
-            ("H3", &H3[..], [2, 1], "lda", h3, true),
-            ("H3", &H3[..], [2, 1], "pbe", h3, true),
+        for (molecule, geometry, particles, functional, components) in [
+            ("H2+", &H2[..], [1usize, 0usize], "lda", h2),
+            ("H2+", &H2[..], [1, 0], "pbe", h2),
+            ("H3", &H3[..], [2, 1], "lda", h3),
+            ("H3", &H3[..], [2, 1], "pbe", h3),
         ] {
             let ion = integrals(&ctx, geometry, functional);
             let electrons = particles[0] + particles[1];
-            let polarized = ion.kohn_sham(functional, particles, true, &options()).unwrap();
-            let spinor = ion.spinor_kohn_sham(functional, electrons, &options()).unwrap();
+            let polarized = ion
+                .kohn_sham(functional, particles, true, &options())
+                .unwrap();
+            let spinor = ion
+                .spinor_kohn_sham(functional, electrons, &options())
+                .unwrap();
             assert!(spinor.converged);
             for approximation in [Approximation::TammDancoff, Approximation::Casida] {
                 let mut open = request(Spin::Singlet, approximation);
                 open.spin = None;
+                if molecule == "H3" && approximation == Approximation::Casida && functional != "lda"
+                {
+                    // Both spins flip: `A + B` and `A - B` have different zero modes. The roots are
+                    // solved densely (gated in `casida_where_both_spins_flip_...`); with PBE the
+                    // forces refuse by name, as every magnetized gradient functional does.
+                    let mut r = open.clone();
+                    r.num_states = 6;
+                    if excitations(&ion, &spinor, &r).is_err() {
+                        failures.push(format!("{molecule} {functional}: Casida roots must solve"));
+                    }
+                    let refusal = excited_state(&ion, &spinor, &r, 0);
+                    if !refusal
+                        .as_ref()
+                        .err()
+                        .is_some_and(|e| e.to_string().contains("gradient functional"))
+                    {
+                        failures.push(format!(
+                            "{molecule} {functional}: Casida forces must refuse by name"
+                        ));
+                    }
+                    continue;
+                }
                 let collinear = excited_state(&ion, &polarized, &open, 0).unwrap();
                 let unrestricted = excitations(&ion, &polarized, &open).unwrap();
                 let mut r = open.clone();
                 r.num_states = 6;
+                if functional == "pbe" {
+                    let refusal = excited_state(&ion, &spinor, &r, 0);
+                    if !refusal
+                        .as_ref()
+                        .err()
+                        .is_some_and(|e| e.to_string().contains("gradient functional"))
+                    {
+                        failures.push(format!(
+                            "{molecule} pbe {}: must refuse by name",
+                            approximation.name()
+                        ));
+                    }
+                    continue;
+                }
                 let found = excitations(&ion, &spinor, &r).unwrap();
                 let label = format!("{molecule} {functional} {}", approximation.name());
                 println!(
                     "{label}: spinor states {:?}, unrestricted {:?}",
-                    found.energies.iter().map(|w| format!("{w:.8}")).collect::<Vec<_>>(),
-                    unrestricted.energies.iter().map(|w| format!("{w:.8}")).collect::<Vec<_>>()
+                    found
+                        .energies
+                        .iter()
+                        .map(|w| format!("{w:.8}"))
+                        .collect::<Vec<_>>(),
+                    unrestricted
+                        .energies
+                        .iter()
+                        .map(|w| format!("{w:.8}"))
+                        .collect::<Vec<_>>()
                 );
                 // (omega rebuilt, asymmetry, ground seam, zero modes, |(A + B) n|, share of r).
-                let identities = |name: &str, d: (f64, f64, f64, usize, f64, f64), omega: f64, failures: &mut Vec<String>| {
+                let identities = |name: &str,
+                                  d: (f64, f64, f64, usize, f64, f64),
+                                  omega: f64,
+                                  failures: &mut Vec<String>| {
                     println!(
                         "  {name}: omega {omega:.10} rebuilt {:.10}, asymmetry {:.1e}, ground seam {:.1e}, {} zero modes (|(A + B) n| {:.1e}, share of r {:.1e})",
                         d.0, d.1, d.2, d.3, d.4, d.5
                     );
-                    if (d.0 - omega).abs() > 1e-9 || d.1 > 1e-7 || d.2 > 1e-9 || d.3 != 2 || d.4 > 1e-7 || d.5 > 1e-6 {
+                    if (d.0 - omega).abs() > 1e-9
+                        || d.1 > 1e-7
+                        || d.2 > 1e-9
+                        || d.3 != 2
+                        || d.4 > 1e-7
+                        || d.5 > 1e-6
+                    {
                         failures.push(format!("{label} {name}: identities {d:?}"));
                     }
                 };
                 // The spin-conserving state against the unrestricted gradient.
-                match found.energies.iter().position(|w| (w - collinear.excitation).abs() < 1e-7) {
-                    None => failures.push(format!("{label}: no spinor state at the unrestricted root {}", collinear.excitation)),
+                match found
+                    .energies
+                    .iter()
+                    .position(|w| (w - collinear.excitation).abs() < 1e-7)
+                {
+                    None => failures.push(format!(
+                        "{label}: no spinor state at the unrestricted root {}",
+                        collinear.excitation
+                    )),
                     Some(state) => {
-                        let (total, _, d) = seams::spinor_state(&ion, &spinor, &found, state).unwrap();
-                        identities(&format!("spin-conserving state {state}"), (d.omega, d.asymmetry, d.ground, d.modes, d.mode_action, d.mode_share), found.energies[state], &mut failures);
+                        let (total, _, d) =
+                            seams::spinor_state(&ion, &spinor, &found, state).unwrap();
+                        identities(
+                            &format!("spin-conserving state {state}"),
+                            (
+                                d.omega,
+                                d.asymmetry,
+                                d.ground,
+                                d.modes,
+                                d.mode_action,
+                                d.mode_share,
+                            ),
+                            found.energies[state],
+                            &mut failures,
+                        );
                         let expected = collinear.gradient.total.as_slice();
-                        let miss = total.iter().zip(expected).map(|(a, b)| (a - b).abs()).fold(0f64, f64::max);
-                        println!("  spin-conserving: max |spinor - unrestricted| {miss:.2e} Ha/Bohr");
+                        let miss = total
+                            .iter()
+                            .zip(expected)
+                            .map(|(a, b)| (a - b).abs())
+                            .fold(0f64, f64::max);
+                        println!(
+                            "  spin-conserving: max |spinor - unrestricted| {miss:.2e} Ha/Bohr"
+                        );
                         if miss > 1e-8 {
                             failures.push(format!("{label}: spin-conserving gradient {miss:.2e}"));
                         }
                     }
                 }
                 // The lowest spin-flip state clear of its neighbors and of the zero modes.
-                let separation = |energies: &[f64], j: usize| (0..energies.len()).filter(|&k| k != j).map(|k| (energies[k] - energies[j]).abs()).fold(f64::INFINITY, f64::min);
+                let separation = |energies: &[f64], j: usize| {
+                    (0..energies.len())
+                        .filter(|&k| k != j)
+                        .map(|k| (energies[k] - energies[j]).abs())
+                        .fold(f64::INFINITY, f64::min)
+                };
                 let Some(root) = (0..found.energies.len() - 1).find(|&j| {
                     let w = found.energies[j];
-                    w > 1e-3 && separation(&found.energies, j) > 1e-3 && unrestricted.energies.iter().all(|u| (u - w).abs() > 1e-6)
+                    w > 1e-3
+                        && separation(&found.energies, j) > 1e-3
+                        && unrestricted.energies.iter().all(|u| (u - w).abs() > 1e-6)
                 }) else {
                     failures.push(format!("{label}: no separated spin-flip state"));
                     continue;
                 };
                 let excited = excited_state(&ion, &spinor, &r, root).unwrap();
                 let (_, _, d) = seams::spinor_state(&ion, &spinor, &found, root).unwrap();
-                identities(&format!("spin-flip state {root}"), (d.omega, d.asymmetry, d.ground, d.modes, d.mode_action, d.mode_share), excited.excitation, &mut failures);
+                identities(
+                    &format!("spin-flip state {root}"),
+                    (
+                        d.omega,
+                        d.asymmetry,
+                        d.ground,
+                        d.modes,
+                        d.mode_action,
+                        d.mode_share,
+                    ),
+                    excited.excitation,
+                    &mut failures,
+                );
                 let energy = |atom: usize, axis: usize, step: f64| {
                     let moved = displaced(&ion, atom, axis, step);
-                    let state = moved.spinor_kohn_sham(functional, electrons, &options()).unwrap();
+                    let state = moved
+                        .spinor_kohn_sham(functional, electrons, &options())
+                        .unwrap();
                     assert!(state.converged);
                     let found = excitations(&moved, &state, &r).unwrap();
                     state.free_energy() + moved.nuclear + found.energies[root]
                 };
                 for &(atom, axis) in components {
-                    let central = |h: f64| (energy(atom, axis, h) - energy(atom, axis, -h)) / (2. * h);
+                    let central =
+                        |h: f64| (energy(atom, axis, h) - energy(atom, axis, -h)) / (2. * h);
                     let (coarse, fine) = (central(1e-3), central(5e-4));
                     let reference = (4. * fine - coarse) / 3.;
                     let analytic = excited.gradient.total.as_slice()[3 * atom + axis];
                     println!("  spin-flip ({atom}, {axis}): analytic {analytic:+.10} FD {reference:+.10} diff {:.2e}", analytic - reference);
-                    if gated && (analytic - reference).abs() > 2e-7 {
-                        failures.push(format!("{label} spin-flip ({atom}, {axis}): {:.2e}", analytic - reference));
+                    if (analytic - reference).abs() > 2e-7 {
+                        failures.push(format!(
+                            "{label} spin-flip ({atom}, {axis}): {:.2e}",
+                            analytic - reference
+                        ));
                     }
                 }
             }
@@ -2728,4 +2927,66 @@ fn the_r2scan_excited_state_gradient_of_nh2_follows_its_energy() {
         );
     }
     assert_eq!(ctx.memory_used(), 0);
+}
+
+/// T8, Casida where both spins flip (`spinor::dense_casida`, the seventeenth session): the
+/// magnetized spinor H3 (two up, one down, LDA, no spin-orbit coupling), whose spin turns `N`
+/// (of `A + B`) differ from `i N` (of `A - B`), is solved densely on the complement of `N`. Its
+/// spectrum holds every spin-conserving root of the unrestricted Casida problem (the collinear
+/// reference's own path, an independent operator), each as a pair of equal real roots, at the base
+/// geometry and at two displaced ones (where Davidson did not converge); every root's residual in
+/// the undeflated `(A - B)(A + B)` is at round-off.
+#[test]
+#[ignore = "slow: 48 s (measured 2026-11-16, three geometries); run: cargo test --profile release-test -p mandacaru-core --test molecular_excited_forces -- --ignored casida_where_both_spins_flip"]
+fn casida_where_both_spins_flip_holds_the_spin_conserving_roots_at_displaced_geometries() {
+    let ctx = Context::new(Some(2), 512 << 20).unwrap();
+    let mut geometries = vec![H3.to_vec()];
+    for (atom, axis, step) in [(1usize, 2usize, 0.05), (2, 0, -0.08)] {
+        let mut g = H3.to_vec();
+        g[atom][axis] += step;
+        geometries.push(g);
+    }
+    for (index, geometry) in geometries.iter().enumerate() {
+        let ion = integrals(&ctx, geometry, "lda");
+        let polarized = ion.kohn_sham("lda", [2, 1], true, &options()).unwrap();
+        let spinor = ion.spinor_kohn_sham("lda", 3, &options()).unwrap();
+        assert!(polarized.converged && spinor.converged);
+        let mut open = request(Spin::Singlet, Approximation::Casida);
+        open.spin = None;
+        open.num_states = 4;
+        let unrestricted = excitations(&ion, &polarized, &open).unwrap();
+        let mut r = open.clone();
+        r.num_states = 12;
+        let found = excitations(&ion, &spinor, &r).unwrap();
+        let worst_residual = found.residuals.iter().copied().fold(0f64, f64::max);
+        let mut worst = 0f64;
+        for omega in &unrestricted.energies {
+            let nearest = found
+                .energies
+                .iter()
+                .map(|w| (w - omega).abs())
+                .fold(f64::INFINITY, f64::min);
+            worst = worst.max(nearest);
+        }
+        println!(
+            "H3 spinor LDA Casida (both spins flip), geometry {index}: spinor states {:?}; \
+             unrestricted {:?}; worst spin-conserving miss {worst:.2e} Ha; largest residual \
+             {worst_residual:.2e}",
+            found
+                .energies
+                .iter()
+                .map(|w| format!("{w:.9}"))
+                .collect::<Vec<_>>(),
+            unrestricted
+                .energies
+                .iter()
+                .map(|w| format!("{w:.9}"))
+                .collect::<Vec<_>>()
+        );
+        assert!(worst < 1e-8, "geometry {index}: {worst:e}");
+        assert!(
+            worst_residual < 1e-8,
+            "geometry {index}: {worst_residual:e}"
+        );
+    }
 }

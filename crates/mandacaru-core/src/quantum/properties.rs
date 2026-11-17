@@ -309,3 +309,112 @@ pub fn spatial_transition_rdms(
     }
     Ok(SpatialRdms { m, one, two })
 }
+
+/// Expectation value `<psi | S^2 | psi> / <psi | psi>` in spin-blocked occupation space (`alpha`
+/// in modes `0..m`, `beta` in modes `m..2m`).
+///
+/// Uses $\hat{S}^2 = \hat{S}_- \hat{S}_+ + \hat{S}_z(\hat{S}_z + 1)$ so
+/// $\langle \hat{S}^2 \rangle = (\|\hat{S}_+ |\psi\rangle\|^2 + \langle \psi | \hat{S}_z(\hat{S}_z + 1) | \psi \rangle) / \langle \psi | \psi \rangle$,
+/// remaining exact and nonnegative even when `basis` restricts to a fixed `(N_alpha, N_beta)`
+/// sector.
+pub fn spin_squared<A: Amplitude>(
+    ctx: &Context,
+    encoding: &Encoding,
+    basis: &Basis,
+    state: &[A],
+) -> Result<f64> {
+    if basis.n != encoding.n_qubits() {
+        return Err(Error::Invalid(
+            "the basis is a tapered register: lift the state to the fermionic register first"
+                .into(),
+        ));
+    }
+    if encoding.modes % 2 != 0 || state.len() != basis.len() || !finite(state) {
+        return Err(Error::Invalid(
+            "spin expectation needs a finite state in an even spin-blocked register".into(),
+        ));
+    }
+    let n = encoding.modes;
+    let m = n / 2;
+    let beta_mask = (1u64 << m) - 1;
+    let nnz = state.iter().filter(|a| **a != A::default()).count();
+    let _memory = ctx.reserve(product(&[nnz.max(1), m.max(1), 24])?)?;
+    let mut s_plus: Vec<(u64, C64)> = Vec::new();
+    let mut norm_sqr = 0.;
+    let mut diag = 0.;
+    for (&index, &amplitude) in basis.indices.as_slice().iter().zip(state) {
+        if amplitude == A::default() {
+            continue;
+        }
+        let amp = amplitude.widen();
+        let weight = amp.norm_sqr();
+        norm_sqr += weight;
+        let ket = encoding.decode(index);
+        let n_alpha = (ket >> m).count_ones() as f64;
+        let n_beta = (ket & beta_mask).count_ones() as f64;
+        let sz = 0.5 * (n_alpha - n_beta);
+        diag += weight * sz * (sz + 1.);
+        for p in 0..m {
+            if let Some((target, sign)) = ladder(n, ket, &[(p, true), (m + p, false)]) {
+                s_plus.push((target, amp * sign));
+            }
+        }
+    }
+    if norm_sqr <= 0. {
+        return Err(Error::Invalid(
+            "spin expectation needs a nonzero state".into(),
+        ));
+    }
+    s_plus.sort_unstable_by_key(|&(ket, _)| ket);
+    let mut s_plus_norm_sqr = 0.;
+    let mut i = 0usize;
+    while i < s_plus.len() {
+        let target = s_plus[i].0;
+        let mut sum = s_plus[i].1;
+        i += 1;
+        while i < s_plus.len() && s_plus[i].0 == target {
+            sum += s_plus[i].1;
+            i += 1;
+        }
+        s_plus_norm_sqr += sum.norm_sqr();
+    }
+    Ok((diag + s_plus_norm_sqr) / norm_sqr)
+}
+
+/// Electronic transition dipole vector `<bra | r_a | ket>` (Bohr) from the spin-summed spatial
+/// one-body transition RDM (`one[p*m + q] = <bra | E_pq | ket>`) and the `(3, m, m)` Cartesian
+/// position integrals `<p | r_a | q>`.
+pub fn transition_dipole(
+    one_trdm: &[C64],
+    position_integrals: &[C64],
+    m: usize,
+) -> Result<[C64; 3]> {
+    if m == 0
+        || one_trdm.len() != product(&[m, m])?
+        || position_integrals.len() != product(&[3, m, m])?
+    {
+        return Err(Error::Invalid(
+            "transition_dipole needs an (m, m) transition RDM and (3, m, m) position integrals"
+                .into(),
+        ));
+    }
+    let mut dipole = [C64::default(); 3];
+    for (axis, slot) in dipole.iter_mut().enumerate() {
+        let r_block = &position_integrals[axis * m * m..(axis + 1) * m * m];
+        let mut acc = C64::default();
+        for p in 0..m {
+            for q in 0..m {
+                acc += one_trdm[p * m + q] * r_block[p * m + q];
+            }
+        }
+        *slot = acc;
+    }
+    Ok(dipole)
+}
+
+/// Length-gauge electric-dipole oscillator strength $f = \frac{2}{3} \Delta E |\mu_{0n}|^2$
+/// (dimensionless, $\Delta E$ in Hartree and $\mu_{0n}$ in atomic units / e Bohr).
+pub fn oscillator_strength(delta_energy_ha: f64, dipole_bohr: [C64; 3]) -> f64 {
+    let mu_sqr: f64 = dipole_bohr.iter().map(|c| c.norm_sqr()).sum();
+    (2. / 3.) * delta_energy_ha * mu_sqr
+}

@@ -5,13 +5,10 @@
 //! branches scatter like the Dirac atom of their own `kappa`, and branches given the wrong
 //! `kappa` do not (the control, 100 times over the gate).
 //!
-//! The generated side of the A0 freeze is not used: the Dirac generation is the spin-orbit
-//! chain (A4) and the freeze stores no full-resolution table of it. The shipped files are the
-//! read-only oracle (`MANDACARU_PAW_PATH`); Na and Fe are not among the stale lda-fr elements.
+//! The shipped files are the read-only oracle (`MANDACARU_PAW_PATH`); Na and Fe are not among
+//! the stale lda-fr elements.
 
-mod paw_assemble_support;
 mod paw_diagnose_support;
-mod paw_generate_support;
 mod paw_spin_orbit_support;
 
 use mandacaru_core::models::xc_scheme::AtomSolver;

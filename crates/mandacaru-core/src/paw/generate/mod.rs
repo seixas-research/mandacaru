@@ -31,10 +31,9 @@
 pub mod assemble;
 pub mod build;
 pub mod core;
-pub mod core_states;
 pub mod energies;
-pub mod ionic_tail;
 mod finish;
+pub mod ionic_tail;
 pub mod ranking;
 pub mod recipe;
 pub mod reference;

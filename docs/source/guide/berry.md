@@ -26,7 +26,9 @@ Born-von Karman supercell with no Bloch bands and raises `NotImplementedError`
 They are methods returning views, not ASE properties: each takes a mesh, a plane or a band
 group, and a polarization means nothing without its quantum. `get_property("polarization")`
 keeps raising. The views are the classes of `mandacaru.analysis.berry`; they are not exported
-by the package.
+by the package. `get_dipole_moment()` of a crystal raises `NotImplementedError` naming
+`get_polarization`: the polarization is a crystal's counterpart of the dipole moment of a
+molecule ([the dipole moment](#charges-dipole)).
 
 ## An example
 
@@ -519,7 +521,7 @@ affordable: a quantitative value waits on denser meshes or a Wannier-interpolati
 
 The Berry phase, the polarization and the occupied-manifold curvature of a metal are undefined
 and raise `ValueError`, as above. The orbital magnetization and the Fermi-surface form of the
-Hall conductivity are not provided. The Born effective charges and the piezoelectric tensor (B3) are planned and not available: see
+Hall conductivity are not provided. The Born effective charges and the piezoelectric tensor have no calculator method yet: see
 [not yet available](#not-yet-available).
 
 ## Scientific references

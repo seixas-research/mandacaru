@@ -1,12 +1,9 @@
-//! What the diagnostics tests share: the shipped libraries, the dataset-level cases the A0
-//! freeze recorded on shipped files, and the NaN-propagating fold of a deviation.
-//! The freeze reader (`Npz`) is `paw_assemble_support` (A2).
+//! What the diagnostics tests share: the shipped libraries and the NaN-propagating fold of a
+//! deviation.
 #![allow(dead_code)]
 
-use crate::paw_assemble_support::{directory, Npz};
 use mandacaru_core::paw::{diagnose::view::Smooth, record::PawDataset};
-use mandacaru_core::{paw::digest::sha256, Context};
-use serde_json::Value;
+use mandacaru_core::Context;
 use std::path::{Path, PathBuf};
 
 /// The larger of two deviations, with a NaN in either kept: `f64::max` would return the other
@@ -30,22 +27,6 @@ pub fn library() -> PathBuf {
     }
 }
 
-/// The UPAW-LCAO library: `$MANDACARU_UPAW_PATH`, else the checkout beside the PAW one.
-pub fn upaw_library() -> PathBuf {
-    if let Ok(path) = std::env::var("MANDACARU_UPAW_PATH") {
-        if !path.trim().is_empty() {
-            return PathBuf::from(path);
-        }
-    }
-    let beside = library().parent().unwrap().join("mandacaru-upaw");
-    assert!(
-        beside.is_dir(),
-        "the UPAW-LCAO library is not at {}: set MANDACARU_UPAW_PATH",
-        beside.display()
-    );
-    beside
-}
-
 pub fn context() -> Context {
     Context::new(Some(2), 768 << 20).unwrap()
 }
@@ -60,92 +41,6 @@ pub fn read(ctx: &Context, path: &Path) -> PawDataset {
 
 pub fn smooth_of(ctx: &Context, ds: &PawDataset) -> Smooth {
     Smooth::scalar(ctx, ds).unwrap()
-}
-
-/// One `lib_<set>_<element>.json` of the freeze: the shipped file it was taken on, its recorded
-/// dataset-level functions and the archive of their large outputs.
-pub struct LibraryCase {
-    pub set: String,
-    pub element: String,
-    pub doc: Value,
-    pub data: Npz,
-}
-
-impl LibraryCase {
-    pub fn open(set: &str, element: &str) -> Self {
-        let base = directory().join(format!("lib_{set}_{element}"));
-        let doc: Value = serde_json::from_str(
-            &std::fs::read_to_string(base.with_extension("json"))
-                .unwrap_or_else(|e| panic!("frozen lib_{set}_{element}.json is missing: {e}")),
-        )
-        .unwrap();
-        let restore = "cp test/migration/reference/paw_generate_archive/*.npz test/migration/reference/paw_generate/".to_string();
-        let data = Npz::open(Path::new(&format!("{}_data.npz", base.display())), &restore);
-        Self {
-            set: set.into(),
-            element: element.into(),
-            doc,
-            data,
-        }
-    }
-
-    /// The shipped file, checked against the digest the freeze took the numbers on: a library
-    /// that changed since fails loudly instead of comparing other numbers.
-    pub fn file(&self) -> PathBuf {
-        let path = dataset_path(&self.set, &self.element);
-        let digest = sha256(&std::fs::read(&path).unwrap());
-        assert_eq!(
-            digest,
-            self.doc["file"]["sha256"].as_str().unwrap(),
-            "{}: the shipped file is not the one the freeze was taken on",
-            path.display()
-        );
-        path
-    }
-
-    pub fn function(&self, name: &str) -> &Value {
-        &self.doc["functions"][name]
-    }
-
-    /// The gate the freeze recorded for a function (100 x its 1-ulp floor).
-    pub fn floor_gate(&self, name: &str) -> f64 {
-        self.doc["functions_floor"]["tol_100x"][name]
-            .as_f64()
-            .unwrap()
-    }
-}
-
-/// Every `(set, element)` that has recorded dataset-level functions.
-pub fn library_cases() -> Vec<(String, String)> {
-    let mut names = std::fs::read_dir(directory())
-        .unwrap()
-        .filter_map(|e| {
-            let file = e.unwrap().file_name().into_string().unwrap();
-            let stem = file.strip_prefix("lib_")?.strip_suffix(".json")?;
-            let (set, element) = stem.split_once('_')?;
-            Some((set.to_string(), element.to_string()))
-        })
-        .collect::<Vec<_>>();
-    names.sort();
-    names
-        .into_iter()
-        .filter(|(s, e)| {
-            let doc: Value = serde_json::from_str(
-                &std::fs::read_to_string(directory().join(format!("lib_{s}_{e}.json"))).unwrap(),
-            )
-            .unwrap();
-            doc.get("functions").is_some()
-        })
-        .collect()
-}
-
-pub fn numbers(value: &Value) -> Vec<f64> {
-    value
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|v| v.as_f64().unwrap())
-        .collect()
 }
 
 /// One shipped file diagnosed: the stored defects against the recomputed ones.

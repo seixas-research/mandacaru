@@ -143,4 +143,3 @@ fn spin_orbit_hi_has_kramers_degenerate_wilson_centers_on_time_reversal_invarian
     let spread = set.centers[0][0].last().unwrap() - set.centers[0][0][0];
     assert!(spread > 1e-3, "{:?}", set.centers[0][0]);
 }
-

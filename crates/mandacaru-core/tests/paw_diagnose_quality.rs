@@ -17,7 +17,6 @@
 //!   not bind; the intact oxygen does not;
 //! - defects a stale record does not store, on synthetic records.
 
-mod paw_assemble_support;
 mod paw_diagnose_support;
 
 use mandacaru_core::models::{atom::Atom, relativity::Treatment};
@@ -118,7 +117,10 @@ fn sphere_reach_finds_a_neighbor_nucleus_inside_a_wide_sphere() {
     let bond = shortest_bond(8).unwrap();
     assert!((bond - 0.97 * BOHR_PER_ANGSTROM).abs() < 1e-9, "{bond}");
     let (widest, against) = sphere_against_bond(&wide).expect("the O-H nucleus is inside");
-    assert!((widest - 2.0).abs() < 1e-3 && against == bond, "{widest} {against}");
+    assert!(
+        (widest - 2.0).abs() < 1e-3 && against == bond,
+        "{widest} {against}"
+    );
     assert!(sphere_against_bond(&o).is_none());
 }
 

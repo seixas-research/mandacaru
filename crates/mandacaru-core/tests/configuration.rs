@@ -16,7 +16,10 @@ fn count(configuration: &[(usize, usize, f64)], state: (usize, usize)) -> f64 {
 #[test]
 fn the_first_candidate_is_aufbau() {
     for z in [8, 26, 57, 90] {
-        assert_eq!(rearrangements(z, VIRTUALS).unwrap()[0], ground_state(z).unwrap());
+        assert_eq!(
+            rearrangements(z, VIRTUALS).unwrap()[0],
+            ground_state(z).unwrap()
+        );
     }
 }
 
@@ -41,9 +44,10 @@ fn every_candidate_keeps_the_electron_count() {
 
 #[test]
 fn lanthanum_can_move_its_4f_electron_to_5d() {
-    let moved = rearrangements(57, VIRTUALS).unwrap().into_iter().any(|c| {
-        count(&c, (5, 2)) == 1. && count(&c, (4, 3)) == 0.
-    });
+    let moved = rearrangements(57, VIRTUALS)
+        .unwrap()
+        .into_iter()
+        .any(|c| count(&c, (5, 2)) == 1. && count(&c, (4, 3)) == 0.);
     assert!(moved);
 }
 
@@ -53,7 +57,10 @@ fn no_destination_opens_a_new_principal_shell() {
     for z in [57u8, 89, 90] {
         let outer = ground_state(z).unwrap().iter().map(|s| s.0).max().unwrap();
         for candidate in rearrangements(z, VIRTUALS).unwrap() {
-            assert!(candidate.iter().map(|s| s.0).max().unwrap() <= outer, "Z = {z}");
+            assert!(
+                candidate.iter().map(|s| s.0).max().unwrap() <= outer,
+                "Z = {z}"
+            );
         }
     }
 }
@@ -90,7 +97,7 @@ fn semicore_d_and_f_shells_belong_in_the_valence() {
     assert_eq!(valence(30), vec![(3, 2), (4, 0)]);
     assert_eq!(valence(31), vec![(3, 2), (4, 0), (4, 1)]);
     assert!(valence(74).contains(&(4, 3))); // tungsten keeps its f shell
-    // The regression: taking only the highest n gave Fe a 4s^2 valence.
+                                            // The regression: taking only the highest n gave Fe a 4s^2 valence.
     let iron = ground_state(26).unwrap();
     let electrons: f64 = valence(26).iter().map(|&s| count(&iron, s)).sum();
     assert_eq!(electrons, 8.);

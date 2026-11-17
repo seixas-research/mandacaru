@@ -1,5 +1,5 @@
 use mandacaru_core::{
-    quantum::{pools, CachedProblem, Encoding, Operator, SolveOptions, C64},
+    quantum::{pools, Encoding, Operator, QuantumProblem, SolveOptions, C64},
     Context,
 };
 
@@ -114,7 +114,7 @@ fn complex_spin_mixing_reaches_the_independent_one_electron_ground_state() {
                 )
                 .unwrap();
         }
-        let mut p = CachedProblem::new(&ctx, encoding, h, false, false, true).unwrap();
+        let mut p = QuantumProblem::new(&ctx, encoding, h, false, false, true).unwrap();
         p.use_pool("spin-orbit", true).unwrap();
         let result = p
             .solve(
@@ -177,7 +177,7 @@ fn adaptive_exchange_pools_solve_a_rotated_two_site_ground_state() {
                 )
                 .unwrap();
         }
-        let mut problem = CachedProblem::new(&ctx, encoding, h, true, false, true).unwrap();
+        let mut problem = QuantumProblem::new(&ctx, encoding, h, true, false, true).unwrap();
         problem.use_pool(name, true).unwrap();
         let result = problem
             .solve(
@@ -235,7 +235,7 @@ fn coupled_exchange_growth_expands_live_members_with_independent_parameters() {
             )
             .unwrap();
     }
-    let mut problem = CachedProblem::new(&ctx, encoding, h, true, false, true).unwrap();
+    let mut problem = QuantumProblem::new(&ctx, encoding, h, true, false, true).unwrap();
     problem.use_pool("ceo", true).unwrap();
     // The inner optimizer stops at 1e-6, not at roundoff: on this symmetric dimer the member
     // gradients of the coupled step are zero up to the roundoff left in the parameters of the

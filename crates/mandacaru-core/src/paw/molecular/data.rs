@@ -1,10 +1,10 @@
 //! Typed radial tables decoded by the Python file-format adapter.
 use super::*;
-use crate::paw::core_exchange::{FrozenCore, StoredShell};
 use crate::math::{
     radial::{integrate, validate},
     spline::Cubic,
 };
+use crate::paw::core_exchange::{FrozenCore, StoredShell};
 use serde_json::Value;
 use std::collections::BTreeMap;
 
@@ -54,6 +54,9 @@ pub struct Species {
     pub charge: f64,
     pub local_radius: f64,
     pub compensation_radius: f64,
+    /// The radius where the partial core joins the all-electron core, when it is applied (a
+    /// payload of tables carries none).
+    pub nlcc_radius: Option<f64>,
     pub ionic: Cubic,
     pub channels: Vec<Channel>,
     pub xc_core: Cubic,
@@ -73,7 +76,18 @@ pub struct Species {
     /// built with spin-orbit allowed): read as the crystal reads them
     /// (`periodic::response::setup::spin_orbit`).
     pub spin_orbit: Vec<SpinOrbitChannel>,
+    /// The reference atom's spherical densities on the knots of `ionic` that its linearized
+    /// one-center exchange-correlation (`Channel::xc`) is taken at.
+    pub xc_reference: XcReference,
     _memory: crate::Reservation,
+}
+/// The densities, per volume, at which a species' one-center exchange-correlation is linearized:
+/// the all-electron reference (valence partial waves and core) and the smooth valence density
+/// with the smooth core, and the knots of the sphere the difference is integrated over.
+pub struct XcReference {
+    pub all_electron: Vec<f64>,
+    pub smooth: Vec<f64>,
+    pub inside: usize,
 }
 /// One `l` of a species' spin-orbit term: its projectors' radial tables, the sphere they live in
 /// (`max(r_cut of the scalar channel, r_cut_local)`) and the radial coupling `D^SO`.
@@ -227,7 +241,7 @@ impl Species {
         let memory = ctx.reserve(
             product(&[
                 r_slice.len(),
-                total_refs.checked_add(2).ok_or(crate::Error::Overflow)?,
+                total_refs.checked_add(4).ok_or(crate::Error::Overflow)?,
                 8,
                 8,
             ])?
@@ -365,15 +379,17 @@ impl Species {
             &ds.xc,
             ds.relativistic_exchange,
         )?;
+        let smooth_density = ds
+            .valence_density
+            .as_slice()
+            .iter()
+            .zip(xc_core_slice)
+            .map(|(a, b)| a + b)
+            .collect::<Vec<_>>();
         let ps_xc = crate::models::spherical::exchange_correlation(
             ctx,
             r_slice,
-            &ds.valence_density
-                .as_slice()
-                .iter()
-                .zip(xc_core_slice)
-                .map(|(a, b)| a + b)
-                .collect::<Vec<_>>(),
+            &smooth_density,
             &ds.xc,
             ds.relativistic_exchange,
         )?;
@@ -389,7 +405,8 @@ impl Species {
                 r_slice,
                 &(0..n)
                     .map(|k| {
-                        4. * PI * r_slice[k].powi(2)
+                        4. * PI
+                            * r_slice[k].powi(2)
                             * ds.valence_density.as_slice()[k]
                             * potential[k]
                     })
@@ -457,7 +474,9 @@ impl Species {
                 let radials = entry
                     .projectors
                     .iter()
-                    .map(|t| Cubic::new(ctx, ctx.copy_slice(r_slice)?, ctx.copy_slice(t.as_slice())?))
+                    .map(|t| {
+                        Cubic::new(ctx, ctx.copy_slice(r_slice)?, ctx.copy_slice(t.as_slice())?)
+                    })
                     .collect::<Result<Vec<_>>>()?;
                 spin_orbit.push(SpinOrbitChannel {
                     l: l as usize,
@@ -475,11 +494,8 @@ impl Species {
             charge,
             local_radius,
             compensation_radius,
-            ionic: Cubic::new(
-                ctx,
-                ctx.copy_slice(r_slice)?,
-                ctx.copy_slice(ionic_slice)?,
-            )?,
+            nlcc_radius: ds.nlcc.r_nlcc.filter(|_| ds.nlcc.applied),
+            ionic: Cubic::new(ctx, ctx.copy_slice(r_slice)?, ctx.copy_slice(ionic_slice)?)?,
             channels,
             xc_core,
             xc_core_tau,
@@ -488,6 +504,11 @@ impl Species {
             core_refusal: support.refusal,
             hybrid_core_supported: support.hybrid,
             spin_orbit,
+            xc_reference: XcReference {
+                all_electron: all_density,
+                smooth: smooth_density,
+                inside,
+            },
             _memory: memory,
         })
     }
@@ -538,8 +559,10 @@ impl Species {
                     .iter()
                     .map(|e| {
                         Ok((
-                            u32::try_from(count(&e["n"])?).map_err(|_| invalid("invalid core state n"))?,
-                            u32::try_from(count(&e["l"])?).map_err(|_| invalid("invalid core state l"))?,
+                            u32::try_from(count(&e["n"])?)
+                                .map_err(|_| invalid("invalid core state n"))?,
+                            u32::try_from(count(&e["l"])?)
+                                .map_err(|_| invalid("invalid core state l"))?,
                             number(&e["occupation"])?,
                             table(arrays, &e["orbital"])?,
                         ))
@@ -582,7 +605,7 @@ impl Species {
         let memory = ctx.reserve(
             product(&[
                 r.as_slice().len(),
-                total_refs.checked_add(2).ok_or(crate::Error::Overflow)?,
+                total_refs.checked_add(4).ok_or(crate::Error::Overflow)?,
                 8,
                 8,
             ])?
@@ -673,8 +696,13 @@ impl Species {
                 radius,
                 r.as_slice(),
                 &occupations,
-                if raw { crate::paw::onecenter::Basis::Raw } else { crate::paw::onecenter::Basis::Dual },
-            ).ok();
+                if raw {
+                    crate::paw::onecenter::Basis::Raw
+                } else {
+                    crate::paw::onecenter::Basis::Dual
+                },
+            )
+            .ok();
             channels.push(Channel {
                 l,
                 radius,
@@ -707,15 +735,16 @@ impl Species {
             functional,
             relativistic,
         )?;
+        let smooth_density = valence
+            .as_slice()
+            .iter()
+            .zip(xc_core.as_slice())
+            .map(|(a, b)| a + b)
+            .collect::<Vec<_>>();
         let ps_xc = crate::models::spherical::exchange_correlation(
             ctx,
             r.as_slice(),
-            &valence
-                .as_slice()
-                .iter()
-                .zip(xc_core.as_slice())
-                .map(|(a, b)| a + b)
-                .collect::<Vec<_>>(),
+            &smooth_density,
             functional,
             relativistic,
         )?;
@@ -789,6 +818,7 @@ impl Species {
             charge,
             local_radius,
             compensation_radius,
+            nlcc_radius: None,
             ionic: Cubic::new(ctx, r, ionic)?,
             channels,
             xc_core,
@@ -798,6 +828,11 @@ impl Species {
             core_refusal: support.refusal,
             hybrid_core_supported: support.hybrid,
             spin_orbit: Vec::new(),
+            xc_reference: XcReference {
+                all_electron: all_density,
+                smooth: smooth_density,
+                inside,
+            },
             _memory: memory,
         })
     }

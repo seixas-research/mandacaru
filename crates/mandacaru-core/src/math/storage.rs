@@ -622,7 +622,8 @@ pub trait ComplexTiles {
     ) -> Result<Tile<'a>>;
 }
 fn check_tile(len: usize, rows: usize, points: usize, start: usize, count: usize) -> Result<()> {
-    if rows.checked_mul(points) != Some(len) || start.checked_add(count).is_none_or(|e| e > points) {
+    if rows.checked_mul(points) != Some(len) || start.checked_add(count).is_none_or(|e| e > points)
+    {
         return Err(Error::Invalid(
             "sample tile is outside the (rows, points) stack".into(),
         ));

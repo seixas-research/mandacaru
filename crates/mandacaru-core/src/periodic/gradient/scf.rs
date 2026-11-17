@@ -56,6 +56,17 @@ pub fn refuse(c: &Crystal) -> Result<()> {
     if c.spins != 1 && c.spins != 2 {
         return no("a crystal with more than two spin channels");
     }
+    if is_reduced(c) {
+        reduced_mesh(c).map_err(|cause| {
+            Error::Unsupported(format!("crystal forces are not available for {cause}"))
+        })?;
+    }
+    Ok(())
+}
+
+/// Whether the crystal's mesh is reduced by space-group operations: it carries node
+/// permutations or a k-point symmetrizer other than the identity.
+pub fn is_reduced(c: &Crystal) -> bool {
     let identity = c.qsym.as_slice().iter().enumerate().all(|(i, v)| {
         let want = if i / c.channels == i % c.channels {
             1.
@@ -64,31 +75,21 @@ pub fn refuse(c: &Crystal) -> Result<()> {
         };
         (v - C64::new(want, 0.)).norm() < 1e-12
     });
-    if !c.permutations.is_empty() || !identity {
-        reduced_mesh(c).map_err(|cause| {
-            Error::Unsupported(format!("crystal forces are not available for {cause}"))
-        })?;
-    }
-    Ok(())
+    !c.permutations.is_empty() || !identity
 }
 
 /// Whether a mesh reduced by space-group operations can be differentiated: the snapshot must
-/// carry the operations (its `setup` block) to average the k-sum over. A spin-orbit crystal is
-/// not (the moment would need the spin rotation), nor is a hybrid (it needs the whole mesh).
-/// The cause names what to do.
+/// carry the operations (its `setup` block) to average the k-sum over. A time-reversal-symmetric
+/// spin-orbit crystal is (it carries the charge alone, a scalar under the spin rotation); a
+/// magnetic one is not (its moment would need the spin rotation of every operation). A hybrid is:
+/// its exact exchange rotates the states of the listed points, with the SU(2) factor of every
+/// operation for a spinor ([`crate::periodic::star`]). The cause names what to do.
 pub fn reduced_mesh(c: &Crystal) -> std::result::Result<(), String> {
-    if c.spinor {
+    if c.spinor && !c.time_reversal {
         return Err(
-            "a spin-orbit crystal on a k mesh reduced by space-group symmetry (the \
-                    magnetization would need the spin rotation of every operation; use \
+            "a spin-orbit crystal on a k mesh reduced by space-group symmetry (it is magnetic: \
+                    its magnetization would need the spin rotation of every operation; use \
                     symmetry=False)"
-                .into(),
-        );
-    }
-    if c.screened_exchange().map_err(|e| e.to_string())?.is_some() {
-        return Err(
-            "a hybrid crystal on a k mesh reduced by space-group symmetry (a hybrid \
-                    needs the whole mesh, which the Mandacaru setup keeps for it)"
                 .into(),
         );
     }
@@ -234,8 +235,19 @@ pub fn output_fields(c: &Crystal, densities: &[StoredMatrix], q: &[C64]) -> Resu
     } else {
         None
     };
-    let potential = solver::local_potential(c, &mut fft, rho.as_slice(), q, tau.as_ref().map(|t| t.as_slice()))?;
-    let terms = solver::exchange_correlation(c, &mut fft, rho.as_slice(), tau.as_ref().map(|t| t.as_slice()))?;
+    let potential = solver::local_potential(
+        c,
+        &mut fft,
+        rho.as_slice(),
+        q,
+        tau.as_ref().map(|t| t.as_slice()),
+    )?;
+    let terms = solver::exchange_correlation(
+        c,
+        &mut fft,
+        rho.as_slice(),
+        tau.as_ref().map(|t| t.as_slice()),
+    )?;
     // One block of `n` per field channel. The unpolarized partial core is differentiated against
     // the spin average of the frame's potentials. For a spinor meta-GGA that is `terms.core` (the
     // Pauli charge channel also carries the turn of the frame, which the core does not move); for
@@ -259,7 +271,8 @@ pub fn output_fields(c: &Crystal, densities: &[StoredMatrix], q: &[C64]) -> Resu
                 Some(v) => {
                     let mut average = c.context.allocate::<f64>(n)?;
                     for (k, to) in average.as_mut_slice().iter_mut().enumerate() {
-                        *to = (0..c.spins).map(|s| v.as_slice()[s * n + k]).sum::<f64>() / c.spins as f64;
+                        *to = (0..c.spins).map(|s| v.as_slice()[s * n + k]).sum::<f64>()
+                            / c.spins as f64;
                     }
                     Some(average)
                 }
@@ -326,29 +339,35 @@ pub fn rediagonalize(
     let nk = c.points.len();
     let tasks = c.spins * nk;
     let mut lanes = vec![(); c.context.lanes(crate::Level::Kpts, tasks)];
-    let solved = c.context.map_tasks(crate::Level::Kpts, &mut lanes, tasks, |_, idx| {
-        let (s, k) = (idx / nk, idx % nk);
-        // A spinor diagonalization takes every Pauli field channel at once, as `solve` does.
-        let local = if c.spinor {
-            fields.local.as_slice()
-        } else {
-            &fields.local.as_slice()[s * n..(s + 1) * n]
-        };
-        // A spinor's single spin block holds every Pauli channel of v_tau.
-        let kinetic = fields.kinetic.as_ref().map(|v| {
-            if c.spinor { v.as_slice() } else { &v.as_slice()[s * n..(s + 1) * n] }
-        });
-        let (eps, coefficient, _) = solver::diagonalize_with_exchange(
-            c,
-            &c.points[k],
-            local,
-            fields.moments.as_slice(),
-            kinetic,
-            hubbard.get(s),
-            exchange.get(idx),
-        )?;
-        Ok((eps, coefficient))
-    })?;
+    let solved = c
+        .context
+        .map_tasks(crate::Level::Kpts, &mut lanes, tasks, |_, idx| {
+            let (s, k) = (idx / nk, idx % nk);
+            // A spinor diagonalization takes every Pauli field channel at once, as `solve` does.
+            let local = if c.spinor {
+                fields.local.as_slice()
+            } else {
+                &fields.local.as_slice()[s * n..(s + 1) * n]
+            };
+            // A spinor's single spin block holds every Pauli channel of v_tau.
+            let kinetic = fields.kinetic.as_ref().map(|v| {
+                if c.spinor {
+                    v.as_slice()
+                } else {
+                    &v.as_slice()[s * n..(s + 1) * n]
+                }
+            });
+            let (eps, coefficient, _) = solver::diagonalize_with_exchange(
+                c,
+                &c.points[k],
+                local,
+                fields.moments.as_slice(),
+                kinetic,
+                hubbard.get(s),
+                exchange.get(idx),
+            )?;
+            Ok((eps, coefficient))
+        })?;
     let (eigenvalues, coefficients): (Vec<_>, Vec<_>) = solved.into_iter().unzip();
     let weights: Vec<f64> = (0..c.spins)
         .flat_map(|_| c.points.iter().map(|p| p.weight))

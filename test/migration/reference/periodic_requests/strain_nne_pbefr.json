@@ -1,0 +1,96 @@
+{
+ "lattice": [
+  15.117808997006161,
+  0.0,
+  0.0,
+  0.0,
+  15.117808997006161,
+  0.0,
+  0.0,
+  0.0,
+  15.117808997006161
+ ],
+ "grid_shape": [
+  23,
+  23,
+  23
+ ],
+ "atoms": [
+  {
+   "species": 0,
+   "symbol": "N",
+   "fractional": [
+    0.5,
+    0.525,
+    0.3375
+   ],
+   "moment": 3.0
+  },
+  {
+   "species": 1,
+   "symbol": "Ne",
+   "fractional": [
+    0.5324999999999999,
+    0.4875,
+    0.6625
+   ],
+   "moment": 0.0
+  }
+ ],
+ "mesh": {
+  "size": [
+   1,
+   1,
+   1
+  ],
+  "gamma": true
+ },
+ "functional": "pbe",
+ "precision": "float64",
+ "basis_size": "SZ",
+ "spinor": true,
+ "spin": true,
+ "symmetry": false,
+ "charge": 0.0,
+ "projector_basis": "raw",
+ "recipes": {
+  "N": {
+   "zetas": 1,
+   "polarizations": 0,
+   "cutoff": 4.2865675181696945,
+   "energy_shift": 0.1,
+   "wall": [
+    12.0,
+    0.6
+   ],
+   "split_norm": 0.15,
+   "tail_norms": [
+    0.15,
+    0.31,
+    0.54
+   ],
+   "polarization": "gaussian",
+   "diffuse": null
+  },
+  "Ne": {
+   "zetas": 1,
+   "polarizations": 0,
+   "cutoff": 4.2865675181696945,
+   "energy_shift": 0.1,
+   "wall": [
+    12.0,
+    0.6
+   ],
+   "split_norm": 0.15,
+   "tail_norms": [
+    0.15,
+    0.31,
+    0.54
+   ],
+   "polarization": "gaussian",
+   "diffuse": null
+  }
+ },
+ "filter_cutoff": 4.2865675181696945,
+ "_dataset_set": "pbe-fr"
+}

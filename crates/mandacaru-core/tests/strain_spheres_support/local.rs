@@ -27,9 +27,7 @@ use mandacaru_core::{
         pulay::Matrix,
         shapes::visit_lattice,
         shells::{DenseRows, Sampling, Shells},
-        spheres::{
-            chunk_size, Sphere, SHORT_RANGE_AZIMUTHAL, SHORT_RANGE_POLAR, SHORT_RANGE_RADIAL,
-        },
+        spheres::{chunk_size, Sphere},
     },
     Context,
 };
@@ -159,17 +157,13 @@ pub fn v_sr_derivative(
 }
 
 /// The rule of an atom's short-range sphere and its weights (`w_x`, and `w_x v^sr(r_x)`).
-fn rule(ctx: &Context, sphere: &ShortRange<'_>) -> (Sphere, Vec<f64>, Vec<f64>) {
-    let rule = Sphere::rule(
-        ctx,
-        sphere.center,
-        sphere.potential.reach(sphere.sigma).unwrap(),
-        SHORT_RANGE_RADIAL,
-        SHORT_RANGE_POLAR,
-        SHORT_RANGE_AZIMUTHAL,
-        sphere.potential.cutoff,
-    )
-    .unwrap();
+fn rule(
+    ctx: &Context,
+    lattice: &Matrix3<f64>,
+    sphere: &ShortRange<'_>,
+) -> (Sphere, Vec<f64>, Vec<f64>) {
+    let rule =
+        Sphere::short_range(ctx, lattice, sphere.center, sphere.potential, sphere.sigma).unwrap();
     let all = 0..rule.len();
     let radii = rule.radii(all.clone());
     let sampled: Vec<f64> = radii.iter().map(|r| sphere.potential.value(*r)).collect();
@@ -192,7 +186,7 @@ pub fn v_variant(
     let m = shells.functions();
     let mut out: [[Matrix; 3]; 3] =
         std::array::from_fn(|_| std::array::from_fn(|_| Matrix::zeros(m, m)));
-    let (rule, _, weights) = rule(ctx, sphere);
+    let (rule, _, weights) = rule(ctx, lattice, sphere);
     let region = rule.region();
     let reached = shells.reaching(ctx, lattice, &region).unwrap();
     let near = reached.rows.len();
@@ -255,7 +249,7 @@ pub fn image_potential_term(
         std::array::from_fn(|_| std::array::from_fn(|_| Matrix::zeros(m, m)));
     let spheres = local.spheres();
     let sphere = &spheres[atom];
-    let (rule, plain, _) = rule(ctx, sphere);
+    let (rule, plain, _) = rule(ctx, &local.cell.lattice, sphere);
     let all = 0..rule.len();
     let points = rule.points(all.clone());
     let n = rule.len();

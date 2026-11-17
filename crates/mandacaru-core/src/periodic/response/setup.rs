@@ -154,16 +154,7 @@ impl Setup {
         }
         let potentials = kind
             .iter()
-            .map(|&k| {
-                let ds = &records[k];
-                LocalPotential::new(
-                    ctx,
-                    ds.r.as_slice(),
-                    ds.v_local.as_slice(),
-                    ds.valence_charge,
-                    ds.r_cut_local,
-                )
-            })
+            .map(|&k| LocalPotential::from_dataset(ctx, &records[k]))
             .collect::<Result<Vec<_>>>()?;
         let q_max = electrostatics::max_wavenumber(ctx, &c.grid)?;
         let shapes = {
@@ -247,7 +238,10 @@ impl Setup {
         &self.owner
     }
     pub(in crate::periodic) fn projector_labels(&self) -> Vec<(usize, i32, usize)> {
-        self.projectors.iter().map(|q| (q.l, q.m, q.index)).collect()
+        self.projectors
+            .iter()
+            .map(|q| (q.l, q.m, q.index))
+            .collect()
     }
 
     /// The smooth core density of every atom's dataset, where its unscreening used one.
@@ -320,7 +314,10 @@ impl Setup {
     pub(super) fn spin_orbit(
         &self,
         c: &Crystal,
-    ) -> Result<(Vec<Projector>, BTreeMap<(usize, usize), crate::models::spin_orbit::Coupling>)> {
+    ) -> Result<(
+        Vec<Projector>,
+        BTreeMap<(usize, usize), crate::models::spin_orbit::Coupling>,
+    )> {
         let (mut projectors, mut couplings) = (Vec::new(), BTreeMap::new());
         if !c.spinor {
             return Ok((projectors, couplings));

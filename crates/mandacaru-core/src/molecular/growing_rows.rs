@@ -54,9 +54,7 @@ impl<'a> GrowingRows<'a> {
             .and_then(|bytes| usize::try_from(bytes).ok())
             .unwrap_or(usize::MAX);
         let held = ctx.memory_limit().min(machine);
-        let limit = rows
-            .min(held / crate::product(&[rows, 8])?.max(1))
-            .max(1);
+        let limit = rows.min(held / crate::product(&[rows, 8])?.max(1)).max(1);
         Ok(Self {
             ctx,
             rows,

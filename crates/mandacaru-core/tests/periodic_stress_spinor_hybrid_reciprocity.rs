@@ -1,13 +1,13 @@
-//! AS-10 diagnostic: is the discretized screened exchange a SYMMETRIC bilinear form of the
-//! density matrices, `sum_k w_k tr(D1_k K_k[D2]) = sum_k w_k tr(D2_k K_k[D1])`? The SCF
-//! diagonalizes with `-a K[D]`, which is the functional derivative of `E_x` only if it is. On a
-//! The smooth pair densities give a symmetric form to rounding; the compensation charges break
-//! it by a relative 1e-6 (LiH at Gamma), 2e-9 (Si, 2x2x2 time-reversal-invariant points) and
-//! 4e-8 (Si, 3x1x1, complex pair wave vectors). The state of an SCF is then stationary for the
-//! Hamiltonian it diagonalized, not exactly for the energy, and `dF/d eps` of the reconverged
-//! free energy differs from the Hellmann-Feynman stress by the response of `D` to the strain times
-//! that violation: the candidate cause of the shear misses of `periodic_stress_crystals_hybrid_*`
-//! (a candidate: the response was not computed).
+//! AS-10: is the discretized screened exchange a SYMMETRIC bilinear form of the density
+//! matrices, `sum_k w_k tr(D1_k K_k[D2]) = sum_k w_k tr(D2_k K_k[D1])`? The SCF diagonalizes with
+//! `-a K[D]`, which is the functional derivative of `E_x` only if it is. The smooth pair densities
+//! give a symmetric form to rounding. The compensation charges once broke it, by a relative 1e-6
+//! (LiH at Gamma), 2e-9 (Si, 2x2x2 time-reversal-invariant points) and 4e-8 (Si, 3x1x1, complex
+//! pair wave vectors), because the shapes on a face of the FFT box (the frequency `N/2`, its own
+//! negative) were read at one of its two aliased wave vectors; they are now the mean of the
+//! aliases the grid's lattice operations pick, both faces among them (`Augmentation::pair_shapes`),
+//! and the form is symmetric to rounding with them as well. The
+//! one-sided control, which breaks it, is in `periodic_screened_augmentation_pairs.rs`.
 //!
 //! Hand-built densities (no SCF), pair part only (no one-center model: the model is not
 //! bilinear). Needs `MANDACARU_PAW_PATH`.
@@ -78,7 +78,7 @@ fn cross(rig: &Rig, augmented: bool, real: bool) -> (f64, f64, f64) {
 }
 
 #[test]
-fn the_grid_pair_exchange_is_reciprocal_and_the_compensation_charges_break_it_slightly() {
+fn the_exchange_is_a_symmetric_bilinear_form_with_the_compensation_charges_too() {
     for (name, rig) in [
         (
             "Gamma only (spinor)",
@@ -93,29 +93,19 @@ fn the_grid_pair_exchange_is_reciprocal_and_the_compensation_charges_break_it_sl
             mesh_rig("si_hsefr_tr3", ExxDivTreatment::None, false),
         ),
     ] {
-        // The smooth pair densities alone: a symmetric bilinear form to rounding.
-        let (a, b, gap) = cross(&rig, false, false);
-        println!("{name}, grid pair alone: {a:.12e} / {b:.12e}, gap {gap:.2e}");
-        assert!(a.abs() > 1e-2 && gap < 1e-12 * a.abs(), "{gap:e}");
-        // With the compensation charges: the form is symmetric only up to a small violation
-        // that lives entirely in the compensation part (SH-1a traced the same size of
-        // time-reversal asymmetry of the energy to the Nyquist planes of the compensation form
-        // factors; this test does not isolate it). With complex densities the violation is asserted
-        // PRESENT (above 1e-12 of the value, so a vanished gap fails); with REAL symmetric
-        // densities it is only printed (at Gamma it vanishes: the imaginary parts carry it).
-        // Pinned from above at 1e-5 of the value; the sizes are the point of the log.
-        for real in [false, true] {
-            let (a, b, gap) = cross(&rig, true, real);
+        for (augmented, real) in [(false, false), (true, false), (true, true)] {
+            let (a, b, gap) = cross(&rig, augmented, real);
             println!(
-                "{name}, with compensation, {} densities: {a:.12e} / {b:.12e}, gap {gap:.2e} (relative {:.2e})",
+                "{name}, {} {} densities: {a:.12e} / {b:.12e}, gap {gap:.2e} (relative {:.2e})",
+                if augmented {
+                    "with compensation,"
+                } else {
+                    "grid pair alone,"
+                },
                 if real { "real" } else { "complex" },
                 gap / a.abs()
             );
-            assert!(gap < 1e-5 * a.abs(), "{gap:e}");
-            assert!(
-                real || gap > 1e-12 * a.abs(),
-                "complex densities: the gap vanished"
-            );
+            assert!(a.abs() > 1e-2 && gap < 1e-12 * a.abs(), "{name}: {gap:e}");
         }
     }
 }

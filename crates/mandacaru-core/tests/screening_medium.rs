@@ -115,6 +115,7 @@ fn bloch<'a>(s: &'a Set, points: usize) -> Bloch<'a> {
         samples: &s.samples,
         projections: None,
         points,
+        components: 1,
     }
 }
 

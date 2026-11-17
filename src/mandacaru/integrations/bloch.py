@@ -34,8 +34,8 @@ def check_geometry(calculation, geometry):
     """Run-time checks of a quantum method on a periodic geometry; returns the mesh size."""
     if not calculation.capabilities.periodic:
         raise ValueError(
-            f"method={calculation.method!r} has no periodic form: use vqe, adapt-vqe, vasqa "
-            "or valsqa for a crystal"
+            f"method={calculation.method!r} has no periodic form: use vqe, adapt-vqe, vasqa, "
+            "valsqa, subspace-vasqa or subspace-valsqa for a crystal"
         )
     if calculation._crystal_orbitals == "k-space":
         raise NotImplementedError(
@@ -117,7 +117,7 @@ def check_derivatives(calculation, properties):
                 "crystal forces need the state vector (HAO differences its energies, PAW-LCAO "
                 "differentiates it); a circuit run (shots, a device, execute_circuits) has none")
         if calculation._basis_spec is not None and calculation.method in (
-                "vasqa", "valsqa") and calculation._constructor_options.get("seed") is None:
+                "vasqa", "valsqa", "subspace-vasqa", "subspace-valsqa") and calculation._constructor_options.get("seed") is None:
             raise ValueError(
                 "crystal forces of an architecture search difference energies of separate "
                 "searches: pass seed= so every displaced search runs the same chain"
@@ -205,7 +205,7 @@ def bands_at(calculation, fractional):
 
 
 def spectral_function(calculation, *, energies=None, eta=0.1, kpoints=None, krylov=200,
-                      path=None, irreducible=False, symprec=1e-5):
+                      path=None, irreducible=False, symprec=1e-5, root=0):
     """The Lehmann spectral function of the correlated supercell state at mesh k-points,
     or along a band path (``path``): the mesh points on it, in path order."""
     import warnings
@@ -216,23 +216,25 @@ def spectral_function(calculation, *, energies=None, eta=0.1, kpoints=None, kryl
 
     if not np.isfinite(eta) or eta <= 0:
         raise ValueError("eta must be positive and finite (eV)")
-    if type(krylov) is not int or krylov < 1:
-        raise ValueError("krylov must be a positive integer")
+    if type(krylov) is not int or krylov < 1 or type(root) is not int:
+        raise ValueError("krylov must be a positive integer and root an integer")
     if path is not None and kpoints is not None:
         raise ValueError("give either kpoints or a band path, not both")
     if irreducible and path is None:
-        raise ValueError(
-            "irreducible=True reduces the points of a band path: pass path=, e.g. path='GXMG'"
-        )
+        raise ValueError("irreducible=True reduces the points of a band path: pass path=, e.g. path='GXMG'")
     cell = supercell(calculation)
     if calculation._shots:
-        raise NotImplementedError(
-            "the spectral function is computed from the state vector; a shot-based run has none"
-        )
+        raise NotImplementedError("the spectral function is computed from the state vector; a shot-based run has none")
     problem = calculation.problem
-    raw_state = calculation.result._raw.get("state")
+    raw_state = None
+    if calculation.result is not None:
+        raw = calculation.result._raw
+        if "states" in raw and root in range(len(raw["states"])):
+            raw_state = raw["states"][root]
+        elif not root:
+            raw_state = raw.get("state")
     if problem is None or raw_state is None:
-        raise RuntimeError("the spectral function needs the state of a single-state variational run")
+        raise ValueError("invalid excited root or missing variational eigenstate for spectral function")
     reference = getattr(calculation, "_bloch_reference", None)
     if reference is None:
         raise RuntimeError("run a quantum calculation on a crystal first")
@@ -246,19 +248,14 @@ def spectral_function(calculation, *, energies=None, eta=0.1, kpoints=None, kryl
             raise ValueError("kpoints must be a sequence of fractional (k1, k2, k3)")
         raw = _native.bloch_spectral_function(
             calculation.native_reference, reference.hamiltonian, problem, state,
-            [list(map(float, k)) for k in points],
-            eta_ha=eta_ha, axis_ha=axis_ha, krylov=krylov,
-        )
+            [list(map(float, k)) for k in points], eta_ha=eta_ha, axis_ha=axis_ha, krylov=krylov)
     else:
         lattice, pbc, positions, numbers = kspace.structure(calculation)
         text, explicit = kspace.path_arguments(path)
         raw = _native.bloch_path_spectral_function(
-            calculation.native_reference, reference.hamiltonian, problem, state,
-            lattice, list(pbc),
+            calculation.native_reference, reference.hamiltonian, problem, state, lattice, list(pbc),
             eta_ha=eta_ha, path=text, path_points=explicit, irreducible=bool(irreducible),
-            positions=positions, numbers=numbers, symprec=float(symprec),
-            axis_ha=axis_ha, krylov=krylov,
-        )
+            positions=positions, numbers=numbers, symprec=float(symprec), axis_ha=axis_ha, krylov=krylov)
     kpath = None if path is None else KPath.from_native(raw["kpath"])
     audit = raw.get("audit")
     if kpath is not None and not kpath.complete:

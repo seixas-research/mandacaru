@@ -4,7 +4,7 @@
 //!
 //! One file at a time (a record, its smooth copy and the atom are dropped before the next).
 //! `paw_diagnose_sample` runs a stratified sample in the default suite; `paw_diagnose_library`
-//! runs all 431 files (368 PAW-LCAO in four sets and 63 UPAW-LCAO) and is `#[ignore]`d: the
+//! runs all 368 files (four sets) and is `#[ignore]`d: the
 //! reference atoms alone take hours (a Pb atom is about 100 s). Run it per set:
 //!
 //! ```text
@@ -12,7 +12,7 @@
 //!   cargo test --release -p mandacaru-core --test paw_diagnose_library -- --ignored --nocapture
 //! ```
 //!
-//! (`MANDACARU_DIAGNOSE_SET` is one of `lda-sr pbe-sr lda-fr pbe-fr upaw`; unset runs all five;
+//! (`MANDACARU_DIAGNOSE_SET` is one of `lda-sr pbe-sr lda-fr pbe-fr`; unset runs all four;
 //! `MANDACARU_DIAGNOSE_ELEMENTS=Si,O` restricts the elements.) Every file appends a JSON line
 //! to the report. The equality is of keys (which channel is flagged, which defect) and of the
 //! recorded numbers to the gates below.
@@ -24,7 +24,7 @@
 //! the report as `{"status": "refused", "cause": ...}` and the sweep goes on. The test ends by
 //! failing on the problems found, and on a refusal that is not one of [`DOCUMENTED_REFUSALS`].
 //!
-//! **The oracle atom is the atom the shipped files were made on**: the 431 files were generated
+//! **The oracle atom is the atom the shipped files were made on**: the 368 files were generated
 //! with the atom-solver radial scheme (derivatives on subset nodes), so the sweep solves their
 //! reference atoms through that legacy seam (`reference_atom_with(.., &AtomSolver)`); the
 //! production scheme (variational, D-2b) would move the PBE atoms by the measured scheme
@@ -35,7 +35,6 @@
 //! generator's 200 iterations (the legacy potential is not the derivative of an energy), so those
 //! files are refused by the legacy sweep and looked at by the variational one, labelled as such.
 
-mod paw_assemble_support;
 mod paw_diagnose_support;
 
 use mandacaru_core::models::xc_scheme::{AtomSolver, Variational, XcSource};
@@ -65,13 +64,9 @@ const MISS_GATE: f64 = 1e-3;
 const LEVEL_GATE: f64 = 2e-4;
 
 fn files(set: &str) -> Vec<(String, PathBuf)> {
-    let (root, folder) = if set == "upaw" {
-        (upaw_library(), "lda-sr")
-    } else {
-        (library(), set)
-    };
-    let mut found = std::fs::read_dir(root.join(folder))
-        .unwrap_or_else(|e| panic!("{}: {e}", root.join(folder).display()))
+    let root = library();
+    let mut found = std::fs::read_dir(root.join(set))
+        .unwrap_or_else(|e| panic!("{}: {e}", root.join(set).display()))
         .map(|e| e.unwrap().path())
         .filter(|p| p.extension().is_some_and(|x| x == "parquet"))
         .map(|p| (p.file_stem().unwrap().to_string_lossy().into_owned(), p))
@@ -315,10 +310,10 @@ fn a_stratified_sample_of_the_library_diagnoses_to_its_stored_defects() {
 }
 
 #[test]
-#[ignore = "431 reference atoms: hours; see the module doc for the per-set run command"]
+#[ignore = "368 reference atoms: hours; see the module doc for the per-set run command"]
 fn paw_diagnose_library() {
     match std::env::var("MANDACARU_DIAGNOSE_SET") {
         Ok(set) => sweep(&[set.as_str()]),
-        Err(_) => sweep(&["lda-sr", "pbe-sr", "lda-fr", "pbe-fr", "upaw"]),
+        Err(_) => sweep(&["lda-sr", "pbe-sr", "lda-fr", "pbe-fr"]),
     }
 }

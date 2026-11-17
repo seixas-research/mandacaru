@@ -35,9 +35,7 @@ fn mod_inverse(a: i64, m: i64) -> Option<i64> {
 
 /// Compute Smith Normal Form of a K x 3 integer matrix A: U * A * V = D.
 /// Returns (D_diag: [i64; 3], U: Vec<Vec<i64>>, V: Matrix3<i64>).
-pub fn smith_normal_form_3col(
-    a_in: &[[i64; 3]],
-) -> ([i64; 3], Vec<Vec<i64>>, Matrix3<i64>) {
+pub fn smith_normal_form_3col(a_in: &[[i64; 3]]) -> ([i64; 3], Vec<Vec<i64>>, Matrix3<i64>) {
     let k = a_in.len();
     if k == 0 {
         return ([0, 0, 0], Vec::new(), Matrix3::identity());
@@ -149,10 +147,7 @@ pub fn smith_normal_form_3col(
 }
 
 /// Compute invariant factors of the stacked integer matrix M_L * (I - W) for all rotations.
-pub fn invariant_factors_for_group(
-    rots: &[[[i8; 3]; 3]],
-    m_l: &[[i32; 3]; 3],
-) -> Vec<i64> {
+pub fn invariant_factors_for_group(rots: &[[[i8; 3]; 3]], m_l: &[[i32; 3]; 3]) -> Vec<i64> {
     let mut a_rows = Vec::with_capacity(rots.len() * 3);
     for r in rots {
         let i_minus_w = [
@@ -162,9 +157,15 @@ pub fn invariant_factors_for_group(
         ];
         for i in 0..3 {
             let row = [
-                (m_l[i][0] * i_minus_w[0][0] + m_l[i][1] * i_minus_w[1][0] + m_l[i][2] * i_minus_w[2][0]) as i64,
-                (m_l[i][0] * i_minus_w[0][1] + m_l[i][1] * i_minus_w[1][1] + m_l[i][2] * i_minus_w[2][1]) as i64,
-                (m_l[i][0] * i_minus_w[0][2] + m_l[i][1] * i_minus_w[1][2] + m_l[i][2] * i_minus_w[2][2]) as i64,
+                (m_l[i][0] * i_minus_w[0][0]
+                    + m_l[i][1] * i_minus_w[1][0]
+                    + m_l[i][2] * i_minus_w[2][0]) as i64,
+                (m_l[i][0] * i_minus_w[0][1]
+                    + m_l[i][1] * i_minus_w[1][1]
+                    + m_l[i][2] * i_minus_w[2][1]) as i64,
+                (m_l[i][0] * i_minus_w[0][2]
+                    + m_l[i][1] * i_minus_w[1][2]
+                    + m_l[i][2] * i_minus_w[2][2]) as i64,
             ];
             a_rows.push(row);
         }
@@ -193,9 +194,15 @@ fn verify_exact_shift(
 ) -> bool {
     for (w, t) in transformed_ops {
         let key = [
-            w[(0, 0)], w[(0, 1)], w[(0, 2)],
-            w[(1, 0)], w[(1, 1)], w[(1, 2)],
-            w[(2, 0)], w[(2, 1)], w[(2, 2)],
+            w[(0, 0)],
+            w[(0, 1)],
+            w[(0, 2)],
+            w[(1, 0)],
+            w[(1, 1)],
+            w[(1, 2)],
+            w[(2, 0)],
+            w[(2, 1)],
+            w[(2, 2)],
         ];
         let t_row = match row_ops.get(&key) {
             Some(tr) => tr,
@@ -203,9 +210,12 @@ fn verify_exact_shift(
         };
 
         let ws = [
-            (w[(0, 0)] * s[0] + w[(0, 1)] * s[1] + w[(0, 2)] * s[2] - s[0] + t[0] - t_row[0]).rem_euclid(24),
-            (w[(1, 0)] * s[0] + w[(1, 1)] * s[1] + w[(1, 2)] * s[2] - s[1] + t[1] - t_row[1]).rem_euclid(24),
-            (w[(2, 0)] * s[0] + w[(2, 1)] * s[1] + w[(2, 2)] * s[2] - s[2] + t[2] - t_row[2]).rem_euclid(24),
+            (w[(0, 0)] * s[0] + w[(0, 1)] * s[1] + w[(0, 2)] * s[2] - s[0] + t[0] - t_row[0])
+                .rem_euclid(24),
+            (w[(1, 0)] * s[0] + w[(1, 1)] * s[1] + w[(1, 2)] * s[2] - s[1] + t[1] - t_row[1])
+                .rem_euclid(24),
+            (w[(2, 0)] * s[0] + w[(2, 1)] * s[1] + w[(2, 2)] * s[2] - s[2] + t[2] - t_row[2])
+                .rem_euclid(24),
         ];
 
         let mut matched = false;
@@ -263,9 +273,15 @@ pub fn solve_origin_shift_exact(
         let mut b_vec = Vec::with_capacity(non_trivial.len() * 3);
         for (w, t) in &non_trivial {
             let key = [
-                w[(0, 0)], w[(0, 1)], w[(0, 2)],
-                w[(1, 0)], w[(1, 1)], w[(1, 2)],
-                w[(2, 0)], w[(2, 1)], w[(2, 2)],
+                w[(0, 0)],
+                w[(0, 1)],
+                w[(0, 2)],
+                w[(1, 0)],
+                w[(1, 1)],
+                w[(1, 2)],
+                w[(2, 0)],
+                w[(2, 1)],
+                w[(2, 2)],
             ];
             let t_row = match row_ops.get(&key) {
                 Some(tr) => tr,
@@ -335,9 +351,12 @@ pub fn solve_origin_shift_exact(
             for &y1 in &coord_candidates[1] {
                 for &y2 in &coord_candidates[2] {
                     let s = [
-                        (v_mat[(0, 0)] * y0 + v_mat[(0, 1)] * y1 + v_mat[(0, 2)] * y2).rem_euclid(24) as i32,
-                        (v_mat[(1, 0)] * y0 + v_mat[(1, 1)] * y1 + v_mat[(1, 2)] * y2).rem_euclid(24) as i32,
-                        (v_mat[(2, 0)] * y0 + v_mat[(2, 1)] * y1 + v_mat[(2, 2)] * y2).rem_euclid(24) as i32,
+                        (v_mat[(0, 0)] * y0 + v_mat[(0, 1)] * y1 + v_mat[(0, 2)] * y2)
+                            .rem_euclid(24) as i32,
+                        (v_mat[(1, 0)] * y0 + v_mat[(1, 1)] * y1 + v_mat[(1, 2)] * y2)
+                            .rem_euclid(24) as i32,
+                        (v_mat[(2, 0)] * y0 + v_mat[(2, 1)] * y1 + v_mat[(2, 2)] * y2)
+                            .rem_euclid(24) as i32,
                     ];
                     if verify_exact_shift(&s, transformed_ops, row_ops, c_trans) {
                         return Some(s);
@@ -368,9 +387,15 @@ pub fn solve_origin_shift_f64(
         // Verify identity
         for (w, t) in transformed_ops {
             let key = [
-                w[(0, 0)], w[(0, 1)], w[(0, 2)],
-                w[(1, 0)], w[(1, 1)], w[(1, 2)],
-                w[(2, 0)], w[(2, 1)], w[(2, 2)],
+                w[(0, 0)],
+                w[(0, 1)],
+                w[(0, 2)],
+                w[(1, 0)],
+                w[(1, 1)],
+                w[(1, 2)],
+                w[(2, 0)],
+                w[(2, 1)],
+                w[(2, 2)],
             ];
             let t_row = row_ops.get(&key)?;
             let t_row_f64 = [
@@ -425,9 +450,15 @@ pub fn solve_origin_shift_f64(
 
     for (w, t) in &non_trivial {
         let key = [
-            w[(0, 0)], w[(0, 1)], w[(0, 2)],
-            w[(1, 0)], w[(1, 1)], w[(1, 2)],
-            w[(2, 0)], w[(2, 1)], w[(2, 2)],
+            w[(0, 0)],
+            w[(0, 1)],
+            w[(0, 2)],
+            w[(1, 0)],
+            w[(1, 1)],
+            w[(1, 2)],
+            w[(2, 0)],
+            w[(2, 1)],
+            w[(2, 2)],
         ];
         let t_row = row_ops.get(&key)?;
         let t_row_f64 = [
@@ -450,12 +481,20 @@ pub fn solve_origin_shift_f64(
 
         for i in 0..3 {
             let row = [
-                (m_l[i][0] * i_minus_w[0][0] + m_l[i][1] * i_minus_w[1][0] + m_l[i][2] * i_minus_w[2][0]) as i64,
-                (m_l[i][0] * i_minus_w[0][1] + m_l[i][1] * i_minus_w[1][1] + m_l[i][2] * i_minus_w[2][1]) as i64,
-                (m_l[i][0] * i_minus_w[0][2] + m_l[i][1] * i_minus_w[1][2] + m_l[i][2] * i_minus_w[2][2]) as i64,
+                (m_l[i][0] * i_minus_w[0][0]
+                    + m_l[i][1] * i_minus_w[1][0]
+                    + m_l[i][2] * i_minus_w[2][0]) as i64,
+                (m_l[i][0] * i_minus_w[0][1]
+                    + m_l[i][1] * i_minus_w[1][1]
+                    + m_l[i][2] * i_minus_w[2][1]) as i64,
+                (m_l[i][0] * i_minus_w[0][2]
+                    + m_l[i][1] * i_minus_w[1][2]
+                    + m_l[i][2] * i_minus_w[2][2]) as i64,
             ];
             a_rows.push(row);
-            let b_val = (m_l[i][0] as f64) * dt[0] + (m_l[i][1] as f64) * dt[1] + (m_l[i][2] as f64) * dt[2];
+            let b_val = (m_l[i][0] as f64) * dt[0]
+                + (m_l[i][1] as f64) * dt[1]
+                + (m_l[i][2] as f64) * dt[2];
             b_vec.push(b_val);
         }
     }
@@ -465,7 +504,9 @@ pub fn solve_origin_shift_f64(
     let mut y_candidates: [Vec<f64>; 3] = [Vec::new(), Vec::new(), Vec::new()];
 
     for i in 0..3 {
-        let ub_i: f64 = (0..b_vec.len()).map(|j| (u_mat[i][j] as f64) * b_vec[j]).sum();
+        let ub_i: f64 = (0..b_vec.len())
+            .map(|j| (u_mat[i][j] as f64) * b_vec[j])
+            .sum();
         let d = diag[i];
         if d == 0 {
             y_candidates[i] = vec![0.0];
@@ -480,18 +521,33 @@ pub fn solve_origin_shift_f64(
         for &y1 in &y_candidates[1] {
             for &y2 in &y_candidates[2] {
                 let s_f64 = [
-                    (v_mat[(0, 0)] as f64 * y0 + v_mat[(0, 1)] as f64 * y1 + v_mat[(0, 2)] as f64 * y2).rem_euclid(1.0),
-                    (v_mat[(1, 0)] as f64 * y0 + v_mat[(1, 1)] as f64 * y1 + v_mat[(1, 2)] as f64 * y2).rem_euclid(1.0),
-                    (v_mat[(2, 0)] as f64 * y0 + v_mat[(2, 1)] as f64 * y1 + v_mat[(2, 2)] as f64 * y2).rem_euclid(1.0),
+                    (v_mat[(0, 0)] as f64 * y0
+                        + v_mat[(0, 1)] as f64 * y1
+                        + v_mat[(0, 2)] as f64 * y2)
+                        .rem_euclid(1.0),
+                    (v_mat[(1, 0)] as f64 * y0
+                        + v_mat[(1, 1)] as f64 * y1
+                        + v_mat[(1, 2)] as f64 * y2)
+                        .rem_euclid(1.0),
+                    (v_mat[(2, 0)] as f64 * y0
+                        + v_mat[(2, 1)] as f64 * y1
+                        + v_mat[(2, 2)] as f64 * y2)
+                        .rem_euclid(1.0),
                 ];
 
                 // Verify s_f64 on all transformed_ops
                 let mut all_match = true;
                 for (w, t) in transformed_ops {
                     let key = [
-                        w[(0, 0)], w[(0, 1)], w[(0, 2)],
-                        w[(1, 0)], w[(1, 1)], w[(1, 2)],
-                        w[(2, 0)], w[(2, 1)], w[(2, 2)],
+                        w[(0, 0)],
+                        w[(0, 1)],
+                        w[(0, 2)],
+                        w[(1, 0)],
+                        w[(1, 1)],
+                        w[(1, 2)],
+                        w[(2, 0)],
+                        w[(2, 1)],
+                        w[(2, 2)],
                     ];
                     let t_row = match row_ops.get(&key) {
                         Some(tr) => tr,
@@ -507,18 +563,32 @@ pub fn solve_origin_shift_f64(
                     ];
 
                     let ws = [
-                        (w[(0, 0)] as f64 * s_f64[0] + w[(0, 1)] as f64 * s_f64[1] + w[(0, 2)] as f64 * s_f64[2] - s_f64[0] + t[0] - t_row_f64[0]).rem_euclid(1.0),
-                        (w[(1, 0)] as f64 * s_f64[0] + w[(1, 1)] as f64 * s_f64[1] + w[(1, 2)] as f64 * s_f64[2] - s_f64[1] + t[1] - t_row_f64[1]).rem_euclid(1.0),
-                        (w[(2, 0)] as f64 * s_f64[0] + w[(2, 1)] as f64 * s_f64[1] + w[(2, 2)] as f64 * s_f64[2] - s_f64[2] + t[2] - t_row_f64[2]).rem_euclid(1.0),
+                        (w[(0, 0)] as f64 * s_f64[0]
+                            + w[(0, 1)] as f64 * s_f64[1]
+                            + w[(0, 2)] as f64 * s_f64[2]
+                            - s_f64[0]
+                            + t[0]
+                            - t_row_f64[0])
+                            .rem_euclid(1.0),
+                        (w[(1, 0)] as f64 * s_f64[0]
+                            + w[(1, 1)] as f64 * s_f64[1]
+                            + w[(1, 2)] as f64 * s_f64[2]
+                            - s_f64[1]
+                            + t[1]
+                            - t_row_f64[1])
+                            .rem_euclid(1.0),
+                        (w[(2, 0)] as f64 * s_f64[0]
+                            + w[(2, 1)] as f64 * s_f64[1]
+                            + w[(2, 2)] as f64 * s_f64[2]
+                            - s_f64[2]
+                            + t[2]
+                            - t_row_f64[2])
+                            .rem_euclid(1.0),
                     ];
 
                     let mut matched = false;
                     for c in c_trans {
-                        let c_f64 = [
-                            c[0] as f64 / 24.0,
-                            c[1] as f64 / 24.0,
-                            c[2] as f64 / 24.0,
-                        ];
+                        let c_f64 = [c[0] as f64 / 24.0, c[1] as f64 / 24.0, c[2] as f64 / 24.0];
                         let d0 = (ws[0] - c_f64[0]).rem_euclid(1.0);
                         let diff0 = if d0 > 0.5 { 1.0 - d0 } else { d0 };
                         let d1 = (ws[1] - c_f64[1]).rem_euclid(1.0);

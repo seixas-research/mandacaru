@@ -2,10 +2,10 @@ use mandacaru_core::{
     math::random::Rng,
     quantum::{
         search::{
-            driver::Options,
             kernel::{self, Action, Kernel, Move},
+            vasqa::SearchOptions,
         },
-        CachedProblem, Encoding, Operator, C64,
+        Encoding, Operator, QuantumProblem, C64,
     },
     Context,
 };
@@ -38,7 +38,11 @@ fn proposal_mass_and_metropolis_balance_include_every_duplicate_edit() {
     let kernel = Kernel::new(3, 3, [1.; 3]).unwrap();
     // Importances as a function of the state (position and operator), as the driver's are.
     let removal = |state: &[usize]| {
-        let importances: Vec<f64> = state.iter().enumerate().map(|(i, &op)| 1. / (1. + i as f64) + 0.1 * op as f64).collect();
+        let importances: Vec<f64> = state
+            .iter()
+            .enumerate()
+            .map(|(i, &op)| 1. / (1. + i as f64) + 0.1 * op as f64)
+            .collect();
         kernel::removal(&importances, 0.4).unwrap()
     };
     let states = architectures(3, 3);
@@ -48,17 +52,27 @@ fn proposal_mass_and_metropolis_balance_include_every_duplicate_edit() {
         |state: &[usize]| 0.1 * state.len() as f64 + 0.03 * state.iter().sum::<usize>() as f64;
     for source in &states {
         let p = probabilities(source);
-        let actions = kernel.actions(&context, source, &p, &removal(source)).unwrap();
+        let actions = kernel
+            .actions(&context, source, &p, &removal(source))
+            .unwrap();
         assert!((actions.items.iter().map(|(_, p)| p).sum::<f64>() - 1.).abs() < 1e-12);
         let mut exhaustive = BTreeMap::<Vec<usize>, f64>::new();
         for &(action, probability) in &actions.items {
             *exhaustive.entry(action.apply(source)).or_default() += probability;
         }
         for target in &states {
-            let forward = kernel.log_q(&context, target, source, &p, &removal(source)).unwrap();
+            let forward = kernel
+                .log_q(&context, target, source, &p, &removal(source))
+                .unwrap();
             assert!((forward.exp() - exhaustive.get(target).copied().unwrap_or(0.)).abs() < 1e-13);
             let reverse = kernel
-                .log_q(&context, source, target, &probabilities(target), &removal(target))
+                .log_q(
+                    &context,
+                    source,
+                    target,
+                    &probabilities(target),
+                    &removal(target),
+                )
                 .unwrap();
             if forward.is_finite() && reverse.is_finite() {
                 let temperature = 0.2;
@@ -126,7 +140,7 @@ fn native_search_reaches_the_independent_ground_state_and_screening_preserves_ch
             ],
         )
         .unwrap();
-        let problem = CachedProblem::new(
+        let problem = QuantumProblem::new(
             &context,
             Encoding::new("jordan_wigner", 4, [1, 0]).unwrap(),
             operator,
@@ -135,7 +149,7 @@ fn native_search_reaches_the_independent_ground_state_and_screening_preserves_ch
             true,
         )
         .unwrap();
-        let mut options = Options {
+        let mut options = SearchOptions {
             max_steps: 40,
             max_length: 4,
             warm_start: false,
@@ -221,15 +235,29 @@ fn native_search_reaches_the_independent_ground_state_and_screening_preserves_ch
         // optimum.)
         let seed_sequence = json!(first.solution.indices);
         let mut compared = 0;
-        for carried_row in carried.records.iter().filter(|r| r["source"] == seed_sequence) {
-            for cold_row in recorded.records.iter().filter(|r| r["source"] == seed_sequence) {
+        for carried_row in carried
+            .records
+            .iter()
+            .filter(|r| r["source"] == seed_sequence)
+        {
+            for cold_row in recorded
+                .records
+                .iter()
+                .filter(|r| r["source"] == seed_sequence)
+            {
                 assert_eq!(carried_row["source_cost"], cold_row["source_cost"]);
                 assert_eq!(carried_row["source_removal"], cold_row["source_removal"]);
-                assert_eq!(carried_row["source_importances"], cold_row["source_importances"]);
+                assert_eq!(
+                    carried_row["source_importances"],
+                    cold_row["source_importances"]
+                );
                 compared += 1;
             }
         }
-        assert!(compared > 0, "the seed sequence is not a source in both chains");
+        assert!(
+            compared > 0,
+            "the seed sequence is not a source in both chains"
+        );
         options.length_penalty = 1.;
         let refused = problem
             .search(
@@ -250,15 +278,26 @@ fn a_less_important_operator_is_more_likely_to_be_removed_or_replaced() {
     let kernel = Kernel::new(3, 4, [1.; 3]).unwrap();
     // Operator 0 was included with the largest gradient, the last one with the smallest.
     let removal = kernel::removal(&[0.9, 0.4, 0.05], 0.5).unwrap();
-    assert!(removal[0] < removal[1] && removal[1] < removal[2], "{removal:?}");
+    assert!(
+        removal[0] < removal[1] && removal[1] < removal[2],
+        "{removal:?}"
+    );
     let source = [0, 1, 2];
     let p = [0.2, 0.3, 0.5];
     let actions = kernel.actions(&context, &source, &p, &removal).unwrap();
     let mass = |kind: Move, position: usize| -> f64 {
-        actions.items.iter().filter(|(a, _)| a.kind == kind && a.position == position).map(|(_, q)| q).sum()
+        actions
+            .items
+            .iter()
+            .filter(|(a, _)| a.kind == kind && a.position == position)
+            .map(|(_, q)| q)
+            .sum()
     };
     for kind in [Move::Delete, Move::Replace] {
-        assert!(mass(kind, 0) < mass(kind, 1) && mass(kind, 1) < mass(kind, 2), "{kind:?}");
+        assert!(
+            mass(kind, 0) < mass(kind, 1) && mass(kind, 1) < mass(kind, 2),
+            "{kind:?}"
+        );
         // Each position's share of the move is its removal weight.
         let total: f64 = (0..3).map(|i| mass(kind, i)).sum();
         for i in 0..3 {
@@ -268,46 +307,49 @@ fn a_less_important_operator_is_more_likely_to_be_removed_or_replaced() {
     // Equal importances are a uniform choice, and there is no swap move.
     assert_eq!(kernel::removal(&[0.3, 0.3], 0.5).unwrap(), vec![0.5, 0.5]);
     assert_eq!(kernel::removal(&[0., 0.], 0.5).unwrap(), vec![0.5, 0.5]);
-    assert!(actions.items.iter().all(|(a, _)| a.kind != Move::Replace || a.operator != source[a.position]));
+    assert!(actions
+        .items
+        .iter()
+        .all(|(a, _)| a.kind != Move::Replace || a.operator != source[a.position]));
 }
 
 #[test]
 fn replica_options_are_validated() {
-    let base = Options::default();
-    assert!(Options {
+    let base = SearchOptions::default();
+    assert!(SearchOptions {
         replicas: 0,
         ..base.clone()
     }
     .validate()
     .is_err());
-    assert!(Options {
+    assert!(SearchOptions {
         replicas: 2,
         replica_spacing: 0.5,
         ..base.clone()
     }
     .validate()
     .is_err());
-    assert!(Options {
+    assert!(SearchOptions {
         replicas: 2,
         replica_spacing: f64::INFINITY,
         ..base.clone()
     }
     .validate()
     .is_err());
-    assert!(Options {
+    assert!(SearchOptions {
         replicas: 2,
         temperatures: [0.; 2],
         ..base.clone()
     }
     .validate()
     .is_err());
-    assert!(Options {
+    assert!(SearchOptions {
         replicas: 2,
         ..base.clone()
     }
     .validate()
     .is_ok());
-    assert!(Options {
+    assert!(SearchOptions {
         replicas: 1,
         temperatures: [0.; 2],
         ..base

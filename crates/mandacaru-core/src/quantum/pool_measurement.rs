@@ -7,7 +7,7 @@
 //! commutator. Neither needs more than one batch of commutators alive, so the pool is walked
 //! twice, forming each commutator again instead of keeping it: memory is the distinct strings
 //! (16 bytes each) plus one batch, whatever the pool's size.
-use super::{algebra::Term, CachedProblem, Operator, C64};
+use super::{algebra::Term, Operator, QuantumProblem, C64};
 use crate::{Context, Reservation, Result};
 use std::ops::ControlFlow;
 
@@ -115,7 +115,7 @@ pub enum PoolWalk {
     Over { distinct: usize, generators: usize },
 }
 
-impl CachedProblem {
+impl QuantumProblem {
     /// Form each `[H, A_k]` in pool order and hand them to `visit` in batches whose accounted
     /// size is about `bound` bytes (a batch holds at least one commutator). A batch is dropped
     /// before the next is formed.
@@ -130,7 +130,7 @@ impl CachedProblem {
         })
         .map(|_| ())
     }
-    /// [`CachedProblem::for_each_pool_commutator_batch`] with an exit: `visit` answering
+    /// [`QuantumProblem::for_each_pool_commutator_batch`] with an exit: `visit` answering
     /// `Break` ends the walk before the next batch is formed. Returns whether it ended early.
     fn walk_pool_commutator_batches(
         &self,
@@ -165,7 +165,7 @@ impl CachedProblem {
             PoolWalk::Over { .. } => unreachable!("no ceiling was given"),
         }
     }
-    /// [`CachedProblem::pool_paulis`] under a ceiling on the distinct strings: the walk stops
+    /// [`QuantumProblem::pool_paulis`] under a ceiling on the distinct strings: the walk stops
     /// after the first batch that carries the count over `limit`, so a pool too large for the
     /// budget is refused after one batch of commutators, not after all of them. The set never
     /// holds more than the ceiling plus one batch.

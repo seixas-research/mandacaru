@@ -18,8 +18,12 @@ pub struct Identity {
 /// The 24 proper signed permutations of standard axes (det = +1).
 pub fn proper_signed_permutations() -> Vec<Matrix3<i32>> {
     let perms = [
-        [0, 1, 2], [1, 2, 0], [2, 0, 1],
-        [0, 2, 1], [2, 1, 0], [1, 0, 2],
+        [0, 1, 2],
+        [1, 2, 0],
+        [2, 0, 1],
+        [0, 2, 1],
+        [2, 1, 0],
+        [1, 0, 2],
     ];
     let signs = [-1, 1];
     let mut out = Vec::with_capacity(24);
@@ -148,9 +152,12 @@ pub fn match_standard_frame(
             let mut cents_match = true;
             for cv in &frame.centering_vectors {
                 let mapped = [
-                    (c_mat[(0, 0)] * cv[0] + c_mat[(0, 1)] * cv[1] + c_mat[(0, 2)] * cv[2]).rem_euclid(24),
-                    (c_mat[(1, 0)] * cv[0] + c_mat[(1, 1)] * cv[1] + c_mat[(1, 2)] * cv[2]).rem_euclid(24),
-                    (c_mat[(2, 0)] * cv[0] + c_mat[(2, 1)] * cv[1] + c_mat[(2, 2)] * cv[2]).rem_euclid(24),
+                    (c_mat[(0, 0)] * cv[0] + c_mat[(0, 1)] * cv[1] + c_mat[(0, 2)] * cv[2])
+                        .rem_euclid(24),
+                    (c_mat[(1, 0)] * cv[0] + c_mat[(1, 1)] * cv[1] + c_mat[(1, 2)] * cv[2])
+                        .rem_euclid(24),
+                    (c_mat[(2, 0)] * cv[0] + c_mat[(2, 1)] * cv[1] + c_mat[(2, 2)] * cv[2])
+                        .rem_euclid(24),
                 ];
                 if !c_trans.contains(&mapped) {
                     cents_match = false;
@@ -168,14 +175,29 @@ pub fn match_standard_frame(
             for (w, t) in &frame.conv_operations_f64 {
                 let w_prime = c_mat * w * c_inv;
                 let t_prime = [
-                    (c_mat[(0, 0)] as f64 * t[0] + c_mat[(0, 1)] as f64 * t[1] + c_mat[(0, 2)] as f64 * t[2]).rem_euclid(1.0),
-                    (c_mat[(1, 0)] as f64 * t[0] + c_mat[(1, 1)] as f64 * t[1] + c_mat[(1, 2)] as f64 * t[2]).rem_euclid(1.0),
-                    (c_mat[(2, 0)] as f64 * t[0] + c_mat[(2, 1)] as f64 * t[1] + c_mat[(2, 2)] as f64 * t[2]).rem_euclid(1.0),
+                    (c_mat[(0, 0)] as f64 * t[0]
+                        + c_mat[(0, 1)] as f64 * t[1]
+                        + c_mat[(0, 2)] as f64 * t[2])
+                        .rem_euclid(1.0),
+                    (c_mat[(1, 0)] as f64 * t[0]
+                        + c_mat[(1, 1)] as f64 * t[1]
+                        + c_mat[(1, 2)] as f64 * t[2])
+                        .rem_euclid(1.0),
+                    (c_mat[(2, 0)] as f64 * t[0]
+                        + c_mat[(2, 1)] as f64 * t[1]
+                        + c_mat[(2, 2)] as f64 * t[2])
+                        .rem_euclid(1.0),
                 ];
                 let key = [
-                    w_prime[(0, 0)], w_prime[(0, 1)], w_prime[(0, 2)],
-                    w_prime[(1, 0)], w_prime[(1, 1)], w_prime[(1, 2)],
-                    w_prime[(2, 0)], w_prime[(2, 1)], w_prime[(2, 2)],
+                    w_prime[(0, 0)],
+                    w_prime[(0, 1)],
+                    w_prime[(0, 2)],
+                    w_prime[(1, 0)],
+                    w_prime[(1, 1)],
+                    w_prime[(1, 2)],
+                    w_prime[(2, 0)],
+                    w_prime[(2, 1)],
+                    w_prime[(2, 2)],
                 ];
                 if !row_map.contains_key(&key) {
                     rot_match = false;
@@ -203,14 +225,18 @@ pub fn match_standard_frame(
     }
 
     if matches.is_empty() {
-        return Err(crate::periodic::invalid("space-group identification failed: no catalog match"));
+        return Err(crate::periodic::invalid(
+            "space-group identification failed: no catalog match",
+        ));
     }
 
     let first = matches[0];
     if matches.iter().all(|m| m.number == first.number) {
         Ok(first)
     } else {
-        Err(crate::periodic::invalid("space-group identification failed: multiple catalog matches"))
+        Err(crate::periodic::invalid(
+            "space-group identification failed: multiple catalog matches",
+        ))
     }
 }
 
@@ -226,7 +252,10 @@ pub fn match_space_group(
     let c_frame = centering_vectors(centering);
 
     for row in iter_groups() {
-        if row.crystal_system != system || row.point_group != point_group || row.centering != centering {
+        if row.crystal_system != system
+            || row.point_group != point_group
+            || row.centering != centering
+        {
             continue;
         }
 
@@ -247,9 +276,12 @@ pub fn match_space_group(
             let mut cents_match = true;
             for cv in c_frame {
                 let mapped = [
-                    (c_mat[(0, 0)] * cv[0] + c_mat[(0, 1)] * cv[1] + c_mat[(0, 2)] * cv[2]).rem_euclid(24),
-                    (c_mat[(1, 0)] * cv[0] + c_mat[(1, 1)] * cv[1] + c_mat[(1, 2)] * cv[2]).rem_euclid(24),
-                    (c_mat[(2, 0)] * cv[0] + c_mat[(2, 1)] * cv[1] + c_mat[(2, 2)] * cv[2]).rem_euclid(24),
+                    (c_mat[(0, 0)] * cv[0] + c_mat[(0, 1)] * cv[1] + c_mat[(0, 2)] * cv[2])
+                        .rem_euclid(24),
+                    (c_mat[(1, 0)] * cv[0] + c_mat[(1, 1)] * cv[1] + c_mat[(1, 2)] * cv[2])
+                        .rem_euclid(24),
+                    (c_mat[(2, 0)] * cv[0] + c_mat[(2, 1)] * cv[1] + c_mat[(2, 2)] * cv[2])
+                        .rem_euclid(24),
                 ];
                 if !c_trans.contains(&mapped) {
                     cents_match = false;
@@ -266,14 +298,23 @@ pub fn match_space_group(
             for (w, t) in conv_ops {
                 let w_prime = c_mat * w * c_inv;
                 let t_prime = [
-                    (c_mat[(0, 0)] * t[0] + c_mat[(0, 1)] * t[1] + c_mat[(0, 2)] * t[2]).rem_euclid(24),
-                    (c_mat[(1, 0)] * t[0] + c_mat[(1, 1)] * t[1] + c_mat[(1, 2)] * t[2]).rem_euclid(24),
-                    (c_mat[(2, 0)] * t[0] + c_mat[(2, 1)] * t[1] + c_mat[(2, 2)] * t[2]).rem_euclid(24),
+                    (c_mat[(0, 0)] * t[0] + c_mat[(0, 1)] * t[1] + c_mat[(0, 2)] * t[2])
+                        .rem_euclid(24),
+                    (c_mat[(1, 0)] * t[0] + c_mat[(1, 1)] * t[1] + c_mat[(1, 2)] * t[2])
+                        .rem_euclid(24),
+                    (c_mat[(2, 0)] * t[0] + c_mat[(2, 1)] * t[1] + c_mat[(2, 2)] * t[2])
+                        .rem_euclid(24),
                 ];
                 let key = [
-                    w_prime[(0, 0)], w_prime[(0, 1)], w_prime[(0, 2)],
-                    w_prime[(1, 0)], w_prime[(1, 1)], w_prime[(1, 2)],
-                    w_prime[(2, 0)], w_prime[(2, 1)], w_prime[(2, 2)],
+                    w_prime[(0, 0)],
+                    w_prime[(0, 1)],
+                    w_prime[(0, 2)],
+                    w_prime[(1, 0)],
+                    w_prime[(1, 1)],
+                    w_prime[(1, 2)],
+                    w_prime[(2, 0)],
+                    w_prime[(2, 1)],
+                    w_prime[(2, 2)],
                 ];
                 if !row_map.contains_key(&key) {
                     rot_match = false;
@@ -301,14 +342,18 @@ pub fn match_space_group(
     }
 
     if matches.is_empty() {
-        return Err(crate::periodic::invalid("space-group identification failed: no catalog match"));
+        return Err(crate::periodic::invalid(
+            "space-group identification failed: no catalog match",
+        ));
     }
 
     let first = matches[0];
     if matches.iter().all(|m| m.number == first.number) {
         Ok(first)
     } else {
-        Err(crate::periodic::invalid("space-group identification failed: multiple catalog matches"))
+        Err(crate::periodic::invalid(
+            "space-group identification failed: multiple catalog matches",
+        ))
     }
 }
 
@@ -344,9 +389,15 @@ pub fn are_groups_affine_equivalent(
     let mut b_map: HashMap<[i32; 9], [i32; 3]> = HashMap::new();
     for (r, t) in ops2 {
         let key = [
-            r[0][0] as i32, r[0][1] as i32, r[0][2] as i32,
-            r[1][0] as i32, r[1][1] as i32, r[1][2] as i32,
-            r[2][0] as i32, r[2][1] as i32, r[2][2] as i32,
+            r[0][0] as i32,
+            r[0][1] as i32,
+            r[0][2] as i32,
+            r[1][0] as i32,
+            r[1][1] as i32,
+            r[1][2] as i32,
+            r[2][0] as i32,
+            r[2][1] as i32,
+            r[2][2] as i32,
         ];
         b_map.insert(key, [t[0] as i32, t[1] as i32, t[2] as i32]);
     }
@@ -364,9 +415,12 @@ pub fn are_groups_affine_equivalent(
         let mut cents_match = true;
         for cv in a_cents {
             let mapped = [
-                (c_mat[(0, 0)] * cv[0] + c_mat[(0, 1)] * cv[1] + c_mat[(0, 2)] * cv[2]).rem_euclid(24),
-                (c_mat[(1, 0)] * cv[0] + c_mat[(1, 1)] * cv[1] + c_mat[(1, 2)] * cv[2]).rem_euclid(24),
-                (c_mat[(2, 0)] * cv[0] + c_mat[(2, 1)] * cv[1] + c_mat[(2, 2)] * cv[2]).rem_euclid(24),
+                (c_mat[(0, 0)] * cv[0] + c_mat[(0, 1)] * cv[1] + c_mat[(0, 2)] * cv[2])
+                    .rem_euclid(24),
+                (c_mat[(1, 0)] * cv[0] + c_mat[(1, 1)] * cv[1] + c_mat[(1, 2)] * cv[2])
+                    .rem_euclid(24),
+                (c_mat[(2, 0)] * cv[0] + c_mat[(2, 1)] * cv[1] + c_mat[(2, 2)] * cv[2])
+                    .rem_euclid(24),
             ];
             if !b_cents.contains(&mapped) {
                 cents_match = false;
@@ -382,20 +436,41 @@ pub fn are_groups_affine_equivalent(
 
         for (r, t) in ops1 {
             let w = Matrix3::new(
-                r[0][0] as i32, r[0][1] as i32, r[0][2] as i32,
-                r[1][0] as i32, r[1][1] as i32, r[1][2] as i32,
-                r[2][0] as i32, r[2][1] as i32, r[2][2] as i32,
+                r[0][0] as i32,
+                r[0][1] as i32,
+                r[0][2] as i32,
+                r[1][0] as i32,
+                r[1][1] as i32,
+                r[1][2] as i32,
+                r[2][0] as i32,
+                r[2][1] as i32,
+                r[2][2] as i32,
             );
             let w_prime = c_mat * w * c_inv;
             let t_prime = [
-                (c_mat[(0, 0)] * t[0] as i32 + c_mat[(0, 1)] * t[1] as i32 + c_mat[(0, 2)] * t[2] as i32).rem_euclid(24),
-                (c_mat[(1, 0)] * t[0] as i32 + c_mat[(1, 1)] * t[1] as i32 + c_mat[(1, 2)] * t[2] as i32).rem_euclid(24),
-                (c_mat[(2, 0)] * t[0] as i32 + c_mat[(2, 1)] * t[1] as i32 + c_mat[(2, 2)] * t[2] as i32).rem_euclid(24),
+                (c_mat[(0, 0)] * t[0] as i32
+                    + c_mat[(0, 1)] * t[1] as i32
+                    + c_mat[(0, 2)] * t[2] as i32)
+                    .rem_euclid(24),
+                (c_mat[(1, 0)] * t[0] as i32
+                    + c_mat[(1, 1)] * t[1] as i32
+                    + c_mat[(1, 2)] * t[2] as i32)
+                    .rem_euclid(24),
+                (c_mat[(2, 0)] * t[0] as i32
+                    + c_mat[(2, 1)] * t[1] as i32
+                    + c_mat[(2, 2)] * t[2] as i32)
+                    .rem_euclid(24),
             ];
             let key = [
-                w_prime[(0, 0)], w_prime[(0, 1)], w_prime[(0, 2)],
-                w_prime[(1, 0)], w_prime[(1, 1)], w_prime[(1, 2)],
-                w_prime[(2, 0)], w_prime[(2, 1)], w_prime[(2, 2)],
+                w_prime[(0, 0)],
+                w_prime[(0, 1)],
+                w_prime[(0, 2)],
+                w_prime[(1, 0)],
+                w_prime[(1, 1)],
+                w_prime[(1, 2)],
+                w_prime[(2, 0)],
+                w_prime[(2, 1)],
+                w_prime[(2, 2)],
             ];
             if !b_map.contains_key(&key) {
                 rot_match = false;

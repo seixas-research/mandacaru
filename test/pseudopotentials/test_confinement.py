@@ -17,6 +17,11 @@ polarization shells and the confining potential and quasi-Gaussian on fixed
 grids.  Quantities at a fixed wall agree to 1e-9 (measured: 5e-11); the ones
 that sit behind the root search of the radius (an ``xtol`` of 1e-4 Bohr) are
 compared at 1e-8.
+
+Since 2026-11-16 the keys that read the shipped library are self-pins of the production
+routine on the regenerated library (file format 3): the ``library_refreeze`` entry of the
+JSON beside the reference lists the keys, the library digests and the extension; the other
+keys keep their Python-era values.
 """
 
 import json

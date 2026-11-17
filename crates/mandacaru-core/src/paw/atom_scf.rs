@@ -124,7 +124,11 @@ pub fn levels(ctx: &Context, ds: &PawDataset, how: &Controls) -> Result<Levels> 
     let setup = crate::periodic::setup::create_setup(ctx, input, vec![shared(ctx, ds)?])?;
     let crystal = setup.build(ctx)?;
     let only = [how.only_width.unwrap_or(0.)];
-    let ladder: &[f64] = if how.only_width.is_some() { &only } else { how.widths };
+    let ladder: &[f64] = if how.only_width.is_some() {
+        &only
+    } else {
+        how.widths
+    };
     for &width in ladder {
         for &mixing in how.mixings {
             let options = Options {
@@ -146,7 +150,9 @@ pub fn levels(ctx: &Context, ds: &PawDataset, how: &Controls) -> Result<Levels> 
                 .occupations
                 .first()
                 .filter(|o| o.len() == energies.len())
-                .ok_or_else(|| invalid("the isolated atom's occupations do not match its levels"))?;
+                .ok_or_else(|| {
+                    invalid("the isolated atom's occupations do not match its levels")
+                })?;
             let mut levels: Vec<Level> = energies
                 .iter()
                 .zip(occupations)
@@ -184,8 +190,8 @@ pub fn clusters(levels: &[Level], tolerance: f64) -> Vec<Cluster> {
     for level in levels {
         match out.last_mut() {
             Some(c) if (level.energy - c.energy).abs() < tolerance => {
-                c.occupation = (c.occupation * c.count as f64 + level.occupation)
-                    / (c.count + 1) as f64;
+                c.occupation =
+                    (c.occupation * c.count as f64 + level.occupation) / (c.count + 1) as f64;
                 c.count += 1;
             }
             _ => out.push(Cluster {

@@ -35,7 +35,13 @@ fn offsets(orbital: &Orbital<'_>, points: [&[f64]; 3]) -> Result<Vec<[f64; 3]>> 
     }
     let c = orbital.center;
     Ok((0..n)
-        .map(|i| [points[0][i] - c[0], points[1][i] - c[1], points[2][i] - c[2]])
+        .map(|i| {
+            [
+                points[0][i] - c[0],
+                points[1][i] - c[1],
+                points[2][i] - c[2],
+            ]
+        })
         .collect())
 }
 
@@ -54,13 +60,17 @@ pub fn values(
     let (l, m) = (orbital.l, orbital.m);
     Ok(if orbital.real {
         Sampled::Real(
-            polar.iter().zip(&radial)
+            polar
+                .iter()
+                .zip(&radial)
                 .map(|(&(_, theta, phi), &r)| r * harmonic(l, m, theta, phi, true).0)
                 .collect(),
         )
     } else {
         Sampled::Complex(
-            polar.iter().zip(&radial)
+            polar
+                .iter()
+                .zip(&radial)
                 .map(|(&(_, theta, phi), &r)| {
                     let y = harmonic(l, m, theta, phi, false).1;
                     Complex64::new(r * y.re, r * y.im)
@@ -91,13 +101,14 @@ pub fn gradient(
     let (l, m, n) = (orbital.l, orbital.m, offsets.len());
     let radial = table::evaluate(ctx, orbital.r, orbital.values, l, &radii, false)?;
     let slope = table::evaluate(ctx, orbital.r, orbital.values, l, &radii, true)?;
-    let terms = offsets.iter().map(|p| harmonic_gradient(l, m, p[0], p[1], p[2], orbital.real));
+    let terms = offsets
+        .iter()
+        .map(|p| harmonic_gradient(l, m, p[0], p[1], p[2], orbital.real));
     Ok(if orbital.real {
         let mut out = vec![0.; 3 * n];
         for (i, (p, (value, g, _, _))) in offsets.iter().zip(terms).enumerate() {
             for axis in 0..3 {
-                out[axis * n + i] =
-                    slope[i] * p[axis] / radii[i] * value + radial[i] * g[axis];
+                out[axis * n + i] = slope[i] * p[axis] / radii[i] * value + radial[i] * g[axis];
             }
         }
         Sampled::Real(out)

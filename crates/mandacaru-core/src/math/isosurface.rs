@@ -17,7 +17,14 @@ fn invalid(message: &str) -> Error {
 
 /// The Kuhn decomposition of a cube: corner `c` of a cell is node `(c >> 2, (c >> 1) & 1, c & 1)`
 /// relative to the cell's first node, and every tetrahedron runs along the diagonal 0 -> 7.
-const KUHN: [[usize; 4]; 6] = [[0, 4, 6, 7], [0, 4, 5, 7], [0, 2, 6, 7], [0, 2, 3, 7], [0, 1, 5, 7], [0, 1, 3, 7]];
+const KUHN: [[usize; 4]; 6] = [
+    [0, 4, 6, 7],
+    [0, 4, 5, 7],
+    [0, 2, 6, 7],
+    [0, 2, 3, 7],
+    [0, 1, 5, 7],
+    [0, 1, 3, 7],
+];
 
 /// One triangle: three vertices of three Cartesian coordinates.
 pub type Triangle = [[f64; 3]; 3];
@@ -37,22 +44,35 @@ pub fn marching_tetrahedra(
     let [nx, ny, nz] = shape;
     let n = crate::product(&shape)?;
     if values.len() != n || coordinates.iter().any(|c| c.len() != n) {
-        return Err(invalid("an isosurface needs one value and three coordinates per node"));
+        return Err(invalid(
+            "an isosurface needs one value and three coordinates per node",
+        ));
     }
-    if !level.is_finite() || values.iter().chain(coordinates.iter().copied().flatten()).any(|v| !v.is_finite()) {
-        return Err(invalid("an isosurface needs a finite field, coordinates and level"));
+    if !level.is_finite()
+        || values
+            .iter()
+            .chain(coordinates.iter().copied().flatten())
+            .any(|v| !v.is_finite())
+    {
+        return Err(invalid(
+            "an isosurface needs a finite field, coordinates and level",
+        ));
     }
     if nx.min(ny).min(nz) < 2 {
         return Ok(Vec::new());
     }
-    let offsets: [usize; 8] = std::array::from_fn(|c| (c >> 2) * ny * nz + ((c >> 1) & 1) * nz + (c & 1));
+    let offsets: [usize; 8] =
+        std::array::from_fn(|c| (c >> 2) * ny * nz + ((c >> 1) & 1) * nz + (c & 1));
     // Each kept tetrahedron with its corners sorted above-first (stably) and its count above.
     let mut kept: Vec<([usize; 4], usize)> = Vec::new();
     for i in 0..nx - 1 {
         for j in 0..ny - 1 {
             for k in 0..nz - 1 {
                 let base = i * ny * nz + j * nz + k;
-                let above = offsets.iter().filter(|&&o| values[base + o] > level).count();
+                let above = offsets
+                    .iter()
+                    .filter(|&&o| values[base + o] > level)
+                    .count();
                 if above == 0 || above == 8 {
                     continue;
                 }
@@ -94,7 +114,14 @@ pub fn marching_tetrahedra(
     let quads: Vec<[[f64; 3]; 4]> = kept
         .iter()
         .filter(|(_, c)| *c == 2)
-        .map(|(nodes, _)| [edge(nodes, 0, 2), edge(nodes, 0, 3), edge(nodes, 1, 3), edge(nodes, 1, 2)])
+        .map(|(nodes, _)| {
+            [
+                edge(nodes, 0, 2),
+                edge(nodes, 0, 3),
+                edge(nodes, 1, 3),
+                edge(nodes, 1, 2),
+            ]
+        })
         .collect();
     out.extend(quads.iter().map(|q| [q[0], q[1], q[2]]));
     out.extend(quads.iter().map(|q| [q[0], q[2], q[3]]));
@@ -106,16 +133,22 @@ pub fn marching_tetrahedra(
 /// `fraction`.
 pub fn enclosing_level(weights: &[f64], fraction: f64) -> Result<f64> {
     if !(fraction > 0. && fraction < 1.) {
-        return Err(invalid(&format!("enclosed must lie strictly between 0 and 1, got {fraction}")));
+        return Err(invalid(&format!(
+            "enclosed must lie strictly between 0 and 1, got {fraction}"
+        )));
     }
     if weights.iter().any(|w| !w.is_finite() || *w < 0.) {
-        return Err(invalid("the enclosing level needs finite, non-negative weights"));
+        return Err(invalid(
+            "the enclosing level needs finite, non-negative weights",
+        ));
     }
     let mut sorted = weights.to_vec();
     sorted.sort_by(|a, b| b.total_cmp(a));
     let total: f64 = sorted.iter().sum();
     if total <= 0. {
-        return Err(invalid("the field is zero everywhere; there is nothing to draw"));
+        return Err(invalid(
+            "the field is zero everywhere; there is nothing to draw",
+        ));
     }
     let mut running = 0.;
     for (i, w) in sorted.iter().enumerate() {
@@ -152,7 +185,9 @@ pub fn weighted_cloud(
         cumulative.push(total);
     }
     if total <= 0. {
-        return Err(invalid("the field is zero everywhere; there is nothing to sample"));
+        return Err(invalid(
+            "the field is zero everywhere; there is nothing to sample",
+        ));
     }
     let mut rng = Rng(seed);
     let mut picked = Vec::with_capacity(count);
@@ -160,10 +195,14 @@ pub fn weighted_cloud(
     for _ in 0..count {
         let target = rng.uniform() * total;
         // The first node whose running weight exceeds the target: a zero weight is never picked.
-        let node = cumulative.partition_point(|&c| c <= target).min(weights.len() - 1);
+        let node = cumulative
+            .partition_point(|&c| c <= target)
+            .min(weights.len() - 1);
         let u: [f64; 3] = std::array::from_fn(|_| rng.uniform() - 0.5);
         let at = nodes[node];
-        points.push(std::array::from_fn(|b| at[b] + (0..3).map(|a| u[a] * step[b][a]).sum::<f64>()));
+        points.push(std::array::from_fn(|b| {
+            at[b] + (0..3).map(|a| u[a] * step[b][a]).sum::<f64>()
+        }));
         picked.push(node);
     }
     Ok((picked, points))
@@ -184,7 +223,13 @@ mod tests {
         for (i, want) in [(1, 0.1), (2, 0.3), (4, 0.6)] {
             assert!((share(i) - want).abs() < 0.015, "node {i}: {}", share(i));
         }
-        assert!(points.iter().zip(&picked).all(|(p, &i)| (p[0] - i as f64).abs() <= 0.5 && p[1].abs() <= 0.5));
-        assert_eq!(weighted_cloud(&weights, &nodes, &step, 50, 7).unwrap().0, picked[..50]);
+        assert!(points
+            .iter()
+            .zip(&picked)
+            .all(|(p, &i)| (p[0] - i as f64).abs() <= 0.5 && p[1].abs() <= 0.5));
+        assert_eq!(
+            weighted_cloud(&weights, &nodes, &step, 50, 7).unwrap().0,
+            picked[..50]
+        );
     }
 }

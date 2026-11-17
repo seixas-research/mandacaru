@@ -25,7 +25,8 @@ fn vectors<'py>(py: Python<'py>, rows: &[[f64; 3]]) -> PyResult<Array<'py, f64>>
 /// of `time_step`, in user units (1/Angstrom and femtoseconds; atomic with `atomic_units`).
 /// Returns, in atomic units, `times_au`, `dipole_au` `(nt, 3)` (the
 /// induced dipole, electrons only; the spin dipole for `kick="spin"`), `momentum_au` `(nt, 3)`
-/// (the electrons' kinetic momentum), `energy_ha`, `norm_error` `(nt,)`, `ground_energy_ha`,
+/// (the electrons' momentum `dE/dA`: the kinetic one plus a meta-GGA's exchange-correlation
+/// current with a partial core), `energy_ha`, `norm_error` `(nt,)`, `ground_energy_ha`,
 /// `kick_energy_ha`, `energy_drift` (kick energies), `width_ha` (the basis width `W` of the
 /// reference Fock matrix), `largest_width_ha`, `step_width_bound` (the scheme's largest `dt W`),
 /// `aliased_weight` (the bare weight above `pi / dt`), `builds`, `corrector_iterations`, and
@@ -386,7 +387,9 @@ pub fn time_spectrum<'py>(
 /// units (eV, 1/Angstrom; Hartree and 1/Bohr with `atomic_units`): `energies` (`None`: 0 to
 /// 20 eV in 0.05 eV steps), `kernel` `"independent"` or `"hartree"` (the RPA with local fields
 /// on `|G| <= cutoff`), `bands` `(valence, conduction)` per channel next to the gap (`None`:
-/// every band), `scissor` added to every transition, `direction` a 3-vector (`None`: the
+/// the smallest window that holds every transition up to the highest energy and leaves out at
+/// most `STATIC_TOLERANCE` of the independent-particle `eps(0) - 1`), `scissor` added to every
+/// transition, `direction` a 3-vector (`None`: the
 /// isotropic average), on the whole Gamma-anchored mesh `kpts` (`None`: the SCF's). Returns
 /// `energies`, `tensor` `(n, 3, 3)` complex, `epsilon` `(n,)` complex along the direction,
 /// `loss` (`-Im 1 / epsilon`), `absorption` (`2 omega Im sqrt(epsilon) / c`, 1/Angstrom),
@@ -455,7 +458,25 @@ pub fn crystal_dielectric_function<'py>(
                 None => crystal::scf_mesh(setup)?,
             };
             let sampler = Sampler::new(periodic, state, setup)?;
-            optics::dielectric(&sampler, &MeshIndex::new(size, [0.; 3])?, &request)
+            let mesh = MeshIndex::new(size, [0.; 3])?;
+            // `bands=None`: the smallest window holding every transition up to the highest
+            // requested energy and the independent-particle `eps(0)` to `STATIC_TOLERANCE`.
+            let mut request = request.clone();
+            if request.window.is_none() {
+                let highest = request
+                    .frequencies
+                    .iter()
+                    .copied()
+                    .fold(f64::NEG_INFINITY, f64::max);
+                request.window = Some(optics::default_window(
+                    &sampler,
+                    &mesh,
+                    highest,
+                    request.scissor,
+                    optics::STATIC_TOLERANCE,
+                )?);
+            }
+            optics::dielectric(&sampler, &mesh, &request)
         })
         .map_err(error)?;
     let along = out.along(direction).map_err(error)?;
@@ -580,8 +601,9 @@ pub fn crystal_dielectric_function<'py>(
 }
 
 /// The `num_states` lowest Bethe-Salpeter excitons of the converged insulating crystal `result`
-/// (`periodic::optics::bse`, T5b) in the Tamm-Dancoff approximation (`approximation="tda"`; the
-/// coupling form raises), on the whole Gamma-anchored mesh `kpts` (`None`: the SCF's): `kernel`
+/// (`periodic::optics::bse`, T5b) in the Tamm-Dancoff approximation (`approximation="tda"`) or
+/// the coupling form (`"casida"`, dense: the resonant amplitudes `X` and the antiresonant `Y`,
+/// the line weights from both), on the whole Gamma-anchored mesh `kpts` (`None`: the SCF's): `kernel`
 /// `None` or `"bse"` (exchange and the statically screened direct term), `"hartree"` (exchange
 /// only) or `"independent"`; `spin` `None` or `"singlet"`, or `"triplet"` (no exchange); `bands`
 /// `(valence, conduction)` next to the gap (`None`: every band), `scissor` added to every
@@ -617,28 +639,21 @@ pub fn crystal_excitations<'py>(
         },
         units::{from_user, to_user, Quantity},
     };
-    match approximation {
-        "tda" => {}
-        "casida" => {
-            return Err(pyo3::exceptions::PyNotImplementedError::new_err(
-                "approximation='casida' on a crystal (the coupling Bethe-Salpeter equation) is \
-                 not built: crystal excitons are Tamm-Dancoff ('tda')",
-            ))
-        }
+    let coupling = match approximation {
+        "tda" => false,
+        "casida" => true,
         other => {
             return Err(pyo3::exceptions::PyValueError::new_err(format!(
                 "unknown approximation {other:?}; expected 'tda' or 'casida'"
             )))
         }
-    }
+    };
     let kernel = match kernel.unwrap_or("bse") {
-        "adiabatic" => {
-            return Err(pyo3::exceptions::PyNotImplementedError::new_err(
-                "kernel='adiabatic' on a crystal (the exchange-correlation kernel in the crystal's \
+        "adiabatic" => return Err(pyo3::exceptions::PyNotImplementedError::new_err(
+            "kernel='adiabatic' on a crystal (the exchange-correlation kernel in the crystal's \
                  response) is not built: crystal excitons take kernel='bse' (the default), \
                  'hartree' or 'independent'",
-            ))
-        }
+        )),
         name => Kernel::parse(name).map_err(error)?,
     };
     let spin = bse::Spin::parse(spin.unwrap_or("singlet")).map_err(error)?;
@@ -649,6 +664,7 @@ pub fn crystal_excitations<'py>(
     }
     let energy = |v: f64| from_user(v, Quantity::Energy, atomic_units);
     let mut request = bse::Request::new(kernel, spin);
+    request.coupling = coupling;
     request.window = bands;
     request.scissor = energy(scissor);
     if let Some(c) = cutoff {
@@ -684,12 +700,14 @@ pub fn crystal_excitations<'py>(
         .iter()
         .flat_map(|o| o.map(|v| 4. * std::f64::consts::PI.powi(2) * op.scale * v.norm_sqr()))
         .collect();
-    let column = |l: usize| excitons.vectors.column(l);
+    // The resonant amplitudes, normalized (in the coupling form `X^dagger X = 1 + Y^dagger Y`).
+    let column = |l: usize| excitons.vectors.column(l).normalize();
     let participation: Vec<f64> = (0..roots)
         .map(|l| 1. / column(l).iter().map(|x| x.norm_sqr().powi(2)).sum::<f64>())
         .collect();
     let mut kpoint_weights = vec![0.; roots * nk];
     let mut dominant = Vec::with_capacity(roots);
+    let mut dominant_channels = Vec::with_capacity(roots);
     for l in 0..roots {
         let a = column(l);
         for (t, transition) in op.transitions.iter().enumerate() {
@@ -701,7 +719,13 @@ pub fn crystal_excitations<'py>(
             .map(|(t, x)| (t, x.norm_sqr()))
             .fold((0, -1.), |best, x| if x.1 > best.1 { x } else { best });
         let transition = op.transitions[t];
-        dominant.push((transition.k, transition.valence, transition.conduction, weight));
+        dominant.push((
+            transition.k,
+            transition.valence,
+            transition.conduction,
+            weight,
+        ));
+        dominant_channels.push(transition.channel);
     }
     let flat = |rows: &[[f64; 3]; 3]| rows.iter().flatten().copied().collect::<Vec<f64>>();
     let dict = PyDict::new(py);
@@ -712,10 +736,14 @@ pub fn crystal_excitations<'py>(
     dict.set_item("participation", array(py, &[roots], participation.clone())?)?;
     dict.set_item("kpoint_weights", array(py, &[roots, nk], kpoint_weights)?)?;
     dict.set_item("dominant", dominant)?;
+    dict.set_item("dominant_channels", dominant_channels)?;
     dict.set_item("spin", spin.name())?;
     dict.set_item("kernel", kernel.name())?;
-    dict.set_item("approximation", "tda")?;
-    dict.set_item("static_tensor", array(py, &[3, 3], flat(&op.static_tensor))?)?;
+    dict.set_item("approximation", approximation)?;
+    dict.set_item(
+        "static_tensor",
+        array(py, &[3, 3], flat(&op.static_tensor))?,
+    )?;
     dict.set_item("screened_head", op.head)?;
     dict.set_item("mesh", (op.mesh[0], op.mesh[1], op.mesh[2]))?;
     dict.set_item("kpoints", nk)?;
@@ -742,14 +770,23 @@ pub fn crystal_excitations<'py>(
     };
     let record: Vec<(String, String)> = vec![
         ("method".into(), "bethe-salpeter".into()),
-        ("approximation".into(), "tda".into()),
+        ("approximation".into(), approximation.into()),
         ("kernel".into(), kernel.name().into()),
         ("spin".into(), spin.name().into()),
-        ("reference".into(), format!("kohn-sham {}", periodic.functional)),
-        ("mesh".into(), format!("{} {} {}", op.mesh[0], op.mesh[1], op.mesh[2])),
+        (
+            "reference".into(),
+            format!("kohn-sham {}", periodic.functional),
+        ),
+        (
+            "mesh".into(),
+            format!("{} {} {}", op.mesh[0], op.mesh[1], op.mesh[2]),
+        ),
         ("kpoints".into(), nk.to_string()),
         ("symmetry".into(), "whole mesh".into()),
-        ("bands_valence_conduction".into(), format!("{},{}", op.window.0, op.window.1)),
+        (
+            "bands_valence_conduction".into(),
+            format!("{},{}", op.window.0, op.window.1),
+        ),
         ("transitions".into(), op.energies.len().to_string()),
         ("exchange_vectors".into(), op.vectors.to_string()),
         (format!("scissor_{unit}"), list(&[op.scissor])?),

@@ -39,7 +39,9 @@ pub fn projector_basis_transform(
         "dual" => Ok((coupling.to_vec(), overlap.to_vec())),
         "raw" => {
             let b = DMatrix::from_row_slice(n, n, vanderbilt);
-            let b_inv = b.try_inverse().ok_or_else(|| invalid("singular Vanderbilt matrix"))?;
+            let b_inv = b
+                .try_inverse()
+                .ok_or_else(|| invalid("singular Vanderbilt matrix"))?;
             let d = DMatrix::from_row_slice(n, n, coupling);
             let q = DMatrix::from_row_slice(n, n, overlap);
             let d_raw = &b_inv * d * b_inv.transpose();
@@ -64,8 +66,12 @@ pub fn multipole_transform(
     }
     let mat_b1 = DMatrix::from_row_slice(n1, n1, b1);
     let mat_b2 = DMatrix::from_row_slice(n2, n2, b2);
-    let b1_inv = mat_b1.try_inverse().ok_or_else(|| invalid("singular Vanderbilt matrix B1"))?;
-    let b2_inv = mat_b2.try_inverse().ok_or_else(|| invalid("singular Vanderbilt matrix B2"))?;
+    let b1_inv = mat_b1
+        .try_inverse()
+        .ok_or_else(|| invalid("singular Vanderbilt matrix B1"))?;
+    let b2_inv = mat_b2
+        .try_inverse()
+        .ok_or_else(|| invalid("singular Vanderbilt matrix B2"))?;
     let d = DMatrix::from_row_slice(n1, n2, delta);
     let res = &b1_inv * d * b2_inv.transpose();
     Ok(row_major(&res))

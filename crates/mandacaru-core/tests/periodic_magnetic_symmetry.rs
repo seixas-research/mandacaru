@@ -145,8 +145,12 @@ fn ferromagnetic_triangle_plain_dft_on_the_wedge_equals_the_whole_mesh() {
 }
 
 #[test]
-#[ignore = "slow: 10 s (measured 2026-11-10); run: cargo test --profile release-test -p mandacaru-core --test periodic_magnetic_symmetry -- --ignored the_flipped_site_triangle"]
+#[ignore = "slow: 21 s (measured 2026-11-16); run: cargo test --profile release-test -p mandacaru-core --test periodic_magnetic_symmetry -- --ignored the_flipped_site_triangle"]
 fn the_flipped_site_triangle_with_its_smaller_group_equals_the_whole_mesh_with_u() {
+    // The run stalls from the moment seed with the plain mixer (the moment collapses to 0.01
+    // Bohr magneton and the iteration hovers 7.7 mHa above the state, on a residual of 0.15, for
+    // 200 iterations on the wedge and on the whole mesh alike) and `Crystal::solve` repeats it with
+    // a mixer that drops its history when the residual grows; both meshes then end on the same state.
     let (wedge, whole) = compare_magnetic(
         &triangle(&[0.5, 0.5, -0.5]),
         dudarev(4.),
@@ -154,6 +158,28 @@ fn the_flipped_site_triangle_with_its_smaller_group_equals_the_whole_mesh_with_u
         EXACT_MAGNETIC,
     );
     assert!(wedge < whole);
+}
+
+#[test]
+#[ignore = "slow: 13 s (measured 2026-11-16); run: cargo test --profile release-test -p mandacaru-core --test periodic_magnetic_symmetry -- --ignored a_stalled_flipped_site_triangle"]
+fn a_stalled_flipped_site_triangle_ends_on_the_ferrimagnetic_state_not_the_collapsed_plateau() {
+    // The collapsed plateau the plain mixer hovers on (moment 0.006 to 0.26 Bohr magneton, free energy
+    // -487.7452 Ha) is not the state: the converged one carries 0.807 Bohr magneton, with the
+    // shells' moments 0.72, 0.72 and -0.68, at -487.752883510 Ha, 7.7 mHa below it. Found by
+    // linear mixing alone (400 iterations, -487.7528835100 at residual 1.7e-6) and by the
+    // restarting mixer (116 iterations): two independent routes to the same energy.
+    let (reduced, _) = triangle(&[0.5, 0.5, -0.5]).crystals(dudarev(4.), false, [2, 2, 2]);
+    let state = solve(&reduced, EXACT_MAGNETIC.3);
+    assert!(
+        (state.free_energy + 487.752883510).abs() < 1e-8,
+        "free energy {:.9}",
+        state.free_energy
+    );
+    assert!(
+        (state.magnetization - 0.807180).abs() < 1e-4,
+        "magnetization {:.6}",
+        state.magnetization
+    );
 }
 
 #[test]

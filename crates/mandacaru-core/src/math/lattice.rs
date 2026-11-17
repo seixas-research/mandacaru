@@ -1,7 +1,7 @@
 //! Lattice reduction and automorphism search via Selling reduction and shell matching.
 use super::invalid;
 use crate::Result;
-use nalgebra::{Matrix3, SVD, Vector3};
+use nalgebra::{Matrix3, Vector3, SVD};
 
 /// Pre-check and validation parameters for a lattice basis.
 pub fn validate_cell(cell: &Matrix3<f64>, tol: f64) -> Result<()> {
@@ -71,12 +71,7 @@ pub fn selling_reduce(cell: &Matrix3<f64>) -> Result<(Matrix3<f64>, Matrix3<i32>
     validate_cell(cell, 1e-6)?;
 
     // Superbase S as 4 rows in Z^3
-    let mut s: [[i32; 3]; 4] = [
-        [1, 0, 0],
-        [0, 1, 0],
-        [0, 0, 1],
-        [-1, -1, -1],
-    ];
+    let mut s: [[i32; 3]; 4] = [[1, 0, 0], [0, 1, 0], [0, 0, 1], [-1, -1, -1]];
 
     let eps = 1e-10;
     let maxit = 1000;
@@ -267,9 +262,7 @@ pub fn lattice_rotations(b: &Matrix3<f64>, tol: f64) -> Result<Vec<Matrix3<i32>>
 
             for n3 in &shells[2] {
                 let m = Matrix3::new(
-                    n1[0], n1[1], n1[2],
-                    n2[0], n2[1], n2[2],
-                    n3[0], n3[1], n3[2],
+                    n1[0], n1[1], n1[2], n2[0], n2[1], n2[2], n3[0], n3[1], n3[2],
                 );
                 if det3(&m).abs() != 1 {
                     continue;
@@ -294,7 +287,9 @@ pub fn lattice_rotations(b: &Matrix3<f64>, tol: f64) -> Result<Vec<Matrix3<i32>>
 
                 let svd = SVD::new(r_mat, true, true);
                 let u = svd.u.ok_or_else(|| invalid("SVD U decomposition failed"))?;
-                let v_t = svd.v_t.ok_or_else(|| invalid("SVD V decomposition failed"))?;
+                let v_t = svd
+                    .v_t
+                    .ok_or_else(|| invalid("SVD V decomposition failed"))?;
                 let q = u * v_t;
 
                 let diff = (r_mat - q) * b_t;
@@ -336,9 +331,15 @@ pub fn input_lattice_rotations(cell: &Matrix3<f64>, tol: f64) -> Result<Vec<Matr
             return Err(invalid("mapped rotation is not unimodular"));
         }
         let key = [
-            win[(0, 0)], win[(0, 1)], win[(0, 2)],
-            win[(1, 0)], win[(1, 1)], win[(1, 2)],
-            win[(2, 0)], win[(2, 1)], win[(2, 2)],
+            win[(0, 0)],
+            win[(0, 1)],
+            win[(0, 2)],
+            win[(1, 0)],
+            win[(1, 1)],
+            win[(1, 2)],
+            win[(2, 0)],
+            win[(2, 1)],
+            win[(2, 2)],
         ];
         if seen.insert(key) {
             out.push(win);

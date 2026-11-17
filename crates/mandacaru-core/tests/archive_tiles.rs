@@ -28,7 +28,14 @@ fn stack(rows: usize, points: usize, seed: u64, real_first_tile: bool) -> Vec<C6
     (0..rows * points)
         .map(|i| {
             let k = i % points;
-            C64::new(re[i], if real_first_tile && k < TILE { 0. } else { im[i] })
+            C64::new(
+                re[i],
+                if real_first_tile && k < TILE {
+                    0.
+                } else {
+                    im[i]
+                },
+            )
         })
         .collect()
 }
@@ -93,7 +100,10 @@ fn a_stack_on_disk_projects_and_accumulates_exactly_as_the_stack_in_memory() {
                 .zip(&oracle)
                 .map(|(a, b)| (a - b).norm())
                 .fold(0f64, f64::max);
-            assert!(bite > 100. * 1e-12, "the control moved the matrix by {bite}");
+            assert!(
+                bite > 100. * 1e-12,
+                "the control moved the matrix by {bite}"
+            );
             drop((resident, archived));
             assert_eq!(ctx.memory_used(), 0);
         }
@@ -110,7 +120,10 @@ fn tiles_cover_the_stack_and_refuse_what_is_outside_it() {
     for (start, count) in [(0, 300), (300, 300), (600, 100), (699, 1)] {
         let tile = archived.tile(m, n, start, count, &mut scratch).unwrap();
         for row in 0..m {
-            assert_eq!(tile.row(row), &original[row * n + start..row * n + start + count]);
+            assert_eq!(
+                tile.row(row),
+                &original[row * n + start..row * n + start + count]
+            );
         }
     }
     assert!(archived.tile(m, n, 650, 100, &mut scratch).is_err());

@@ -327,8 +327,8 @@ fn a_saddle_is_escaped_and_an_unfinished_escape_is_not_converged() {
             norm < Options::default().gradient_tolerance,
             "precondition: the mixed pair must be stationary (gradient norm {norm:e})"
         );
-        let full = wannier::localize(&ctx, &mesh, &saddle, Some(&centers), &Options::default())
-            .unwrap();
+        let full =
+            wannier::localize(&ctx, &mesh, &saddle, Some(&centers), &Options::default()).unwrap();
         assert!(full.converged);
         assert!(
             full.spread.total() < 1e-9,
@@ -353,7 +353,10 @@ fn a_saddle_is_escaped_and_an_unfinished_escape_is_not_converged() {
             short.spread.total()
         );
         let totals: Vec<f64> = short.history.iter().map(|h| h.iter().sum()).collect();
-        assert!(totals.windows(2).all(|w| w[1] <= w[0] + 1e-14), "{totals:?}");
+        assert!(
+            totals.windows(2).all(|w| w[1] <= w[0] + 1e-14),
+            "{totals:?}"
+        );
     }
     assert_eq!(ctx.memory_used(), 0);
 }

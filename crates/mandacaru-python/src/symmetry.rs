@@ -48,19 +48,21 @@ pub fn crystal_symmetry<'py>(
 
     let cell_slice = cell.as_slice()?;
     let lat_matrix = Matrix3::new(
-        cell_slice[0], cell_slice[1], cell_slice[2],
-        cell_slice[3], cell_slice[4], cell_slice[5],
-        cell_slice[6], cell_slice[7], cell_slice[8],
+        cell_slice[0],
+        cell_slice[1],
+        cell_slice[2],
+        cell_slice[3],
+        cell_slice[4],
+        cell_slice[5],
+        cell_slice[6],
+        cell_slice[7],
+        cell_slice[8],
     );
 
     let pos_slice = positions.as_slice()?;
     let mut frac_positions = Vec::with_capacity(n_atoms);
     for i in 0..n_atoms {
-        frac_positions.push([
-            pos_slice[3 * i],
-            pos_slice[3 * i + 1],
-            pos_slice[3 * i + 2],
-        ]);
+        frac_positions.push([pos_slice[3 * i], pos_slice[3 * i + 1], pos_slice[3 * i + 2]]);
     }
 
     let num_slice = numbers.as_slice()?;

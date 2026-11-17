@@ -205,7 +205,8 @@ pub fn mpc_hole_contraction(
                 for r in 0..m {
                     for s in 0..m {
                         let rho_rs_conj = rho_k[r * m + s].conj();
-                        let h_pqrs = gamma[((p * m + q) * m + r) * m + s] - d[p * m + r] * d[q * m + s];
+                        let h_pqrs =
+                            gamma[((p * m + q) * m + r) * m + s] - d[p * m + r] * d[q * m + s];
                         k_sum += h_pqrs * (rho_pq * rho_rs_conj).re;
                     }
                 }

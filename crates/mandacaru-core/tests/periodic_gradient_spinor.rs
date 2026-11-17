@@ -2,7 +2,7 @@
 //!
 //! * the zero-coupling limit equals the scalar engine on the same case;
 //! * the force of the `lda-fr` Si cell equals the Richardson reconverged central difference of
-//!   the same discretized spinor free energy (the frozen oracle of `freeze_periodic_gradients.py`).
+//!   the same discretized spinor free energy (the frozen oracle of `periodic_freeze_snapshot.rs`).
 //!
 //! Needs `MANDACARU_PAW_PATH`.
 mod periodic_gradient_crystals_support;

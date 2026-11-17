@@ -66,11 +66,7 @@ pub struct StructureFactor {
 
 impl StructureFactor {
     /// Create a new `StructureFactor` and validate lengths.
-    pub fn new(
-        kvectors: Vec<[f64; 3]>,
-        values: Vec<f64>,
-        n_electrons: f64,
-    ) -> Result<Self> {
+    pub fn new(kvectors: Vec<[f64; 3]>, values: Vec<f64>, n_electrons: f64) -> Result<Self> {
         if kvectors.len() != values.len() {
             return Err(invalid(format!(
                 "kvectors count ({}) must match values count ({})",
@@ -217,7 +213,10 @@ pub fn ccmh_extrapolate(
     let mut ratios = Vec::with_capacity(shells.len());
     for s in shells {
         if !s.k.is_finite() || s.k <= 0.0 || !s.s.is_finite() {
-            return Err(invalid(format!("invalid reciprocal shell k={}, s={}", s.k, s.s)));
+            return Err(invalid(format!(
+                "invalid reciprocal shell k={}, s={}",
+                s.k, s.s
+            )));
         }
         ks.push(s.k);
         ratios.push(s.s / (s.k * s.k));
@@ -317,23 +316,25 @@ pub fn structure_factor(
     let [nx, ny, nz] = shape;
     let n_grid = crate::product(&shape)?;
     if n_grid == 0 || psi.len() % n_grid != 0 || cell.len() != 9 || !(0..=16).contains(&limit) {
-        return Err(invalid("psi must be (n_ao, points of the shape), the cell 3x3, the limit in 0..=16"));
+        return Err(invalid(
+            "psi must be (n_ao, points of the shape), the cell 3x3, the limit in 0..=16",
+        ));
     }
     let n_ao = psi.len() / n_grid;
-    if a_cols == 0 || a_matrix.len() != n_ao * a_cols || d_slice.len() != a_cols * a_cols
+    if a_cols == 0
+        || a_matrix.len() != n_ao * a_cols
+        || d_slice.len() != a_cols * a_cols
         || gamma_slice.len() != a_cols.pow(4)
     {
-        return Err(invalid("A must be (n_ao, M), D (M, M) and Gamma (M, M, M, M)"));
+        return Err(invalid(
+            "A must be (n_ao, M), D (M, M) and Gamma (M, M, M, M)",
+        ));
     }
     let mut fft = Fft3::new(&ctx, [nx, ny, nz])?;
 
     // Compute reciprocal triples and kvectors
     let c = cell;
-    let mat = Matrix3::new(
-        c[0], c[1], c[2],
-        c[3], c[4], c[5],
-        c[6], c[7], c[8],
-    );
+    let mat = Matrix3::new(c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7], c[8]);
     let inv_t = mat
         .try_inverse()
         .ok_or_else(|| invalid("singular cell matrix"))?
@@ -362,9 +363,11 @@ pub fn structure_factor(
     }
     let n_triples = triples.len();
     // M and M' over every G-vector plus the zero vector, the pair line and the rotation scratch.
-    let _tensors = ctx.reserve(crate::product(&[n_triples + 1, n_ao * n_ao + a_cols * a_cols, 16])?
-        .checked_add(crate::product(&[n_grid + n_ao * a_cols, 16])?)
-        .ok_or(crate::Error::Overflow)?)?;
+    let _tensors = ctx.reserve(
+        crate::product(&[n_triples + 1, n_ao * n_ao + a_cols * a_cols, 16])?
+            .checked_add(crate::product(&[n_grid + n_ao * a_cols, 16])?)
+            .ok_or(crate::Error::Overflow)?,
+    )?;
 
     // M: (n_triples + 1, n_ao, n_ao)
     let mut m_tensor = vec![C64::new(0.0, 0.0); (n_triples + 1) * n_ao * n_ao];
@@ -513,7 +516,13 @@ pub fn structure_factor(
         magnitudes.push((kx * kx + ky * ky + kz * kz).sqrt());
     }
 
-    Ok(StructureFactorGrid { kvectors: kvectors_vec, values, magnitudes, n_electrons, overlap_error })
+    Ok(StructureFactorGrid {
+        kvectors: kvectors_vec,
+        values,
+        magnitudes,
+        n_electrons,
+        overlap_error,
+    })
 }
 
 /// The shell means of a structure factor sampled at `magnitudes` (values `values`): the samples

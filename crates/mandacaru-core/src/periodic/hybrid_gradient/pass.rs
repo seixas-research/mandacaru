@@ -20,6 +20,7 @@ use crate::{
             kernel_weights, occupied_states, periodic_part, weighted_pairs, ExxDivTreatment,
             OccupiedStates, PairInputs, Part, Screening,
         },
+        star::{self, Reduction},
         Crystal, KPoint,
     },
     quantum::C64,
@@ -167,6 +168,12 @@ struct Sweep<'a> {
     aug: &'a Augmentation<'a>,
     motion: Option<&'a dyn Motion>,
     channel_owner: Vec<usize>,
+    /// The rotation of the states of a mesh reduced by space-group operations, `None` on a whole or
+    /// time-reversal-halved mesh. The sources are then the images of the listed points: what a
+    /// source moves with is differentiated at the listed point and carried through its rotation
+    /// (the atoms keep the listed point's labels: the engine averages the terms over the group,
+    /// which maps the image's atom onto them).
+    reduction: Option<Reduction>,
 }
 
 pub(super) fn run<M: MatrixSource + Sync>(
@@ -203,6 +210,7 @@ pub(super) fn run<M: MatrixSource + Sync>(
         aug,
         motion,
         channel_owner: aug.sites().channels.iter().map(|ch| ch.0).collect(),
+        reduction: star::reduced(c).then(|| Reduction::new(c)).transpose()?,
     };
     let mut out = Pass {
         energy: 0.,
@@ -304,7 +312,10 @@ impl Sweep<'_> {
         ];
         // The functions of a time-reversal partner are the conjugates of the listed point's, and
         // so are their center derivatives.
-        let mut du_source = self.motion.map(|mo| slopes(c, mo, source.point)).transpose()?;
+        let mut du_source = self
+            .motion
+            .map(|mo| slopes(c, mo, source.point))
+            .transpose()?;
         if source.partner {
             for slope in du_source.iter_mut().flatten() {
                 slope.as_mut_slice().iter_mut().for_each(|v| *v = v.conj());
@@ -436,6 +447,9 @@ impl Sweep<'_> {
         let scale = C64::new(t.scale, 0.);
         let projected = &a.source.projected[a.state];
         let coefficients = &a.source.coefficients[a.state];
+        // The responses of an image's projections, per component (the source part of an image is
+        // formed from all of them at once, below).
+        let mut gammas: Vec<Vec<C64>> = Vec::new();
         for component in 0..rows / m {
             // The component's rows of `Phi` (`m x channels`) and its projections `a_{n, sigma}`.
             let phi = phi.rows(component * m, m).into_owned();
@@ -466,10 +480,17 @@ impl Sweep<'_> {
                 }
             }
             // The source part of both components lands in the same `p x m` matrix: every entry
-            // once per state, as one addition of the whole matrix. A partner's projections are
+            // once per state, as one addition of the whole matrix. The projections of an image of
+            // a reduced mesh's listed point are `a' = M a` (`Pi conj(M a)` when time reversed): the
+            // response `gamma` to `a'` is pulled back to the listed point's `a` first, then the
+            // listed point's coefficients give `Z` as for a plain source. A partner's projections are
             // `a'_t = sign sum_nu C(q)[nu, s] c'_nu` (`(t, s, sign)` the reversal of the
             // projectors, `c'` its coefficients over the conjugated functions): linear in `C(q)`,
             // not in its conjugate.
+            if a.source.rotation.is_some() {
+                gammas.push(gamma);
+                continue;
+            }
             let mut source = Matrix::zeros(p, m);
             if a.source.partner {
                 let map = self.aug.reversal().ok_or_else(|| {
@@ -496,6 +517,35 @@ impl Sweep<'_> {
                 at: a.z_source,
                 matrix: source,
             });
+        }
+        // An image of a listed point of a reduced mesh has the projections `a' = (U x M) a` (and
+        // `Pi conj(...)` when time reversed): the response to them is pulled back to the listed
+        // point's `a`, and the listed point's coefficients give `Z` as for a plain source.
+        if let (Some(image), Some(reduction)) =
+            (a.source.rotation.as_ref(), self.reduction.as_ref())
+        {
+            let flat: Vec<C64> = gammas.into_iter().flatten().collect();
+            let back = reduction.pull_back(
+                c,
+                self.aug.reversal(),
+                c.points[a.source.point].k,
+                image,
+                &flat,
+            )?;
+            for component in 0..rows / m {
+                let mut source = Matrix::zeros(p, m);
+                for nu in 0..m {
+                    let coefficient = coefficients[component * m + nu];
+                    for pp in 0..p {
+                        source[(pp, nu)] = (coefficient * back[component * p + pp]).conj() * scale;
+                    }
+                }
+                adds.push(Add::Compensation {
+                    component,
+                    at: a.z_source,
+                    matrix: source,
+                });
+            }
         }
         Ok(())
     }
@@ -553,6 +603,14 @@ impl Sweep<'_> {
                         }
                     }
                     moved.push(buffer);
+                }
+                // An image's functions are those of its listed point, moved with it: rotate the
+                // components together (the SU(2) factor mixes them).
+                if let (Some(image), Some(reduction)) =
+                    (a.source.rotation.as_ref(), self.reduction.as_ref())
+                {
+                    let input: Vec<&[C64]> = moved.iter().map(|b| b.as_slice()).collect();
+                    moved = reduction.grid_states(c, c.points[a.source.point].k, image, &input)?;
                 }
                 let ket = PairInputs {
                     u_k: t.u.as_slice(),

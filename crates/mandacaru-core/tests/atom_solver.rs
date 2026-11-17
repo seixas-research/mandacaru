@@ -339,14 +339,17 @@ fn aufbau_and_rearrangements_follow_the_filling_rule() {
         vec![(3, 2), (4, 0)]
     );
     // j-j filling: the lower j (kappa = +l) fills first
-    let split = configuration::split_configuration(&[(2, 1, 4.)], configuration::JShares::LowerFirst);
+    let split =
+        configuration::split_configuration(&[(2, 1, 4.)], configuration::JShares::LowerFirst);
     assert_eq!(split, vec![(2, 1, 1, 2.), (2, 1, -2, 2.)]);
-    let open = configuration::split_configuration(&[(2, 1, 3.)], configuration::JShares::LowerFirst);
+    let open =
+        configuration::split_configuration(&[(2, 1, 3.)], configuration::JShares::LowerFirst);
     assert_eq!(open, vec![(2, 1, 1, 2.), (2, 1, -2, 1.)]);
     // The PAW reference atom shares an open subshell in proportion to 2j + 1 (every state the same
     // fraction of an electron, the spherical density of the scalar partial waves); a closed one
     // is the same either way.
-    let shared = configuration::split_configuration(&[(2, 1, 3.)], configuration::JShares::Proportional);
+    let shared =
+        configuration::split_configuration(&[(2, 1, 3.)], configuration::JShares::Proportional);
     assert_eq!(shared, vec![(2, 1, 1, 1.), (2, 1, -2, 2.)]);
     let closed = [(2, 1, 6.)];
     assert_eq!(

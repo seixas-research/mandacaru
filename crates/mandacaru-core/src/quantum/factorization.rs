@@ -12,7 +12,10 @@ struct Spectrum {
 fn checked(matrix: DMatrix<f64>) -> Result<Spectrum, String> {
     let (eigenvalues, eigenvectors) =
         crate::math::linalg::checked_symmetric(matrix).map_err(|e| e.to_string())?;
-    Ok(Spectrum { eigenvalues, eigenvectors })
+    Ok(Spectrum {
+        eigenvalues,
+        eigenvectors,
+    })
 }
 use num_complex::Complex64;
 
@@ -156,10 +159,18 @@ pub fn double_factorization(
     constant: f64,
 ) -> Result<DoubleFactorizationData, String> {
     if h_pq.len() != m * m {
-        return Err(format!("expected h_pq with {} elements, got {}", m * m, h_pq.len()));
+        return Err(format!(
+            "expected h_pq with {} elements, got {}",
+            m * m,
+            h_pq.len()
+        ));
     }
     if g_pqrs.len() != m * m * m * m {
-        return Err(format!("expected g_pqrs with {} elements, got {}", m * m * m * m, g_pqrs.len()));
+        return Err(format!(
+            "expected g_pqrs with {} elements, got {}",
+            m * m * m * m,
+            g_pqrs.len()
+        ));
     }
 
     let m3 = m * m * m;
@@ -290,7 +301,11 @@ pub fn spatial_double_factorization(
     constant: f64,
 ) -> Result<DoubleFactorizationData, String> {
     if h.len() != m * m {
-        return Err(format!("expected h with {} elements, got {}", m * m, h.len()));
+        return Err(format!(
+            "expected h with {} elements, got {}",
+            m * m,
+            h.len()
+        ));
     }
 
     let mut exchange_like = DMatrix::zeros(m, m);
@@ -322,7 +337,10 @@ pub fn spatial_double_factorization(
         }
     } else if let Some((data, p_m)) = eri_packed {
         if p_m != m {
-            return Err(format!("packed eri orbital dim {} does not match {}", p_m, m));
+            return Err(format!(
+                "packed eri orbital dim {} does not match {}",
+                p_m, m
+            ));
         }
         for a in 0..m {
             for c in 0..=a {
@@ -361,7 +379,10 @@ pub fn spatial_double_factorization(
         }
     } else if let Some((g, g_m)) = eri_dense {
         if g_m != m {
-            return Err(format!("dense eri orbital dim {} does not match {}", g_m, m));
+            return Err(format!(
+                "dense eri orbital dim {} does not match {}",
+                g_m, m
+            ));
         }
         let m3 = m * m * m;
         let m2 = m * m;
@@ -631,4 +652,3 @@ mod tests {
         assert!(!res.leaves.is_empty());
     }
 }
-

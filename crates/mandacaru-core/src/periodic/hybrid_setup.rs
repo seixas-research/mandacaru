@@ -244,6 +244,18 @@ impl Crystal {
         })
     }
 
+    /// How the images of a reduced mesh's stars were reached (hidden: for the gates that must
+    /// know a feature of the rotation is used). Raises for a crystal on a whole or halved mesh.
+    #[doc(hidden)]
+    pub fn image_census(&self) -> Result<super::ImageCensus> {
+        if !super::star::reduced(self) {
+            return Err(invalid(
+                "the crystal's mesh is not reduced by space-group operations",
+            ));
+        }
+        Ok(super::star::Reduction::new(self)?.census(self))
+    }
+
     /// The augmentation of this hybrid crystal's pair densities with its one-center terms: the
     /// object [`Crystal::hybrid_exchange`] builds, for the callers that differentiate it.
     pub fn hybrid_augmentation(&self) -> Result<Augmentation<'_>> {

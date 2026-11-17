@@ -217,8 +217,12 @@ error. It never selects a different calculation.
 - Molecular RHF, UHF, GHF and Kohn-Sham with the six functionals (`lda`, `pbe`,
   `r2scan`, `hse06`, `pbe+rvv10`, `r2scan+rvv10`), the integrals, and the
   analytic forces of RHF, UHF and Kohn-Sham.
-- The PAW machinery of a calculation: dataset reading, basis construction,
-  projectors, one-center terms and the crystal setup.
+- Molecular excited states: linear-response TD-DFT and CIS/TDHF
+  (`get_excitations`), real-time propagation after a delta kick (`get_real_time`),
+  and the energy and analytic forces of one excited state (`excited_state=`).
+- The PAW machinery of a calculation: dataset generation (the installed library
+  is its format-3 output), dataset reading, basis construction, projectors,
+  one-center terms and the crystal setup.
 - Crystals: the self-consistent iterations, bands and densities of states,
   spin-orbit spinors, DFT+U, analytic forces and stress, Wannier downfolding
   and finite-size corrections.
@@ -234,9 +238,8 @@ error. It never selects a different calculation.
 1. Validate the HSE06 energies and gaps against an all-electron reference.
 2. Spinor DFT+U for molecules and crystals, DFT+U with a hybrid functional,
    and hybrid and spin-orbit calculations on a symmetry-reduced k mesh.
-3. Finish the PAW physics: scalar-relativistic dataset generation, the
-   nonlinear one-center exchange-correlation term and multi-shell frozen-core
-   exchange for Hartree-Fock.
+3. Finish the PAW physics: the nonlinear one-center exchange-correlation term
+   and Hartree-Fock frozen-core exchange for a partially filled core subshell.
 4. Complete the quantum methods on crystals: the per-k register
    (`crystal_orbitals="k-space"`), a PAW-LCAO supercell, and analytic forces
    and stress.

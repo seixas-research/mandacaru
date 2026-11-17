@@ -2,7 +2,7 @@
 //! datasets) and HSE06 on the whole 3x1x1 Gamma-centered mesh (the points 0 and +-1/3, so the
 //! exchange runs at complex k, all three kept: a hybrid needs the whole mesh), against the
 //! Richardson-reconverged free energy of the same discretized spinor hybrid
-//! (`freeze_periodic_strain.py case si_hsefr_tr3`, two step families, all nine entries
+//! (`periodic_freeze_snapshot.rs`, MANDACARU_FREEZE_KIND=strain, case si_hsefr_tr3, two step families, all nine entries
 //! unsymmetrized). The spin-orbit coupling of Si is weak, so the spin-orbit term is reported next
 //! to the gates; the exchange terms are each removed in turn and must be missed by the oracle.
 //!

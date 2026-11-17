@@ -178,3 +178,200 @@ fn the_one_center_operators_do_not_depend_on_the_projector_basis() {
         assert!(gradient < 1e-6, "gradient axis {axis}: {gradient:e}");
     }
 }
+
+#[test]
+fn the_dipole_moment_is_the_field_derivative_of_the_energy() {
+    // Q10a, `multipoles::dipole_moment` on library water (LDA, partial cores): the electrons'
+    // share of the moment is minus the derivative of the SCF energy under a field term `F x_k` in
+    // the one-body operator (the energy is variational, so it is `g tr(D x_k)`), by central
+    // differences at 2e-3 and 1e-3 a.u. (Richardson), on every axis; the neutral molecule's
+    // moment does not depend on the origin; the closed shell run unrestricted (two density
+    // matrices, each counted once) has the restricted moment.
+    use mandacaru_core::molecular::{multipoles::dipole_moment, ScfOptions};
+    use paw_molecular_support::dataset;
+    let ctx = Context::new(Some(2), 1 << 30).unwrap();
+    let mut integrals = library_water(&ctx, "lda-sr");
+    let electrons = ["O", "H", "H"]
+        .iter()
+        .map(|e| dataset::read(&ctx, "lda-sr", e).valence_charge)
+        .sum::<f64>()
+        .round() as usize;
+    let options = ScfOptions {
+        tolerance: 1e-12,
+        max_iterations: 200,
+        ..Default::default()
+    };
+    let particles = [electrons / 2, electrons / 2];
+    let state = integrals
+        .kohn_sham("lda", particles, false, &options)
+        .unwrap();
+    assert!(state.converged);
+    let moment = dipole_moment(&integrals, &state.densities, [0.; 3]).unwrap();
+    let shifted = dipole_moment(&integrals, &state.densities, [1.3, -2.1, 0.7]).unwrap();
+    let open = integrals
+        .kohn_sham("lda", particles, true, &options)
+        .unwrap();
+    assert!(open.converged && open.densities.len() == 2);
+    let unrestricted = dipole_moment(&integrals, &open.densities, [0.; 3]).unwrap();
+    let channels = (0..3)
+        .map(|a| (unrestricted[a] - moment[a]).abs())
+        .fold(0f64, f64::max);
+    let origin = (0..3)
+        .map(|a| (moment[a] - shifted[a]).abs())
+        .fold(0f64, f64::max);
+    let charges = integrals.corrections.as_ref().unwrap().charges.clone();
+    let positions = integrals.geometry.positions().to_vec();
+    let x = position_integrals(&integrals, [0.; 3]).unwrap();
+    let base: Vec<f64> = integrals.one.as_slice().to_vec();
+    let m = integrals.m();
+    let mut misses = vec![];
+    for axis in 0..3 {
+        let ions: f64 = charges
+            .iter()
+            .zip(&positions)
+            .map(|(z, r)| z * r[axis])
+            .sum();
+        let mut energy = |field: f64| {
+            for a in 0..m {
+                for b in 0..m {
+                    integrals.one.as_mut_slice()[a * m + b] =
+                        base[a * m + b] + field * x[axis][(a, b)];
+                }
+            }
+            let state = integrals
+                .kohn_sham("lda", particles, false, &options)
+                .unwrap();
+            assert!(state.converged);
+            state.electronic_energy
+        };
+        let slope =
+            |f: f64, energy: &mut dyn FnMut(f64) -> f64| (energy(f) - energy(-f)) / (2. * f);
+        let (coarse, fine) = (slope(2e-3, &mut energy), slope(1e-3, &mut energy));
+        let field = (4. * fine - coarse) / 3.;
+        let electronic = moment[axis] - ions;
+        println!(
+            "water LDA axis {axis}: moment {:+.10} e Bohr, electrons {electronic:+.10}, -dE/dF \
+             {:+.10} (central {:+.10} / {:+.10})",
+            moment[axis], -field, -coarse, -fine
+        );
+        misses.push((electronic + field).abs());
+    }
+    for a in 0..m * m {
+        integrals.one.as_mut_slice()[a] = base[a];
+    }
+    let size = moment.iter().map(|v| v * v).sum::<f64>().sqrt();
+    println!("water LDA: |mu| {size:.6} e Bohr; origin shift {origin:.2e}; unrestricted {channels:.2e}; field misses {misses:?}");
+    assert!(channels < 1e-8, "{channels:e}");
+    assert!(origin < 1e-9, "{origin:e}");
+    assert!(misses.iter().all(|m| *m < 1e-6), "{misses:?}");
+    assert!(size > 0.5 && size < 1., "{size}");
+}
+
+/// The spinor branch of `dipole_moment` (Q10a): Au-H on the `pbe-fr` set with gold's spin-orbit
+/// term (one s, p and d shell on each atom), spinor PBE. The electrons' share of the moment of the
+/// one `2m x 2m` density, its charge component `D_up,up + D_dn,dn`, is minus the derivative of the
+/// spinor SCF energy under `F x_k` in the one-body operator, which enters both spin blocks, by
+/// central differences at 2e-3 and 1e-3 a.u. (Richardson), along the bond (z) and across it (x).
+/// The red control reads the up-up block alone and misses by about half the share.
+#[test]
+#[ignore = "slow: 75 s (measured 2026-11-16; spinor PBE SCFs of Au-H, four per axis, needs MANDACARU_PAW_PATH); run: cargo test --profile release-test -p mandacaru-core --test molecular_multipoles -- --ignored the_spinor_dipole"]
+fn the_spinor_dipole_moment_is_the_field_derivative_of_the_spin_orbit_energy() {
+    use mandacaru_core::{
+        molecular::{multipoles::dipole_moment, ScfOptions},
+        paw::molecular::Arrays,
+    };
+    use paw_molecular_support::{analytic_shells, dataset, molecule_with};
+    let ctx = Context::new(Some(2), 1536 << 20).unwrap();
+    let root = std::path::PathBuf::from(
+        std::env::var_os("MANDACARU_PAW_PATH").expect("MANDACARU_PAW_PATH"),
+    );
+    let file = |e: &str| {
+        root.join("pbe-fr")
+            .join(format!("{e}.parquet"))
+            .to_string_lossy()
+            .into_owned()
+    };
+    let mut integrals = molecule_with(
+        &ctx,
+        &[79, 1],
+        &[[0.07, -0.04, 0.05], [0.15, 0.11, 2.95]],
+        14.,
+        0.5,
+        (
+            vec![
+                serde_json::json!({ "file": file("Au") }),
+                serde_json::json!({ "file": file("H") }),
+            ],
+            vec![0, 1],
+            Arrays::new(),
+        ),
+        "raw",
+        &analytic_shells(&[0, 1, 2]),
+        &[("spin_orbit", serde_json::json!(true))],
+    );
+    let electrons = (dataset::read(&ctx, "pbe-fr", "Au").valence_charge
+        + dataset::read(&ctx, "pbe-fr", "H").valence_charge)
+        .round() as usize;
+    let options = ScfOptions {
+        tolerance: 1e-12,
+        max_iterations: 600,
+        ..Default::default()
+    };
+    let state = integrals
+        .spinor_kohn_sham("pbe", electrons, &options)
+        .unwrap();
+    assert!(state.converged && state.densities.len() == 1);
+    let m = integrals.m();
+    assert_eq!(state.densities[0].shape(), (2 * m, 2 * m));
+    let moment = dipole_moment(&integrals, &state.densities, [0.; 3]).unwrap();
+    let charges = integrals.corrections.as_ref().unwrap().charges.clone();
+    let positions = integrals.geometry.positions().to_vec();
+    let x = position_integrals(&integrals, [0.; 3]).unwrap();
+    let base: Vec<f64> = integrals.one.as_slice().to_vec();
+    let d = state.densities[0].clone();
+    let mut misses = vec![];
+    for axis in [2, 0] {
+        let ions: f64 = charges
+            .iter()
+            .zip(&positions)
+            .map(|(z, r)| z * r[axis])
+            .sum();
+        let mut energy = |field: f64| {
+            for a in 0..m {
+                for b in 0..m {
+                    integrals.one.as_mut_slice()[a * m + b] =
+                        base[a * m + b] + field * x[axis][(a, b)];
+                }
+            }
+            let state = integrals
+                .spinor_kohn_sham("pbe", electrons, &options)
+                .unwrap();
+            assert!(state.converged);
+            state.electronic_energy
+        };
+        let slope =
+            |f: f64, energy: &mut dyn FnMut(f64) -> f64| (energy(f) - energy(-f)) / (2. * f);
+        let (coarse, fine) = (slope(2e-3, &mut energy), slope(1e-3, &mut energy));
+        let field = (4. * fine - coarse) / 3.;
+        let electronic = moment[axis] - ions;
+        let up: f64 = (0..m)
+            .flat_map(|a| (0..m).map(move |b| (a, b)))
+            .map(|(a, b)| d[(a, b)].re * x[axis][(b, a)])
+            .sum();
+        println!(
+            "Au-H spinor PBE axis {axis}: moment {:+.10} e Bohr, electrons {electronic:+.10}, \
+             -dE/dF {:+.10} (central {:+.10} / {:+.10}); red (up-up block only) {:+.10}",
+            moment[axis], -field, -coarse, -fine, -up
+        );
+        misses.push((electronic + field).abs());
+        assert!(
+            (-up + field).abs() > 1e-2 * field.abs(),
+            "the red control must miss"
+        );
+    }
+    for a in 0..m * m {
+        integrals.one.as_mut_slice()[a] = base[a];
+    }
+    println!("Au-H spinor: moment {moment:?} e Bohr; field misses {misses:?}");
+    assert!(misses.iter().all(|m| *m < 1e-6), "{misses:?}");
+}

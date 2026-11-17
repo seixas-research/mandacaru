@@ -9,7 +9,7 @@ use crate::setup_gradients_support::Cell;
 use mandacaru_core::{
     math::angular,
     paw::{
-        local_split::{angular_rule, radial_rule, short_range_potential_derivative},
+        local_split::{lattice_angular_rule, radial_rule, short_range_potential_derivative},
         multipole::shape_function,
     },
     periodic::setup::{
@@ -103,11 +103,11 @@ pub fn linear_variant(
     let sigma = sites.sigma;
     let reaches: Vec<f64> = potentials.iter().map(|p| p.reach(sigma).unwrap()).collect();
     let mut out = vec![[[Complex64::new(0., 0.); 3]; 3]; sites.channels.len()];
-    let (axes, angular_weights) = angular_rule(SPHERE_POLAR, SPHERE_AZIMUTHAL).unwrap();
+    let (axes, angular_weights) =
+        lattice_angular_rule(ctx, &sites.lattice, SPHERE_POLAR, SPHERE_AZIMUTHAL).unwrap();
     let directions: Vec<[f64; 3]> = (0..angular_weights.len())
         .map(|j| [axes[0][j], axes[1][j], axes[2][j]])
         .collect();
-    let _ = ctx;
     for owner in 0..sites.atoms.len() {
         let radius = sites.atoms[owner].compensation_radius;
         let (r, radial_weights) = radial_rule(radius, 0., SPHERE_RADIAL).unwrap();

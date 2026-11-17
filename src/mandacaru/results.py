@@ -165,7 +165,7 @@ class CalculationResult:
 
     @property
     def states(self):
-        return self.state()
+        return self._problem.expand_state(np.ascontiguousarray(self._raw["states"])) if "states" in self._raw else self.state()
 
     @property
     def _reference_hartree(self):

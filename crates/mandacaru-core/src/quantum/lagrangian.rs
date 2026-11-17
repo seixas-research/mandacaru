@@ -23,7 +23,7 @@
 //! 013129 (2020).
 use super::amplitude::{inner_wide, stack, Amplitude};
 use super::evolution::{exponential, inner};
-use super::{solver::CachedProblem, Basis, Operator, State, C64};
+use super::{solver::QuantumProblem, Basis, Operator, State, C64};
 use crate::{math::storage::Precision, math::symmetric_solve, Error, Result};
 use nalgebra::DMatrix;
 
@@ -122,6 +122,30 @@ impl Residual {
     }
 }
 
+/// Shifted states for one ensemble weight `w_j` in [`SubspaceResidual::Corrected`].
+pub struct SubspaceTerm {
+    pub weight: f64,
+    pub state: State,
+    pub plus: State,
+    pub minus: State,
+    pub scale: f64,
+}
+
+/// Weighted subspace Lagrangian correction solving `H_ens z_n = grad <psi_n | H | psi_n>`.
+pub enum SubspaceResidual {
+    Stationary {
+        gradient_norm: f64,
+    },
+    Corrected {
+        gradient_norm: f64,
+        z: Vec<f64>,
+        z_norm: f64,
+        z_dot_g_ens: f64,
+        solve: Solve,
+        terms: Vec<SubspaceTerm>,
+    },
+}
+
 fn norm(v: &[f64]) -> f64 {
     v.iter().map(|x| x * x).sum::<f64>().sqrt()
 }
@@ -140,7 +164,7 @@ fn act(generator: &Operator, basis: &Basis, input: &[C64], out: &mut [C64]) {
     generator.apply_into(basis, input, out);
 }
 
-impl CachedProblem {
+impl QuantumProblem {
     fn product<'a>(&'a self, indices: &[usize], parameters: &[f64]) -> Result<Product<'a>> {
         if let Some(hva) = &self.hva {
             let expanded = hva.expand(&self.pool, indices, parameters)?;
@@ -174,17 +198,38 @@ impl CachedProblem {
         }
     }
 
+    fn reference_vector(&self, basis: &Basis) -> Result<crate::Buffer<C64>> {
+        let mut out = self.context.allocate::<C64>(basis.len())?;
+        out.as_mut_slice()[basis.reference] = C64::new(1., 0.);
+        Ok(out)
+    }
+
     /// The state `psi` and its tangent `psi' = sum_k v_k d psi / d theta_k` of a product-form
-    /// ansatz, by one forward sweep: `psi'_k = U_k psi'_{k-1} + v_k G_k psi_k` (two rows).
-    fn forward_tangent(&self, basis: &Basis, product: &Product<'_>, v: &[f64]) -> Result<crate::Buffer<C64>> {
+    /// ansatz from an arbitrary `initial` state vector, by one forward sweep.
+    fn forward_tangent_from(
+        &self,
+        basis: &Basis,
+        product: &Product<'_>,
+        initial: &[C64],
+        v: &[f64],
+    ) -> Result<crate::Buffer<C64>> {
         let ctx = &self.context;
         let d = basis.len();
         let mut rows = stack::<C64>(ctx, 2, d)?;
-        rows.as_mut_slice()[basis.reference] = C64::new(1., 0.);
+        rows.as_mut_slice()[..d].copy_from_slice(initial);
         let mut acc = ctx.allocate::<C64>(C64::accumulator_len(d))?;
         let mut action = ctx.allocate::<C64>(d)?;
         for (j, (g, &angle)) in product.ops.iter().zip(&product.angles).enumerate() {
-            exponential(ctx, basis, &[*g], &[angle], rows.as_mut_slice(), 2, &[None], acc.as_mut_slice())?;
+            exponential(
+                ctx,
+                basis,
+                &[*g],
+                &[angle],
+                rows.as_mut_slice(),
+                2,
+                &[None],
+                acc.as_mut_slice(),
+            )?;
             let (i, w) = product.links[j];
             let direction = w * v[i];
             if direction != 0. {
@@ -198,14 +243,12 @@ impl CachedProblem {
         Ok(rows)
     }
 
-    /// The exact Hessian of a product-form ansatz, `psi = U_{N-1} ... U_0 |ref>`, `U_j = exp(a_j G_j)`,
-    /// in its angles `a`: `H_jk = 2 Re [<d_j psi| (H - E) |d_k psi> + <lambda| d_j d_k psi>]`,
-    /// `lambda = (H - E) psi` (the form is exact because `d_j d_k <psi|psi> = 0`). A forward sweep
-    /// stores the partial states `psi_j`, a reverse sweep `mu_k = G_k^+ lambda_k`; each
-    /// `v = G_j psi_j` is then carried through `U_{j+1} .. U_{N-1}`, `<mu_k| v>` after `U_k` being
-    /// `<lambda| d_j d_k psi>` (`k >= j`), until it is `d_j psi`; one Hamiltonian action each gives
-    /// the first part, computed in full so that its antisymmetry is the measured roundoff.
-    fn exact_angle_hessian(&self, basis: &Basis, product: &Product<'_>) -> Result<DMatrix<f64>> {
+    fn exact_angle_hessian_from(
+        &self,
+        basis: &Basis,
+        product: &Product<'_>,
+        initial: &[C64],
+    ) -> Result<DMatrix<f64>> {
         let ctx = &self.context;
         let d = basis.len();
         let n = product.ops.len();
@@ -213,9 +256,18 @@ impl CachedProblem {
         let mut adjoints = stack::<C64>(ctx, n.max(1), d)?;
         let mut acc = ctx.allocate::<C64>(C64::accumulator_len(d))?;
         let mut row = ctx.allocate::<C64>(d)?;
-        row.as_mut_slice()[basis.reference] = C64::new(1., 0.);
+        row.as_mut_slice().copy_from_slice(initial);
         for (j, (g, &angle)) in product.ops.iter().zip(&product.angles).enumerate() {
-            exponential(ctx, basis, &[*g], &[angle], row.as_mut_slice(), 1, &[], acc.as_mut_slice())?;
+            exponential(
+                ctx,
+                basis,
+                &[*g],
+                &[angle],
+                row.as_mut_slice(),
+                1,
+                &[],
+                acc.as_mut_slice(),
+            )?;
             states.as_mut_slice()[j * d..(j + 1) * d].copy_from_slice(row.as_slice());
         }
         let mut lambda = ctx.allocate::<C64>(d)?;
@@ -231,16 +283,39 @@ impl CachedProblem {
                 *v = -*v;
             }
             if k > 0 {
-                exponential(ctx, basis, &[product.ops[k]], &[-product.angles[k]], lambda.as_mut_slice(), 1, &[], acc.as_mut_slice())?;
+                exponential(
+                    ctx,
+                    basis,
+                    &[product.ops[k]],
+                    &[-product.angles[k]],
+                    lambda.as_mut_slice(),
+                    1,
+                    &[],
+                    acc.as_mut_slice(),
+                )?;
             }
         }
         drop(lambda);
         let mut second = DMatrix::<f64>::zeros(n, n);
         for j in 0..n {
-            act(product.ops[j], basis, &states.as_slice()[j * d..(j + 1) * d], row.as_mut_slice());
+            act(
+                product.ops[j],
+                basis,
+                &states.as_slice()[j * d..(j + 1) * d],
+                row.as_mut_slice(),
+            );
             second[(j, j)] = inner(&adjoints.as_slice()[j * d..(j + 1) * d], row.as_slice()).re;
             for k in j + 1..n {
-                exponential(ctx, basis, &[product.ops[k]], &[product.angles[k]], row.as_mut_slice(), 1, &[], acc.as_mut_slice())?;
+                exponential(
+                    ctx,
+                    basis,
+                    &[product.ops[k]],
+                    &[product.angles[k]],
+                    row.as_mut_slice(),
+                    1,
+                    &[],
+                    acc.as_mut_slice(),
+                )?;
                 second[(j, k)] = inner(&adjoints.as_slice()[k * d..(k + 1) * d], row.as_slice()).re;
                 second[(k, j)] = second[(j, k)];
             }
@@ -259,13 +334,19 @@ impl CachedProblem {
             (0..n).map(|j| inner(derivatives[j], row).re).collect()
         };
         let columns = match &self.sparse {
-            Some(sparse) => {
-                super::parallel::parallel_each(&self.context, n, d, n.saturating_mul(d), |k, row| {
+            Some(sparse) => super::parallel::parallel_each(
+                &self.context,
+                n,
+                d,
+                n.saturating_mul(d),
+                |k, row| {
                     sparse.apply_into(derivatives[k], row);
                     finish(k, row)
-                })?
-            }
-            None => self.hamiltonian.apply_each(basis, &derivatives, false, finish)?,
+                },
+            )?,
+            None => self
+                .hamiltonian
+                .apply_each(basis, &derivatives, false, finish)?,
         };
         let first = DMatrix::from_fn(n, n, |j, k| columns[k][j]);
         drop(row);
@@ -280,12 +361,33 @@ impl CachedProblem {
     /// cost: exact in product form (the angle Hessian pulled back
     /// through the links of a Hamiltonian-variational expansion), columns of central differences
     /// of the analytic gradients for the summed exponential.
-    pub fn parameter_hessian(&self, ansatz: &Ansatz<'_>, options: &Options) -> Result<(DMatrix<f64>, usize, usize)> {
+    pub fn parameter_hessian(
+        &self,
+        ansatz: &Ansatz<'_>,
+        options: &Options,
+    ) -> Result<(DMatrix<f64>, usize, usize)> {
+        self.parameter_hessian_from(ansatz, None, options)
+    }
+
+    fn parameter_hessian_from(
+        &self,
+        ansatz: &Ansatz<'_>,
+        initial: Option<&[C64]>,
+        options: &Options,
+    ) -> Result<(DMatrix<f64>, usize, usize)> {
         let basis = self.register("the parameter Hessian")?;
         let n = ansatz.parameters.len();
         if ansatz.product_form {
+            let owned;
+            let seed = match initial {
+                Some(state) => state,
+                None => {
+                    owned = self.reference_vector(basis)?;
+                    owned.as_slice()
+                }
+            };
             let product = self.product(ansatz.indices, ansatz.parameters)?;
-            let angles = self.exact_angle_hessian(basis, &product)?;
+            let angles = self.exact_angle_hessian_from(basis, &product, seed)?;
             let mut hessian = DMatrix::<f64>::zeros(n, n);
             for (a, &(i, wi)) in product.links.iter().enumerate() {
                 for (b, &(k, wk)) in product.links.iter().enumerate() {
@@ -299,7 +401,12 @@ impl CachedProblem {
             let shifted = |sign: f64| -> Result<Vec<f64>> {
                 let mut theta = ansatz.parameters.to_vec();
                 theta[column] += sign * options.hessian_step;
-                Ok(self.evaluate(ansatz.indices, &theta, false)?.gradient)
+                match initial {
+                    Some(state) => Ok(self
+                        .evaluate_from_state(ansatz.indices, &theta, false, state)?
+                        .gradient),
+                    None => Ok(self.evaluate(ansatz.indices, &theta, false)?.gradient),
+                }
             };
             let (up, down) = (shifted(1.)?, shifted(-1.)?);
             for row in 0..n {
@@ -309,27 +416,57 @@ impl CachedProblem {
         Ok((hessian, 2 * n, 2 * n))
     }
 
-    /// The exact tangent `psi' = sum_k z_k d psi / d theta_k` of the ansatz state.
-    fn tangent(&self, ansatz: &Ansatz<'_>, z: &[f64]) -> Result<crate::Buffer<C64>> {
+    /// The exact tangent `psi' = sum_k z_k d psi / d theta_k` of the ansatz state from `initial`
+    /// (`basis.reference` when `None`).
+    fn tangent_from(
+        &self,
+        ansatz: &Ansatz<'_>,
+        initial: Option<&[C64]>,
+        z: &[f64],
+    ) -> Result<crate::Buffer<C64>> {
         let ctx = &self.context;
         let basis = self.register("the Lagrangian tangent state")?;
         let d = basis.len();
         let mut out = ctx.allocate::<C64>(d)?;
         if ansatz.product_form {
+            let owned;
+            let seed = match initial {
+                Some(state) => state,
+                None => {
+                    owned = self.reference_vector(basis)?;
+                    owned.as_slice()
+                }
+            };
             let product = self.product(ansatz.indices, ansatz.parameters)?;
-            let rows = self.forward_tangent(basis, &product, z)?;
+            let rows = self.forward_tangent_from(basis, &product, seed, z)?;
             out.as_mut_slice().copy_from_slice(&rows.as_slice()[d..]);
             return Ok(out);
         }
         let product = self.product(ansatz.indices, ansatz.parameters)?;
-        let rows = super::evolution::state::<C64>(ctx, basis, &product.ops, &product.angles, false, true)?;
+        let rows = super::evolution::state_from::<C64>(
+            ctx,
+            basis,
+            &product.ops,
+            &product.angles,
+            false,
+            true,
+            initial,
+        )?;
         for (j, &(i, w)) in product.links.iter().enumerate() {
             let coefficient = w * z[i];
-            for (o, r) in out.as_mut_slice().iter_mut().zip(&rows.as_slice()[(j + 1) * d..(j + 2) * d]) {
+            for (o, r) in out
+                .as_mut_slice()
+                .iter_mut()
+                .zip(&rows.as_slice()[(j + 1) * d..(j + 2) * d])
+            {
                 *o += r * coefficient;
             }
         }
         Ok(out)
+    }
+
+    fn tangent(&self, ansatz: &Ansatz<'_>, z: &[f64]) -> Result<crate::Buffer<C64>> {
+        self.tangent_from(ansatz, None, z)
     }
 
     /// The parameter gradient of the state `state`, which must be this ansatz's state, and the
@@ -341,7 +478,9 @@ impl CachedProblem {
         options: &Options,
     ) -> Result<Residual> {
         if self.precision != Precision::Float64 {
-            return Err(invalid("the Lagrangian force correction needs float64 states"));
+            return Err(invalid(
+                "the Lagrangian force correction needs float64 states",
+            ));
         }
         let Ansatz {
             indices,
@@ -442,6 +581,192 @@ impl CachedProblem {
             })
         })
     }
+
+    /// Weighted subspace Lagrangian correction for any Rayleigh–Ritz eigenstate `eigenstate` of a
+    /// subspace ensemble minimized under `weights`. Solves `H_ens z_n = grad <psi_n | H | psi_n>`,
+    /// returning per-weight shifted states `tilde_phi_j ± s * tilde_phi_j'` and `z_n . g_ens`.
+    pub fn subspace_lagrangian(
+        &self,
+        ansatz: &Ansatz<'_>,
+        weights: &[f64],
+        eigenstate: &[C64],
+        options: &Options,
+    ) -> Result<SubspaceResidual> {
+        if self.precision != Precision::Float64 {
+            return Err(invalid(
+                "the subspace Lagrangian force correction needs float64 states",
+            ));
+        }
+        super::subspace::validate_subspace_weights(weights)?;
+        let Ansatz {
+            indices,
+            parameters,
+            product_form,
+        } = *ansatz;
+        if parameters.iter().any(|v| !v.is_finite())
+            || !(options.floor >= 0.)
+            || !(options.hessian_step > 0.)
+        {
+            return Err(invalid("the subspace Lagrangian correction needs finite parameters, a nonnegative floor and a positive step"));
+        }
+        self.context.run(|| {
+            let basis = self.register("the subspace Lagrangian force correction")?;
+            let d = basis.len();
+            if eigenstate.len() != d {
+                return Err(invalid(
+                    "the eigenstate and the ansatz live in different registers",
+                ));
+            }
+            let ref_rows = self.subspace_ref_rows(weights.len())?;
+            let mut ref_states = Vec::with_capacity(weights.len());
+            let mut evals = Vec::with_capacity(weights.len());
+            let mut coeffs = Vec::with_capacity(weights.len());
+            for &row in &ref_rows {
+                let mut ref_buf = self.context.allocate::<C64>(d)?;
+                ref_buf.as_mut_slice()[row] = C64::new(1., 0.);
+                let eval = self.evaluate_from_state(
+                    indices,
+                    parameters,
+                    product_form,
+                    ref_buf.as_slice(),
+                )?;
+                let c = inner(eval.state.complex128()?, eigenstate);
+                ref_states.push(ref_buf);
+                evals.push(eval);
+                coeffs.push(c);
+            }
+            let proj_sq: f64 = coeffs.iter().map(|c| c.norm_sqr()).sum();
+            if (1. - proj_sq).abs() > 1e-8 {
+                return Err(invalid(format!(
+                    "eigenstate lies outside the prepared subspace span (projection norm^2 = {proj_sq:.6e})"
+                )));
+            }
+            let mut chi0 = self.context.allocate::<C64>(d)?;
+            for (&row, &c) in ref_rows.iter().zip(&coeffs) {
+                chi0.as_mut_slice()[row] = c;
+            }
+            let eval_n =
+                self.evaluate_from_state(indices, parameters, product_form, chi0.as_slice())?;
+            let gradient = eval_n.gradient;
+            let gradient_norm = norm(&gradient);
+            if gradient.len() != parameters.len() || !gradient_norm.is_finite() {
+                return Err(invalid("the eigenstate parameter gradient is nonfinite or mis-sized"));
+            }
+            if parameters.is_empty() || gradient_norm <= options.floor {
+                return Ok(SubspaceResidual::Stationary { gradient_norm });
+            }
+            let n = parameters.len();
+            if n > options.max_parameters {
+                return Err(invalid(format!(
+                    "the subspace Lagrangian force correction refuses {n} parameters (limit {})",
+                    options.max_parameters
+                )));
+            }
+            let mut hessian = DMatrix::<f64>::zeros(n, n);
+            let mut gradient_evaluations = 0;
+            let mut hamiltonian_actions = 0;
+            for (j, &w) in weights.iter().enumerate() {
+                let (h_j, g_ev, h_act) = self.parameter_hessian_from(
+                    ansatz,
+                    Some(ref_states[j].as_slice()),
+                    options,
+                )?;
+                hessian += h_j * w;
+                gradient_evaluations += g_ev;
+                hamiltonian_actions += h_act;
+            }
+            let solution = symmetric_solve::solve(&hessian, &gradient, &options.solver).map_err(
+                |e| {
+                    invalid(format!(
+                        "the subspace parameter Hessian cannot be inverted for the Lagrangian force correction \
+                         (|g| = {gradient_norm:.3e}): {e}"
+                    ))
+                },
+            )?;
+            let z_norm = norm(&solution.x);
+            if !(z_norm > 0.) || !z_norm.is_finite() {
+                return Err(invalid(format!(
+                    "every direction of the subspace Hessian lies below its noise cutoff {:.3e} (|g| = {gradient_norm:.3e})",
+                    solution.cutoff
+                )));
+            }
+            let z_dot_g_ens: f64 = weights
+                .iter()
+                .zip(&evals)
+                .map(|(&w, ev)| w * solution.x.iter().zip(&ev.gradient).map(|(a, b)| a * b).sum::<f64>())
+                .sum();
+            let solve = Solve {
+                parameters: n,
+                exact: product_form,
+                gradient_evaluations,
+                hamiltonian_actions,
+                noise: solution.noise,
+                cutoff: solution.cutoff,
+                lowest: solution.eigenvalues[0],
+                highest: solution.eigenvalues[n - 1],
+                smallest_kept: solution.smallest_kept,
+                dropped: solution.dropped,
+                dropped_gradient: solution.dropped_rhs,
+                neglected_scale: solution.neglected_scale(),
+            };
+            let mut weighted_tangent_sq = 0.;
+            let mut terms = Vec::with_capacity(weights.len());
+            for (j, &w) in weights.iter().enumerate() {
+                let tangent =
+                    self.tangent_from(ansatz, Some(ref_states[j].as_slice()), &solution.x)?;
+                let t_norm = inner_wide(tangent.as_slice(), tangent.as_slice())
+                    .re
+                    .sqrt();
+                weighted_tangent_sq += w * t_norm * t_norm;
+                let prepared = evals[j].state.complex128()?;
+                let (scale, plus, minus) = if t_norm > 0. {
+                    let s = 1. / t_norm;
+                    let mut p = self.context.allocate::<C64>(d)?;
+                    let mut m = self.context.allocate::<C64>(d)?;
+                    for ((po, mo), (&pr, &tg)) in p
+                        .as_mut_slice()
+                        .iter_mut()
+                        .zip(m.as_mut_slice())
+                        .zip(prepared.iter().zip(tangent.as_slice()))
+                    {
+                        *po = pr + tg * s;
+                        *mo = pr - tg * s;
+                    }
+                    (s, C64::wrap(p), C64::wrap(m))
+                } else {
+                    (
+                        0.,
+                        C64::wrap(self.context.allocate::<C64>(d)?),
+                        C64::wrap(self.context.allocate::<C64>(d)?),
+                    )
+                };
+                terms.push(SubspaceTerm {
+                    weight: w,
+                    state: C64::wrap({
+                        let mut buf = self.context.allocate::<C64>(d)?;
+                        buf.as_mut_slice().copy_from_slice(prepared);
+                        buf
+                    }),
+                    plus,
+                    minus,
+                    scale,
+                });
+            }
+            if !(weighted_tangent_sq > 0.) || !weighted_tangent_sq.is_finite() {
+                return Err(invalid(
+                    "every subspace tangent along z vanishes: z lies in redundant directions",
+                ));
+            }
+            Ok(SubspaceResidual::Corrected {
+                gradient_norm,
+                z: solution.x,
+                z_norm,
+                z_dot_g_ens,
+                solve,
+                terms,
+            })
+        })
+    }
 }
 
 /// How one energy measured on a device enters the measured gradient and Hessian, with its
@@ -505,14 +830,20 @@ pub fn measured_z(
     let n = gradient.len();
     let gradient_norm = norm(gradient);
     if !gradient_norm.is_finite() || hessian.shape() != (n, n) {
-        return Err(invalid("the measured gradient and Hessian must be finite and of one size"));
+        return Err(invalid(
+            "the measured gradient and Hessian must be finite and of one size",
+        ));
     }
     if energies.iter().any(|e| {
         !(e.error >= 0.)
             || e.gradient.iter().any(|&(i, c)| i >= n || !c.is_finite())
-            || e.hessian.iter().any(|&(p, q, c)| p >= n || q >= n || !c.is_finite())
+            || e.hessian
+                .iter()
+                .any(|&(p, q, c)| p >= n || q >= n || !c.is_finite())
     }) {
-        return Err(invalid("a measured energy's error and dependences must be finite and within the parameters"));
+        return Err(invalid(
+            "a measured energy's error and dependences must be finite and within the parameters",
+        ));
     }
     if gradient_norm <= options.floor {
         return Ok(MeasuredZ {
@@ -598,7 +929,11 @@ pub fn measured_z(
 /// Pereyra, SIAM J. Numer. Anal. 10, 413 (1973)): `dz = H^+ (dg - dH z) + H^+ H^+ dH P g +
 /// P dH H^+ z`, `P` the projector on the dropped directions (both last terms vanish when none is
 /// dropped).
-fn covariance(solution: &symmetric_solve::Solution, gradient: &[f64], energies: &[MeasuredEnergy]) -> DMatrix<f64> {
+fn covariance(
+    solution: &symmetric_solve::Solution,
+    gradient: &[f64],
+    energies: &[MeasuredEnergy],
+) -> DMatrix<f64> {
     let n = gradient.len();
     let v = &solution.vectors;
     let mut pseudo = DMatrix::<f64>::zeros(n, n);

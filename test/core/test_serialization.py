@@ -275,10 +275,9 @@ class TestFileFormats:
         assert np.allclose(record.hamiltonian.to_matrix(), pauli.to_matrix())
 
     def test_no_python_parquet_package_is_needed(self, tmp_path):
-        """Parquet and JSON, a pseudopotential and a Qiskit transpile run with
-        ``pandas``, ``pyarrow`` and ``fastparquet`` unimportable, and no
-        Mandacaru module so much as asks for them."""
-        fixture = PARQUET_REFERENCE / "pseudopotential/fastparquet_zstd.parquet"
+        """Parquet and JSON, the pseudopotential I/O import and a Qiskit
+        transpile run with ``pandas``, ``pyarrow`` and ``fastparquet``
+        unimportable, and no Mandacaru module so much as asks for them."""
         done = _run_isolated(f"""
             import importlib.abc, os, sys
             BLOCKED = {{"pandas", "pyarrow", "fastparquet"}}
@@ -297,8 +296,7 @@ class TestFileFormats:
             from mandacaru.core import PauliSum
             from mandacaru.core.serialization import (save_hamiltonian,
                                                     load_hamiltonian)
-            from mandacaru.pseudopotentials.io import (load_pseudopotential,
-                                                       save_pseudopotential)
+            import mandacaru.pseudopotentials.io
             pauli = PauliSum({{"IZ": 0.5, "ZI": -0.25}})
             for extension in (".parquet", ".json"):
                 path = save_hamiltonian(os.path.join({str(tmp_path)!r},
@@ -308,10 +306,6 @@ class TestFileFormats:
                 record = load_hamiltonian(path)
                 assert record.num_particles == (1, 1)
                 assert record.hamiltonian.terms == pauli.terms
-            loaded = load_pseudopotential({str(fixture)!r})
-            again = save_pseudopotential(
-                loaded, os.path.join({str(tmp_path)!r}, "pp.parquet"), stride=1)
-            assert load_pseudopotential(again).symbol == loaded.symbol
             from qiskit import QuantumCircuit, transpile
             circuit = QuantumCircuit(2)
             circuit.h(0)

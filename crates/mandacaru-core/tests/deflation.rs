@@ -1,5 +1,5 @@
 use mandacaru_core::{
-    quantum::{evolution, optimizer, CachedProblem, Encoding, Operator, SolveOptions, C64},
+    quantum::{evolution, optimizer, Encoding, Operator, QuantumProblem, SolveOptions, C64},
     Context,
 };
 
@@ -17,7 +17,7 @@ fn sequential_deflation_finds_unbiased_orthogonal_levels_with_independent_restar
             ],
         )
         .unwrap();
-        let p = CachedProblem::new(
+        let p = QuantumProblem::new(
             &ctx,
             Encoding::new("jordan_wigner", 4, [1, 0]).unwrap(),
             h,

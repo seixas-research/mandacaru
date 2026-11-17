@@ -17,6 +17,11 @@ analytic functions through every method and option.  Each case records its
 samples); the small ones also keep the whole array.  The tolerance is
 ``1e-9`` relative to the function's peak (the residuals, which are
 ``1 - (a number near one)``, carry an absolute floor of ``1e-13``).
+
+The 24 cases that read Cu, Ag, Au and Pt from the shipped library were re-taken on 2026-11-16
+from the regenerated library (file format 3) by the production filter: they are self-pins of the
+native filter, not Python numbers (``library_refreeze`` in ``radial_filter.json``). The cases with
+stored inputs and the analytic ones still hold the 2026-10-30 Python numbers.
 """
 
 from __future__ import annotations

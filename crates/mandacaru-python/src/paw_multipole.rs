@@ -289,13 +289,17 @@ fn paw_projector_basis_transform<'py>(
 ) -> PyResult<(Array<'py, f64>, Array<'py, f64>)> {
     let n = vanderbilt.shape()[0];
     if vanderbilt.shape() != [n, n] || coupling.shape() != [n, n] || overlap.shape() != [n, n] {
-        return Err(pyo3::exceptions::PyValueError::new_err("projector matrices must be square and have the same shape"));
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "projector matrices must be square and have the same shape",
+        ));
     }
     let (v, _a) = copy(&context.inner, &vanderbilt)?;
     let (c, _b) = copy(&context.inner, &coupling)?;
     let (o, _c) = copy(&context.inner, &overlap)?;
     let (d_raw, q_raw) = py
-        .detach(|| mandacaru_core::paw::basis_blocks::projector_basis_transform(&v, &c, &o, n, basis))
+        .detach(|| {
+            mandacaru_core::paw::basis_blocks::projector_basis_transform(&v, &c, &o, n, basis)
+        })
         .map_err(error)?;
     Ok((array(py, &[n, n], d_raw)?, array(py, &[n, n], q_raw)?))
 }
@@ -311,13 +315,19 @@ fn paw_multipole_transform<'py>(
     let n1 = b1.shape()[0];
     let n2 = b2.shape()[0];
     if b1.shape() != [n1, n1] || b2.shape() != [n2, n2] || delta.shape() != [n1, n2] {
-        return Err(pyo3::exceptions::PyValueError::new_err("multipole matrices have incompatible shapes"));
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "multipole matrices have incompatible shapes",
+        ));
     }
     let (b1_buf, _a) = copy(&context.inner, &b1)?;
     let (b2_buf, _b) = copy(&context.inner, &b2)?;
     let (delta_buf, _c) = copy(&context.inner, &delta)?;
     let res = py
-        .detach(|| mandacaru_core::paw::basis_blocks::multipole_transform(&b1_buf, n1, &b2_buf, n2, &delta_buf))
+        .detach(|| {
+            mandacaru_core::paw::basis_blocks::multipole_transform(
+                &b1_buf, n1, &b2_buf, n2, &delta_buf,
+            )
+        })
         .map_err(error)?;
     array(py, &[n1, n2], res)
 }
@@ -388,7 +398,9 @@ fn paw_atom_multipole_blocks<'py>(
     for (k, v) in deltas_dict {
         let key_tuple: (usize, usize, usize) = k.extract()?;
         let arr: PyReadonlyArray2<'py, f64> = v.extract()?;
-        let slice = arr.as_slice().map_err(|e| PyValueError::new_err(e.to_string()))?;
+        let slice = arr
+            .as_slice()
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
         deltas.insert(key_tuple, slice.to_vec());
     }
 
@@ -400,7 +412,11 @@ fn paw_atom_multipole_blocks<'py>(
     }
 
     let blocks = py
-        .detach(|| mandacaru_core::paw::basis_blocks::atom_multipole_blocks(&specs, real, &deltas, &strides))
+        .detach(|| {
+            mandacaru_core::paw::basis_blocks::atom_multipole_blocks(
+                &specs, real, &deltas, &strides,
+            )
+        })
         .map_err(error)?;
 
     let mut out = Vec::with_capacity(blocks.len());

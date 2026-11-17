@@ -1,7 +1,8 @@
 //! The threaded state-vector actions (`quantum::parallel`): a Pauli sum and its sparse store,
 //! applied on a particle sector and on a whole register large enough to split across threads,
 //! give the same bits on one thread and on four, and agree with a per-term scatter, for a dense
-//! input (the threaded gather) and a sparse one (the serial scatter of its nonzero columns). A
+//! input (the threaded gather) and a sparse one (the scatter of its nonzero columns, split over
+//! the workers with each row's additions in the serial order, so one thread is the serial scatter). A
 //! product ansatz of excitation rotations (the forward sweep, and the fused adjoint step with its
 //! overlap) gives the same energy, gradient and state on every thread count, in both storage
 //! precisions.
@@ -31,7 +32,10 @@ fn operator(ctx: &Context, n: usize, groups: usize) -> (Operator, Vec<(u64, u64,
             if x == 0 && z == 0 {
                 continue;
             }
-            let c = C64::new((next() % 2001) as f64 / 1000. - 1., (next() % 2001) as f64 / 1000. - 1.);
+            let c = C64::new(
+                (next() % 2001) as f64 / 1000. - 1.,
+                (next() % 2001) as f64 / 1000. - 1.,
+            );
             raw.push((x, z, c));
         }
     }
@@ -62,7 +66,11 @@ fn scatter(basis: &Basis, raw: &[(u64, u64, C64)], input: &[C64]) -> Vec<C64> {
         for &(x, z, c) in raw {
             if let Some(row) = basis.index(ket ^ x) {
                 let i = C64::new(0., 1.).powi((x & z).count_ones() as i32);
-                let sign = if (ket & z).count_ones() % 2 == 0 { 1. } else { -1. };
+                let sign = if (ket & z).count_ones() % 2 == 0 {
+                    1.
+                } else {
+                    -1.
+                };
                 out[row] += c * i * sign * input[column];
             }
         }
@@ -78,14 +86,20 @@ fn state(d: usize, dense: bool) -> Vec<C64> {
             if zero {
                 C64::default()
             } else {
-                C64::new(((k * 37) % 101) as f64 / 101. - 0.5, ((k * 53) % 89) as f64 / 89. - 0.5)
+                C64::new(
+                    ((k * 37) % 101) as f64 / 101. - 0.5,
+                    ((k * 53) % 89) as f64 / 89. - 0.5,
+                )
             }
         })
         .collect()
 }
 
 fn bits(values: &[C64]) -> Vec<(u64, u64)> {
-    values.iter().map(|v| (v.re.to_bits(), v.im.to_bits())).collect()
+    values
+        .iter()
+        .map(|v| (v.re.to_bits(), v.im.to_bits()))
+        .collect()
 }
 
 fn check(basis_of: impl Fn(&Context) -> Basis, n: usize) {
@@ -102,22 +116,46 @@ fn check_input(basis_of: &impl Fn(&Context) -> Basis, n: usize, dense: bool) {
         let basis = basis_of(&ctx);
         let (op, raw) = operator(&ctx, n, 120);
         let input = state(basis.len(), dense);
-        assert!(basis.len() * op.terms.len() >= 1 << 20, "the action must cross the parallel threshold");
+        assert!(
+            basis.len() * op.terms.len() >= 1 << 20,
+            "the action must cross the parallel threshold"
+        );
         let out = op.apply(&ctx, &basis, &input).unwrap();
         let reference = scatter(&basis, &raw, &input);
         let scale = reference.iter().map(|v| v.norm()).fold(0., f64::max);
-        let error = out.as_slice().iter().zip(&reference).map(|(a, b)| (a - b).norm()).fold(0., f64::max);
-        assert!(error <= 1e-12 * scale, "{threads} threads, dense {dense}: action vs scatter {error:e}");
+        let error = out
+            .as_slice()
+            .iter()
+            .zip(&reference)
+            .map(|(a, b)| (a - b).norm())
+            .fold(0., f64::max);
+        assert!(
+            error <= 1e-12 * scale,
+            "{threads} threads, dense {dense}: action vs scatter {error:e}"
+        );
         let matrix = SparseMatrix::new(&ctx, &basis, &op).unwrap();
         let mut sparse = vec![C64::default(); basis.len()];
         matrix.apply_into(&input, &mut sparse);
-        let error = sparse.iter().zip(&reference).map(|(a, b)| (a - b).norm()).fold(0., f64::max);
-        assert!(error <= 1e-12 * scale, "{threads} threads, dense {dense}: sparse store vs scatter {error:e}");
+        let error = sparse
+            .iter()
+            .zip(&reference)
+            .map(|(a, b)| (a - b).norm())
+            .fold(0., f64::max);
+        assert!(
+            error <= 1e-12 * scale,
+            "{threads} threads, dense {dense}: sparse store vs scatter {error:e}"
+        );
         results.push(bits(out.as_slice()));
         sparse_results.push(bits(&sparse));
     }
-    assert!(results[0] == results[1], "the Pauli action depends on the thread count");
-    assert!(sparse_results[0] == sparse_results[1], "the sparse action depends on the thread count");
+    assert!(
+        results[0] == results[1],
+        "the Pauli action depends on the thread count"
+    );
+    assert!(
+        sparse_results[0] == sparse_results[1],
+        "the sparse action depends on the thread count"
+    );
 }
 
 #[test]
@@ -150,15 +188,23 @@ fn many_actions_spread_over_the_workers_are_each_the_single_action() {
             })
             .collect();
         let views: Vec<&[C64]> = inputs.iter().map(Vec::as_slice).collect();
-        let each = op.apply_each(&basis, &views, false, |_, row| bits(row)).unwrap();
+        let each = op
+            .apply_each(&basis, &views, false, |_, row| bits(row))
+            .unwrap();
         for (k, input) in inputs.iter().enumerate() {
             let single = op.apply(&ctx, &basis, input).unwrap();
-            assert!(each[k] == bits(single.as_slice()), "{threads} threads, input {k}: the many-action route differs from the action");
+            assert!(
+                each[k] == bits(single.as_slice()),
+                "{threads} threads, input {k}: the many-action route differs from the action"
+            );
         }
         assert!(basis.len() * op.terms.len() >= 1 << 18);
         runs.push(each);
     }
-    assert!(runs[0] == runs[1] && runs[0] == runs[2], "the many-action route depends on the thread count");
+    assert!(
+        runs[0] == runs[1] && runs[0] == runs[2],
+        "the many-action route depends on the thread count"
+    );
 }
 
 /// A Hubbard chain of `sites` sites (spin-blocked modes: `spin * sites + site`).
@@ -169,14 +215,26 @@ fn hubbard(ctx: &Context, encoding: &Encoding, sites: usize) -> Operator {
         for site in 0..sites - 1 {
             let (i, j) = (spin * sites + site, spin * sites + site + 1);
             for (p, q) in [(i, j), (j, i)] {
-                h = h.add(ctx, &encoding.monomial(ctx, &[(p, true), (q, false)]).unwrap(), C64::new(-1., 0.)).unwrap();
+                h = h
+                    .add(
+                        ctx,
+                        &encoding.monomial(ctx, &[(p, true), (q, false)]).unwrap(),
+                        C64::new(-1., 0.),
+                    )
+                    .unwrap();
             }
         }
     }
     for site in 0..sites {
         let (up, down) = (site, sites + site);
         h = h
-            .add(ctx, &encoding.monomial(ctx, &[(up, true), (up, false), (down, true), (down, false)]).unwrap(), C64::new(4., 0.))
+            .add(
+                ctx,
+                &encoding
+                    .monomial(ctx, &[(up, true), (up, false), (down, true), (down, false)])
+                    .unwrap(),
+                C64::new(4., 0.),
+            )
             .unwrap();
     }
     h
@@ -196,9 +254,10 @@ fn product_run(
     let ctx = Context::new(Some(threads), 1 << 30).unwrap();
     let encoding = Encoding::new("jordan_wigner", modes, electrons).unwrap();
     let h = hubbard(&ctx, &encoding, modes / 2);
-    let mut problem = mandacaru_core::quantum::CachedProblem::new(&ctx, encoding, h, true, false, true)
-        .unwrap()
-        .with_precision(precision);
+    let mut problem =
+        mandacaru_core::quantum::QuantumProblem::new(&ctx, encoding, h, true, false, true)
+            .unwrap()
+            .with_precision(precision);
     let pool = mandacaru_core::quantum::pools::build(&ctx, &problem.encoding, "ceo", true).unwrap();
     let mut combined = Vec::new();
     let mut members = Vec::new();
@@ -210,7 +269,10 @@ fn product_run(
         }
     }
     let half = operators / 2;
-    let (combined_step, member_step) = ((combined.len() / half).max(1), (members.len() / half).max(1));
+    let (combined_step, member_step) = (
+        (combined.len() / half).max(1),
+        (members.len() / half).max(1),
+    );
     let chosen: Vec<_> = combined
         .into_iter()
         .step_by(combined_step)
@@ -221,10 +283,15 @@ fn product_run(
     assert_eq!(chosen.len(), operators);
     problem.pool = chosen;
     let indices: Vec<usize> = (0..operators).collect();
-    let theta: Vec<f64> = (0..operators).map(|k| 0.3 * ((k as f64) * 1.7 + 0.4).sin()).collect();
+    let theta: Vec<f64> = (0..operators)
+        .map(|k| 0.3 * ((k as f64) * 1.7 + 0.4).sin())
+        .collect();
     let evaluation = problem.evaluate(&indices, &theta, true).unwrap();
     // The analytic gradient against a central difference of the same energy.
-    for k in [0, operators / 2, operators - 1].into_iter().take(derivatives) {
+    for k in [0, operators / 2, operators - 1]
+        .into_iter()
+        .take(derivatives)
+    {
         let step = 1e-5;
         let mut plus = theta.clone();
         plus[k] += step;
@@ -233,7 +300,11 @@ fn product_run(
         let difference = (problem.evaluate(&indices, &plus, true).unwrap().energy
             - problem.evaluate(&indices, &minus, true).unwrap().energy)
             / (2. * step);
-        assert!((difference - evaluation.gradient[k]).abs() < 1e-7, "{k}: {difference} vs {}", evaluation.gradient[k]);
+        assert!(
+            (difference - evaluation.gradient[k]).abs() < 1e-7,
+            "{k}: {difference} vs {}",
+            evaluation.gradient[k]
+        );
     }
     let state = match precision {
         Precision::Float64 => bits(evaluation.state.complex128().unwrap()),
@@ -245,23 +316,62 @@ fn product_run(
             .map(|v| (v.re.to_bits() as u64, v.im.to_bits() as u64))
             .collect(),
     };
-    (evaluation.energy.to_bits(), evaluation.gradient.iter().map(|g| g.to_bits()).collect(), state)
+    (
+        evaluation.energy.to_bits(),
+        evaluation.gradient.iter().map(|g| g.to_bits()).collect(),
+        state,
+    )
 }
 
-fn assert_product_runs_agree(modes: usize, electrons: [usize; 2], operators: usize, rows_at_least: usize, thread_counts: &[usize], derivatives: usize, precision: Precision) {
+fn assert_product_runs_agree(
+    modes: usize,
+    electrons: [usize; 2],
+    operators: usize,
+    rows_at_least: usize,
+    thread_counts: &[usize],
+    derivatives: usize,
+    precision: Precision,
+) {
     let encoding_rows = {
         let ctx = Context::new(Some(1), 1 << 30).unwrap();
-        Basis::new(&ctx, &Encoding::new("jordan_wigner", modes, electrons).unwrap(), true).unwrap().len()
+        Basis::new(
+            &ctx,
+            &Encoding::new("jordan_wigner", modes, electrons).unwrap(),
+            true,
+        )
+        .unwrap()
+        .len()
     };
     assert!(encoding_rows >= rows_at_least, "{encoding_rows} rows");
     let runs: Vec<_> = thread_counts
         .iter()
-        .map(|&threads| (threads, product_run(threads, modes, electrons, operators, if threads == 1 { derivatives } else { 0 }, precision)))
+        .map(|&threads| {
+            (
+                threads,
+                product_run(
+                    threads,
+                    modes,
+                    electrons,
+                    operators,
+                    if threads == 1 { derivatives } else { 0 },
+                    precision,
+                ),
+            )
+        })
         .collect();
     for (threads, run) in &runs[1..] {
-        assert!(runs[0].1 .0 == run.0, "the energy depends on the thread count ({threads})");
-        assert!(runs[0].1 .1 == run.1, "the gradient depends on the thread count ({threads})");
-        assert!(runs[0].1 .2 == run.2, "the state depends on the thread count ({threads})");
+        assert!(
+            runs[0].1 .0 == run.0,
+            "the energy depends on the thread count ({threads})"
+        );
+        assert!(
+            runs[0].1 .1 == run.1,
+            "the gradient depends on the thread count ({threads})"
+        );
+        assert!(
+            runs[0].1 .2 == run.2,
+            "the state depends on the thread count ({threads})"
+        );
     }
 }
 

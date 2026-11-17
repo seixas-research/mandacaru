@@ -1,6 +1,6 @@
 //! AS-9: the analytic stress of a scalar collinear HSE06 crystal on a REAL converged SCF, against
 //! the reconverged free-energy finite difference of the same discretized energy (the frozen
-//! Richardson oracle of `freeze_periodic_strain.py`): the triclinic LiH box at Gamma with both
+//! Richardson oracle of `periodic_freeze_snapshot.rs`): the triclinic LiH box at Gamma with both
 //! divergence treatments of the exact exchange. The stress is the semilocal one with `W` from the
 //! bands of the hybrid Hamiltonian plus the explicit exchange terms (H-1..H-6). Needs
 //! `MANDACARU_PAW_PATH`; the Si cell on the whole 2x2x2 mesh is

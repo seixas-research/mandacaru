@@ -136,4 +136,3 @@ pub unsafe fn mandacaru_fourier_bessel_transform(
         }
     });
 }
-

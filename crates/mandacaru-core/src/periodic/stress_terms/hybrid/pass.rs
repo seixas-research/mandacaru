@@ -36,6 +36,7 @@ use crate::{
             OccupiedStates, PairInputs, Part, Screening,
         },
         setup::strain_grid::VOIGT,
+        star::{self, Reduction},
         Crystal,
     },
     product,
@@ -132,9 +133,14 @@ pub(super) fn run<M: MatrixSource + Sync>(
     }
     // On a time-reversal-halved mesh the partner at `-k` of a listed point moves with the
     // conjugates of its tangents.
+    // On a mesh reduced by space-group operations the sources are the images of the listed points
+    // (`star`): the ket of an image is the listed point's moved state rotated with it, along the
+    // same strain direction (the directions of a reduced mesh are invariant under its operations, or
+    // averaged over them afterwards), so no partner tangents are needed.
+    let reduction = star::reduced(c).then(|| Reduction::new(c)).transpose()?;
     let reversed: Vec<Option<Vec<Buffer<C64>>>> = (0..nk)
         .map(|k| {
-            if has_partner(&c.points, k) {
+            if reduction.is_some() || has_partner(&c.points, k) {
                 return Ok(None);
             }
             tangent[k]
@@ -242,6 +248,7 @@ pub(super) fn run<M: MatrixSource + Sync>(
                     forms: &forms,
                     prefactor: source.weight * dv / n as f64,
                     source,
+                    reduction: reduction.as_ref(),
                     bra_tangents: &tangent[k],
                     ket_tangents: if source.partner {
                         reversed[source.point]
@@ -303,6 +310,8 @@ struct PairData<'a> {
     forms: &'a [Buffer<C64>],
     prefactor: f64,
     source: &'a OccupiedStates,
+    /// The rotation of the states of a reduced mesh, `None` on a whole or halved one.
+    reduction: Option<&'a Reduction>,
     bra_tangents: &'a [Buffer<C64>],
     ket_tangents: &'a [Buffer<C64>],
     directions: &'a [[[f64; 3]; 3]],
@@ -442,6 +451,10 @@ fn state_terms(c: &Crystal, lane: &mut StateLane, pd: &PairData, state: usize) -
                 }
             }
             moved.push(buffer);
+        }
+        if let (Some(image), Some(reduction)) = (source.rotation.as_ref(), pd.reduction) {
+            let input: Vec<&[C64]> = moved.iter().map(|b| b.as_slice()).collect();
+            moved = reduction.grid_states(c, c.points[source.point].k, image, &input)?;
         }
         let ket = PairInputs {
             u_k: pd.u,

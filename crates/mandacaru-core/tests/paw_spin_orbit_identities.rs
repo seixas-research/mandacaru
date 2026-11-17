@@ -1,10 +1,8 @@
-//! What the spin-orbit block must satisfy besides matching the freeze: the Dirac atom's levels
-//! average to its scalar levels, each `j` is recovered exactly from the stored average and
-//! `L.S` pair, the reference levels of the two branches split as the Dirac atom's do, and the
-//! `(2j+1)`-weighted average of the branches reduces to the scalar channel. The shipped
-//! `lda-fr` file is a read-only cross-check where its recipe is reproducible.
-mod paw_assemble_support;
-mod paw_generate_support;
+//! What the spin-orbit block must satisfy: the Dirac atom's levels average to its scalar levels,
+//! each `j` is recovered exactly from the stored average and `L.S` pair, the reference levels of
+//! the two branches split as the Dirac atom's do, and the `(2j+1)`-weighted average of the
+//! branches reduces to the scalar channel. The datasets are generated with the production
+//! recipe of each element.
 mod paw_spin_orbit_support;
 
 use mandacaru_core::models::configuration::valence_subshells;

@@ -44,8 +44,11 @@ impl Operations {
     /// The heap `n` operations on `atoms` atoms take.
     pub fn bytes(n: usize, atoms: usize) -> Result<usize> {
         let each = product(&[atoms, std::mem::size_of::<usize>()])?
-            .checked_add(std::mem::size_of::<[i32; 9]>() + std::mem::size_of::<[f64; 3]>()
-                         + std::mem::size_of::<Vec<usize>>())
+            .checked_add(
+                std::mem::size_of::<[i32; 9]>()
+                    + std::mem::size_of::<[f64; 3]>()
+                    + std::mem::size_of::<Vec<usize>>(),
+            )
             .ok_or(Error::Overflow)?;
         product(&[n, each])
     }
@@ -75,8 +78,11 @@ impl Operations {
             if t.len() != 3 {
                 return Err(invalid("a translation needs 3 numbers"));
             }
-            out.translations.push([real(&t[0], "a translation")?, real(&t[1], "a translation")?,
-                                   real(&t[2], "a translation")?]);
+            out.translations.push([
+                real(&t[0], "a translation")?,
+                real(&t[1], "a translation")?,
+                real(&t[2], "a translation")?,
+            ]);
         }
         for m in rows("atom_maps")? {
             let entries = list(m, "an atom map")?;
@@ -476,9 +482,15 @@ impl Description {
 
     /// The `setup` and `sites` blocks of a snapshot: the exact inverse of [`Description::parse`].
     pub fn blocks(&self) -> (Value, Value) {
-        let tables: Vec<Value> = self.tables.iter().map(|t| serde_json::json!({
-            "l": t.l, "r": t.r, "values": t.values, "confinement": t.confinement,
-        })).collect();
+        let tables: Vec<Value> = self
+            .tables
+            .iter()
+            .map(|t| {
+                serde_json::json!({
+                    "l": t.l, "r": t.r, "values": t.values, "confinement": t.confinement,
+                })
+            })
+            .collect();
         let setup = serde_json::json!({
             "version": 1,
             "sigma_bohr": self.sigma,

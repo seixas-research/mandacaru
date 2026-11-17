@@ -1,5 +1,8 @@
-//! The strain derivative of the periodic screened exact exchange (AS-9, AS-10): scalar collinear
-//! and spinor crystals on the whole k mesh.
+//! The strain derivative of the periodic screened exact exchange (AS-9, AS-10, SH-5d): scalar
+//! collinear and spinor crystals on the whole k mesh, its time-reversal half, or a mesh reduced by
+//! space-group operations (the sources are then the rotated images of the listed points,
+//! [`crate::periodic::star`]; the ket tangent of an image is the listed point's, rotated with it,
+//! along a strain direction the operations leave invariant, or averaged over them afterwards).
 //!
 //! The Mermin free energy of a hybrid is `F = E_semilocal[D; eps] + E_x[D; eps] - T S` with the
 //! exchange `E_x = -(a/2) mult sum_{k,q} w_k w_q (dv/N) sum_{m,n} sum_G v(Q_G) |F_mn(G)|^2 + E_oc[P]`,
@@ -41,11 +44,11 @@ use crate::{
         invalid,
         screened_exchange::{ExxDivTreatment, Screening},
         setup::{
+            projection_table::SetupTables,
             provider::Inputs,
             pulay::{Matrix, Mesh},
             shells::Shells,
             spheres::Projector,
-            projection_table::SetupTables,
             strain_samples::StrainSamples,
         },
         Crystal,

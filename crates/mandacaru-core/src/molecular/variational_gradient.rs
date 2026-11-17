@@ -181,7 +181,8 @@ fn lift_two(two_t: Vec<f64>, rt: &DMatrix<f64>) -> Vec<f64> {
             let mut sum = 0.;
             for source in 0..t {
                 index[axis] = source;
-                let o_flat = ((index[0] * old[1] + index[1]) * old[2] + index[2]) * old[3] + index[3];
+                let o_flat =
+                    ((index[0] * old[1] + index[1]) * old[2] + index[2]) * old[3] + index[3];
                 sum += rt[(target, source)] * current[o_flat];
             }
             *out = sum;
@@ -747,7 +748,9 @@ fn unrestricted(
             let high = nocc[0].max(nocc[1]);
             let occupations = &rotation.occupations;
             if occupations.len() != m || high >= m {
-                return Err(invalid("the MP2 rotation does not match the unrestricted reference"));
+                return Err(invalid(
+                    "the MP2 rotation does not match the unrestricted reference",
+                ));
             }
             // The adjoint of the virtual natural orbitals (eigenvectors of the MP2 density's
             // block from `high` up), zero inside an exactly degenerate cluster.
@@ -1001,7 +1004,8 @@ fn block4(frame: &Frame, c: [&DMatrix<f64>; 4]) -> Vec<f64> {
             let mut sum = 0.;
             for source in 0..m {
                 index[axis] = source;
-                let o_flat = ((index[0] * old[1] + index[1]) * old[2] + index[2]) * old[3] + index[3];
+                let o_flat =
+                    ((index[0] * old[1] + index[1]) * old[2] + index[2]) * old[3] + index[3];
                 sum += c[axis][(source, target)] * current[o_flat];
             }
             *out = sum;
@@ -1108,7 +1112,11 @@ fn open_shell_mp2(frame: &Frame, h: &DMatrix<f64>, nocc: [usize; 2]) -> Result<O
     let mut same = Vec::with_capacity(2);
     for spin in &spins {
         let (o, v) = (spin.eo.len(), spin.ev.len());
-        let g = if o > 0 && v > 0 { block4(frame, [&spin.co, &spin.co, &spin.cv, &spin.cv]) } else { vec![] };
+        let g = if o > 0 && v > 0 {
+            block4(frame, [&spin.co, &spin.co, &spin.cv, &spin.cv])
+        } else {
+            vec![]
+        };
         let at = |i: usize, j: usize, a: usize, b: usize| ((i * o + j) * v + a) * v + b;
         let mut t = vec![0.; g.len()];
         let mut denominator = vec![0.; g.len()];
@@ -1208,7 +1216,14 @@ fn open_shell_mp2(frame: &Frame, h: &DMatrix<f64>, nocc: [usize; 2]) -> Result<O
         density += &spin.co * occ * spin.co.transpose() + &spin.cv * vir * spin.cv.transpose();
     }
     let density = sym(&density);
-    Ok(OpenShellMp2 { spins, same, t_ab, d_ab, correlation, density })
+    Ok(OpenShellMp2 {
+        spins,
+        same,
+        t_ab,
+        d_ab,
+        correlation,
+        density,
+    })
 }
 
 fn open_shell_mp2_lagrangian(
@@ -1223,7 +1238,14 @@ fn open_shell_mp2_lagrangian(
     let m = frame.m;
     let high = nocc[0].max(nocc[1]);
     let occupied = |s: usize, k: usize| if k < nocc[s] { 1. } else { 0. };
-    let OpenShellMp2 { spins, same, t_ab, d_ab, correlation, density } = open_shell_mp2(frame, h, nocc)?;
+    let OpenShellMp2 {
+        spins,
+        same,
+        t_ab,
+        d_ab,
+        correlation,
+        density,
+    } = open_shell_mp2(frame, h, nocc)?;
     if (correlation - correlation_energy).abs() > 1e-9 * correlation_energy.abs().max(1e-3) {
         return Err(crate::Error::Unsupported(format!(
             "the natural-orbital response of this unrestricted selection: the rebuilt open-shell MP2 correlation \
@@ -1255,8 +1277,14 @@ fn open_shell_mp2_lagrangian(
         )));
     }
     // The multipliers: tbar = (dL_D / dt) / D in the semicanonical blocks.
-    let bar_v: Vec<DMatrix<f64>> = spins.iter().map(|s| s.cv.transpose() * d_bar * &s.cv).collect();
-    let bar_o: Vec<DMatrix<f64>> = spins.iter().map(|s| s.co.transpose() * d_bar * &s.co).collect();
+    let bar_v: Vec<DMatrix<f64>> = spins
+        .iter()
+        .map(|s| s.cv.transpose() * d_bar * &s.cv)
+        .collect();
+    let bar_o: Vec<DMatrix<f64>> = spins
+        .iter()
+        .map(|s| s.co.transpose() * d_bar * &s.co)
+        .collect();
     let mut p_bar = DMatrix::<f64>::zeros(m, m);
     let mut two_bar = vec![0.; m.pow(4)];
     let at4 = |p: usize, q: usize, r: usize, s: usize| ((p * m + q) * m + r) * m + s;
@@ -1280,7 +1308,8 @@ fn open_shell_mp2_lagrangian(
                 let mut sum = 0.;
                 for source in 0..k[axis] {
                     index[axis] = source;
-                    let o_flat = ((index[0] * old[1] + index[1]) * old[2] + index[2]) * old[3] + index[3];
+                    let o_flat =
+                        ((index[0] * old[1] + index[1]) * old[2] + index[2]) * old[3] + index[3];
                     sum += sets[axis][(target, source)] * current[o_flat];
                 }
                 *out = sum;
@@ -1295,7 +1324,11 @@ fn open_shell_mp2_lagrangian(
         .iter()
         .map(|s| {
             let (o, v) = (s.eo.len(), s.ev.len());
-            (DMatrix::zeros(o, o), DMatrix::zeros(v, v), DMatrix::zeros(o, v))
+            (
+                DMatrix::zeros(o, o),
+                DMatrix::zeros(v, v),
+                DMatrix::zeros(o, v),
+            )
         })
         .collect();
     for (s, spin) in spins.iter().enumerate() {
@@ -1322,8 +1355,14 @@ fn open_shell_mp2_lagrangian(
                     for b in 0..v {
                         // Virtual: sum_e bar_ae t_ijeb; occupied (-1/2 sum t_ikab t_jkab): -sum_l bar_il t_ljab.
                         let x: f64 = (0..v).map(|e| bar[(a, e)] * t[at(i, j, e, b)]).sum::<f64>()
-                            - (0..o).map(|l| bar_occ[(i, l)] * t[at(l, j, a, b)]).sum::<f64>();
-                        tbar[at(i, j, a, b)] = if x == 0. { 0. } else { x / denominator[at(i, j, a, b)] };
+                            - (0..o)
+                                .map(|l| bar_occ[(i, l)] * t[at(l, j, a, b)])
+                                .sum::<f64>();
+                        tbar[at(i, j, a, b)] = if x == 0. {
+                            0.
+                        } else {
+                            x / denominator[at(i, j, a, b)]
+                        };
                     }
                 }
             }
@@ -1365,10 +1404,19 @@ fn open_shell_mp2_lagrangian(
             for j in 0..ob {
                 for a in 0..va {
                     for c in 0..vb {
-                        let x: f64 = 2. * (0..va).map(|b| bar_a[(a, b)] * t_ab[ab(i, j, b, c)]).sum::<f64>()
-                            + 2. * (0..vb).map(|d| bar_b[(c, d)] * t_ab[ab(i, j, a, d)]).sum::<f64>()
-                            - 2. * (0..oa).map(|k| occ_a[(i, k)] * t_ab[ab(k, j, a, c)]).sum::<f64>()
-                            - 2. * (0..ob).map(|k| occ_b[(j, k)] * t_ab[ab(i, k, a, c)]).sum::<f64>();
+                        let x: f64 = 2.
+                            * (0..va)
+                                .map(|b| bar_a[(a, b)] * t_ab[ab(i, j, b, c)])
+                                .sum::<f64>()
+                            + 2. * (0..vb)
+                                .map(|d| bar_b[(c, d)] * t_ab[ab(i, j, a, d)])
+                                .sum::<f64>()
+                            - 2. * (0..oa)
+                                .map(|k| occ_a[(i, k)] * t_ab[ab(k, j, a, c)])
+                                .sum::<f64>()
+                            - 2. * (0..ob)
+                                .map(|k| occ_b[(j, k)] * t_ab[ab(i, k, a, c)])
+                                .sum::<f64>();
                         tbar[ab(i, j, a, c)] = x / d_ab[ab(i, j, a, c)];
                     }
                 }
@@ -1404,7 +1452,8 @@ fn open_shell_mp2_lagrangian(
     // The Fock-block coefficients in V, then f^s = h + J[D_a + D_b] - K[D_s] into P and Gamma.
     for (s, spin) in spins.iter().enumerate() {
         let (oo, vv, ov) = &f_bar[s];
-        let l = sym(&(&spin.co * oo * spin.co.transpose() + &spin.cv * vv * spin.cv.transpose()
+        let l = sym(&(&spin.co * oo * spin.co.transpose()
+            + &spin.cv * vv * spin.cv.transpose()
             + &spin.co * ov * spin.cv.transpose()));
         p_bar += &l;
         for p in 0..m {

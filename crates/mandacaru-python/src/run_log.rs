@@ -6,13 +6,16 @@
 use super::error;
 use super::molecular::PyIntegrals;
 use super::persistence::PySnapshot;
-use super::quantum::PyProblem;
-use mandacaru_core::{derived, quantum::{pools, Encoding}};
+use super::quantum::PyQuantumProblem;
+use mandacaru_core::{
+    derived,
+    quantum::{pools, Encoding},
+};
 use pyo3::{prelude::*, types::PyDict};
 
 /// Number of Pauli terms of the problem's qubit Hamiltonian.
 #[pyfunction]
-fn problem_term_count(problem: PyRef<'_, PyProblem>) -> usize {
+fn problem_term_count(problem: PyRef<'_, PyQuantumProblem>) -> usize {
     problem.inner.hamiltonian.terms.len()
 }
 
@@ -41,7 +44,10 @@ fn integrals_report<'py>(
     let cholesky = report.as_ref().and_then(|r| r.cholesky);
     out.set_item("cholesky_rank", cholesky.map(|(rank, _)| rank))?;
     out.set_item("cholesky_residual", cholesky.and_then(|(_, r)| r))?;
-    out.set_item("cholesky_tolerance_ha", integrals.inner.cholesky_tolerance())?;
+    out.set_item(
+        "cholesky_tolerance_ha",
+        integrals.inner.cholesky_tolerance(),
+    )?;
     out.set_item("n_orbitals", integrals.inner.m())?;
     out.set_item(
         "atom_of_orbital",
@@ -108,10 +114,16 @@ fn paw_diffuse_box<'py>(
     cuts: Vec<Vec<f64>>,
 ) -> PyResult<Option<Bound<'py, PyDict>>> {
     let inner = &integrals.inner;
-    let Some(setup) = inner.paw_setup.as_ref().filter(|s| s.diffuse_functions() > 0) else {
+    let Some(setup) = inner
+        .paw_setup
+        .as_ref()
+        .filter(|s| s.diffuse_functions() > 0)
+    else {
         return Ok(None);
     };
-    let report = py.detach(|| setup.diffuse_box(&inner.grid, &cuts)).map_err(error)?;
+    let report = py
+        .detach(|| setup.diffuse_box(&inner.grid, &cuts))
+        .map_err(error)?;
     let out = PyDict::new(py);
     out.set_item("ratios", report.ratios)?;
     out.set_item("rows", report.rows)?;
@@ -154,7 +166,9 @@ fn spin_summary(alpha: u64, beta: u64) -> (f64, u64, bool) {
 /// The spin-orbitals of `n_spatial` spatial orbitals, `2 n_spatial`.
 #[pyfunction]
 fn spin_orbital_count(n_spatial: usize) -> PyResult<usize> {
-    n_spatial.checked_mul(2).ok_or_else(|| error(mandacaru_core::Error::Overflow))
+    n_spatial
+        .checked_mul(2)
+        .ok_or_else(|| error(mandacaru_core::Error::Overflow))
 }
 
 /// The qubits `modes` spin-orbitals need under `mapping` (`Encoding::register_qubits`).

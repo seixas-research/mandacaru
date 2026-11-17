@@ -53,3 +53,26 @@ def test_bad_integration_requests_raise(crystal):
         calc.dos(integration="simpson")
     with pytest.raises(ValueError, match="Gamma-centered"):
         calc.dos(kpts={"size": (4, 1, 1), "gamma": False}, integration="tetrahedron")
+
+
+def test_a_polar_molecule_has_its_dipole_moment_and_a_crystal_raises(crystal):
+    """``get_dipole_moment`` of LiH (PAW-LCAO DZP, LDA): along the bond, from H to Li
+    (Li+ H-), unchanged by a rigid translation of the neutral molecule to the grid's
+    egg-box level, and the same in e Bohr with ``atomic_units=True``. A crystal raises."""
+    def lithium_hydride(**options):
+        atoms = Atoms("LiH", positions=[[0, 0, 0], [0, 0, 1.6]], cell=[6, 6, 6])
+        atoms.center()
+        atoms.calc = Mandacaru(method="dft", basis={"name": "PAW-LCAO", "size": "DZP"},
+                               grid_spacing=0.3, trace=False, **options)
+        return atoms
+
+    atoms = lithium_hydride()
+    moment = atoms.get_dipole_moment()
+    assert moment.shape == (3,)
+    assert moment[2] < -0.5 and max(abs(moment[0]), abs(moment[1])) < 1e-3 * abs(moment[2])
+    atoms.positions += [0.4, -0.3, 0.2]
+    assert np.allclose(atoms.get_dipole_moment(), moment, atol=1e-2 * abs(moment[2]))
+    atomic = lithium_hydride(atomic_units=True).get_dipole_moment()
+    assert np.allclose(atomic * 0.529177210903, moment, rtol=1e-9, atol=1e-12)
+    with pytest.raises(NotImplementedError, match="get_polarization"):
+        crystal.calc.get_dipole_moment()

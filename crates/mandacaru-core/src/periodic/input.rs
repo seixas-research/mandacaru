@@ -343,6 +343,12 @@ pub(super) fn has_partner(points: &[KPoint], q: usize) -> bool {
 /// stand beside several points (an irreducible wedge of the point group would give a wrong
 /// energy and wrong bands with no error). One Gamma point is complete whatever the table says.
 pub(super) fn hybrid_needs_a_complete_mesh(points: &[KPoint], permutations: usize) -> Result<()> {
+    // A table of more than the identity is the point-group reduction of the mesh (SH-5b): the
+    // exchange rotates the states of every listed point to the rest of its star
+    // (`star::Reduction`, which also checks the weights against the stars).
+    if permutations > 1 {
+        return Ok(());
+    }
     let unfolded = |q: usize| {
         let weight = points[q].weight;
         if has_partner(points, q) {
@@ -353,7 +359,7 @@ pub(super) fn hybrid_needs_a_complete_mesh(points: &[KPoint], permutations: usiz
     };
     let first = if points.is_empty() { 0. } else { unfolded(0) };
     let uniform = (0..points.len()).all(|q| (unfolded(q) - first).abs() < 1e-10);
-    if uniform && (permutations == 0 || points.len() == 1) {
+    if uniform && (permutations <= 1 || points.len() == 1) {
         return Ok(());
     }
     Err(crate::Error::Unsupported(
@@ -409,17 +415,32 @@ pub struct CrystalComponents {
 
 impl Crystal {
     pub(crate) fn from_components(ctx: &Context, c: CrystalComponents) -> Result<Self> {
-        let labels = c.description.as_ref()
-            .ok_or_else(|| invalid("native crystal needs channel labels"))?.channels.clone();
+        let labels = c
+            .description
+            .as_ref()
+            .ok_or_else(|| invalid("native crystal needs channel labels"))?
+            .channels
+            .clone();
         // Components must satisfy the same DFT+U capability and table checks as a loaded snapshot.
         let hubbard = super::hubbard::Spec::parse(
             &c.hubbard.as_ref().map_or(Value::Null, |h| h.to_json()),
-            c.p, c.spins, c.spinor, c.precision,
+            c.p,
+            c.spins,
+            c.spinor,
+            c.precision,
         )?;
-        let step: Vec<f64> = (0..3).flat_map(|i| (0..3).map(move |j| c.grid.step[(i, j)])).collect();
-        let points: Vec<Value> = c.points.iter().map(|p| serde_json::json!({
-            "k": p.k, "fractional": p.fractional, "weight": p.weight,
-        })).collect();
+        let step: Vec<f64> = (0..3)
+            .flat_map(|i| (0..3).map(move |j| c.grid.step[(i, j)]))
+            .collect();
+        let points: Vec<Value> = c
+            .points
+            .iter()
+            .map(|p| {
+                serde_json::json!({
+                    "k": p.k, "fractional": p.fractional, "weight": p.weight,
+                })
+            })
+            .collect();
         let metadata = serde_json::json!({
             "schema_version": 1, "representation": "periodic-paw-snapshot",
             "energy_unit": "Ha", "length_unit": "bohr",
@@ -448,7 +469,11 @@ impl Crystal {
         }
         let metadata = metadata.to_string();
         let source = Source::keep(ctx, &metadata)?;
-        let memory = ctx.reserve(4096usize.checked_add(source.resident_bytes()).ok_or(crate::Error::Overflow)?)?;
+        let memory = ctx.reserve(
+            4096usize
+                .checked_add(source.resident_bytes())
+                .ok_or(crate::Error::Overflow)?,
+        )?;
         let crystal = Self {
             context: ctx.clone(),
             grid: c.grid,
@@ -569,7 +594,11 @@ impl Crystal {
             raw.len(),
             m,
             n,
-            if precision == Precision::Float32 { 8 } else { 16 },
+            if precision == Precision::Float32 {
+                8
+            } else {
+                16
+            },
         ])?);
         let points = raw
             .iter()
@@ -707,9 +736,11 @@ impl Crystal {
                 "spinor time-reversal constraint requires a spinor crystal",
             ));
         }
-        if spinor && (spins != 1 || !permutations.is_empty()) {
+        if spinor && (spins != 1 || (!permutations.is_empty() && !time_reversal)) {
             return Err(invalid(
-                "spinor crystals need one spinor block without scalar symmetry averaging",
+                "a spinor crystal needs one spinor block, and symmetry averaging only when it is \
+                 time-reversal symmetric (a magnetization would need the spin rotation of every \
+                 operation)",
             ));
         }
         if points
@@ -731,13 +762,7 @@ impl Crystal {
         if definition.screened_exchange.is_some() {
             hybrid_needs_a_complete_mesh(&points, permutations.len())?;
         }
-        let hubbard = super::hubbard::Spec::parse(
-            &v["hubbard"],
-            p,
-            spins,
-            spinor,
-            precision,
-        )?;
+        let hubbard = super::hubbard::Spec::parse(&v["hubbard"], p, spins, spinor, precision)?;
         let functional = definition.name.to_string();
         let hybrid = match definition.screened_exchange {
             Some(range) => Some(super::hybrid_setup::Hybrid::parse(

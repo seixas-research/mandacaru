@@ -1,12 +1,13 @@
-//! Generation tool, not a gate: re-freezes the reconverged finite-difference oracles of the
-//! HSE06 crystal cases (`reference/periodic_gradients/<case>.json`, displaced atoms, and
+//! Generation tool, not a gate: re-runs ONLY the reconverged finite-difference oracles of the
+//! HSE06 crystal cases (the snapshot and the manifest's `setup` sidecar are those
+//! `periodic_freeze_snapshot.rs` wrote; it re-freezes both with the oracle in one pass) (`reference/periodic_gradients/<case>.json`, displaced atoms, and
 //! `reference/periodic_strain/<case>.json`, strained cells) on the Rust energy. The oracle stays
 //! independent of the analytic gradient and stress: it is the central difference of the converged
 //! free energy of fresh SCFs, Richardson extrapolated over the manifest's three steps.
 //!
 //! Each SCF is a fresh crystal of the live setup (`parse_input_json`, `create_setup`, `build`)
-//! from the request the case was set up with (`reference/periodic_requests/<snapshot>.json`, one
-//! per frozen snapshot: the recipes, the mesh, the filter wave-vector, the node counts):
+//! from the request the case was set up with (`reference/periodic_requests/<snapshot>.json`, or
+//! `strain_<snapshot>.json` for a stress case, one per frozen snapshot: the recipes, the mesh, the filter wave-vector, the node counts):
 //!   * gradient: the same setup request with the displaced atom (fractional coordinates of the
 //!     displaced Cartesian position), the ion width again `1.4 x` the coarsest step of the
 //!     unchanged cell;
@@ -36,27 +37,16 @@ mod periodic_freeze_support;
 mod periodic_gradient_crystals_support;
 mod periodic_stress_crystals_support;
 
-use mandacaru_core::periodic::{screened_exchange::ExxDivTreatment, Options};
-use nalgebra::Matrix3;
-use periodic_freeze_support::{energies_of, free_energy, reference, richardson, Case, Ledger};
+use periodic_freeze_support::{
+    free_energy, gradient_oracle, options_of, reference, request_of, strain_oracle, Case, Ledger,
+};
+use periodic_gradient_crystals_support::gates::PLAN_GATE;
+use periodic_stress_crystals_support::{
+    gates::{plan, PLAN_DIAGONAL},
+    TO_EV_PER_A3,
+};
 use serde_json::{json, Value};
 use std::{path::PathBuf, time::Instant};
-
-fn options_of(manifest: &Value) -> Options {
-    let scf = &manifest["scf"];
-    Options {
-        max_iterations: scf["max_iterations"].as_u64().unwrap() as usize,
-        tolerance: scf["tolerance"].as_f64().unwrap(),
-        density_tolerance: scf["density_tolerance"].as_f64().unwrap(),
-        smearing: mandacaru_core::periodic::spectrum::Smearing::FermiDirac,
-        width: scf["width_ha"].as_f64().unwrap(),
-        mixing: scf["mixing"].as_f64().unwrap(),
-        history: scf["history"].as_u64().unwrap() as usize,
-        exxdiv_treatment: ExxDivTreatment::parse(scf["exxdiv_treatment"].as_str().unwrap())
-            .unwrap(),
-        ..Options::default()
-    }
-}
 
 #[test]
 #[ignore = "generation tool: minutes to hours of SCFs; needs MANDACARU_FREEZE_KIND, _CASE and _WORK"]
@@ -78,16 +68,11 @@ fn refreeze_a_hybrid_crystal_oracle() {
     let mut manifest: Value =
         serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
     let owner = manifest["snapshot"].as_str().unwrap_or(&name).to_string();
-    let request: Value = serde_json::from_str(
-        &std::fs::read_to_string(
-            reference()
-                .join("periodic_requests")
-                .join(format!("{owner}.json")),
-        )
-        .unwrap(),
-    )
-    .unwrap();
-    let case = Case::load(request);
+    let case = Case::load(request_of(&if kind == "strain" {
+        format!("strain_{owner}")
+    } else {
+        owner.clone()
+    }));
     let options = options_of(&manifest);
     let mut ledger =
         Ledger::open(PathBuf::from(&work).join(format!("{folder}_{name}.energies.jsonl")));
@@ -116,77 +101,19 @@ fn refreeze_a_hybrid_crystal_oracle() {
         live - energy
     );
     manifest["free_energy_ha"] = json!(energy);
-
     if kind == "gradient" {
-        let steps_bohr: Vec<f64> = manifest["steps_bohr"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|x| x.as_f64().unwrap())
-            .collect();
-        let steps = [steps_bohr[0], steps_bohr[1], steps_bohr[2]];
-        for entry in manifest["coordinates"].as_array_mut().unwrap() {
-            let (atom, axis) = (
-                entry["atom"].as_u64().unwrap() as usize,
-                entry["axis"].as_u64().unwrap() as usize,
-            );
-            let (energies, central) =
-                energies_of(&mut ledger, &format!("g{atom}{axis}"), &steps, &|h| {
-                    free_energy(&case, &case.setup(Some((atom, axis, h))), &options)
-                });
-            let (r24, r48, rr, floor, extrapolated) = richardson(central);
-            entry["central"] = json!(central);
-            entry["r24"] = json!(r24);
-            entry["r48"] = json!(r48);
-            entry["rr"] = json!(rr);
-            entry["floor_richardson"] = json!(floor);
-            entry["floor_extrapolated"] = json!(extrapolated);
-            entry["free_energies_ha"] = energies;
-        }
+        gradient_oracle(&mut manifest, &case, &options, &mut ledger, PLAN_GATE);
     } else {
-        let strained = |eps: Matrix3<f64>| -> f64 {
-            let cell = (Matrix3::identity() + eps) * case.lattice;
-            let setup = base.with_cell(&case.ctx, &cell).unwrap();
-            free_energy(&case, &setup, &options)
-        };
-        let steps_f: Vec<f64> = manifest["steps"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|x| x.as_f64().unwrap())
-            .collect();
-        let steps = [steps_f[0], steps_f[1], steps_f[2]];
-        for entry in manifest["entries"].as_array_mut().unwrap() {
-            let (a, b) = (
-                entry["a"].as_u64().unwrap() as usize,
-                entry["b"].as_u64().unwrap() as usize,
-            );
-            let (energies, central) = energies_of(&mut ledger, &format!("e{a}{b}"), &steps, &|h| {
-                let mut eps = Matrix3::zeros();
-                eps[(a, b)] = h;
-                strained(eps)
-            });
-            let (r12, r24, rr, floor, extrapolated) = richardson(central);
-            entry["central"] = json!(central);
-            entry["r12"] = json!(r12);
-            entry["r24"] = json!(r24);
-            entry["rr"] = json!(rr);
-            entry["floor_richardson"] = json!(floor);
-            entry["floor_extrapolated"] = json!(extrapolated);
-            entry["free_energies_ha"] = energies;
-        }
-        let (energies, central) = energies_of(&mut ledger, "iso", &steps, &|h| {
-            strained(Matrix3::identity() * h)
-        });
-        let (r12, r24, rr, floor, extrapolated) = richardson(central);
-        let iso = &mut manifest["isotropic"];
-        iso["central"] = json!(central);
-        iso["r12"] = json!(r12);
-        iso["r24"] = json!(r24);
-        iso["rr"] = json!(rr);
-        iso["floor_richardson"] = json!(floor);
-        iso["floor_extrapolated"] = json!(extrapolated);
-        iso["free_energies_ha"] = energies;
+        let volume = manifest["volume_bohr3"].as_f64().unwrap();
+        strain_oracle(
+            &mut manifest,
+            &case,
+            &base,
+            &options,
+            &mut ledger,
+            &|a, b| plan(a, b, volume),
+            3. * PLAN_DIAGONAL / TO_EV_PER_A3 * volume,
+        );
     }
     // The wall time of a run resumed from its ledger says nothing about the oracle: not recorded.
     manifest.as_object_mut().unwrap().remove("seconds");

@@ -20,7 +20,8 @@ use mandacaru_core::{
         gradient::State,
         stress_terms::{
             crystal::{
-                all_entries, crystal_strain, crystal_stress_along, CrystalStrain, Reuse, SpinOrbitInputs,
+                all_entries, crystal_strain, crystal_stress_along, CrystalStrain, Reuse,
+                SpinOrbitInputs,
             },
             Stress, Tensor,
         },

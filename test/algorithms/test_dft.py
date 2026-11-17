@@ -921,10 +921,13 @@ class TestHybrid:
         assert forces[1, 2] == pytest.approx(_numerical_force(atoms, 1, 2),
                                              abs=1e-3)
 
-    def test_periodic_hse06_forces_and_stress_on_crystal(self):
+    def test_periodic_hse06_forces_and_stress_on_crystal(self, monkeypatch):
         """Periodic crystal forces and stress tensor with HSE06 on bulk diamond Silicon: the analytic numbers against
         central differences of the energy computed here (symmetry=False: a hybrid derivative sums the whole mesh)."""
         from ase.build import bulk
+        from mandacaru.integrals import Grid
+        from mandacaru.integrations import setup_block
+        from mandacaru.units import ANGSTROM_TO_BOHR
 
         atoms = bulk("Si", "diamond", a=5.43)
         atoms.calc = Mandacaru(
@@ -935,8 +938,15 @@ class TestHybrid:
             symmetry=False, trace=False
         )
 
-        # 1. Hydrostatic pressure P = -dE/dOmega from cell strain response
+        # 1. Hydrostatic pressure P = -dE/dOmega from cell strain response, at the pins the analytic stress is the
+        # derivative at: the node counts (unchanged at these strains) and the Rust setup's ion width, 1.4 times the
+        # coarsest step of the unstrained grid, held for every strain (as test_crystal_forces.py does).
         cell0 = atoms.cell.copy()
+        reference = Grid(center=0.5 * cell0.array.sum(axis=0), box_size=0.0, grid_spacing=0.34, units="angstrom",
+                         cell=cell0.array, periodic=True)
+        steps = np.linalg.norm(cell0.array, axis=1) / np.asarray(reference.shape)
+        sigma = 1.4 * float(steps.max()) * ANGSTROM_TO_BOHR
+        monkeypatch.setattr(setup_block, "ion_width", lambda grid: sigma)
         vol0 = atoms.get_volume()
         eps = 1e-3
 
@@ -961,8 +971,10 @@ class TestHybrid:
         assert abs(f_num) < 1e-4
 
         # 3. The analytic force and stress against the same differences. The stress is the derivative at the pinned node
-        # counts and ion width of the unstrained cell; the strained cells above are re-meshed, which is the 5e-6 eV/A^3
-        # measured here (the gate is 2e-5). ASE's stress is +dE/d(strain)/V, minus the pressure.
+        # counts and ion width of the unstrained cell. Pinned, the difference misses it by 4.0e-6 eV/A^3, the eps^2
+        # truncation of the central difference (the gate is 2e-5); with the ion width following the strained grid it
+        # would miss by 8.5e-5 on the 2026-11-16 Si dataset (measured 2026-11-16). ASE's stress is +dE/d(strain)/V,
+        # minus the pressure.
         forces = atoms.get_forces()
         assert np.abs(forces).max() < 1e-4 and abs(forces[0, 0] - f_num) < 1e-4
         stress = atoms.get_stress()

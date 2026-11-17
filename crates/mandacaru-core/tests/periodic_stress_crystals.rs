@@ -1,6 +1,6 @@
 //! AS-6: the analytic crystal stress on a REAL converged SCF crystal (scalar LDA, whole k mesh),
 //! against the reconverged free-energy finite difference of the SAME discretized energy. The
-//! oracle (`freeze_periodic_strain.py`) strains the cell one entry `eps_ab` at a time
+//! oracle (`periodic_freeze_snapshot.rs`) strains the cell one entry `eps_ab` at a time
 //! (unsymmetrized, all nine, both orders of every shear), solves the Rust SCF on each strained
 //! cell with the pins of `ANALYTIC_STRESS_PLAN.md` section 2 held (node counts, ion width, filter
 //! cutoff, the dense list of the unstrained cell, the alias operation set, the k fractions), and

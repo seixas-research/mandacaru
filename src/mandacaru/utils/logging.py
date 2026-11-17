@@ -1637,14 +1637,18 @@ def _excitation_block_lines(view, *, tolerance) -> list[str]:
         keys.append(f"reference_spin_squared: {view.reference_spin_squared:.6f}")
     if view.one_center_hartree is not None:
         keys.append(f"one_center_{unit}: first-order shift of each root from the one-center "
-                    "Hartree kernel the linearized PAW one-center energy omits; the one-center "
-                    "exchange-correlation part is not estimated")
+                    "Hartree kernel the linearized PAW one-center energy omits")
+    if view.one_center_xc is not None:
+        keys.append(f"one_center_xc_{unit}: the same from its one-center exchange-correlation "
+                    "kernel, at the spherical reference atom")
     heading = ["root", f"energy_{unit}", "wavelength_nm", "oscillator_strength",
                "f_velocity", "residual"]
     if view.spin_squared is not None:
         heading.append("spin_squared")
     if view.one_center_hartree is not None:
         heading.append(f"one_center_{unit}")
+    if view.one_center_xc is not None:
+        heading.append(f"one_center_xc_{unit}")
     heading.append("transitions")
     rows = [" ".join(f"{h:>20}" if k else f"{h:>4}" for k, h in enumerate(heading))]
     for root in range(view.num_states):
@@ -1656,6 +1660,8 @@ def _excitation_block_lines(view, *, tolerance) -> list[str]:
             cells.append(f"{view.spin_squared[root]:>20.6f}")
         if view.one_center_hartree is not None:
             cells.append(f"{view.one_center_hartree[root]:>20.8f}")
+        if view.one_center_xc is not None:
+            cells.append(f"{view.one_center_xc[root]:>20.8f}")
         cells.append(",".join(
             f"{t.occupied}{'' if t.spin is None else t.spin[0]}->{t.empty}"
             f"{'' if t.spin is None else t.spin[0]}({t.weight:.3f})"

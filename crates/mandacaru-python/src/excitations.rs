@@ -1,7 +1,7 @@
 //! Linear-response excitations of a converged molecular reference: the request is copied in,
 //! Python is detached for the solve, and owned arrays come back. No numerics here;
 //! `mandacaru_core::molecular::excitations` computes every value (atomic units).
-use super::{array, error, molecular::PyMeanField, Array};
+use super::{array, error, molecular::PyMeanField, Array, PySpatialGrid};
 use mandacaru_core::{
     models::spectrum::{line_spectrum as broaden, LineShape},
     molecular::{
@@ -46,10 +46,12 @@ fn stack<'py, T: numpy::Element + nalgebra::Scalar>(
     )
 }
 
-/// The solved roots of one request, kept for the methods that read their amplitudes.
+/// The solved roots of one request, kept for the methods that read their amplitudes, with the
+/// integrals their transition densities are sampled on.
 #[pyclass(name = "MolecularExcitations", module = "mandacaru._native", frozen)]
 pub struct PyExcitations {
     inner: Excitations,
+    integrals: Arc<MolecularIntegrals>,
 }
 
 #[pymethods]
@@ -57,7 +59,8 @@ impl PyExcitations {
     /// Every value of the roots, atomic units: `energies_ha`, `wavelengths_nm`,
     /// `oscillator_strengths`, `transition_dipoles_bohr` `(n, 3)`, `plus` and `minus`
     /// `(n, occupied, virtual)`, `transitions` (per root, `(occupied, virtual, weight)` with
-    /// orbital indices of the reference), `nto_weights`, `one_center_hartree_ha` (or `None`),
+    /// orbital indices of the reference), `nto_weights`, `one_center_hartree_ha` and
+    /// `one_center_xc_ha` (or `None`),
     /// `orbital_energies_ha`, `occupied`, `virtual` (per spin channel: one for a closed shell,
     /// alpha and beta otherwise), `spin_squared` and `reference_spin_squared` (unrestricted
     /// references; else `None`), the request and the solver's counters. `plus` and `minus` are a
@@ -136,6 +139,7 @@ impl PyExcitations {
         out.set_item("transitions", transitions)?;
         out.set_item("nto_weights", e.nto_weights.clone())?;
         out.set_item("one_center_hartree_ha", e.one_center_hartree.clone())?;
+        out.set_item("one_center_xc_ha", e.one_center_xc.clone())?;
         out.set_item(
             "occupied",
             e.channels.iter().map(|c| c.occupied).collect::<Vec<_>>(),
@@ -197,6 +201,69 @@ impl PyExcitations {
                 .map_err(error)?,
         )
     }
+    /// The transition density of `root` sampled on `grid` (the integration grid by default;
+    /// `Excitations::transition_field`): `channel=None` the charge transition density (a
+    /// closed-shell triplet raises), a channel index its spatial factor. A dict with `data`
+    /// (the grid's shape, e/Bohr^3), `integral`, `norm`, `moment_bohr` (the field's dipole),
+    /// `augmentation_charge` and `augmentation_dipole_bohr` (the PAW one-center part it leaves
+    /// out), `grid`, `numbers`, `positions` and `charges`.
+    #[pyo3(signature=(root, channel=None, grid=None))]
+    fn transition_field<'py>(
+        &self,
+        py: Python<'py>,
+        root: usize,
+        channel: Option<usize>,
+        grid: Option<&PySpatialGrid>,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let integrals = &self.integrals;
+        let grid = grid.map_or(&integrals.grid, |grid| &grid.inner);
+        let field = py
+            .detach(|| self.inner.transition_field(integrals, root, channel, grid))
+            .map_err(error)?;
+        let out = PyDict::new(py);
+        out.set_item(
+            "data",
+            array(py, &grid.index.shape(), field.values.as_slice().to_vec())?,
+        )?;
+        out.set_item("integral", field.integral)?;
+        out.set_item("norm", field.norm)?;
+        out.set_item("moment_bohr", field.moment.to_vec())?;
+        out.set_item("augmentation_charge", field.augmentation_charge)?;
+        out.set_item(
+            "augmentation_dipole_bohr",
+            field.augmentation_dipole.to_vec(),
+        )?;
+        out.set_item(
+            "grid",
+            PySpatialGrid {
+                inner: grid.clone(),
+            },
+        )?;
+        let geometry = &integrals.geometry;
+        out.set_item(
+            "numbers",
+            geometry
+                .numbers()
+                .iter()
+                .map(|&z| usize::from(z))
+                .collect::<Vec<_>>(),
+        )?;
+        out.set_item("positions", geometry.positions().to_vec())?;
+        out.set_item(
+            "charges",
+            integrals.corrections.as_ref().map_or_else(
+                || {
+                    geometry
+                        .numbers()
+                        .iter()
+                        .map(|&z| z as f64)
+                        .collect::<Vec<_>>()
+                },
+                |c| c.charges.clone(),
+            ),
+        )?;
+        Ok(out)
+    }
 }
 
 /// The lowest `num_states` excitations of a converged closed-shell molecular reference
@@ -226,7 +293,7 @@ pub fn molecular_excitations(
     let inner = py
         .detach(|| excitations::excitations(&integrals, &reference, &request))
         .map_err(error)?;
-    Ok(PyExcitations { inner })
+    Ok(PyExcitations { inner, integrals })
 }
 
 /// The calculator's `excited_state=` request (`Mandacaru(method="dft", "rhf" or "uhf",

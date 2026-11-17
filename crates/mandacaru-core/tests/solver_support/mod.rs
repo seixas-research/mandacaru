@@ -1,6 +1,6 @@
 //! The model problem the solver tests share.
 use mandacaru_core::{
-    quantum::{CachedProblem, Encoding, Operator, C64},
+    quantum::{Encoding, Operator, QuantumProblem, C64},
     Context,
 };
 
@@ -8,7 +8,7 @@ use mandacaru_core::{
 /// particle-number sector: one-body levels and hoppings, on-site repulsion and a pair hopping,
 /// so ADAPT grows several operators. With the alpha orbitals on qubits 0-2 and the beta ones on
 /// 3-5, an alpha and a beta excitation of the fermionic pool act on disjoint qubits.
-pub fn problem(ctx: &Context, pool: &str) -> CachedProblem {
+pub fn problem(ctx: &Context, pool: &str) -> QuantumProblem {
     let encoding = Encoding::new("jordan_wigner", 6, [1, 1]).unwrap();
     let mut h = Operator::new(ctx, 6, &[]).unwrap();
     let add = |h: Operator, term: &[(usize, bool)], c: f64| {
@@ -36,7 +36,7 @@ pub fn problem(ctx: &Context, pool: &str) -> CachedProblem {
     // Pair hopping between orbitals 0 and 2, both directions.
     h = add(h, &[(2, true), (5, true), (3, false), (0, false)], 0.12);
     h = add(h, &[(0, true), (3, true), (5, false), (2, false)], 0.12);
-    let mut problem = CachedProblem::new(ctx, encoding, h, true, false, true).unwrap();
+    let mut problem = QuantumProblem::new(ctx, encoding, h, true, false, true).unwrap();
     problem.use_pool(pool, true).unwrap();
     problem
 }

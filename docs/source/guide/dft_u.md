@@ -50,6 +50,9 @@ to the precision of the SCF (`result.hubbard_energy` is then 0.0 eV).
 `hubbard_u` requires `method="dft"`: any other method raises `ValueError`
 ([the methods reference](#methods-table)).
 
+A periodic SCF that starts from the shells' moment seed and ends unconverged is repeated from the integer
+diagonal occupation starts, and the lowest converged run is kept ([the retry](#dft-u-retry)).
+
 (dft-u-molecules)=
 ### Molecules
 
@@ -201,7 +204,10 @@ overridden via the optional keys `"f4_f2"` and `"f6_f2"`.
 
 ### 3. Noncollinear spinor Dudarev functional
 
-For two-component spinor calculations with spin-orbit coupling, the occupation matrix is a
+The functional of this section is the model for two-component spinor calculations
+(`models/hubbard_spinor.rs`); it is not yet part of any SCF, so a spinor calculation with
+`hubbard_u` raises `NotImplementedError` ([the refusal matrix](#dft-u-refusals)). For two-component
+spinors with spin-orbit coupling, the occupation matrix is a
 full $2p \times 2p$ complex Hermitian matrix over spin and orbital indices:
 
 $$
@@ -400,13 +406,58 @@ around a threefold axis ($U = 3$ eV, 14 eV/Å radial forces) the reduced mesh ag
 $1.4\times10^{-10}$ eV/Å in the forces and $5\times10^{-11}$ eV/Å$^3$ in the stress. A DFT+U hybrid or spinor crystal raises
 `NotImplementedError` before any SCF; there is no finite-difference fallback.
 
+(dft-u-retry)=
+## An SCF that does not settle: the integer-occupation retry
+
+A shell with a partly filled $d$ or $f$ set (an isolated Ni atom is the clear case) has a ring of nearly
+degenerate orbital orderings of its holes, and the spherical start sits on a saddle between them. The
+`hubbard_u` option starts each shell from that spherical seed, $n^\sigma = \mathrm{clamp}\left[(N \pm m)/(2p),\, 0,\, 1\right]
+\mathbf{I}$ ($N$ the shell's reference occupation in the dataset, $m$ the atom's initial magnetic moment, $p = 2l+1$,
+$N/2p$ for a restricted run), and the SCF can run to `max_iterations` without converging.
+
+When the **periodic** SCF ends unconverged from this seed, it is repeated from every integer diagonal occupation start
+that the shell's electron counts allow, and the converged run of lowest free energy is kept in place of the unconverged
+one. A run that converges is returned unchanged. The molecular SCF has no such retry.
+
+The retry runs only when all of these hold:
+
+* the first run ended at `max_iterations` unconverged;
+* at least one shell has $U - J \ne 0$;
+* every shell starts from the moment seed that `hubbard_u` builds. A shell with an explicit seed (occupation matrices
+  stored in a saved crystal file) is never retried;
+* the run did not start from an earlier state. The perturbed SCFs of `hubbard_response` and of the Berry-phase
+  perturbation start from the ground state and are never repeated.
+
+**The starts.** Each spin channel of a shell holds $(N \pm m)/2$ electrons ($N/2$ restricted). The retry needs this count
+to be a whole number $e$ (to $10^{-9}$) between 0 and $2l+1$ for every channel; otherwise there is no retry, whatever
+$N$ is (for $N = 8$ and $m = 1$ the channels hold 4.5 and 3.5). A channel with $e = 0$ or $e = 2l+1$ is empty or full and
+has nothing to choose. A channel with $0 < e < 2l+1$ gets one electron in each of $e$ of the $2l+1$ orbitals of the
+$m$ basis and none in the rest, with a diagonal occupation matrix of ones and zeros. Channels of one element with
+the same $l$ and the same $e$ share one choice of orbitals, so the sites of an ordered crystal start alike. One start
+is run for every combination of choices, so the number of starts is the product of $\binom{2l+1}{e}$ over those
+classes: an isolated Ni atom with $m = 2$ (a full majority channel and three electrons in the minority one) has ten, and
+so does an ordered antiferromagnetic pair of Ni sites. Two classes of ten (a shell with 3 electrons in one channel and 2 in the other,
+$10 \times 10 = 100$) exceed the limit of **64** starts, and then there is no retry. A start that breaks the symmetry
+of the reduced $k$ mesh is left out ([Symmetry-reduced $k$ meshes](#dft-u-symmetry)).
+
+**The result.** Each start is a full SCF with the same options, so a retry can cost up to one more SCF per start. If a
+retry cannot fit the memory budget, the loop stops and keeps what it has. The run kept is the converged one of lowest free
+energy, returned as it ran. If no start converges, the first, unconverged run is returned as it ran, and nothing is
+substituted.
+
+The run kept is the lowest converged state found among these starts. It need not be the ground state: the starts are
+integer and diagonal in the $m$ basis, and each keeps the electron count of its channels, so a state of another
+character is never visited, and a metastable state can be the lowest of the ones that converge. For an isolated Ni atom
+at $U = 3$ eV the retry settles on the pattern with the two minority holes on $m = -1$ and $+1$.
+
+(dft-u-refusals)=
 ## Supported features and refusal matrix
 
 Every unsupported combination raises an explicit error; none silently runs a different calculation.
 
 | Configuration / Request | Status / Behavior |
 | --- | --- |
-| Periodic crystal, collinear spin, semilocal functional (`lda`, `pbe`), float64 | **Supported** (native Rust SCF, energies, band structures, DOS/PDOS, Wannier) |
+| Periodic crystal, collinear spin, semilocal functional (`lda`, `pbe`, `r2scan`), float64 | **Supported** (native Rust SCF, energies, band structures, DOS/PDOS, Wannier) |
 | Periodic crystal with `symmetry=True` on a reduced $k$-mesh | **Supported** ([Symmetry-reduced $k$ meshes](#dft-u-symmetry)): the occupation matrices are completed over the kept operations and time reversal. A table the operations cannot complete (an atom's image carries no shell, or a different $U$, $J$ or weight), or an explicit seed that breaks the symmetry, raises `ValueError` naming `symmetry=False`. A collinear magnetic crystal keeps the operations that preserve its moment pattern ([below](#dft-u-symmetry)). |
 | `hubbard_response` on a reduced $k$-mesh | Runs when every `hubbard_u` atom is fixed by every kept operation; raises `ValueError` ("... fixed by every kept operation ... use symmetry=False") when an operation moves one. |
 | Periodic crystal with `xc="hse06"` (screened hybrid) | Raises `NotImplementedError` ("DFT+U is implemented for semilocal functionals only"). |

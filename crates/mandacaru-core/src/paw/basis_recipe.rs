@@ -82,17 +82,23 @@ impl Recipe {
     pub fn from_json(v: &serde_json::Value, auto_cutoff: Option<f64>) -> Result<Self> {
         use serde_json::Value;
         let count = |key: &str| -> Result<usize> {
-            v[key].as_u64().map(|n| n as usize).ok_or_else(|| invalid(format!("the recipe needs {key}")))
+            v[key]
+                .as_u64()
+                .map(|n| n as usize)
+                .ok_or_else(|| invalid(format!("the recipe needs {key}")))
         };
         let number = |value: &Value, what: &str| -> Result<f64> {
-            value.as_f64().filter(|x| x.is_finite())
+            value
+                .as_f64()
+                .filter(|x| x.is_finite())
                 .ok_or_else(|| invalid(format!("{what} must be a finite number")))
         };
         let mut out = Recipe::new(count("zetas")?, count("polarizations")?, None);
         out.cutoff = match &v["cutoff"] {
             Value::Null => None,
-            Value::String(text) if text == "auto" => Some(auto_cutoff
-                .ok_or_else(|| invalid("an \"auto\" filter cutoff needs the grid"))?),
+            Value::String(text) if text == "auto" => Some(
+                auto_cutoff.ok_or_else(|| invalid("an \"auto\" filter cutoff needs the grid"))?,
+            ),
             x => Some(number(x, "cutoff")?),
         };
         out.energy_shift = match &v["energy_shift"] {
@@ -103,14 +109,21 @@ impl Recipe {
             if wall.len() != 2 {
                 return Err(invalid("wall is [amplitude in Hartree, r_i / r_c]"));
             }
-            out.wall = (number(&wall[0], "the wall amplitude")?, number(&wall[1], "the wall radius")?);
+            out.wall = (
+                number(&wall[0], "the wall amplitude")?,
+                number(&wall[1], "the wall radius")?,
+            );
         }
         if !v["split_norm"].is_null() {
             out.split_norm = number(&v["split_norm"], "split_norm")?;
         }
         out.tail_norms = match &v["tail_norms"] {
             Value::Null => None,
-            Value::Array(list) => Some(list.iter().map(|x| number(x, "a tail norm")).collect::<Result<_>>()?),
+            Value::Array(list) => Some(
+                list.iter()
+                    .map(|x| number(x, "a tail norm"))
+                    .collect::<Result<_>>()?,
+            ),
             _ => return Err(invalid("tail_norms must be a list or null")),
         };
         out.gaussian_polarization = match v["polarization"].as_str() {
@@ -124,13 +137,21 @@ impl Recipe {
             d => {
                 let channels = match &d["shells"] {
                     Value::Null => None,
-                    Value::Array(list) => Some(list.iter().map(|x| x.as_u64().map(|l| l as usize)
-                        .ok_or_else(|| invalid("a diffuse channel is an angular momentum")))
-                        .collect::<Result<Vec<_>>>()?),
+                    Value::Array(list) => Some(
+                        list.iter()
+                            .map(|x| {
+                                x.as_u64().map(|l| l as usize).ok_or_else(|| {
+                                    invalid("a diffuse channel is an angular momentum")
+                                })
+                            })
+                            .collect::<Result<Vec<_>>>()?,
+                    ),
                     _ => return Err(invalid("diffuse shells are null or a list of l")),
                 };
                 let sizing = crate::basis::diffuse::Recipe {
-                    count: d["count"].as_u64().map(|n| n as usize)
+                    count: d["count"]
+                        .as_u64()
+                        .map(|n| n as usize)
                         .ok_or_else(|| invalid("the diffuse recipe needs count"))?,
                     ratio: number(&d["ratio"], "the diffuse ratio")?,
                     cutoff_norm: number(&d["cutoff_norm"], "the diffuse cutoff_norm")?,
@@ -150,13 +171,23 @@ impl Recipe {
     fn check(&self) -> Result<()> {
         let (amplitude, inner) = self.wall;
         if !(amplitude.is_finite() && amplitude > 0. && inner > 0. && inner < 1.) {
-            return Err(invalid("the confinement potential needs a positive amplitude and r_i / r_c in (0, 1)"));
+            return Err(invalid(
+                "the confinement potential needs a positive amplitude and r_i / r_c in (0, 1)",
+            ));
         }
-        if self.energy_shift.is_some_and(|x| !(x.is_finite() && x >= MIN_ENERGY_SHIFT)) {
-            return Err(invalid(format!("an energy_shift must be at least {MIN_ENERGY_SHIFT:e} eV")));
+        if self
+            .energy_shift
+            .is_some_and(|x| !(x.is_finite() && x >= MIN_ENERGY_SHIFT))
+        {
+            return Err(invalid(format!(
+                "an energy_shift must be at least {MIN_ENERGY_SHIFT:e} eV"
+            )));
         }
         if !(self.split_norm > 0. && self.split_norm < 1.)
-            || self.tail_norms.as_ref().is_some_and(|t| t.is_empty() || t.iter().any(|x| !(*x > 0. && *x < 1.)))
+            || self
+                .tail_norms
+                .as_ref()
+                .is_some_and(|t| t.is_empty() || t.iter().any(|x| !(*x > 0. && *x < 1.)))
         {
             return Err(invalid("the split norm and tail norms must lie in (0, 1)"));
         }
@@ -224,7 +255,15 @@ pub fn species(ctx: &Context, ds: &PawDataset, recipe: &Recipe) -> Result<(Vec<S
     let mut valence = std::collections::BTreeMap::new();
     let mut cutoffs = std::collections::BTreeMap::new();
     let mut first_radials = std::collections::BTreeMap::new();
-    for BasisState { l, state, n, semicore, empty, .. } in states {
+    for BasisState {
+        l,
+        state,
+        n,
+        semicore,
+        empty,
+        ..
+    } in states
+    {
         let lu = l as usize;
         let radial = match recipe.energy_shift {
             Some(shift) => {
@@ -233,30 +272,69 @@ pub fn species(ctx: &Context, ds: &PawDataset, recipe: &Recipe) -> Result<(Vec<S
                 if !semicore {
                     cutoffs.insert((l, state), confined.r_c);
                 }
-                report.confined.push(Confined { n, l: lu, state, orbital: confined });
+                report.confined.push(Confined {
+                    n,
+                    l: lu,
+                    state,
+                    orbital: confined,
+                });
                 radial
             }
             None if empty => empty_channel_radial(ctx, ds, l)?,
-            None => ds.channels[&l].pseudo_waves.get(state)
+            None => ds.channels[&l]
+                .pseudo_waves
+                .get(state)
                 .ok_or_else(|| invalid("occupied state has no pseudo wave"))?
-                .as_slice().to_vec(),
+                .as_slice()
+                .to_vec(),
         };
         if !semicore {
             valence.insert(l, state);
             first_radials.entry(l).or_insert_with(|| radial.clone());
         }
         let count = if semicore { 1 } else { recipe.zetas };
-        let zetas = crate::basis::radial::zeta_values(ctx, r, &radial, lu, count, recipe.split_norm, tails)?;
+        let zetas = crate::basis::radial::zeta_values(
+            ctx,
+            r,
+            &radial,
+            lu,
+            count,
+            recipe.split_norm,
+            tails,
+        )?;
         for (index, zeta) in zetas.iter().enumerate() {
             shells.push(Shell {
-                n, l: lu, zeta: index + 1, polarization: false, diffuse: false, r: r.to_vec(),
+                n,
+                l: lu,
+                zeta: index + 1,
+                polarization: false,
+                diffuse: false,
+                r: r.to_vec(),
                 values: band_limit(zeta.as_slice(), lu)?,
             });
         }
     }
-    polarize(ctx, ds, recipe, &valence, &cutoffs, &first_radials, &band_limit, &mut shells, &mut report)?;
+    polarize(
+        ctx,
+        ds,
+        recipe,
+        &valence,
+        &cutoffs,
+        &first_radials,
+        &band_limit,
+        &mut shells,
+        &mut report,
+    )?;
     if let Some((channels, sizing)) = &recipe.diffuse {
-        add_diffuse(ctx, ds, recipe, channels.as_deref(), sizing, &mut shells, &mut report)?;
+        add_diffuse(
+            ctx,
+            ds,
+            recipe,
+            channels.as_deref(),
+            sizing,
+            &mut shells,
+            &mut report,
+        )?;
     }
     Ok((shells, report))
 }
@@ -278,17 +356,29 @@ fn polarize(
     if recipe.polarizations == 0 {
         return Ok(());
     }
-    let l_max = *valence.keys().max()
+    let l_max = *valence
+        .keys()
+        .max()
         .ok_or_else(|| invalid("polarization needs a valence channel"))?;
-    if !recipe.gaussian_polarization.unwrap_or(recipe.energy_shift.is_some()) {
+    if !recipe
+        .gaussian_polarization
+        .unwrap_or(recipe.energy_shift.is_some())
+    {
         // r^k R_outer: one shell per extra l, each a single zeta.
         let outermost = &first_radials[&l_max];
         for offset in 0..recipe.polarizations {
             let l = l_max as usize + 1 + offset;
             let shape = crate::basis::pao::power_shape(r, outermost, offset + 1)?;
-            for zeta in crate::basis::radial::zeta_values(ctx, r, &shape, l, 1, recipe.split_norm, None)? {
+            for zeta in
+                crate::basis::radial::zeta_values(ctx, r, &shape, l, 1, recipe.split_norm, None)?
+            {
                 shells.push(Shell {
-                    n: l + 1, l, zeta: 1, polarization: true, diffuse: false, r: r.to_vec(),
+                    n: l + 1,
+                    l,
+                    zeta: 1,
+                    polarization: true,
+                    diffuse: false,
+                    r: r.to_vec(),
                     values: band_limit(zeta.as_slice(), l)?,
                 });
             }
@@ -298,27 +388,54 @@ fn polarize(
     if recipe.energy_shift.is_none() {
         return Err(invalid(format!(
             "the Gaussian polarization shell is sized from a confined orbital; {} is unconfined",
-            ds.symbol)));
+            ds.symbol
+        )));
     }
-    let l = (0..=l_max).find(|l| !valence.contains_key(l)).unwrap_or(l_max + 1);
-    let base = l.checked_sub(1)
+    let l = (0..=l_max)
+        .find(|l| !valence.contains_key(l))
+        .unwrap_or(l_max + 1);
+    let base = l
+        .checked_sub(1)
         .and_then(|l| valence.get(&l).map(|&state| (l, state)))
         .ok_or_else(|| invalid("polarization needs the preceding valence channel"))?;
     let r_cut = cutoffs[&base];
-    let reference = confined_orbital(ctx, ds, base.0, base.1, POLARIZATION_REFERENCE_SHIFT, DEFAULT_WALL)?.r_c;
+    let reference = confined_orbital(
+        ctx,
+        ds,
+        base.0,
+        base.1,
+        POLARIZATION_REFERENCE_SHIFT,
+        DEFAULT_WALL,
+    )?
+    .r_c;
     let r_char = POLARIZATION_CHARACTER_FRACTION * reference;
     let shape = crate::basis::pao::polarization_radial(r, l as usize, r_cut, r_char)?;
     let zetas = crate::basis::radial::zeta_values_by_fraction(
-        ctx, r, &shape, l as usize, recipe.polarizations, recipe.split_norm, tails,
+        ctx,
+        r,
+        &shape,
+        l as usize,
+        recipe.polarizations,
+        recipe.split_norm,
+        tails,
     )?;
     for (index, zeta) in zetas.iter().enumerate() {
         shells.push(Shell {
-            n: l as usize + 1, l: l as usize, zeta: index + 1, polarization: true, diffuse: false,
-            r: r.to_vec(), values: band_limit(zeta.as_slice(), l as usize)?,
+            n: l as usize + 1,
+            l: l as usize,
+            zeta: index + 1,
+            polarization: true,
+            diffuse: false,
+            r: r.to_vec(),
+            values: band_limit(zeta.as_slice(), l as usize)?,
         });
     }
     report.polarization = Some(GaussianShell {
-        l: l as usize, base_l: base.0 as usize, r_cut, r_char, reference_radius: reference,
+        l: l as usize,
+        base_l: base.0 as usize,
+        r_cut,
+        r_char,
+        reference_radius: reference,
     });
     Ok(())
 }
@@ -337,7 +454,14 @@ fn add_diffuse(
 ) -> Result<()> {
     let r = ds.r.as_slice();
     let mut reference = std::collections::BTreeMap::<usize, f64>::new();
-    for BasisState { l, state, semicore, empty, .. } in basis_states(ctx, ds)? {
+    for BasisState {
+        l,
+        state,
+        semicore,
+        empty,
+        ..
+    } in basis_states(ctx, ds)?
+    {
         if semicore {
             continue;
         }
@@ -352,25 +476,58 @@ fn add_diffuse(
             *entry = rms;
         }
     }
-    let (&outermost, _) = reference.iter()
+    let (&outermost, _) = reference
+        .iter()
         .max_by(|a, b| a.1.total_cmp(b.1))
-        .ok_or_else(|| invalid(format!("{} has no valence orbital to size diffuse shells from", ds.symbol)))?;
+        .ok_or_else(|| {
+            invalid(format!(
+                "{} has no valence orbital to size diffuse shells from",
+                ds.symbol
+            ))
+        })?;
     let present: std::collections::BTreeSet<usize> = shells.iter().map(|s| s.l).collect();
     let wanted: Vec<usize> = match channels {
-        None => present.into_iter().filter(|&l| l <= DIFFUSE_PRESENT_L_MAX).collect(),
+        None => present
+            .into_iter()
+            .filter(|&l| l <= DIFFUSE_PRESENT_L_MAX)
+            .collect(),
         Some(list) => list.to_vec(),
     };
-    let info: Vec<(usize, usize, f64)> = wanted.iter().map(|&l| {
-        let source = if reference.contains_key(&l) { l } else { outermost };
-        (l, source, reference[&source])
-    }).collect();
-    let existing: Vec<(usize, usize, &[f64], &[f64])> = shells.iter()
-        .map(|s| (s.n, s.l, s.r.as_slice(), s.values.as_slice())).collect();
+    let info: Vec<(usize, usize, f64)> = wanted
+        .iter()
+        .map(|&l| {
+            let source = if reference.contains_key(&l) {
+                l
+            } else {
+                outermost
+            };
+            (l, source, reference[&source])
+        })
+        .collect();
+    let existing: Vec<(usize, usize, &[f64], &[f64])> = shells
+        .iter()
+        .map(|s| (s.n, s.l, s.r.as_slice(), s.values.as_slice()))
+        .collect();
     let (tables, rows) = crate::basis::diffuse::build_tables(
-        ctx, r, &existing, &info, sizing, recipe.cutoff, DIFFUSE_GRID_REACH, DIFFUSE_LINEAR_DEPENDENCE_TOL,
+        ctx,
+        r,
+        &existing,
+        &info,
+        sizing,
+        recipe.cutoff,
+        DIFFUSE_GRID_REACH,
+        DIFFUSE_LINEAR_DEPENDENCE_TOL,
     )?;
     for (grid, values, n, l) in tables {
-        shells.push(Shell { n, l, zeta: 1, polarization: false, diffuse: true, r: grid, values });
+        shells.push(Shell {
+            n,
+            l,
+            zeta: 1,
+            polarization: false,
+            diffuse: true,
+            r: grid,
+            values,
+        });
     }
     report.diffuse = rows;
     Ok(())
@@ -395,7 +552,14 @@ pub fn basis_states(ctx: &Context, ds: &PawDataset) -> Result<Vec<BasisState>> {
     let mut states = Vec::new();
     let state_of = |l: u32, state: usize, level: Option<f64>| {
         let n = ds.channels[&l].n as usize + state;
-        BasisState { l, state, n, semicore: is_semicore(ds, n, l), empty: level.is_some(), level }
+        BasisState {
+            l,
+            state,
+            n,
+            semicore: is_semicore(ds, n, l),
+            empty: level.is_some(),
+            level,
+        }
     };
     for (&l, channel) in &ds.channels {
         for (state, &occupation) in channel.occupations.data().iter().enumerate() {
@@ -419,11 +583,17 @@ pub fn basis_states(ctx: &Context, ds: &PawDataset) -> Result<Vec<BasisState>> {
 }
 
 fn is_semicore(ds: &PawDataset, n: usize, l: u32) -> bool {
-    ds.semicore_subshells.iter()
+    ds.semicore_subshells
+        .iter()
         .any(|shell| shell.len() >= 2 && shell[0] == n as i64 && shell[1] == l as i64)
 }
 
-fn channel_data<'a>(ds: &'a PawDataset, l: u32, wave: &'a [f64], projectors: &'a [f64]) -> ChannelData<'a> {
+fn channel_data<'a>(
+    ds: &'a PawDataset,
+    l: u32,
+    wave: &'a [f64],
+    projectors: &'a [f64],
+) -> ChannelData<'a> {
     let channel = &ds.channels[&l];
     ChannelData {
         table: ds.r.as_slice(),
@@ -439,17 +609,29 @@ fn channel_data<'a>(ds: &'a PawDataset, l: u32, wave: &'a [f64], projectors: &'a
 }
 
 fn flat_projectors(ds: &PawDataset, l: u32) -> Vec<f64> {
-    ds.channels[&l].projectors.iter().flat_map(|p| p.as_slice().iter().copied()).collect()
+    ds.channels[&l]
+        .projectors
+        .iter()
+        .flat_map(|p| p.as_slice().iter().copied())
+        .collect()
 }
 
 fn spectrum_box(data: &ChannelData) -> Result<f64> {
     let (lo, hi) = super::diagnose::spectrum::EXTENT_BOUNDS;
-    super::checks::spectrum_extent(data.table, data.wave, super::diagnose::spectrum::EXTENT_FLOOR, lo, hi)
+    super::checks::spectrum_extent(
+        data.table,
+        data.wave,
+        super::diagnose::spectrum::EXTENT_FLOOR,
+        lo,
+        hi,
+    )
 }
 
 /// The lowest level (Hartree) of an empty channel in the box of the spectrum rule.
 pub fn empty_channel_level(ctx: &Context, ds: &PawDataset, l: u32) -> Result<f64> {
-    let wave = ds.channels[&l].pseudo_waves.first()
+    let wave = ds.channels[&l]
+        .pseudo_waves
+        .first()
         .ok_or_else(|| invalid("empty channel has no reference pseudo wave"))?;
     let projectors = flat_projectors(ds, l);
     let data = channel_data(ds, l, wave.as_slice(), &projectors);
@@ -459,7 +641,9 @@ pub fn empty_channel_level(ctx: &Context, ds: &PawDataset, l: u32) -> Result<f64
 
 /// The lowest eigenstate of an empty channel, `R(r)` on the dataset's table.
 pub fn empty_channel_radial(ctx: &Context, ds: &PawDataset, l: u32) -> Result<Vec<f64>> {
-    let wave = ds.channels[&l].pseudo_waves.first()
+    let wave = ds.channels[&l]
+        .pseudo_waves
+        .first()
         .ok_or_else(|| invalid("empty channel has no reference pseudo wave"))?;
     let projectors = flat_projectors(ds, l);
     let data = channel_data(ds, l, wave.as_slice(), &projectors);
@@ -468,13 +652,24 @@ pub fn empty_channel_radial(ctx: &Context, ds: &PawDataset, l: u32) -> Result<Ve
 }
 
 /// The orbital of channel `l`, `state`, confined so that its level rises by `shift` eV in `wall`.
-pub fn confined_orbital(ctx: &Context, ds: &PawDataset, l: u32, state: usize, shift: f64,
-                        (amplitude, inner_fraction): (f64, f64)) -> Result<Orbital> {
-    let wave = ds.channels[&l].pseudo_waves.get(state)
+pub fn confined_orbital(
+    ctx: &Context,
+    ds: &PawDataset,
+    l: u32,
+    state: usize,
+    shift: f64,
+    (amplitude, inner_fraction): (f64, f64),
+) -> Result<Orbital> {
+    let wave = ds.channels[&l]
+        .pseudo_waves
+        .get(state)
         .ok_or_else(|| invalid("occupied state has no corresponding pseudo wave"))?;
     let projectors = flat_projectors(ds, l);
     let prepared = Prepared::new(ctx, channel_data(ds, l, wave.as_slice(), &projectors))?;
-    let wall = crate::basis::confinement::Potential { amplitude, inner_fraction };
+    let wall = crate::basis::confinement::Potential {
+        amplitude,
+        inner_fraction,
+    };
     orbital(ctx, &prepared, shift, &wall, state, None)?
         .map_err(|reach| invalid(format!("orbital does not fit table at reach {reach}")))
 }

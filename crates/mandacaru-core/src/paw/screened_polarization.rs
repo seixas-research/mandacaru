@@ -408,7 +408,8 @@ impl Polarization {
             let clamp = |n: &[f64]| n.iter().map(|v| v.max(0.)).collect::<Vec<_>>();
             let (n_up, n_down) = (clamp(&ground[0]), clamp(&ground[1]));
             let doubled = |n: &[f64]| n.iter().map(|v| 2. * v).collect::<Vec<_>>();
-            let sum = |a: &[f64], b: &[f64]| a.iter().zip(b).map(|(a, b)| a + b).collect::<Vec<_>>();
+            let sum =
+                |a: &[f64], b: &[f64]| a.iter().zip(b).map(|(a, b)| a + b).collect::<Vec<_>>();
             let fields = [
                 self.exchange_second(&doubled(&n_up), &doubled(&changes[0]))?,
                 self.exchange_second(&doubled(&n_down), &doubled(&changes[1]))?,

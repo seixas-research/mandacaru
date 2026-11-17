@@ -246,14 +246,7 @@ fn write_parquet(
     metadata: &Bound<'_, PyDict>,
     compression: &str,
 ) -> PyResult<()> {
-    write_parquet_with_ctx(
-        &context.inner,
-        py,
-        path,
-        columns,
-        metadata,
-        compression,
-    )
+    write_parquet_with_ctx(&context.inner, py, path, columns, metadata, compression)
 }
 
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {

@@ -20,29 +20,44 @@ use nalgebra::DMatrix;
 
 /// Cartesian Bloch gradients for row-major complex128 orbital samples.
 pub fn bloch_gradients(
-    ctx: &crate::Context, grid: &crate::math::SpatialGrid, k: [f64; 3],
-    samples: &[C64], functions: usize,
+    ctx: &crate::Context,
+    grid: &crate::math::SpatialGrid,
+    k: [f64; 3],
+    samples: &[C64],
+    functions: usize,
 ) -> Result<Buffer<C64>> {
     bloch_gradients_typed(ctx, grid, k, samples, functions, |v| v)
 }
 
 /// As [`bloch_gradients`], promoting complex64 inputs while forming FFT rows.
 pub fn bloch_gradients_f32(
-    ctx: &crate::Context, grid: &crate::math::SpatialGrid, k: [f64; 3],
-    samples: &[num_complex::Complex32], functions: usize,
+    ctx: &crate::Context,
+    grid: &crate::math::SpatialGrid,
+    k: [f64; 3],
+    samples: &[num_complex::Complex32],
+    functions: usize,
 ) -> Result<Buffer<C64>> {
-    bloch_gradients_typed(ctx, grid, k, samples, functions,
-        |v| C64::new(v.re as f64, v.im as f64))
+    bloch_gradients_typed(ctx, grid, k, samples, functions, |v| {
+        C64::new(v.re as f64, v.im as f64)
+    })
 }
 
 fn bloch_gradients_typed<T: Copy>(
-    ctx: &crate::Context, grid: &crate::math::SpatialGrid, k: [f64; 3],
-    samples: &[T], functions: usize, convert: impl Fn(T) -> C64,
+    ctx: &crate::Context,
+    grid: &crate::math::SpatialGrid,
+    k: [f64; 3],
+    samples: &[T],
+    functions: usize,
+    convert: impl Fn(T) -> C64,
 ) -> Result<Buffer<C64>> {
     let n = grid.index.points();
-    if functions == 0 || samples.len() != product(&[functions, n])?
-        || k.iter().any(|x| !x.is_finite()) {
-        return Err(invalid("Bloch gradients need finite k and matching nonempty orbital samples"));
+    if functions == 0
+        || samples.len() != product(&[functions, n])?
+        || k.iter().any(|x| !x.is_finite())
+    {
+        return Err(invalid(
+            "Bloch gradients need finite k and matching nonempty orbital samples",
+        ));
     }
     let symbols = reciprocal::bloch(ctx, grid, k)?;
     let mut fft = Fft3::new(ctx, grid.index.shape())?;
@@ -55,14 +70,16 @@ fn bloch_gradients_typed<T: Copy>(
     let mut gradients = ctx.allocate::<C64>(product(&[3, functions, n])?)?;
     for orbital in 0..functions {
         for j in 0..n {
-            transformed.as_mut_slice()[j] = convert(samples[orbital * n + j]) * phase.as_slice()[j].conj();
+            transformed.as_mut_slice()[j] =
+                convert(samples[orbital * n + j]) * phase.as_slice()[j].conj();
         }
         fft.transform(transformed.as_mut_slice(), false)?;
         for axis in 0..3 {
             let start = (axis * functions + orbital) * n;
             let row = &mut gradients.as_mut_slice()[start..start + n];
             for j in 0..n {
-                row[j] = transformed.as_slice()[j] * C64::new(0., symbols.vectors.as_slice()[axis * n + j]);
+                row[j] = transformed.as_slice()[j]
+                    * C64::new(0., symbols.vectors.as_slice()[axis * n + j]);
             }
             fft.transform(row, true)?;
             for j in 0..n {
@@ -189,8 +206,14 @@ pub fn evaluate(
     tau: Option<&[f64]>,
     spins: usize,
 ) -> Result<Terms> {
-    let Partials { energy, mut local, kinetic_potential, gradients, flux, nonlocal_source } =
-        partials(c, fft, rho, tau, spins, None)?;
+    let Partials {
+        energy,
+        mut local,
+        kinetic_potential,
+        gradients,
+        flux,
+        nonlocal_source,
+    } = partials(c, fft, rho, tau, spins, None)?;
     let n = c.grid.index.points();
     for s in 0..2 {
         for a in 0..3 {
@@ -295,7 +318,9 @@ pub(super) fn partials(
         }
         Some(given) => {
             if given.len() != 6 * n || given.iter().any(|v| !v.is_finite()) {
-                return Err(invalid("supplied spin gradients are two spins of three finite axes"));
+                return Err(invalid(
+                    "supplied spin gradients are two spins of three finite axes",
+                ));
             }
             for a in 0..3 {
                 let core = derivative(c, fft, c.core.as_slice(), a)?;
@@ -457,7 +482,9 @@ pub fn kinetic_density<M: MatrixSource>(c: &Crystal, matrices: &[M]) -> Result<B
 /// is not symmetrized.
 fn spinor_kinetic_density<M: MatrixSource>(c: &Crystal, matrices: &[M]) -> Result<Buffer<f64>> {
     if matrices.len() != c.points.len() {
-        return Err(invalid("a spinor kinetic density needs one matrix per k-point"));
+        return Err(invalid(
+            "a spinor kinetic density needs one matrix per k-point",
+        ));
     }
     let n = c.grid.index.points();
     let channels = c.field_channels();

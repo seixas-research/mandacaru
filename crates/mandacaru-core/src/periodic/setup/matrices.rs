@@ -44,7 +44,8 @@ pub struct MatrixAssembly<'a> {
     pub kpoints_frac: &'a [[f64; 3]],
     pub weights: &'a [f64],
     pub operators: &'a Operators,
-    pub spin_orbit_couplings: Option<&'a BTreeMap<(usize, usize), crate::models::spin_orbit::Coupling>>,
+    pub spin_orbit_couplings:
+        Option<&'a BTreeMap<(usize, usize), crate::models::spin_orbit::Coupling>>,
     /// The spin-orbit dataset projectors; distinct from scalar raw projectors.
     pub spin_orbit_projectors: Option<&'a [Projector]>,
     pub sigma: f64,
@@ -52,10 +53,21 @@ pub struct MatrixAssembly<'a> {
 }
 
 /// Grid overlap of row-major orbital samples, without a conjugated grid copy.
-pub fn grid_overlap(samples: &[Complex64], functions: usize, points: usize, dv: f64) -> Result<DMatrix<Complex64>> {
-    if functions == 0 || points == 0 || samples.len() != product(&[functions, points])?
-        || !dv.is_finite() || dv <= 0. {
-        return Err(crate::Error::Invalid("invalid orbital grid or volume element".into()));
+pub fn grid_overlap(
+    samples: &[Complex64],
+    functions: usize,
+    points: usize,
+    dv: f64,
+) -> Result<DMatrix<Complex64>> {
+    if functions == 0
+        || points == 0
+        || samples.len() != product(&[functions, points])?
+        || !dv.is_finite()
+        || dv <= 0.
+    {
+        return Err(crate::Error::Invalid(
+            "invalid orbital grid or volume element".into(),
+        ));
     }
     crate::math::gemm::complex_gram(samples, points, functions, dv)
 }
@@ -63,7 +75,9 @@ pub fn grid_overlap(samples: &[Complex64], functions: usize, points: usize, dv: 
 /// Compute `C Q C^H` and `C D C^H`. The accessors permit both real and
 /// complex, row- or column-major operators without duplicating their storage.
 pub fn projector_products(
-    ctx: &Context, m: usize, p: usize,
+    ctx: &Context,
+    m: usize,
+    p: usize,
     c: impl Fn(usize, usize) -> Complex64,
     q: impl Fn(usize, usize) -> Complex64,
     d: impl Fn(usize, usize) -> Complex64,
@@ -79,8 +93,14 @@ pub fn projector_products(
         let (mut first, mut end) = (p, 0);
         for j in 0..p {
             let (qkj, dkj) = (q(k, j), d(k, j));
-            if !qkj.re.is_finite() || !qkj.im.is_finite() || !dkj.re.is_finite() || !dkj.im.is_finite() {
-                return Err(crate::Error::Invalid("PAW projector operators must be finite".into()));
+            if !qkj.re.is_finite()
+                || !qkj.im.is_finite()
+                || !dkj.re.is_finite()
+                || !dkj.im.is_finite()
+            {
+                return Err(crate::Error::Invalid(
+                    "PAW projector operators must be finite".into(),
+                ));
             }
             if !tiled && j <= k && (qkj != q(j, k).conj() || dkj != d(j, k).conj()) {
                 hermitian = false;
@@ -98,7 +118,9 @@ pub fn projector_products(
             for k in 0..p {
                 let value = c(i, k);
                 if !value.re.is_finite() || !value.im.is_finite() {
-                    return Err(crate::Error::Invalid("PAW projections must be finite".into()));
+                    return Err(crate::Error::Invalid(
+                        "PAW projections must be finite".into(),
+                    ));
                 }
             }
         }
@@ -117,12 +139,18 @@ pub fn projector_products(
         for k in 0..p {
             let value = c(i, k);
             if !value.re.is_finite() || !value.im.is_finite() {
-                return Err(crate::Error::Invalid("PAW projections must be finite".into()));
+                return Err(crate::Error::Invalid(
+                    "PAW projections must be finite".into(),
+                ));
             }
             for j in ranges.as_slice()[2 * k]..ranges.as_slice()[2 * k + 1] {
                 let (qkj, dkj) = (q(k, j), d(k, j));
-                if qkj != Complex64::new(0., 0.) { qrow[j] += value * qkj; }
-                if dkj != Complex64::new(0., 0.) { drow[j] += value * dkj; }
+                if qkj != Complex64::new(0., 0.) {
+                    qrow[j] += value * qkj;
+                }
+                if dkj != Complex64::new(0., 0.) {
+                    drow[j] += value * dkj;
+                }
             }
         }
         for j in (if hermitian { i } else { 0 })..m {
@@ -165,7 +193,8 @@ impl TiledScratch {
 /// Tiled real GEMMs for a complex product. Only one transformed projection
 /// and a bounded block of conjugate projections are held at a time.
 fn tiled_projector_product(
-    m: usize, p: usize,
+    m: usize,
+    p: usize,
     c: &impl Fn(usize, usize) -> Complex64,
     op: &impl Fn(usize, usize) -> Complex64,
     ranges: &[usize],
@@ -203,12 +232,66 @@ fn tiled_projector_product(
                 bi[k + j * p] = z.im;
             }
         }
-        let a = |values| MatrixRef { values, rows: m, columns: p, leading: m };
-        let b = |values| MatrixRef { values, rows: p, columns: count, leading: p };
-        multiply(a(ar), b(br), MatrixMut { values: rr, rows: m, columns: count, leading: m }, 1., 0.)?;
-        multiply(a(ai), b(bi), MatrixMut { values: rr, rows: m, columns: count, leading: m }, 1., 1.)?;
-        multiply(a(ai), b(br), MatrixMut { values: ri, rows: m, columns: count, leading: m }, 1., 0.)?;
-        multiply(a(ar), b(bi), MatrixMut { values: ri, rows: m, columns: count, leading: m }, -1., 1.)?;
+        let a = |values| MatrixRef {
+            values,
+            rows: m,
+            columns: p,
+            leading: m,
+        };
+        let b = |values| MatrixRef {
+            values,
+            rows: p,
+            columns: count,
+            leading: p,
+        };
+        multiply(
+            a(ar),
+            b(br),
+            MatrixMut {
+                values: rr,
+                rows: m,
+                columns: count,
+                leading: m,
+            },
+            1.,
+            0.,
+        )?;
+        multiply(
+            a(ai),
+            b(bi),
+            MatrixMut {
+                values: rr,
+                rows: m,
+                columns: count,
+                leading: m,
+            },
+            1.,
+            1.,
+        )?;
+        multiply(
+            a(ai),
+            b(br),
+            MatrixMut {
+                values: ri,
+                rows: m,
+                columns: count,
+                leading: m,
+            },
+            1.,
+            0.,
+        )?;
+        multiply(
+            a(ar),
+            b(bi),
+            MatrixMut {
+                values: ri,
+                rows: m,
+                columns: count,
+                leading: m,
+            },
+            -1.,
+            1.,
+        )?;
         for j in 0..count {
             for i in 0..m {
                 result[(i, first + j)] = Complex64::new(rr[i + j * m], ri[i + j * m]);
@@ -220,23 +303,36 @@ fn tiled_projector_product(
 
 /// Apply PAW corrections and Hermitianize the two energy matrices in place.
 pub fn assemble_paw_matrices(
-    ctx: &Context, m: usize, p: usize, grid_overlap: &[Complex64],
-    kinetic: &[Complex64], local: &[Complex64],
+    ctx: &Context,
+    m: usize,
+    p: usize,
+    grid_overlap: &[Complex64],
+    kinetic: &[Complex64],
+    local: &[Complex64],
     c: impl Fn(usize, usize) -> Complex64,
     q: impl Fn(usize, usize) -> Complex64,
     d: impl Fn(usize, usize) -> Complex64,
 ) -> Result<(DMatrix<Complex64>, DMatrix<Complex64>)> {
     let size = product(&[m, m])?;
     if m == 0 || grid_overlap.len() != size || kinetic.len() != size || local.len() != size {
-        return Err(crate::Error::Invalid("PAW matrix dimensions disagree".into()));
+        return Err(crate::Error::Invalid(
+            "PAW matrix dimensions disagree".into(),
+        ));
     }
-    if grid_overlap.iter().chain(kinetic).chain(local).any(|z| !z.re.is_finite() || !z.im.is_finite()) {
-        return Err(crate::Error::Invalid("PAW input matrices must be finite".into()));
+    if grid_overlap
+        .iter()
+        .chain(kinetic)
+        .chain(local)
+        .any(|z| !z.re.is_finite() || !z.im.is_finite())
+    {
+        return Err(crate::Error::Invalid(
+            "PAW input matrices must be finite".into(),
+        ));
     }
     let (augmentation, ionic) = projector_products(ctx, m, p, c, q, d)?;
     let mut overlap = DMatrix::from_row_slice(m, m, grid_overlap) + augmentation;
-    let mut fixed = DMatrix::from_row_slice(m, m, kinetic)
-        + DMatrix::from_row_slice(m, m, local) + ionic;
+    let mut fixed =
+        DMatrix::from_row_slice(m, m, kinetic) + DMatrix::from_row_slice(m, m, local) + ionic;
     for matrix in [&mut overlap, &mut fixed] {
         for i in 0..m {
             for j in i..m {
@@ -258,11 +354,7 @@ pub fn kpoint_matrices(ctx: &Context, assembly: &MatrixAssembly<'_>) -> Result<V
     let n_points = mesh.len();
     let d_v = mesh.dv;
 
-    let points_slice = [
-        mesh.points()[0],
-        mesh.points()[1],
-        mesh.points()[2],
-    ];
+    let points_slice = [mesh.points()[0], mesh.points()[1], mesh.points()[2]];
 
     let so_buffer = if let Some(couplings) = assembly.spin_orbit_couplings {
         if !couplings.is_empty() {
@@ -346,10 +438,14 @@ pub fn kpoint_matrices(ctx: &Context, assembly: &MatrixAssembly<'_>) -> Result<V
         let mut s_mat = grid_overlap(psi_slice, m, n_points, d_v)?;
 
         // Add PAW augmentation overlap correction: C @ q_overlap @ C^H
-        let (augmentation, h_ion) = projector_products(ctx, m, p,
+        let (augmentation, h_ion) = projector_products(
+            ctx,
+            m,
+            p,
             |i, j| c_mat[(i, j)],
             |i, j| assembly.operators.augmentation[(i, j)],
-            |i, j| assembly.operators.ion_operator[(i, j)])?;
+            |i, j| assembly.operators.ion_operator[(i, j)],
+        )?;
         s_mat += augmentation;
 
         // Symmetrize / Hermitianize S = 0.5 * (S + S^H)
@@ -364,19 +460,14 @@ pub fn kpoint_matrices(ctx: &Context, assembly: &MatrixAssembly<'_>) -> Result<V
         }
         let inv_sqrt_diag = DMatrix::from_diagonal(&DVector::from_iterator(
             m,
-            eigenvalues.iter().map(|&e| Complex64::new(1.0 / e.sqrt(), 0.0)),
+            eigenvalues
+                .iter()
+                .map(|&e| Complex64::new(1.0 / e.sqrt(), 0.0)),
         ));
         let lowdin = &eigenvectors * inv_sqrt_diag * eigenvectors.adjoint();
 
         // 4. Kinetic matrix T
-        let mut t_mat = kinetic_self(
-            ctx,
-            assembly.grid,
-            &mesh,
-            k,
-            psi_slice,
-            m,
-        )?;
+        let mut t_mat = kinetic_self(ctx, assembly.grid, &mesh, k, psi_slice, m)?;
         t_mat = (&t_mat + t_mat.adjoint()) * Complex64::new(0.5, 0.);
 
         // The full-precision samples are no longer needed for assembly. Archive
@@ -385,7 +476,11 @@ pub fn kpoint_matrices(ctx: &Context, assembly: &MatrixAssembly<'_>) -> Result<V
         let sample_bytes = product(&[
             m,
             n_points,
-            if assembly.precision == Precision::Float32 { 8 } else { 16 },
+            if assembly.precision == Precision::Float32 {
+                8
+            } else {
+                16
+            },
         ])?;
         let psi_samples = if ctx.offloads(sample_bytes) {
             let archived = ComplexSamples::archived_copy(ctx, psi_slice, assembly.precision)?;

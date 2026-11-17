@@ -108,7 +108,7 @@ const SLACK: usize = 1 << 20;
 /// Every `*.parquet` fixture as `(relative name, bytes)`, sorted by name.
 fn all_fixtures() -> Vec<(String, Vec<u8>)> {
     let mut found = Vec::new();
-    for folder in ["generic", "hamiltonian", "negative", "pseudopotential"] {
+    for folder in ["generic", "hamiltonian", "negative"] {
         let mut names: Vec<_> = fs::read_dir(fixtures().join(folder))
             .unwrap()
             .map(|e| e.unwrap().file_name().into_string().unwrap())
@@ -1654,7 +1654,7 @@ fn weight(part: Part) -> usize {
     }
 }
 
-const MUTATION_TARGETS: [&str; 16] = [
+const MUTATION_TARGETS: [&str; 14] = [
     "hamiltonian/pyarrow_zstd.parquet",
     "hamiltonian/fastparquet_zstd.parquet",
     "hamiltonian/pyarrow_zstd_data_page_v2.parquet",
@@ -1668,8 +1668,6 @@ const MUTATION_TARGETS: [&str; 16] = [
     "hamiltonian/fastparquet_multi_row_group.parquet",
     "hamiltonian/pyarrow_page_checksum.parquet",
     "hamiltonian/fastparquet_empty.parquet",
-    "pseudopotential/fastparquet_zstd.parquet",
-    "pseudopotential/pyarrow_snappy.parquet",
     "generic/pyarrow_special_values_zstd.parquet",
 ];
 

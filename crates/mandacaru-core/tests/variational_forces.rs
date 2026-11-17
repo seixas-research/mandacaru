@@ -454,7 +454,13 @@ fn a_triplet_with_an_mp2_active_space_matches_the_oracle() {
     let ctx = Context::new(Some(2), 1 << 30).unwrap();
     {
         let base = integrals(&ctx, &H2, "lda");
-        parity_with(&base, "uhf", [2, 0], Some(r#"{"orbitals": 4, "method": "mp2"}"#), 0.01);
+        parity_with(
+            &base,
+            "uhf",
+            [2, 0],
+            Some(r#"{"orbitals": 4, "method": "mp2"}"#),
+            0.01,
+        );
     }
     assert_eq!(ctx.memory_used(), 0);
 }
@@ -470,7 +476,13 @@ fn an_unrestricted_doublet_with_an_mp2_active_space_matches_the_oracle() {
     {
         let h3 = [[0., 0., -1.7], [0.3, 0., 0.1], [0., 0.2, 1.6]];
         let base = integrals(&ctx, &h3, "lda");
-        parity_with(&base, "uhf", [2, 1], Some(r#"{"orbitals": 3, "method": "mp2"}"#), 0.01);
+        parity_with(
+            &base,
+            "uhf",
+            [2, 1],
+            Some(r#"{"orbitals": 3, "method": "mp2"}"#),
+            0.01,
+        );
     }
     assert_eq!(ctx.memory_used(), 0);
 }
@@ -538,10 +550,280 @@ fn hydroxyl_mp2_analytic_force_matches_the_oracle_on_the_shipped_set() {
             "raw",
             &analytic_shells(&[0, 1, 2]),
         );
-        parity_with(&base, "uhf", [4, 3], Some(r#"{"orbitals": 6, "method": "mp2", "frozen": "auto"}"#), 0.01);
+        parity_with(
+            &base,
+            "uhf",
+            [4, 3],
+            Some(r#"{"orbitals": 6, "method": "mp2", "frozen": "auto"}"#),
+            0.01,
+        );
         // A frozen doubly occupied orbital: the occupied natural orbitals of the rest rotate.
-        parity_with(&base, "uhf", [4, 3], Some(r#"{"orbitals": 6, "method": "mp2", "frozen": [0]}"#), 0.);
+        parity_with(
+            &base,
+            "uhf",
+            [4, 3],
+            Some(r#"{"orbitals": 6, "method": "mp2", "frozen": [0]}"#),
+            0.,
+        );
     }
     assert_eq!(ctx.memory_used(), 0);
     println!("elapsed {:.0} s", started.elapsed().as_secs_f64());
+}
+
+#[test]
+fn subspace_vasqa_ground_and_excited_analytic_forces_match_finite_differences() {
+    use mandacaru_core::{
+        molecular::response::{self, SubspaceOptions},
+        quantum::{lagrangian::Ansatz, optimizer, search::vasqa::SearchOptions},
+    };
+
+    let ctx = Context::new(Some(2), 512 << 20).unwrap();
+    {
+        let base = integrals(&ctx, &H2, "lda");
+        let state = solve(&base, Method::Hf("rhf"), [1, 1]);
+        let active = r#"{"orbitals": 2, "method": "energy"}"#;
+        let model = std::sync::Arc::new(state.active_model(&base, active).unwrap());
+        let problem = model
+            .problem(&ctx, "jordan_wigner", true, false, true)
+            .unwrap();
+        // Four weights span all four determinants of H2's (1,1) active sector so both
+        // ground (root 0) and doubly-excited (root 3) eigenstates couple to the ansatz.
+        let weights = [0.6, 0.25, 0.1, 0.05];
+        let search = SearchOptions {
+            max_steps: 24,
+            max_length: 2,
+            move_weights: [1., 0.5, 0.5],
+            temperatures: [0.02, 0.0005],
+            length_penalty: 0.,
+            proposal_temperature: 0.1,
+            uniform: false,
+            warm_start: true,
+            ..Default::default()
+        };
+        let found = problem
+            .search_subspace(&search, &weights, &[], &[])
+            .unwrap();
+        assert!(!found.solution.indices.is_empty());
+        let indices = found.solution.indices.clone();
+        let solve_opts = SolveOptions {
+            adapt: true,
+            max_growth: indices.len(),
+            optimizer: optimizer::Options {
+                tolerance: Some(1e-12),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let solved = problem
+            .solve_subspace_sequence(
+                &solve_opts,
+                &weights,
+                Some(&found.solution.parameters),
+                Some(&indices),
+            )
+            .unwrap();
+        let states = solved.states.complex128().unwrap();
+        let d = states.len() / weights.len();
+        let ansatz = Ansatz {
+            indices: &solved.indices,
+            parameters: &solved.parameters,
+            product_form: true,
+        };
+        let h = 2e-4;
+        let mut excited_lagrangian_tested = false;
+        for root in 0..weights.len() {
+            let psi_root = &states[root * d..(root + 1) * d];
+            let analytic = response::subspace_gradient(
+                &base,
+                &state,
+                &model,
+                &problem,
+                psi_root,
+                &SubspaceOptions {
+                    weights: &weights,
+                    ansatz: Some(ansatz),
+                    lagrangian: Default::default(),
+                    internal: false,
+                },
+            )
+            .unwrap();
+            assert_eq!(analytic.scheme, "analytic");
+            assert!((analytic.energy - solved.energies[root]).abs() < 1e-10);
+            let eval_at = |delta: f64| -> f64 {
+                let disp = moved(&base, 1, 2, delta);
+                let disp_scf = solve(&disp, Method::Hf("rhf"), [1, 1]);
+                let disp_model = disp_scf.active_model(&disp, active).unwrap();
+                let disp_problem = disp_model
+                    .problem(&ctx, "jordan_wigner", true, false, true)
+                    .unwrap();
+                let disp_solved = disp_problem
+                    .solve_subspace_sequence(
+                        &solve_opts,
+                        &weights,
+                        Some(&solved.parameters),
+                        Some(&solved.indices),
+                    )
+                    .unwrap();
+                disp_solved.energies[root]
+            };
+            let fd_z = (eval_at(h) - eval_at(-h)) / (2. * h);
+            let analytic_z = analytic.gradient.as_slice()[5];
+            assert!(
+                (analytic_z - fd_z).abs() < 5e-7,
+                "root {root} converged dE/dz mismatch: analytic={analytic_z:.10} fd={fd_z:.10}"
+            );
+
+            let shifted_params: Vec<f64> = solved
+                .parameters
+                .iter()
+                .enumerate()
+                .map(|(k, t)| t + 0.04 * ((k + 1) as f64).cos())
+                .collect();
+            let shifted_ansatz = Ansatz {
+                indices: &solved.indices,
+                parameters: &shifted_params,
+                product_form: true,
+            };
+            let shifted_res = problem
+                .solve_subspace_sequence(
+                    &SolveOptions {
+                        adapt: true,
+                        max_growth: solved.indices.len(),
+                        optimizer: optimizer::Options {
+                            max_iterations: 0,
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    },
+                    &weights,
+                    Some(&shifted_params),
+                    Some(&solved.indices),
+                )
+                .unwrap();
+            assert_eq!(shifted_res.parameters, shifted_params);
+            let shifted_states = shifted_res.states.complex128().unwrap();
+            let shifted_root = &shifted_states[root * d..(root + 1) * d];
+            let lagrangian = response::subspace_gradient(
+                &base,
+                &state,
+                &model,
+                &problem,
+                shifted_root,
+                &SubspaceOptions {
+                    weights: &weights,
+                    ansatz: Some(shifted_ansatz),
+                    lagrangian: Default::default(),
+                    internal: false,
+                },
+            )
+            .unwrap();
+            if let mandacaru_core::quantum::lagrangian::SubspaceResidual::Corrected {
+                z: fixed_z,
+                ..
+            } = problem
+                .subspace_lagrangian(&shifted_ansatz, &weights, shifted_root, &Default::default())
+                .unwrap()
+            {
+                if root > 0 {
+                    excited_lagrangian_tested = true;
+                }
+                let shifted_surface_at = |delta: f64| -> f64 {
+                    let disp = moved(&base, 1, 2, delta);
+                    let disp_scf = solve(&disp, Method::Hf("rhf"), [1, 1]);
+                    let disp_model = disp_scf.active_model(&disp, active).unwrap();
+                    let disp_problem = disp_model
+                        .problem(&ctx, "jordan_wigner", true, false, true)
+                        .unwrap();
+                    let d_sub = disp_problem.register("sub").unwrap().len();
+                    let disp_res = disp_problem
+                        .solve_subspace_sequence(
+                            &SolveOptions {
+                                adapt: true,
+                                max_growth: solved.indices.len(),
+                                optimizer: optimizer::Options {
+                                    max_iterations: 0,
+                                    ..Default::default()
+                                },
+                                ..Default::default()
+                            },
+                            &weights,
+                            Some(&shifted_params),
+                            Some(&solved.indices),
+                        )
+                        .unwrap();
+                    let ref_rows = disp_problem.subspace_ref_rows(weights.len()).unwrap();
+                    let mut g_ens = vec![0.; solved.indices.len()];
+                    for (&row, &w) in ref_rows.iter().zip(&weights) {
+                        let mut seed = vec![C64::new(0., 0.); d_sub];
+                        seed[row] = C64::new(1., 0.);
+                        let ev = disp_problem
+                            .evaluate_from_state(&solved.indices, &shifted_params, true, &seed)
+                            .unwrap();
+                        for (acc, &g) in g_ens.iter_mut().zip(&ev.gradient) {
+                            *acc += w * g;
+                        }
+                    }
+                    let z_dot_g: f64 = fixed_z.iter().zip(&g_ens).map(|(a, b)| a * b).sum();
+                    disp_res.energies[root] - z_dot_g
+                };
+                let shifted_z = lagrangian.gradient.as_slice()[5];
+                let shifted_fd_z = (shifted_surface_at(h) - shifted_surface_at(-h)) / (2. * h);
+                assert!(
+                    (shifted_z - shifted_fd_z).abs() < 5e-7,
+                    "root {root} shifted Lagrangian d(E - z.g_ens)/dz mismatch: analytic={shifted_z:.10} fd={shifted_fd_z:.10}"
+                );
+            }
+        }
+        assert!(
+            excited_lagrangian_tested,
+            "at least one excited eigenstate should test the active Lagrangian Z-vector branch"
+        );
+
+        // Verify K=1 exact parity with single-state response::gradient
+        let ss = problem
+            .solve(
+                &SolveOptions {
+                    adapt: true,
+                    ..Default::default()
+                },
+                None,
+            )
+            .unwrap();
+        let ss_p: Vec<f64> = ss.parameters.iter().map(|t| t + 0.04).collect();
+        let ss_eval = problem.prepare_state(&ss.indices, &ss_p, true).unwrap();
+        let ss_psi = ss_eval.complex128().unwrap();
+        let ss_ansatz = Ansatz {
+            indices: &ss.indices,
+            parameters: &ss_p,
+            product_form: true,
+        };
+        let g_single = response::gradient(
+            &base,
+            &state,
+            &model,
+            &problem,
+            ss_psi,
+            &response::Options {
+                ansatz: Some(ss_ansatz),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let g_sub1 = response::subspace_gradient(
+            &base,
+            &state,
+            &model,
+            &problem,
+            ss_psi,
+            &SubspaceOptions {
+                weights: &[1.0],
+                ansatz: Some(ss_ansatz),
+                lagrangian: Default::default(),
+                internal: false,
+            },
+        )
+        .unwrap();
+        assert!((g_single.gradient.as_slice()[5] - g_sub1.gradient.as_slice()[5]).abs() < 1e-13);
+    }
+    assert_eq!(ctx.memory_used(), 0);
 }

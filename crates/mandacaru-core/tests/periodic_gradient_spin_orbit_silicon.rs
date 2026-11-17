@@ -21,7 +21,13 @@ use setup_spin_orbit_silicon_support::*;
 const FORCE_GATE: f64 = 1e-11;
 
 fn spin_orbit(t: &Silicon) -> SpinOrbit {
-    let found = mandacaru_core::models::spin_orbit::channels(&t.ctx, &labels(&t.projectors), &t.couplings, false).unwrap();
+    let found = mandacaru_core::models::spin_orbit::channels(
+        &t.ctx,
+        &labels(&t.projectors),
+        &t.couplings,
+        false,
+    )
+    .unwrap();
     SpinOrbit::new(
         operator(&t.ctx, t.projectors.len(), &found).unwrap(),
         t.row_owner.clone(),

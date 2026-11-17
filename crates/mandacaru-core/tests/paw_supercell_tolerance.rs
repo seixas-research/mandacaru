@@ -11,9 +11,7 @@ mod setup_shells_support;
 use paw_supercell_support::{cells_with_basis, silicon_cell, Primitive};
 
 use mandacaru_core::{
-    molecular::{
-        periodic::paw::SUPERCELL_CHOLESKY_TOLERANCE, MolecularIntegrals, ScfOptions,
-    },
+    molecular::{periodic::paw::SUPERCELL_CHOLESKY_TOLERANCE, MolecularIntegrals, ScfOptions},
     quantum::SolveOptions,
     Context,
 };
@@ -37,18 +35,39 @@ fn run(
 ) -> Run {
     let cells = mesh.iter().product::<usize>() as f64;
     let ctx = Context::new(Some(2), 3 << 30).unwrap();
-    let integrals = MolecularIntegrals::paw_supercell(&ctx, setup.clone(), mesh, tolerance).unwrap();
+    let integrals =
+        MolecularIntegrals::paw_supercell(&ctx, setup.clone(), mesh, tolerance).unwrap();
     let n = integrals.neutral_electrons();
-    let options = ScfOptions { tolerance: 1e-11, ..ScfOptions::default() };
-    let rhf = integrals.mean_field("rhf", [n / 2, n / 2], &options).unwrap();
+    let options = ScfOptions {
+        tolerance: 1e-11,
+        ..ScfOptions::default()
+    };
+    let rhf = integrals
+        .mean_field("rhf", [n / 2, n / 2], &options)
+        .unwrap();
     let rank = integrals.eri().unwrap().report().cholesky.unwrap().0;
     let mut correlation = 0.;
     if active {
         let frozen: Vec<String> = (0..n / 2 - 1).map(|i| i.to_string()).collect();
-        let spec = format!(r#"{{"orbitals": [{}, {}], "frozen": [{}]}}"#, n / 2 - 1, n / 2, frozen.join(", "));
+        let spec = format!(
+            r#"{{"orbitals": [{}, {}], "frozen": [{}]}}"#,
+            n / 2 - 1,
+            n / 2,
+            frozen.join(", ")
+        );
         let model = rhf.active_model(&integrals, &spec).unwrap();
-        let problem = model.problem(&ctx, "jordan_wigner", true, false, true).unwrap();
-        let solved = problem.solve(&SolveOptions { adapt: true, ..Default::default() }, None).unwrap();
+        let problem = model
+            .problem(&ctx, "jordan_wigner", true, false, true)
+            .unwrap();
+        let solved = problem
+            .solve(
+                &SolveOptions {
+                    adapt: true,
+                    ..Default::default()
+                },
+                None,
+            )
+            .unwrap();
         correlation = (solved.energy - solved.reference) / cells;
     }
     Run {
@@ -61,7 +80,9 @@ fn run(
 fn silicon(basis: &str, mesh: [usize; 3]) -> Arc<mandacaru_core::periodic::setup::PeriodicSetup> {
     let ctx = Context::new(Some(2), 3 << 30).unwrap();
     let cell: Primitive = silicon_cell();
-    Arc::new(cells_with_basis(&ctx, "lda-sr", false, &cell, 1, [0.; 3], basis))
+    Arc::new(cells_with_basis(
+        &ctx, "lda-sr", false, &cell, 1, [0.; 3], basis,
+    ))
 }
 
 /// Si 2 x 1 x 1 at SZ (`m = 16`, 136 pairs): measured against the reference 1e-12 (rank 136),
@@ -86,7 +107,11 @@ fn the_energy_per_cell_follows_the_tolerance_on_silicon_sz() {
             got.correlation - reference.correlation
         );
         assert!(got.rank < rank_below, "rank {}", got.rank);
-        assert!((got.rhf - reference.rhf).abs() < rhf, "RHF {:e}", got.rhf - reference.rhf);
+        assert!(
+            (got.rhf - reference.rhf).abs() < rhf,
+            "RHF {:e}",
+            got.rhf - reference.rhf
+        );
         assert!(
             (got.correlation - reference.correlation).abs() < correlation,
             "correlation {:e}",
@@ -112,7 +137,11 @@ fn the_default_tolerance_holds_the_energy_per_cell_on_silicon_222() {
         reference.rank,
         got.rhf - reference.rhf
     );
-    assert!((got.rhf - reference.rhf).abs() < 1e-6, "{:e}", got.rhf - reference.rhf);
+    assert!(
+        (got.rhf - reference.rhf).abs() < 1e-6,
+        "{:e}",
+        got.rhf - reference.rhf
+    );
 }
 
 /// Si 2 x 1 x 1 at DZP (`m = 52`, 1378 pairs), the production basis: 1e-8 Hartree kept 79 % of the
@@ -131,7 +160,11 @@ fn the_default_tolerance_holds_the_energy_per_cell_on_silicon_dzp() {
         got.rhf - reference.rhf,
         got.correlation - reference.correlation
     );
-    assert!((got.rhf - reference.rhf).abs() < 1e-7, "{:e}", got.rhf - reference.rhf);
+    assert!(
+        (got.rhf - reference.rhf).abs() < 1e-7,
+        "{:e}",
+        got.rhf - reference.rhf
+    );
     assert!((got.correlation - reference.correlation).abs() < 1e-8);
 }
 
@@ -149,5 +182,9 @@ fn the_default_tolerance_holds_the_energy_per_cell_on_silicon_dzp_four_cells() {
         reference.rank,
         got.rhf - reference.rhf
     );
-    assert!((got.rhf - reference.rhf).abs() < 1e-6, "{:e}", got.rhf - reference.rhf);
+    assert!(
+        (got.rhf - reference.rhf).abs() < 1e-6,
+        "{:e}",
+        got.rhf - reference.rhf
+    );
 }

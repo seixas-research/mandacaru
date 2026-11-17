@@ -112,7 +112,7 @@ pub fn build(
         if reached.rows.is_empty() {
             continue;
         }
-        let sphere = Sphere::projector(ctx, first.center, first.r_cut).unwrap();
+        let sphere = Sphere::projector(ctx, &lattice, first.center, first.r_cut).unwrap();
         for range in sphere.chunks(chunk_size(1, 4 * reached.rows.len())) {
             let points = sphere.points(range.clone());
             let cols = columns(ctx, &kept, &members, points, sphere.weights(range));

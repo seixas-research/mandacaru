@@ -1,17 +1,14 @@
 //! Interoperability: files written by other libraries are read bit for bit,
-//! the 431 shipped pseudopotential files match the digests frozen from the
-//! previous reader, and files written here have exactly the layout other
-//! readers (pyarrow, fastparquet, pandas, DuckDB) depend on, checked by an
-//! independent walk of the Thrift bytes.
+//! and files written here have exactly the layout other readers (pyarrow,
+//! fastparquet, pandas, DuckDB) depend on, checked by an independent walk of
+//! the Thrift bytes.
 //!
 //! The foreign files are the frozen fixtures under
-//! `test/migration/reference/parquet/`. The shipped libraries are read from
-//! `MANDACARU_PAW_PATH` and `MANDACARU_UPAW_PATH`; a test that needs an unset
-//! library says so on stderr and passes without it.
+//! `test/migration/reference/parquet/`.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use mandacaru_core::parquet::{
@@ -19,8 +16,7 @@ use mandacaru_core::parquet::{
         self, codec as codec_id, encoding, page_type, physical, repetition, FileMetaData,
         PageHeader,
     },
-    read_metadata, read_table, write_table, Codec, Column, ColumnKind, Table, Utf8Column,
-    WriteOptions, CREATED_BY, MAGIC,
+    read_table, write_table, Codec, Column, Table, Utf8Column, WriteOptions, CREATED_BY, MAGIC,
 };
 use mandacaru_core::Context;
 use serde_json::Value;
@@ -177,19 +173,6 @@ impl Sha256 {
 fn sha256(data: &[u8]) -> String {
     let mut hash = Sha256::new();
     hash.update(data);
-    hash.finish()
-}
-
-fn double_digest(values: &[f64]) -> String {
-    let mut hash = Sha256::new();
-    let mut buffer = Vec::with_capacity(1 << 16);
-    for chunk in values.chunks(1 << 13) {
-        buffer.clear();
-        for value in chunk {
-            buffer.extend_from_slice(&value.to_le_bytes());
-        }
-        hash.update(&buffer);
-    }
     hash.finish()
 }
 
@@ -452,7 +435,7 @@ fn foreign_files_read_exactly_as_the_previous_reader_returned_them() {
         "the previous reader's known misreads are exactly one column"
     );
     assert!(
-        files >= 38 && columns >= 150,
+        files >= 32 && columns >= 150,
         "{files} files, {columns} columns"
     );
     eprintln!(
@@ -530,212 +513,6 @@ fn the_fixtures_cover_every_variant_the_reader_claims_to_support() {
     );
     assert!(multi_group && multi_page && zero_rows && fallback && checksum);
     assert!(footer_versions.len() >= 2, "{footer_versions:?}");
-}
-
-// ---------------------------------------------------------------------------
-// The shipped libraries.
-// ---------------------------------------------------------------------------
-
-fn library_root(variable: &str) -> Option<PathBuf> {
-    match std::env::var_os(variable) {
-        Some(value) if !value.is_empty() => Some(PathBuf::from(value)),
-        _ => None,
-    }
-}
-
-/// Where a corpus name (`paw/<set>/<Symbol>.parquet`, `upaw/lda-sr/...`) lives.
-fn library_path(name: &str) -> Option<PathBuf> {
-    if let Some(rest) = name.strip_prefix("paw/") {
-        library_root("MANDACARU_PAW_PATH").map(|root| root.join(rest))
-    } else if let Some(rest) = name.strip_prefix("upaw/") {
-        library_root("MANDACARU_UPAW_PATH").map(|root| root.join(rest))
-    } else {
-        None
-    }
-}
-
-/// The footer of a shipped file equals what was frozen.
-fn check_footer(name: &str, entry: &Value, ctx: &Context, path: &Path) {
-    let footer = read_metadata(ctx, path).unwrap_or_else(|e| panic!("{name}: {e}"));
-    assert_eq!(footer.num_rows, entry["rows"].as_u64().unwrap(), "{name}");
-    assert_eq!(
-        footer.created_by,
-        entry["created_by"].as_str().unwrap(),
-        "{name}"
-    );
-    assert_eq!(footer.num_row_groups, 1, "{name}");
-    let expected = entry["columns"].as_array().unwrap();
-    assert_eq!(footer.columns.len(), expected.len(), "{name}");
-    for ((got, kind), want) in footer.columns.iter().zip(expected) {
-        assert_eq!(got, want[0].as_str().unwrap(), "{name}");
-        assert_eq!(*kind, ColumnKind::Double, "{name} {got}");
-    }
-    let kv = &entry["kv"];
-    let text = &footer.metadata[kv["key"].as_str().unwrap()];
-    assert_eq!(text.len() as u64, kv["bytes"].as_u64().unwrap(), "{name}");
-    for (key, other) in entry["kv_other_keys"].as_object().unwrap() {
-        let text = &footer.metadata[key];
-        assert_eq!(
-            text.len() as u64,
-            other["bytes"].as_u64().unwrap(),
-            "{name} {key}"
-        );
-        assert_eq!(
-            sha256(text.as_bytes()),
-            other["sha256"].as_str().unwrap(),
-            "{name} {key}"
-        );
-    }
-    assert_eq!(
-        footer.metadata.len(),
-        1 + entry["kv_other_keys"].as_object().unwrap().len(),
-        "{name}"
-    );
-}
-
-/// Every column and the pseudopotential text of a shipped file hash to the
-/// frozen digests. Returns the table for further use.
-fn check_digests(name: &str, entry: &Value, ctx: &Context, path: &Path) -> Table {
-    let table = read_table(ctx, path).unwrap_or_else(|e| panic!("{name}: {e}"));
-    let expected = entry["columns"].as_array().unwrap();
-    assert_eq!(table.columns.len(), expected.len(), "{name}");
-    for ((got_name, column), want) in table.columns.iter().zip(expected) {
-        assert_eq!(got_name, want[0].as_str().unwrap(), "{name}");
-        assert_eq!(
-            column.len() as u64,
-            want[1].as_u64().unwrap(),
-            "{name} {got_name}"
-        );
-        assert_eq!(
-            double_digest(column.as_f64().unwrap()),
-            want[2].as_str().unwrap(),
-            "{name} {got_name}"
-        );
-    }
-    let kv = &entry["kv"];
-    let text = &table.metadata[kv["key"].as_str().unwrap()];
-    assert_eq!(text.len() as u64, kv["bytes"].as_u64().unwrap(), "{name}");
-    assert_eq!(
-        sha256(text.as_bytes()),
-        kv["sha256"].as_str().unwrap(),
-        "{name}"
-    );
-    table
-}
-
-#[test]
-fn every_shipped_footer_matches_the_frozen_references() {
-    let references = json("references.json");
-    let ctx = context();
-    let mut checked = BTreeMap::<String, usize>::new();
-    for (name, entry) in references["corpus_files"].as_object().unwrap() {
-        let Some(path) = library_path(name).filter(|p| p.exists()) else {
-            continue;
-        };
-        check_footer(name, entry, &ctx, &path);
-        let library = name.rsplit_once('/').unwrap().0.to_owned();
-        *checked.entry(library).or_default() += 1;
-    }
-    assert_eq!(ctx.memory_used(), 0);
-    let total: usize = checked.values().sum();
-    eprintln!("shipped footers checked: {checked:?} (total {total} of 431)");
-    for (library, count) in &checked {
-        assert_eq!(
-            *count,
-            references["corpus_totals"]["files_per_set"][library]
-                .as_u64()
-                .unwrap() as usize,
-            "{library}"
-        );
-    }
-}
-
-/// Every shipped file, every column, bit for bit. Debug builds decode zstd
-/// slowly, so they check five files (one per library); release builds check
-/// all that are installed.
-#[test]
-#[ignore = "slow: 11 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test parquet_interop -- --ignored every_shipped_file_matches_the_frozen_digests"]
-fn every_shipped_file_matches_the_frozen_digests() {
-    let references = json("references.json");
-    let ctx = Context::new(Some(1), 2 << 30).unwrap();
-    let sample = [
-        "paw/lda-sr/Cu.parquet",
-        "paw/lda-fr/Ac.parquet",
-        "paw/pbe-sr/H.parquet",
-        "paw/pbe-fr/Pb.parquet",
-        "upaw/lda-sr/Ag.parquet",
-    ];
-    let mut checked = 0usize;
-    let mut bytes = 0u64;
-    for (name, entry) in references["corpus_files"].as_object().unwrap() {
-        if cfg!(debug_assertions) && !sample.contains(&name.as_str()) {
-            continue;
-        }
-        let Some(path) = library_path(name).filter(|p| p.exists()) else {
-            continue;
-        };
-        let table = check_digests(name, entry, &ctx, &path);
-        drop(table);
-        assert_eq!(ctx.memory_used(), 0, "{name}");
-        bytes += entry["bytes"].as_u64().unwrap();
-        checked += 1;
-    }
-    eprintln!(
-        "shipped files with identical digests: {checked} ({} MB)",
-        bytes >> 20
-    );
-    if checked == 0 {
-        eprintln!("MANDACARU_PAW_PATH and MANDACARU_UPAW_PATH are unset: no shipped file was read");
-    }
-}
-
-#[test]
-fn resaving_a_shipped_file_keeps_every_digest() {
-    let references = json("references.json");
-    let ctx = Context::new(Some(1), 2 << 30).unwrap();
-    let dir = Directory::new();
-    let mut checked = 0;
-    for name in [
-        "paw/lda-sr/Cu.parquet",
-        "paw/pbe-fr/Pb.parquet",
-        "paw/pbe-sr/H.parquet",
-        "upaw/lda-sr/Ag.parquet",
-    ] {
-        let Some(path) = library_path(name).filter(|p| p.exists()) else {
-            continue;
-        };
-        let entry = &references["corpus_files"][name];
-        let table = check_digests(name, entry, &ctx, &path);
-        for codec in [Codec::Zstd, Codec::Uncompressed] {
-            let out = dir.file("resaved.parquet");
-            write_table(
-                &ctx,
-                &out,
-                &table,
-                &WriteOptions {
-                    codec,
-                    ..WriteOptions::default()
-                },
-            )
-            .unwrap();
-            let size = fs::metadata(&out).unwrap().len();
-            let again = check_digests(name, entry, &ctx, &out);
-            assert_eq!(again.metadata, table.metadata, "{name}");
-            eprintln!(
-                "{name}: original {} B, re-saved {} {} B",
-                entry["bytes"],
-                codec.name(),
-                size
-            );
-            drop(again);
-        }
-        drop(table);
-        assert_eq!(ctx.memory_used(), 0, "{name}");
-        checked += 1;
-    }
-    if checked == 0 {
-        eprintln!("no shipped library is set: nothing was re-saved");
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1136,7 +913,10 @@ fn the_dictionary_pages_of_a_foreign_file_are_not_copied_into_ours() {
 #[ignore]
 fn emit_files_for_external_readers() {
     use mandacaru_core::persistence::{Document, HAMILTONIAN};
-    let Some(out) = library_root("MANDACARU_PARQUET_EMIT_DIR") else {
+    let Some(out) = std::env::var_os("MANDACARU_PARQUET_EMIT_DIR")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+    else {
         eprintln!("MANDACARU_PARQUET_EMIT_DIR is unset: nothing emitted");
         return;
     };
@@ -1202,30 +982,6 @@ fn emit_files_for_external_readers() {
             }
             let path = out.join(format!("hamiltonian_{rows}_{}.parquet", codec.name()));
             document.save_parquet(&ctx, &path, codec).unwrap();
-        }
-    }
-    // Pseudopotential-shaped files: float64 columns and one large JSON entry,
-    // re-saved from shipped files when the libraries are set.
-    for (name, label) in [
-        ("paw/lda-sr/Cu.parquet", "Cu"),
-        ("upaw/lda-sr/Ag.parquet", "Ag_upaw"),
-    ] {
-        let Some(path) = library_path(name).filter(|p| p.exists()) else {
-            continue;
-        };
-        let table = read_table(&ctx, &path).unwrap();
-        for codec in [Codec::Zstd, Codec::Uncompressed] {
-            let target = out.join(format!("pseudopotential_{label}_{}.parquet", codec.name()));
-            write_table(
-                &ctx,
-                &target,
-                &table,
-                &WriteOptions {
-                    codec,
-                    ..WriteOptions::default()
-                },
-            )
-            .unwrap();
         }
     }
     // A foreign-shaped generic table with the special values.

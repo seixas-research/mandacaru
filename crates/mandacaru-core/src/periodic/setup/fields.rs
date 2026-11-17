@@ -89,17 +89,17 @@ fn profile(ctx: &Context, radius: &[f64], values: &[f64]) -> Result<(Cubic, f64)
         .iter()
         .rposition(|v| v.abs() > SUPPORT_TOLERANCE * peak)
         .map_or(0., |index| radius[index]);
-    let curve = Cubic::new(
-        ctx,
-        ctx.copy_slice(radius)?,
-        ctx.copy_slice(values)?,
-    )?;
+    let curve = Cubic::new(ctx, ctx.copy_slice(radius)?, ctx.copy_slice(values)?)?;
     Ok((curve, last))
 }
 
 /// Place one species' complete valence spline using the production cutoff.
 pub fn valence_field(
-    ctx: &Context, grid: &SpatialGrid, radius: &[f64], values: &[f64], center: [f64; 3],
+    ctx: &Context,
+    grid: &SpatialGrid,
+    radius: &[f64],
+    values: &[f64],
+    center: [f64; 3],
 ) -> Result<Buffer<f64>> {
     let (curve, support) = profile(ctx, radius, values)?;
     place_with_support(ctx, grid, &curve, &[center], support)
@@ -118,7 +118,11 @@ pub fn superposed_valence(
     }
     let mut total = ctx.allocate::<f64>(grid.index.points())?;
     for (species, table) in tables.iter().enumerate() {
-        if !atoms.iter().zip(weights).any(|(a, &w)| a.species == species && w != 0.) {
+        if !atoms
+            .iter()
+            .zip(weights)
+            .any(|(a, &w)| a.species == species && w != 0.)
+        {
             continue;
         }
         let (curve, support) = profile(ctx, table.radius, table.valence_density)?;
@@ -240,9 +244,16 @@ pub fn initial_charges(sites: &Sites, compensation_charges: &[f64]) -> Result<Ve
 }
 
 /// Reference compensation moments in the caller's channel order.
-pub fn initial_monopoles(channels: &[(usize, usize, i32)], charges: &[f64]) -> Result<Vec<Complex64>> {
-    if charges.iter().any(|z| !z.is_finite()) || channels.iter().any(|(a, _, _)| *a >= charges.len()) {
-        return Err(invalid("compensation channels need a finite charge for each atom"));
+pub fn initial_monopoles(
+    channels: &[(usize, usize, i32)],
+    charges: &[f64],
+) -> Result<Vec<Complex64>> {
+    if charges.iter().any(|z| !z.is_finite())
+        || channels.iter().any(|(a, _, _)| *a >= charges.len())
+    {
+        return Err(invalid(
+            "compensation channels need a finite charge for each atom",
+        ));
     }
     Ok(channels
         .iter()
@@ -277,9 +288,15 @@ pub fn species_constant(
     for i in 0..n {
         dressed_rho.as_mut_slice()[i] = valence[i] + core[i];
     }
-    let bare_xc = crate::models::spherical::exchange_correlation(ctx, r, valence, xc, relativistic)?;
-    let dressed_xc =
-        crate::models::spherical::exchange_correlation(ctx, r, dressed_rho.as_slice(), xc, relativistic)?;
+    let bare_xc =
+        crate::models::spherical::exchange_correlation(ctx, r, valence, xc, relativistic)?;
+    let dressed_xc = crate::models::spherical::exchange_correlation(
+        ctx,
+        r,
+        dressed_rho.as_slice(),
+        xc,
+        relativistic,
+    )?;
 
     let valence_potential = |potential: &[f64]| -> Result<f64> {
         let values: Vec<f64> = (0..n)
@@ -315,6 +332,9 @@ pub fn constant(
             relativistic,
         )?);
     }
-    let total: f64 = atoms_species.iter().map(|&s| per_species.get(s).copied().unwrap_or(0.0)).sum();
+    let total: f64 = atoms_species
+        .iter()
+        .map(|&s| per_species.get(s).copied().unwrap_or(0.0))
+        .sum();
     Ok(total)
 }

@@ -387,7 +387,9 @@ fn an_orthorhombic_cell_follows_the_increasing_length_order_of_its_convention() 
     assert_eq!(sorted.point("Z").unwrap(), [0., 0., 0.5]);
     // Any other order would put X along a longer axis: refused, as for an unordered tetragonal cell.
     for (a, b, c) in [(5.1, 3.9, 3.0), (3.9, 3.0, 5.1), (3.0, 5.1, 3.9)] {
-        let message = convention::convention(&diagonal(a, b, c), [true; 3]).unwrap_err().to_string();
+        let message = convention::convention(&diagonal(a, b, c), [true; 3])
+            .unwrap_err()
+            .to_string();
         assert!(message.contains("increasing order"), "{message}");
     }
 }
@@ -402,7 +404,13 @@ fn a_sampled_path_shares_its_points_by_segment_length_and_ends_on_the_last_verte
     let metric = Metric::new(&cell, ALL).unwrap();
     let five = interpolate(&band, &metric, 5).unwrap();
     let third = 1.0 / 3.0;
-    let expected = [[0., 0., 0.], [0., 0.5, 0.], [0., 0.5 - 0.5 * third, 0.], [0., 0.5 - 1.0 * third, 0.], [0.; 3]];
+    let expected = [
+        [0., 0., 0.],
+        [0., 0.5, 0.],
+        [0., 0.5 - 0.5 * third, 0.],
+        [0., 0.5 - 1.0 * third, 0.],
+        [0.; 3],
+    ];
     for (got, want) in five.kpoints.iter().zip(expected) {
         for a in 0..3 {
             assert!((got[a] - want[a]).abs() < 1e-15, "{got:?} {want:?}");
@@ -417,7 +425,10 @@ fn a_sampled_path_shares_its_points_by_segment_length_and_ends_on_the_last_verte
     }
     // distances accumulate the segment lengths; the vertices sit at 0, L and 2L (L = pi / a)
     let l = PI / 2.0;
-    assert!((nine.vertex_distances[2] - 2.0 * l).abs() < 1e-14 && (nine.vertex_distances[1] - l).abs() < 1e-14);
+    assert!(
+        (nine.vertex_distances[2] - 2.0 * l).abs() < 1e-14
+            && (nine.vertex_distances[1] - l).abs() < 1e-14
+    );
     assert!(interpolate(&band, &metric, 1).is_err());
 }
 
@@ -431,7 +442,10 @@ fn a_comma_adds_no_length_and_every_run_ends_on_its_last_vertex() {
     assert!(sampled.kpoints.contains(&[0., 0.5, 0.]) && sampled.kpoints.contains(&[0.5, 0.5, 0.]));
     assert_eq!(sampled.kpoints.last().unwrap(), &[0.5, 0.5, 0.5]);
     assert_eq!(sampled.vertex_distances.len(), 4);
-    assert_eq!(sampled.vertex_distances[1], sampled.vertex_distances[2], "the jump has no length");
+    assert_eq!(
+        sampled.vertex_distances[1], sampled.vertex_distances[2],
+        "the jump has no length"
+    );
 }
 
 #[test]
@@ -446,7 +460,11 @@ fn a_rhombohedral_cell_takes_its_points_from_its_angle() {
         let a3x = c;
         let a3y = (c - c * c) / (1. - c * c).sqrt();
         let a3z = (1. - a3x * a3x - a3y * a3y).sqrt();
-        Matrix3::from_rows(&[a1.transpose(), a2.transpose(), Vector3::new(a3x, a3y, a3z).transpose()])
+        Matrix3::from_rows(&[
+            a1.transpose(),
+            a2.transpose(),
+            Vector3::new(a3x, a3y, a3z).transpose(),
+        ])
     };
     let near = convention(&rhombohedral(70.), ALL).unwrap();
     assert_eq!(near.name, "rhombohedral-1");
@@ -473,7 +491,13 @@ fn the_two_dimensional_conventions_are_ases() {
     assert_eq!(square.default_path, "MGXM");
     let rectangle = convention(&diagonal(3., 4., 15.), PLANE).unwrap();
     assert_eq!(rectangle.default_path, "GXSYGS");
-    let sixty = rows([[2.46, 0., 0.], [2.46 * 0.5, 2.46 * 0.75_f64.sqrt(), 0.], [0., 0., 15.]]);
-    assert_eq!(convention(&sixty, PLANE).unwrap().point("M").unwrap(), [0., -0.5, 0.]);
+    let sixty = rows([
+        [2.46, 0., 0.],
+        [2.46 * 0.5, 2.46 * 0.75_f64.sqrt(), 0.],
+        [0., 0., 15.],
+    ]);
+    assert_eq!(
+        convention(&sixty, PLANE).unwrap().point("M").unwrap(),
+        [0., -0.5, 0.]
+    );
 }
-

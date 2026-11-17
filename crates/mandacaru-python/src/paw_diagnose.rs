@@ -83,9 +83,8 @@ fn paw_diagnose<'py>(
 ) -> PyResult<Bound<'py, PyDict>> {
     let ctx = &context.inner;
     let dataset = paw_record::import(ctx, payload, tables)?;
-    let found = py.detach(|| {
-        diagnose::diagnose_record_with_unprojected(ctx, &dataset, &mut AeLogs::new())
-    });
+    let found =
+        py.detach(|| diagnose::diagnose_record_with_unprojected(ctx, &dataset, &mut AeLogs::new()));
     let out = match found {
         Ok((diagnosis, unprojected_missing)) => {
             let out = diagnosis_dict(py, &diagnosis)?;
@@ -362,7 +361,9 @@ fn paw_quality<'py>(
     out.set_item("sphere", sphere)?;
     out.set_item(
         "partition",
-        other.as_ref().and_then(|o| quality::partition_mismatch(&dataset, o)),
+        other
+            .as_ref()
+            .and_then(|o| quality::partition_mismatch(&dataset, o)),
     )?;
     Ok(out)
 }

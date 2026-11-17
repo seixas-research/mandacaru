@@ -89,40 +89,51 @@ pub(super) fn derivative_samples(
                 };
                 let d = super::super::distance(positions[a], orbital.center);
                 if d <= r_proj_max + r_cut {
-                    Some((i, if r_cut.is_finite() { r_cut * r_cut } else { f64::INFINITY }))
+                    Some((
+                        i,
+                        if r_cut.is_finite() {
+                            r_cut * r_cut
+                        } else {
+                            f64::INFINITY
+                        },
+                    ))
                 } else {
                     None
                 }
             })
             .collect();
 
-        projection_points(&scalar_spheres(species, terms), terms.projectors.len(), |offset, target| {
-            let active_targets: Vec<(usize, f64)> = target
-                .iter()
-                .enumerate()
-                .filter_map(|(q, &t)| if t != 0. { Some((q, t)) } else { None })
-                .collect();
-            if active_targets.is_empty() {
-                return Ok(());
-            }
-            let point = std::array::from_fn(|i| positions[a][i] + offset[i]);
-            for &(i, support2) in &active_orbitals {
-                let orbital = &integrals.basis.orbitals[i];
-                let r2 = (point[0] - orbital.center[0]).powi(2)
-                    + (point[1] - orbital.center[1]).powi(2)
-                    + (point[2] - orbital.center[2]).powi(2);
-                if r2 > support2 {
-                    continue;
+        projection_points(
+            &scalar_spheres(species, terms),
+            terms.projectors.len(),
+            |offset, target| {
+                let active_targets: Vec<(usize, f64)> = target
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(q, &t)| if t != 0. { Some((q, t)) } else { None })
+                    .collect();
+                if active_targets.is_empty() {
+                    return Ok(());
                 }
-                let gradient = orbital.gradient(point);
-                for &(q, t) in &active_targets {
-                    for axis in 0..3 {
-                        samples[axis][(i, q)] += gradient[axis] * t;
+                let point = std::array::from_fn(|i| positions[a][i] + offset[i]);
+                for &(i, support2) in &active_orbitals {
+                    let orbital = &integrals.basis.orbitals[i];
+                    let r2 = (point[0] - orbital.center[0]).powi(2)
+                        + (point[1] - orbital.center[1]).powi(2)
+                        + (point[2] - orbital.center[2]).powi(2);
+                    if r2 > support2 {
+                        continue;
+                    }
+                    let gradient = orbital.gradient(point);
+                    for &(q, t) in &active_targets {
+                        for axis in 0..3 {
+                            samples[axis][(i, q)] += gradient[axis] * t;
+                        }
                     }
                 }
-            }
-            Ok(())
-        })?;
+                Ok(())
+            },
+        )?;
         Ok(samples)
     };
 
@@ -140,9 +151,7 @@ pub(super) fn derivative_samples(
     integrals.context.run(|| {
         std::thread::scope(|scope| {
             let handles: Vec<_> = (0..n_atoms)
-                .map(|a| {
-                    mandacaru_kernels::runtime::spawn(scope, move || (a, compute_atom(a)))
-                })
+                .map(|a| mandacaru_kernels::runtime::spawn(scope, move || (a, compute_atom(a))))
                 .collect();
             for handle in handles {
                 let (a, res) = handle.join().unwrap();
@@ -232,19 +241,12 @@ pub(super) fn derivatives(
         pi.coulomb.push(coulomb);
     }
     if hf {
-        pi.exchange = exchange_derivatives(
-            setup,
-            channels,
-            moments,
-            occupied,
-            projected,
-            &|s| {
-                (
-                    setup.species_terms[s].factors.clone(),
-                    setup.species_terms[s].weights.clone(),
-                )
-            },
-        );
+        pi.exchange = exchange_derivatives(setup, channels, moments, occupied, projected, &|s| {
+            (
+                setup.species_terms[s].factors.clone(),
+                setup.species_terms[s].weights.clone(),
+            )
+        });
     }
     pi
 }

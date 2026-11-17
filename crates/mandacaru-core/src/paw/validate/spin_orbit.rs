@@ -64,12 +64,21 @@ pub fn rows(ctx: &Context, ds: &PawDataset, width: Option<f64>) -> Vec<Row> {
     // splitting of the atom, so a shell of it that stays out of the gate at every converged width
     // is reported with the open shell named, not refused.
     let open_atom = found.iter().any(|s| s.unreliable());
-    if found.iter().any(|s| s.engine.is_some() && !s.passes() && !s.unreliable()) {
+    if found
+        .iter()
+        .any(|s| s.engine.is_some() && !s.passes() && !s.unreliable())
+    {
         let first_width = found[0].width;
-        for &w in crate::paw::atom_scf::Controls::default().widths.iter().filter(|&&w| w > first_width) {
+        for &w in crate::paw::atom_scf::Controls::default()
+            .widths
+            .iter()
+            .filter(|&&w| w > first_width)
+        {
             if let Ok(alt) = splittings_from(ctx, ds, Some(w)) {
                 if alt.len() == found.len()
-                    && alt.iter().all(|a| a.engine.is_none() || a.passes() || a.unreliable())
+                    && alt
+                        .iter()
+                        .all(|a| a.engine.is_none() || a.passes() || a.unreliable())
                 {
                     instability = Some(format!(
                         "outside the gate at the SCF width {first_width} eV, inside it at {w} eV: the occupations of the open shell move the splitting"

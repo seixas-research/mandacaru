@@ -85,8 +85,12 @@ class Excitations:
     one_center_hartree : ndarray or None
         On a PAW-LCAO Kohn-Sham state: the first-order shift of each root from
         the one-center Hartree kernel that the linearized one-center energy
-        omits (energy units). The one-center exchange-correlation part is not
-        estimated. ``None`` on other references.
+        omits (energy units). ``None`` on other references.
+    one_center_xc : ndarray or None
+        On a PAW-LCAO Kohn-Sham state with LDA or PBE: the first-order shift of
+        each root from the one-center exchange-correlation kernel the same
+        linearization omits, at the spherical reference atom (energy units).
+        ``None`` on other references and functionals.
     """
 
     def __init__(self, native, *, atomic_units, context):
@@ -108,6 +112,8 @@ class Excitations:
             atomic_units=atomic_units)
         shifts = values["one_center_hartree_ha"]
         self.one_center_hartree = None if shifts is None else self._energy(shifts)
+        shifts = values["one_center_xc_ha"]
+        self.one_center_xc = None if shifts is None else self._energy(shifts)
         #: Per spin channel (one for a closed shell, alpha and beta otherwise).
         self.orbital_energies = tuple(self._energy(e) for e in values["orbital_energies_ha"])
         self.occupied = tuple(values["occupied"])
@@ -170,6 +176,28 @@ class Excitations:
         spin's first-order density change."""
         return np.asarray(self._native.transition_density(root, channel))
 
+    def transition_density(self, root, channel=None, grid=None):
+        """The transition density of ``root`` sampled in Rust, as a
+        :class:`~mandacaru.analysis.fields.VolumetricField` (``write`` gives a
+        cube or xsf file), on ``grid`` (a native ``SpatialGrid``; default the
+        integration grid). ``channel=None`` gives the charge transition density,
+        whose dipole with the PAW one-center part is ``transition_dipoles[root]``
+        (a closed-shell triplet has none and raises ``ValueError``); a channel
+        index gives the spatial factor of that spin's change. A one-particle
+        quantity in e/Bohr^3; the PAW one-center charge it leaves out is
+        ``augmentation_charge``."""
+        from .fields import SamplingGrid, VolumetricField
+
+        values = self._native.transition_field(root, channel, getattr(grid, "native", grid))
+        return VolumetricField(
+            quantity="transition_density", data=values["data"],
+            grid=SamplingGrid(values["grid"]), numbers=np.asarray(values["numbers"]),
+            positions=np.asarray(values["positions"]),
+            charges=np.asarray(values["charges"], dtype=float), units="e/Bohr^3",
+            integral=values["integral"], norm=values["norm"], n_electrons=0.0,
+            context=self._context, index=root,
+            augmentation_charge=values["augmentation_charge"])
+
     def spectrum(self, energies, width=0.1, shape="gaussian"):
         """The broadened absorption spectrum ``sum_n f_n g(E - E_n)`` on
         ``energies`` (the view's energy unit), with unit-area ``"gaussian"``
@@ -182,7 +210,8 @@ class Excitations:
 
 
 class CrystalExcitations:
-    """The Bethe-Salpeter excitons of a converged insulating crystal (Tamm-Dancoff).
+    """The Bethe-Salpeter excitons of a converged insulating crystal (Tamm-Dancoff, or the
+    coupling form with ``approximation="casida"``).
 
     Returned by :meth:`Mandacaru.get_excitations` on a crystal. Every number comes from Rust
     (``periodic::optics::bse``), already in user units; the view holds no arithmetic.
@@ -198,18 +227,22 @@ class CrystalExcitations:
     weights : ndarray
         ``(n, 3)`` the area of each exciton's line in ``Im epsilon`` along x, y and z,
         ``4 pi^2 s |sum_t h_t A_t|^2`` (eV; Ha), with ``s = g / (N_k Omega)`` and ``h`` the
-        k . p dipoles; zero for triplets.
+        k . p dipoles (in the coupling form ``sum_t (h_t X_t + h~_t Y_t)``, ``h~`` the dipoles
+        of the antiresonant transitions); zero for triplets.
     participation : ndarray
         ``1 / sum_t |A_t|^4``: the number of transitions an exciton spreads over (of
-        ``transitions``).
+        ``transitions``); ``A`` is the normalized resonant amplitude ``X``.
     kpoint_weights : ndarray
         ``(n, kpoints)`` ``sum_vc |A_vck|^2`` per mesh point (mesh order, C order of ``mesh``).
     dominant : list of tuple
         Per exciton ``(k, valence, conduction, weight)``: its largest transition (band indices
         of the crystal, 0-based).
-    spin, kernel : str
+    dominant_channels : list of int
+        The spin channel of each ``dominant`` transition (0, or 1 for the second channel of a
+        spin-polarized crystal).
+    spin, kernel, approximation : str
         ``"singlet"`` or ``"triplet"``; ``"bse"``, ``"hartree"`` (exchange only) or
-        ``"independent"``.
+        ``"independent"``; ``"tda"`` or ``"casida"``.
     static_tensor : ndarray
         ``(3, 3)`` the static ``eps_M`` with local fields that screens the head of ``W``.
     screened_head : float
@@ -220,7 +253,7 @@ class CrystalExcitations:
         dimension of the operator.
     hermiticity, residuals, converged, solver :
         ``max |H - H^dagger| / max |H|`` before the Hermitization, each root's residual, whether
-        every root converged, and ``"dense"`` or ``"davidson"``.
+        every root converged, and ``"dense"``, ``"davidson"`` or ``"coupling"``.
     record : list of tuple
         The ``[EXCITED STATES]`` run-log record, ``(name, text)`` pairs.
     """

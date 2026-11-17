@@ -1,17 +1,18 @@
 //! Shared by the `periodic_gradient_crystals*` tests: a REAL converged SCF crystal and the Rust
 //! setup built for the same structure.
 //!
-//! * the crystal is the snapshot `reference/periodic_gradients/<case>.snapshot.json` the Python
-//!   setup exported (`freeze_periodic_gradients.py`; a manifest with a `snapshot` entry names the
-//!   case whose snapshot it shares), solved by the Rust SCF at the oracle tolerances recorded in
+//! * the crystal is the snapshot `reference/periodic_gradients/<case>.snapshot.json`, exported
+//!   by the retired Python setup or re-frozen on the Rust setup by `tests/periodic_freeze_snapshot.rs`
+//!   (its `provenance` says which; a manifest with a `snapshot` entry names the case whose snapshot
+//!   it shares), solved by the Rust SCF at the oracle tolerances recorded in
 //!   the manifest, with its exact-exchange divergence treatment for a hybrid. The dataset files
 //!   of the snapshot's `sites` block are joined to `MANDACARU_PAW_PATH` (the snapshot keeps
 //!   library-relative names);
 //! * the derivative data come from the Rust setup built from the snapshot's `sites` block (atom
 //!   centers, channel labels, dataset files checked by SHA-256), the datasets, and the sidecar
-//!   of the manifest (the radial tables and the function list of the basis, which the Python
-//!   basis generation still owns: WP-M moves them to Rust). `q` and `D_ion` are assembled here
-//!   from the dataset blocks in the raw projector basis (`B^-1 X B^-T`), as the Python does.
+//!   of the manifest (the radial tables and the function list of the basis, checked equal to the
+//!   snapshot's own `setup` block where it has one). `q` and `D_ion` are assembled here from the
+//!   dataset blocks in the raw projector basis (`B^-1 X B^-T`), as the setup does.
 //!
 //! `setup_consistency` of `periodic_gradient_crystals_setup.rs` proves the two descriptions are
 //! the same crystal (matrices, grids, lattice sums, core), so the force is a force of THAT energy.
@@ -41,8 +42,8 @@ use nalgebra::Matrix3;
 use serde_json::Value;
 use std::path::PathBuf;
 
-/// `SIGMA_FACTOR` of `pseudopotentials/local_split.py`: the Gaussian ion width over the grid's
-/// coarsest spacing (checked against the manifest's sigma).
+/// The Gaussian ion width over the grid's coarsest spacing, the default of
+/// `periodic::setup::parse` (checked against the manifest's sigma).
 pub const SIGMA_FACTOR: f64 = 1.4;
 
 pub mod altered;
@@ -84,8 +85,9 @@ pub fn snapshot_of(case: &str, manifest: &Value) -> Value {
 }
 
 /// The `setup` block of the snapshot format (`periodic::description`) from the sidecar of a
-/// manifest: the radial tables, the function and projector lists and the ion width the Python
-/// setup wrote next to the frozen snapshot before the snapshot carried them itself.
+/// manifest: the radial tables, the function and projector lists and the ion width the freeze
+/// writes next to the frozen snapshot (the retired Python setup did so before the snapshot
+/// carried them itself).
 pub fn setup_block(manifest: &Value) -> Value {
     let setup = &manifest["setup"];
     let functions = setup["basis_functions"].as_array().unwrap();
@@ -249,16 +251,7 @@ impl Data {
         }
         let potentials = datasets
             .iter()
-            .map(|ds| {
-                LocalPotential::new(
-                    &crystal.context,
-                    ds.r.as_slice(),
-                    ds.v_local.as_slice(),
-                    ds.valence_charge,
-                    ds.r_cut_local,
-                )
-                .unwrap()
-            })
+            .map(|ds| LocalPotential::from_dataset(&crystal.context, ds).unwrap())
             .collect();
         let sites = Sites {
             atoms: &atoms,

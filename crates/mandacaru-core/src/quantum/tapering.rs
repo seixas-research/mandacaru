@@ -107,9 +107,21 @@ impl Taper {
         let (generators, anchors) = reduced_echelon(n, found.clone());
         let signs = generators
             .iter()
-            .map(|&tau| if (reference & tau).count_ones() % 2 == 0 { 1 } else { -1 })
+            .map(|&tau| {
+                if (reference & tau).count_ones() % 2 == 0 {
+                    1
+                } else {
+                    -1
+                }
+            })
             .collect();
-        Some(Self { n, found, generators, anchors, signs })
+        Some(Self {
+            n,
+            found,
+            generators,
+            anchors,
+            signs,
+        })
     }
 
     /// The register width after tapering.
@@ -119,14 +131,19 @@ impl Taper {
 
     /// Whether the term with X support `x` fails to commute with a generator.
     pub fn leaks(&self, x: u64) -> bool {
-        self.generators.iter().any(|&tau| (x & tau).count_ones() % 2 == 1)
+        self.generators
+            .iter()
+            .any(|&tau| (x & tau).count_ones() % 2 == 1)
     }
 
     /// `operator` reduced to the tapered register. Refuses an operator with a term that does not
     /// commute with the symmetries, which tapering would silently replace by its projection.
     pub fn operator(&self, ctx: &Context, operator: &Operator) -> Result<Operator> {
         if let Some(term) = operator.terms.iter().find(|t| self.leaks(t.x)) {
-            let label = Operator::from_terms(ctx, operator.n, vec![*term])?.labels().remove(0).0;
+            let label = Operator::from_terms(ctx, operator.n, vec![*term])?
+                .labels()
+                .remove(0)
+                .0;
             return Err(Error::Invalid(format!(
                 "a term of this operator ({label}) does not commute with the Z2 symmetries: \
                  tapering would replace it by its projection, and an ansatz built from projected \
@@ -139,7 +156,12 @@ impl Taper {
     /// An observable projected into the sector (its symmetry-changing terms have zero
     /// expectation there) and then tapered.
     pub fn observable(&self, ctx: &Context, operator: &Operator) -> Result<Operator> {
-        let kept: Vec<Term> = operator.terms.iter().filter(|t| !self.leaks(t.x)).copied().collect();
+        let kept: Vec<Term> = operator
+            .terms
+            .iter()
+            .filter(|t| !self.leaks(t.x))
+            .copied()
+            .collect();
         self.reduce(ctx, &Operator::from_terms(ctx, operator.n, kept)?)
     }
 
@@ -174,8 +196,16 @@ impl Taper {
             ctx,
             self.n,
             vec![
-                Term { x: 0, z: self.generators[j], coefficient: C64::new(root, 0.) },
-                Term { x: bit(self.n, self.anchors[j]), z: 0, coefficient: C64::new(root, 0.) },
+                Term {
+                    x: 0,
+                    z: self.generators[j],
+                    coefficient: C64::new(root, 0.),
+                },
+                Term {
+                    x: bit(self.n, self.anchors[j]),
+                    z: 0,
+                    coefficient: C64::new(root, 0.),
+                },
             ],
         )
     }
@@ -184,7 +214,11 @@ impl Taper {
     pub fn labels(&self) -> Vec<String> {
         self.generators
             .iter()
-            .map(|&tau| (0..self.n).map(|j| if tau & bit(self.n, j) != 0 { 'Z' } else { 'I' }).collect())
+            .map(|&tau| {
+                (0..self.n)
+                    .map(|j| if tau & bit(self.n, j) != 0 { 'Z' } else { 'I' })
+                    .collect()
+            })
             .collect()
     }
 
@@ -247,7 +281,9 @@ impl Taper {
 
     fn reduce(&self, ctx: &Context, operator: &Operator) -> Result<Operator> {
         if operator.n != self.n {
-            return Err(Error::Invalid("the operator is not on the tapered Hamiltonian's register".into()));
+            return Err(Error::Invalid(
+                "the operator is not on the tapered Hamiltonian's register".into(),
+            ));
         }
         let n = self.n;
         let mut rotated = operator.copy_into(ctx)?;
@@ -256,7 +292,11 @@ impl Taper {
             rotated = u.compose(ctx, &rotated)?.compose(ctx, &u)?;
         }
         let mut terms = Vec::with_capacity(rotated.terms.len());
-        for t in rotated.terms.iter().filter(|t| t.coefficient.norm() > TAPER_TOLERANCE) {
+        for t in rotated
+            .terms
+            .iter()
+            .filter(|t| t.coefficient.norm() > TAPER_TOLERANCE)
+        {
             let mut coefficient = t.coefficient;
             for (&q, &sign) in self.anchors.iter().zip(&self.signs) {
                 let (x, z) = (t.x & bit(n, q) != 0, t.z & bit(n, q) != 0);
@@ -271,10 +311,19 @@ impl Taper {
                     }
                 }
             }
-            terms.push(Term { x: self.compress(t.x), z: self.compress(t.z), coefficient });
+            terms.push(Term {
+                x: self.compress(t.x),
+                z: self.compress(t.z),
+                coefficient,
+            });
         }
         let out = Operator::from_terms(ctx, self.width(), terms)?;
-        let kept: Vec<Term> = out.terms.iter().filter(|t| t.coefficient.norm() > TAPER_TOLERANCE).copied().collect();
+        let kept: Vec<Term> = out
+            .terms
+            .iter()
+            .filter(|t| t.coefficient.norm() > TAPER_TOLERANCE)
+            .copied()
+            .collect();
         Operator::from_terms(ctx, self.width(), kept)
     }
 }

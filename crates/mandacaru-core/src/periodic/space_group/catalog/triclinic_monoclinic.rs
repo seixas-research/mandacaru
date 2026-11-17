@@ -9,9 +9,7 @@ pub static GROUPS: &[GroupEntry] = &[
         crystal_system: CrystalSystem::Triclinic,
         point_group: "1",
         centering: 'P',
-        operations: &[
-            ([1, 0, 0, 0, 1, 0, 0, 0, 1], [0, 0, 0]),
-        ],
+        operations: &[([1, 0, 0, 0, 1, 0, 0, 0, 1], [0, 0, 0])],
     },
     GroupEntry {
         number: 2,

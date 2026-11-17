@@ -14,7 +14,7 @@ use mandacaru_core::{
     quantum::{
         lagrangian::{self, Ansatz, Residual},
         properties::{self, SpatialRdms},
-        CachedProblem, C64,
+        QuantumProblem, C64,
     },
     Buffer, Error, Geometry, LengthUnit, Result,
 };
@@ -239,7 +239,7 @@ pub fn gradient(
     integrals: &MolecularIntegrals,
     reference: &MeanField,
     model: &Model,
-    problem: &CachedProblem,
+    problem: &QuantumProblem,
     state: &[C64],
     options: &Options<'_>,
 ) -> Result<Gradient> {
@@ -322,7 +322,11 @@ pub fn gradient(
         };
         let directions = match chosen {
             Some(d) if d.nrows() == size => d.clone(),
-            Some(_) => return Err(invalid("the oracle's directions need one row per Cartesian coordinate")),
+            Some(_) => {
+                return Err(invalid(
+                    "the oracle's directions need one row per Cartesian coordinate",
+                ))
+            }
             None => internal_basis.as_ref().map_or_else(
                 || DMatrix::identity(size, size),
                 |basis| basis.matrix.clone(),

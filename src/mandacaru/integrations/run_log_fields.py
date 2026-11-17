@@ -356,7 +356,7 @@ def search_setup(driver, result):
              f"length_penalty_{unit}": f"{convert(search['length_penalty']):.10g}",
              "proposal": search["proposal"],
              "proposal_temperature": f"{search['proposal_temperature']:g}"}
-    if driver.method == "valsqa":
+    if driver.method in ("valsqa", "subspace-valsqa"):
         extra["proposal_model"] = (
             f"{'ready' if result.proposal_ready else 'not used'} ({result.proposal_reason})")
         update = result._raw.get("model_update")

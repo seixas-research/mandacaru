@@ -27,8 +27,8 @@ mod spinor;
 use super::{
     electrostatics::{hats, ion_charge},
     gradients::ion_constants_strain,
+    projection_table::{ProjectionTable, SetupTables},
     provider::{Inputs, Operators},
-    projection_table::{SetupTables, ProjectionTable},
     pulay::{mesh_dot, Matrix, Mesh},
     shapes::visit_lattice,
     strain_grid::{core_strain, hats_strain, ions_strain, kernel_strain, VOIGT},
@@ -408,16 +408,30 @@ impl Strain for StrainSetup<'_> {
             // samples for a meta-GGA), against the spin-averaged v_tau.
             let kinetic = match &fields.kinetic {
                 Some((_, average)) => {
-                    let density = crate::math::spline::Cubic::new(ctx, ctx.copy_slice(table.radius)?, ctx.copy_slice(table.values)?)?;
+                    let density = crate::math::spline::Cubic::new(
+                        ctx,
+                        ctx.copy_slice(table.radius)?,
+                        ctx.copy_slice(table.values)?,
+                    )?;
                     Some((crate::paw::fields::core_kinetic(ctx, &density)?, average))
                 }
                 None => None,
             };
             for &(a, b) in &VOIGT {
                 let slope = core_strain(ctx, grid, table.radius, table.values, &[center], (a, b))?;
-                let mut t = [mesh_dot(&self.mesh, &fields.xc.potential, slope.as_slice())?, 0.];
+                let mut t = [
+                    mesh_dot(&self.mesh, &fields.xc.potential, slope.as_slice())?,
+                    0.,
+                ];
                 if let Some((tau, average)) = &kinetic {
-                    let slope = core_strain(ctx, grid, table.radius, tau.values.as_slice(), &[center], (a, b))?;
+                    let slope = core_strain(
+                        ctx,
+                        grid,
+                        table.radius,
+                        tau.values.as_slice(),
+                        &[center],
+                        (a, b),
+                    )?;
                     t[1] = mesh_dot(&self.mesh, average, slope.as_slice())?;
                 }
                 for (to, value) in [&mut core, &mut core_kinetic].into_iter().zip(t) {

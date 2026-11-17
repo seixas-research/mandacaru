@@ -13,7 +13,10 @@
 //!
 //! A uniform vector potential `A` along `e` (the velocity gauge) adds `A e.P + (A^2 / 2) 1` to
 //! every channel, `P = -i <a|grad|b>` the Hermitian momentum matrix (the T2 operator with its
-//! one-center part), and the matching terms to the energy.
+//! one-center part), and the matching terms to the energy; a meta-GGA's `tau~` reads the kinetic
+//! `tau` and current in it (`dft::fock_and_energy`), so with a partial core it keeps the core's
+//! share as the length kick's does, and the energy's slope in `A` gains the exchange-correlation
+//! current `dE_xc / dA` ([`MolecularMap::xc_current`]).
 use crate::math::fft::Poisson;
 use crate::math::propagator::{Evaluation, FockMap};
 use crate::molecular::{dft, integrals::Eri, MolecularIntegrals};
@@ -40,13 +43,19 @@ enum Theory {
 }
 
 /// The Fock map of a reference (`functional` `None` is Hartree-Fock), with an optional constant
-/// vector potential `strength` along the momentum matrix `momentum` (already `e . P`).
+/// vector potential `strength` along the unit `direction` and its momentum matrix `momentum`
+/// (already `e . P`).
 pub(super) struct MolecularMap<'a> {
     integrals: &'a MolecularIntegrals,
     theory: Theory,
     field: Option<(Matrix, f64)>,
+    /// The vector potential `A e` (Bohr^-1) a meta-GGA's kinetic fields carry.
+    potential: Option<[f64; 3]>,
     /// Evaluations so far (the record of the run).
     pub(super) evaluations: usize,
+    /// `dE_xc / dA` at fixed `D` per spin (`[spin][axis]`) of the last [`MolecularMap::bare`]
+    /// build: a meta-GGA with a partial core; zero otherwise.
+    pub(super) xc_current: [[f64; 3]; 2],
 }
 
 impl<'a> MolecularMap<'a> {
@@ -85,21 +94,31 @@ impl<'a> MolecularMap<'a> {
             integrals,
             theory,
             field: None,
+            potential: None,
             evaluations: 0,
+            xc_current: [[0.; 3]; 2],
         })
     }
 
-    /// Switches on the constant vector potential `strength` along `momentum` (`e . P`).
-    pub(super) fn set_field(&mut self, momentum: Matrix, strength: f64) {
+    /// Switches on the constant vector potential `strength` along the unit `direction`, whose
+    /// momentum matrix is `momentum` (`e . P`).
+    pub(super) fn set_field(&mut self, momentum: Matrix, strength: f64, direction: [f64; 3]) {
         self.field = Some((momentum, strength));
+        self.potential = Some(direction.map(|e| strength * e));
+    }
+    /// The vector potential alone, without its one-body terms (the oracle of [`super::fock_matrices`]).
+    pub(super) fn set_potential(&mut self, potential: Option<[f64; 3]>) {
+        self.potential = potential;
     }
 
-    /// The matrices and the energy without the field, at `densities` (one per-spin matrix of a
-    /// restricted state, or both spin matrices).
+    /// The matrices and the energy without the field's one-body terms, at `densities` (one
+    /// per-spin matrix of a restricted state, or both spin matrices); a meta-GGA's kinetic fields
+    /// carry the field.
     pub(super) fn bare(&mut self, densities: &[Matrix]) -> Result<(Vec<Matrix>, f64)> {
         self.evaluations += 1;
         let integrals = self.integrals;
         let m = integrals.m();
+        let field = self.potential;
         match &mut self.theory {
             Theory::KohnSham {
                 name,
@@ -108,16 +127,21 @@ impl<'a> MolecularMap<'a> {
                 screening,
                 scratch,
                 gradients,
-            } => dft::fock_and_energy(
-                integrals,
-                core,
-                densities,
-                name,
-                poisson,
-                gradients.as_ref(),
-                screening.as_ref(),
-                (scratch.0.as_mut_slice(), scratch.1.as_mut_slice()),
-            ),
+            } => {
+                let (focks, energy, current) = dft::fock_and_energy(
+                    integrals,
+                    core,
+                    densities,
+                    name,
+                    poisson,
+                    gradients.as_ref(),
+                    screening.as_ref(),
+                    (scratch.0.as_mut_slice(), scratch.1.as_mut_slice()),
+                    field,
+                )?;
+                self.xc_current = current;
+                Ok((focks, energy))
+            }
             Theory::HartreeFock { core, eri } => {
                 let parts: Vec<_> = densities
                     .iter()

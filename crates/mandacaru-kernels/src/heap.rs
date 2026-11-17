@@ -107,11 +107,19 @@ mod tests {
 
     #[test]
     fn releasing_freed_memory_leaves_live_data_and_later_allocations_intact() {
-        let keep: Vec<u64> = (0..2_000_000u64).map(|i| i.wrapping_mul(0x9e37_79b9)).collect();
+        let keep: Vec<u64> = (0..2_000_000u64)
+            .map(|i| i.wrapping_mul(0x9e37_79b9))
+            .collect();
         let discard: Vec<u64> = vec![7; 4_000_000];
         drop(discard);
         let supported = release_freed_memory();
-        assert_eq!(supported, cfg!(any(target_os = "macos", all(target_os = "linux", target_env = "gnu"))));
+        assert_eq!(
+            supported,
+            cfg!(any(
+                target_os = "macos",
+                all(target_os = "linux", target_env = "gnu")
+            ))
+        );
         assert!(keep
             .iter()
             .enumerate()

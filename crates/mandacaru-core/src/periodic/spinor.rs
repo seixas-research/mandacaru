@@ -137,7 +137,8 @@ fn meta_exchange_correlation(
     let mut core_kinetic = ctx.allocate::<f64>(n)?;
     for k in 0..n {
         core.as_mut_slice()[k] = 0.5 * (local.as_slice()[k] + local.as_slice()[n + k]);
-        core_kinetic.as_mut_slice()[k] = 0.5 * (frame_kinetic.as_slice()[k] + frame_kinetic.as_slice()[n + k]);
+        core_kinetic.as_mut_slice()[k] =
+            0.5 * (frame_kinetic.as_slice()[k] + frame_kinetic.as_slice()[n + k]);
     }
     let flux = unrotate_gradients(
         ctx,
@@ -176,7 +177,10 @@ fn meta_exchange_correlation(
         gradients: Some(partials.gradients),
         flux: Some(partials.flux),
         nonlocal_source: partials.nonlocal_source,
-        core: Some(super::fields::CoreSources { potential: core, kinetic: core_kinetic }),
+        core: Some(super::fields::CoreSources {
+            potential: core,
+            kinetic: core_kinetic,
+        }),
     })
 }
 
@@ -300,7 +304,9 @@ pub fn diagonalize_with_solver(
     match (meta, kinetic) {
         (true, Some(v)) => {
             if v.len() != c.field_channels() * n {
-                return Err(invalid("one kinetic potential block per spinor field channel"));
+                return Err(invalid(
+                    "one kinetic potential block per spinor field channel",
+                ));
             }
             let channels = (0..c.field_channels())
                 .map(|a| {
@@ -311,7 +317,9 @@ pub fn diagonalize_with_solver(
             assemble_into(&mut h, &channels, m);
         }
         (true, None) => {
-            return Err(invalid("a spinor meta-GGA Hamiltonian needs its kinetic potential"));
+            return Err(invalid(
+                "a spinor meta-GGA Hamiltonian needs its kinetic potential",
+            ));
         }
         (false, _) => {}
     }
@@ -350,7 +358,10 @@ pub fn diagonalize_with_solver(
 
 /// Spatial Hermitian matrices for (n, mx, my, mz); public for the spinor force. This retains transverse
 /// coherences; dropping the off-diagonal spin blocks would discard SOC.
-pub fn density<M: MatrixSource + Sync>(c: &Crystal, matrices: &[M]) -> Result<(Buffer<f64>, Buffer<C64>)> {
+pub fn density<M: MatrixSource + Sync>(
+    c: &Crystal,
+    matrices: &[M],
+) -> Result<(Buffer<f64>, Buffer<C64>)> {
     if matrices.len() != c.points.len() {
         return Err(invalid(
             "spinor density matrices must match the Bloch basis and k-point mesh",

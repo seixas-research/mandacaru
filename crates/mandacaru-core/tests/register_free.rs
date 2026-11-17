@@ -6,7 +6,7 @@ use mandacaru_core::{
     quantum::{
         execution::{CircuitExecution, Request, Response},
         optimizer::{Method, Options},
-        CachedProblem, Encoding, Operator, SolveOptions, Space, C64,
+        Encoding, Operator, QuantumProblem, SolveOptions, Space, C64,
     },
     Context,
 };
@@ -38,8 +38,8 @@ fn hamiltonian(ctx: &Context, with_leak: bool) -> Operator {
     }
     Operator::new(ctx, N, &terms).unwrap()
 }
-fn problem(ctx: &Context, number_conserving: bool) -> CachedProblem {
-    CachedProblem::new_in(
+fn problem(ctx: &Context, number_conserving: bool) -> QuantumProblem {
+    QuantumProblem::new_in(
         ctx,
         Encoding::new("jordan_wigner", N, [1, 1]).unwrap(),
         hamiltonian(ctx, false),
@@ -93,7 +93,7 @@ fn every_state_vector_method_refuses_by_name() {
         problem.solve_subspace(&SolveOptions::default(), &[2., 1.], None),
         "subspace",
     );
-    let dense = CachedProblem::new_in(
+    let dense = QuantumProblem::new_in(
         &ctx,
         Encoding::new("jordan_wigner", N, [1, 1]).unwrap(),
         hamiltonian(&ctx, false),
@@ -109,7 +109,7 @@ fn every_state_vector_method_refuses_by_name() {
 #[test]
 fn the_particle_number_check_is_algebraic() {
     let ctx = context();
-    let leaking = CachedProblem::new_in(
+    let leaking = QuantumProblem::new_in(
         &ctx,
         Encoding::new("jordan_wigner", N, [1, 1]).unwrap(),
         hamiltonian(&ctx, true),
@@ -124,7 +124,7 @@ fn the_particle_number_check_is_algebraic() {
         .expect("an X term changes the particle number");
     assert!(message.to_string().contains("particle sector"), "{message}");
     // Without the request nothing is checked (a register-free problem has nothing to check with).
-    CachedProblem::new_in(
+    QuantumProblem::new_in(
         &ctx,
         Encoding::new("jordan_wigner", N, [1, 1]).unwrap(),
         hamiltonian(&ctx, true),

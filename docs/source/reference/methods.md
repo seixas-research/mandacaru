@@ -3,7 +3,7 @@
 (methods-table)=
 ## The methods table
 
-`Mandacaru(method=...)` builds exactly the ten methods below. Any other name raises
+`Mandacaru(method=...)` builds exactly the twelve methods below. Any other name raises
 `ValueError` and lists them. The default is `adapt-vqe`. The "quantum", "forces"
 and "periodic" columns are the three capability flags in
 `mandacaru.specifications.METHODS`; the notes give the run-time conditions the flags
@@ -19,8 +19,10 @@ do not carry.
 | `adapt-vqe` | ADAPT-VQE: the ansatz grows from an operator pool | yes | yes | yes | The default method. Pools are `fermionic`, `qubit`, `qeb`, `ceo` (the default), `ceo-ovp` and `spin-orbit`. |
 | `subspace-vqe` | Shared-unitary VQE for the lowest `num_states` states | yes | no | no | Levels are bare expectations, not Ritz values of the final subspace. |
 | `subspace-adapt-vqe` | ADAPT-VQE over the same shared subspace | yes | no | no | The pool gradient is the weighted sum over all references. |
-| `vasqa` | VASQA (Variational Adaptive Stochastic Quantum Algorithm): Markov-chain search over ansatz architectures | yes | yes | yes | The search controls are `max_steps` (default 200), `max_length`, `seed`, `temperature` and `move_weights`; `replicas` (with `replica_spacing`) is opt-in ([the VASQA tutorial](../tutorial/vasqa.md)). Local state vector and fresh chains only: circuit execution and `resume=` raise `NotImplementedError`. |
+| `vasqa` | VASQA (Variational Adaptive Stochastic Quantum Algorithm): Markov-chain search over ansatz architectures | yes | yes | yes | The search controls are `max_steps` (default 200), `max_length`, `seed`, `temperature` and `move_weights`; `replicas` (with `replica_spacing`) is opt-in ([the VASQA tutorial](../tutorial/vasqa.md)). Supports local state-vector simulation, circuit execution (`execute_circuits=True`, `shots`), and chain checkpointing/resumption (`checkpoint=`, `resume=`). |
 | `valsqa` | VALSQA (Variational Adaptive Learnable Stochastic Quantum Algorithm): the same chain with learned proposals (a pairwise ranker or a graph model) | yes | yes | yes | Uses a trained `proposal_model` when one is supplied and ready; otherwise it falls back to gradient proposals and says so (`result.proposal_reason`). |
+| `subspace-vasqa` | Subspace-VASQA: Markov-chain architecture search over shared weighted subspace states and Rayleigh–Ritz eigenstate diagonalization | yes | no | yes | Returns ground and excited states (`num_states`, `weights`); supports molecules and periodic crystals (`crystal_orbitals="real-space"`). Local state-vector simulation only. |
+| `subspace-valsqa` | Subspace-VALSQA: Subspace-VASQA with learned proposal models | yes | no | yes | Combines Subspace-VASQA with a trained `proposal_model` and Rayleigh–Ritz diagonalization. |
 
 ## What the flags do not say
 
@@ -76,17 +78,28 @@ raises `NotImplementedError` (the full list is in [DFT+U](../guide/dft_u.md)).
 `uhf` state or on a `dft` state with `xc="lda"`, `"pbe"`, `"r2scan"` or `"hse06"`, with or
 without `hubbard_u=` where the ground state accepts it (molecules, closed
 or open shell; an open shell gives the spin-conserving excitations of both spins with
-`<S^2>` of each root, and takes `spin=None`); every
-other method raises, the rVV10 pairings (`pbe+rvv10`, `r2scan+rvv10`) raise because the
-nonlocal kernel is not implemented, and `energy_levels()` stays the quantum route
+`<S^2>` of each root, and takes `spin=None`); a spinor Kohn-Sham reference (a spin-orbit
+dataset or noncollinear initial moments) gets its two-component response with `lda` or
+`pbe`; and an insulating `lda` or `pbe` crystal (closed shell, spin-polarized, or spinor, with
+or without spin-orbit coupling) gets Bethe-Salpeter excitons, Tamm-Dancoff or, with
+`approximation="casida"`, in the coupling form (dense, at most 1500 transitions).
+Every other method raises, the rVV10 pairings (`pbe+rvv10`, `r2scan+rvv10`) raise because
+the nonlocal kernel is not implemented, and `energy_levels()` stays the quantum route.
+Giving the calculator `excited_state=` (`rhf`, `uhf` or `dft` on a molecule with a PAW-LCAO
+basis) makes `get_potential_energy()` and `get_forces()` those of one root
 ([Excited states of molecules](../guide/excited_states.md)).
 
 **Real time.** `get_real_time()` is a post-SCF request on a converged molecule with `rhf`,
-`uhf` or a `dft` state with `xc="lda"`, `"pbe"` or `"hse06"` (with `hubbard_u=` where the
-ground state accepts it): it kicks the orbitals and propagates them, and the returned view
-holds the dipole trace and its spectra. `r2scan`, the rVV10 pairings, spin-orbit datasets,
-fractional occupations, `precision="float32"` and crystals raise, and every quantum method
-raises `ValueError` ([Real-time TD-DFT of molecules](../guide/real_time.md)).
+`uhf` or a `dft` state with `xc="lda"`, `"pbe"`, `"r2scan"` or `"hse06"` (with `hubbard_u=`
+where the ground state accepts it): it kicks the orbitals and propagates them, and the
+returned view holds the dipole trace and its spectra. An insulating crystal (`lda`, `pbe` or
+`r2scan`, with or without `hubbard_u`) is propagated in the velocity gauge, and
+`get_dielectric_function()` gives its frequency-domain response (it also takes a spinor
+crystal, with or without spin-orbit coupling, which `get_real_time()` refuses). The rVV10
+pairings, spin-orbit datasets, fractional occupations and `precision="float32"` raise, so do
+a metal, a hybrid or an rVV10 crystal and (in `get_real_time()` only) a spinor crystal, and
+every quantum method raises `ValueError`
+([Real-time TD-DFT of molecules](../guide/real_time.md)).
 
 **Quantum options on classical methods.** `rhf`, `uhf`, `ghf` and `dft` refuse
 `shots`, `execute_circuits`, `backend_provider`, `device`, `backend_options` and

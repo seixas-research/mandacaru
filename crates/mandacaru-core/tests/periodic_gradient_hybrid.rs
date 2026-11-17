@@ -1,6 +1,6 @@
 //! HX-W: the force of a HYBRID (HSE06) crystal on a real converged SCF, against the reconverged
 //! free-energy finite difference of the same discretized energy (the frozen Richardson oracle of
-//! `freeze_periodic_gradients.py`, 14.4 item 1): a pair in a triclinic box at Gamma, and the
+//! `periodic_freeze_snapshot.rs`, 14.4 item 1): a pair in a triclinic box at Gamma, and the
 //! displaced Si cell on the whole 2x2x2 mesh with both divergence treatments of the exact
 //! exchange. Collinear scalar, whole k mesh, no Python. Needs `MANDACARU_PAW_PATH`.
 //!

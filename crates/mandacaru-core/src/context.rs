@@ -155,7 +155,8 @@ impl<T> Lazy<T> {
     pub fn finish(mut self, len: usize) -> Result<Buffer<T>> {
         self.data.truncate(len);
         self.data.shrink_to_fit();
-        self.reservation.shrink_to(product(&[len, size_of::<T>()])?)?;
+        self.reservation
+            .shrink_to(product(&[len, size_of::<T>()])?)?;
         Ok(Buffer {
             data: self.data,
             _reservation: self.reservation,
@@ -421,7 +422,11 @@ impl Context {
             let installed = mandacaru_kernels::heap::installed_memory_bytes()
                 .and_then(|b| usize::try_from(b).ok())
                 .unwrap_or(usize::MAX);
-            let available = self.memory.limit.min(installed).saturating_sub(self.memory_used());
+            let available = self
+                .memory
+                .limit
+                .min(installed)
+                .saturating_sub(self.memory_used());
             return Ok(lanes.min(available / per_lane.max(1)).max(1));
         }
         self.check_lanes(level, lanes, per_lane)?;

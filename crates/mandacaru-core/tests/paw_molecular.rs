@@ -165,8 +165,14 @@ fn molecular_paw_species_from_dataset_file() {
     let mut arrays = std::collections::BTreeMap::new();
     let r_key = "r0".to_string();
     let v_key = "v0".to_string();
-    arrays.insert(r_key.clone(), ctx.copy_slice(&[0.1, 0.5, 1.0, 2.0]).unwrap());
-    arrays.insert(v_key.clone(), ctx.copy_slice(&[1.0, 0.5, 0.2, 0.05]).unwrap());
+    arrays.insert(
+        r_key.clone(),
+        ctx.copy_slice(&[0.1, 0.5, 1.0, 2.0]).unwrap(),
+    );
+    arrays.insert(
+        v_key.clone(),
+        ctx.copy_slice(&[1.0, 0.5, 0.2, 0.05]).unwrap(),
+    );
     let metadata = serde_json::json!({
         "format": "molecular-paw-input",
         "version": 1,

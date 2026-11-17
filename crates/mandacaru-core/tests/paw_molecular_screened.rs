@@ -369,7 +369,10 @@ fn the_sphere_polarization_second_change_is_the_derivative_of_its_kernel() {
         product(2, 3) * -0.2,
     );
     let check = |up: &DMatrix<f64>, down: &DMatrix<f64>, du: &DMatrix<f64>, dd: &DMatrix<f64>| {
-        let [su, sd] = screened.spin.polarization_second_change(up, down, du, dd).unwrap();
+        let [su, sd] = screened
+            .spin
+            .polarization_second_change(up, down, du, dd)
+            .unwrap();
         // The kernel's action at t = +-h is K1 +- 2 h K2.
         let action = |h: f64| {
             screened
@@ -396,7 +399,10 @@ fn the_sphere_polarization_second_change_is_the_derivative_of_its_kernel() {
     let (up, down) = (&d + &polarize, &d - &polarize);
     let (scale, error) = check(&up, &down, &d_up, &d_down);
     assert!(scale > 1e-6, "the second change vanishes: {scale:e}");
-    assert!(error < 1e-6 * scale, "polarized point: {error:e} of {scale:e}");
+    assert!(
+        error < 1e-6 * scale,
+        "polarized point: {error:e} of {scale:e}"
+    );
     let (scale, error) = check(&d, &d, &d_up, &(-&d_up));
     assert!(
         scale > 1e-6 && error < 1e-6 * scale,

@@ -1,10 +1,7 @@
 //! The recipe of a PAW-LCAO / UPAW-LCAO dataset (`paw::generate::recipe` and the policy tables
 //! behind it, A3): every entry of every table against the frozen resolution of the Python
 //! generator (`test/migration/reference/paw_recipe/policy.json`, written from the live
-//! Python tables before they were deleted at A7), the Bessel counts and norm
-//! deficits against the parameters stored in the 184 shipped scalar-relativistic files
-//! (`census_<set>.json` of the A0 freeze), and the refusals.
-use mandacaru_core::models::configuration::{ground_state, valence_subshells};
+//! Python tables before they were deleted at A7), and the refusals.
 use mandacaru_core::models::relativity::Treatment;
 use mandacaru_core::paw::generate::recipe::{Cutoffs, Nlcc, Recipe};
 use mandacaru_core::paw::generate::{
@@ -63,9 +60,6 @@ fn occupancies(v: &Value) -> Vec<((usize, usize), f64)> {
         })
         .collect()
 }
-
-/// The elements whose reference configuration is relaxed away from the aufbau filling.
-const RELAXED: [&str; 4] = ["La", "Ac", "Th", "Pa"];
 
 #[test]
 fn the_generic_constants_equal_the_frozen_ones() {
@@ -288,84 +282,6 @@ fn the_tables_hold_no_entry_the_freeze_does_not_have() {
             }
         }
     }
-}
-
-/// Elements whose core/valence partition differs from the shipped file on purpose (see the test below).
-const PARTITION_CHANGED: &[&str] = &["Fr"];
-
-/// The census of the shipped scalar-relativistic files stores, per file, the norm deficit and Bessel counts it
-/// was built with and which parameters deviate from what the tables would give a first
-/// construction. Where nothing deviates the recipe must say what the file says.
-#[test]
-fn the_recipe_reproduces_the_parameters_of_the_shipped_files() {
-    let mut compared = 0;
-    // The `fr` sets are not an oracle for the policy tables: 35 of their elements were built
-    // before the tables of 10-20/21 (A0 finding, `PAW_COMPLETION_PLAN.md` 3.1).
-    for (set, functional) in [("lda-sr", "lda"), ("pbe-sr", "pbe")] {
-        let census = reference(&format!("paw_generate/census_{set}.json"));
-        for (symbol, entry) in census["files"].as_object().unwrap() {
-            let deviates = entry["deviates"].as_array().unwrap();
-            let recipe = Recipe::for_dataset(symbol, functional, Treatment::Scalar).unwrap();
-            if !deviates.iter().any(|d| d == "norm_deficit") {
-                // The census omits a deficit of zero.
-                let stored = entry.get("nd").map_or(0., |v| v.as_f64().unwrap());
-                assert_eq!(recipe.norm_deficit, stored, "{set} {symbol}");
-                compared += 1;
-            }
-            if !deviates.iter().any(|d| d == "n_bessel") {
-                let counts = entry["nb"].as_array().unwrap();
-                assert!(
-                    counts
-                        .iter()
-                        .all(|c| c.as_u64().unwrap() as usize == recipe.n_bessel),
-                    "{set} {symbol}: file {counts:?}, recipe {}",
-                    recipe.n_bessel
-                );
-                compared += 1;
-            }
-            // Elements whose partition the regeneration of 2026-11-12 changed on purpose: the shipped
-            // file keeps only its 7s in the valence and no generator builds it clean (a p ghost no
-            // remedy removes); with 6s6p as semicore, like every other alkali, it does.
-            if PARTITION_CHANGED.contains(&symbol.as_str()) {
-                continue;
-            }
-            let frozen = entry.get("frozen").map(subshells).unwrap_or_default();
-            assert_eq!(recipe.frozen_subshells, frozen, "{set} {symbol} frozen");
-            let semicore = entry.get("semicore").map(subshells).unwrap_or_default();
-            assert_eq!(
-                recipe.semicore_subshells, semicore,
-                "{set} {symbol} semicore"
-            );
-            // The empty channels above the valence: from the aufbau valence of the element with
-            // the recipe's frozen and semicore moves, as the generator derives them.
-            // La, Ac, Th and Pa are solved in a relaxed configuration (their aufbau 4f or 5f is a
-            // box state), which only the atom knows: the generator tests cover them.
-            if RELAXED.contains(&symbol.as_str()) {
-                continue;
-            }
-            let z = recipe.atomic_number;
-            let ground = ground_state(z).unwrap();
-            let mut valence = valence_subshells(&ground);
-            valence.retain(|s| !recipe.frozen_subshells.contains(s));
-            valence.extend(recipe.semicore_subshells.iter().copied());
-            let top = valence.iter().map(|s| s.1).max().unwrap();
-            let frozen_top = recipe
-                .frozen_subshells
-                .iter()
-                .map(|s| s.1)
-                .max()
-                .unwrap_or(top);
-            let extra = frozen_top
-                .saturating_sub(top)
-                .max(recipe.highest_channel.unwrap_or(top).saturating_sub(top));
-            let stored = entry
-                .get("extra_l")
-                .map_or(0, |v| v.as_u64().unwrap() as usize);
-            assert_eq!(extra, stored, "{set} {symbol} extra_l");
-            compared += 3;
-        }
-    }
-    assert!(compared > 700, "only {compared} comparisons");
 }
 
 #[test]

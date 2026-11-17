@@ -1,6 +1,6 @@
 //! F1: the force of a COLLINEAR SPIN-POLARIZED (`spins = 2`, unrestricted) LDA/PBE crystal on a real
 //! converged SCF, against the reconverged free-energy finite difference of the same discretized
-//! energy (the frozen Richardson oracle of `freeze_periodic_gradients.py`, 14.4 item 1, two step
+//! energy (the frozen Richardson oracle of `periodic_freeze_snapshot.rs`, 14.4 item 1, two step
 //! families): the BeH radical (Be carries a large partial core and the spin density) in a box at
 //! Gamma, LDA and PBE, with every coordinate of both atoms. Whole k mesh, no Python. Needs
 //! `MANDACARU_PAW_PATH`.

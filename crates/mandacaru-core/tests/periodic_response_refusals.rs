@@ -118,13 +118,12 @@ fn a_state_that_did_not_converge_is_refused() {
     }
 }
 
-/// A hybrid with the symmetry table of a reduced mesh: Gamma is one point, so the load accepts the
-/// table (the energy path refuses it only beside several points), and the derivative engines name
-/// the reduction instead of averaging a k-sum that was never reduced. The Mandacaru setup never
-/// builds such a crystal (a hybrid's mesh is never reduced by the space group, MG-F3 part 1 and
-/// Q11/SH-5); a snapshot from another source can.
+/// A hybrid with the symmetry table of a reduced mesh but no operations in its setup block (a
+/// snapshot from another source): the derivative engines name the missing operations instead of
+/// averaging a k-sum they cannot average (SH-5b: with the operations a collinear hybrid is reduced,
+/// its states rotated to the stars).
 #[test]
-fn a_hybrid_with_symmetry_operations_on_a_gamma_mesh_is_refused() {
+fn a_hybrid_with_a_symmetry_table_and_no_operations_is_refused() {
     let mut data = Data::load("lih_hse06");
     assert_eq!(data.crystal.points.len(), 1, "a Gamma-only mesh");
     scf::refuse(&data.crystal).expect("the plain hybrid is differentiated");
@@ -133,22 +132,24 @@ fn a_hybrid_with_symmetry_operations_on_a_gamma_mesh_is_refused() {
     let stress_cause = refusal(crystal::refuse(&data.crystal)).to_string();
     for message in [&forces_cause, &stress_cause] {
         assert!(
-            message.contains("a hybrid crystal on a k mesh reduced by space-group symmetry")
-                && message.contains("needs the whole mesh"),
+            message.contains("a k mesh reduced by space-group symmetry")
+                && message.contains("'setup' block"),
             "{message}"
         );
     }
 }
 
-/// The loader forbids a spinor snapshot to list node permutations, so the only spinor crystal the
-/// derivative engines can meet on a reduced mesh carries a moment symmetrization that is not the
-/// identity (a hand-edited snapshot); it is refused with the cause.
+/// A time-reversal-symmetric spinor crystal may list node permutations (SH-5a: it carries the charge
+/// alone, a scalar under the spin rotation), a magnetic one may not, so the only magnetic spinor
+/// crystal the derivative engines can meet on a reduced mesh carries a moment symmetrization that
+/// is not the identity (a hand-edited snapshot); it is refused with the cause.
 #[test]
-fn a_spin_orbit_crystal_on_a_reduced_mesh_is_refused() {
+fn a_magnetic_spin_orbit_crystal_on_a_reduced_mesh_is_refused() {
     let mut spinor = Spinor::load("si_ldafr");
     let crystal = &mut spinor.data.crystal;
     scf::refuse(crystal).expect("the spinor crystal on a whole mesh is differentiated");
     crystal::refuse(crystal).expect("and so is its stress");
+    crystal.time_reversal = false;
     crystal.qsym.as_mut_slice()[1] = num_complex::Complex64::new(0.5, 0.);
     let forces_cause = refusal(scf::refuse(crystal)).to_string();
     let stress_cause = refusal(crystal::refuse(crystal)).to_string();

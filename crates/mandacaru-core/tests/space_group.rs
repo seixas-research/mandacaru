@@ -52,9 +52,15 @@ fn test_mg_hcp() {
     let a = 3.21;
     let c = 5.21;
     let hex = Matrix3::new(
-        a, 0.0, 0.0,
-        -a / 2.0, a * 3.0f64.sqrt() / 2.0, 0.0,
-        0.0, 0.0, c,
+        a,
+        0.0,
+        0.0,
+        -a / 2.0,
+        a * 3.0f64.sqrt() / 2.0,
+        0.0,
+        0.0,
+        0.0,
+        c,
     );
     let frac = [[1.0 / 3.0, 2.0 / 3.0, 0.25], [2.0 / 3.0, 1.0 / 3.0, 0.75]];
     let labels = [12, 12];
@@ -75,9 +81,15 @@ fn test_aln_wurtzite() {
     let c = 4.98;
     let u = 0.382;
     let hex = Matrix3::new(
-        a, 0.0, 0.0,
-        -a / 2.0, a * 3.0f64.sqrt() / 2.0, 0.0,
-        0.0, 0.0, c,
+        a,
+        0.0,
+        0.0,
+        -a / 2.0,
+        a * 3.0f64.sqrt() / 2.0,
+        0.0,
+        0.0,
+        0.0,
+        c,
     );
     let frac = [
         [1.0 / 3.0, 2.0 / 3.0, 0.0],
@@ -161,9 +173,15 @@ fn test_cu_supercells() {
     let fcc: Matrix3<f64> = 0.5 * a * Matrix3::new(0.0, 1.0, 1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 0.0);
     // 2x1x1 supercell of primitive Cu: cell has double volume, 2 atoms
     let lat = Matrix3::new(
-        2.0 * fcc[(0, 0)], 2.0 * fcc[(0, 1)], 2.0 * fcc[(0, 2)],
-        fcc[(1, 0)], fcc[(1, 1)], fcc[(1, 2)],
-        fcc[(2, 0)], fcc[(2, 1)], fcc[(2, 2)],
+        2.0 * fcc[(0, 0)],
+        2.0 * fcc[(0, 1)],
+        2.0 * fcc[(0, 2)],
+        fcc[(1, 0)],
+        fcc[(1, 1)],
+        fcc[(1, 2)],
+        fcc[(2, 0)],
+        fcc[(2, 1)],
+        fcc[(2, 2)],
     );
     let frac = [[0.0, 0.0, 0.0], [0.5, 0.0, 0.0]];
     let labels = [29, 29];
@@ -265,4 +283,3 @@ fn test_find_with_context_respects_budget() {
     let ops = find_with_context(&ctx_ok, &cell, 1e-5).unwrap();
     assert_eq!(ops.rotations.len(), 16);
 }
-

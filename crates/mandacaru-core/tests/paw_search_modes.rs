@@ -3,8 +3,6 @@
 //! potential lowered by 3 Ha binds an extra s state at -0.868 Ha (8,677 ghost tolerances), and
 //! the unitary aluminum without its 5 Ha raise misses an intruding hydrogen 1s by 1.19. Every
 //! error text is checked for its cause. The attempt table is in `paw_search_table.rs`.
-mod paw_assemble_support;
-mod paw_generate_support;
 mod paw_search_support;
 
 use mandacaru_core::models::relativity::Treatment;

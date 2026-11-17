@@ -9,8 +9,8 @@ use crate::{
     math::{assignment, rigid},
     product,
     quantum::{
-        lagrangian::{self, Ansatz, Residual},
-        properties, CachedProblem, C64,
+        lagrangian::{self, Ansatz, Residual, SubspaceResidual},
+        properties, QuantumProblem, C64,
     },
     Buffer, Result,
 };
@@ -158,23 +158,31 @@ fn require_analytic_forces(integrals: &MolecularIntegrals) -> Result<()> {
     }
 }
 
-/// The analytic gradient (Hartree per Bohr) of the state `state` of `problem`, built on
-/// `model` of `reference`. PAW-LCAO only: the all-electron basis raises by name.
-pub fn gradient(
+/// Options for [`subspace_gradient`] computing the analytic force of any Rayleigh–Ritz eigenstate
+/// of a weighted subspace optimization (`Subspace-VQE`, `Subspace-ADAPT`, `Subspace-VASQA`,
+/// `Subspace-VALSQA`).
+pub struct SubspaceOptions<'a> {
+    pub weights: &'a [f64],
+    pub ansatz: Option<Ansatz<'a>>,
+    pub lagrangian: lagrangian::Options,
+    pub internal: bool,
+}
+
+fn validate_response_setup<'a>(
     integrals: &MolecularIntegrals,
     reference: &MeanField,
     model: &Model,
-    problem: &CachedProblem,
+    problem: &'a QuantumProblem,
     state: &[C64],
-    options: &Options<'_>,
-) -> Result<Gradient> {
+    internal: bool,
+) -> Result<(bool, &'a crate::quantum::Basis, f64)> {
     model.require_dense("an analytic variational force")?;
     require_analytic_forces(integrals)?;
     let supercell = integrals.kind() == super::periodic::paw::HamiltonianKind::PawSupercell;
     if supercell {
         super::periodic::paw::require_gap(reference)?;
     }
-    if supercell && options.internal {
+    if supercell && internal {
         return Err(crate::Error::Unsupported(
             "rigid rotations are not a symmetry of a crystal: the force of a PAW-LCAO supercell \
              is Cartesian (internal=False)"
@@ -195,15 +203,110 @@ pub fn gradient(
         ));
     }
     let basis = problem.register("variational geometry response")?;
+    let norm = state.iter().map(|v| v.norm_sqr()).sum::<f64>();
+    if (norm - 1.).abs() > 1e-9 {
+        return Err(invalid("variational forces require a normalized state"));
+    }
+    let action = problem
+        .hamiltonian
+        .apply(&integrals.context, basis, state)?;
+    let energy = crate::quantum::evolution::inner(state, action.as_slice()).re;
+    Ok((supercell, basis, energy))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn finish_analytic_gradient(
+    integrals: &MolecularIntegrals,
+    reference: &MeanField,
+    model: &Model,
+    supercell: bool,
+    internal: bool,
+    energy: f64,
+    expected: f64,
+    m: usize,
+    t1: &[C64],
+    t2: &[C64],
+    stationarity: Stationarity,
+) -> Result<Gradient> {
+    let ctx = &integrals.context;
+    let one = real(
+        &(0..m * m)
+            .map(|k| 0.5 * (t1[k] + t1[(k % m) * m + k / m].conj()))
+            .collect::<Vec<_>>(),
+        "one-body density matrices",
+    )?;
+    let two = real(
+        &(0..m.pow(4))
+            .map(|k| {
+                let (p, q, r, s) = (k / (m * m * m), (k / (m * m)) % m, (k / m) % m, k % m);
+                0.5 * (t2[k] + t2[((r * m + s) * m + p) * m + q].conj())
+            })
+            .collect::<Vec<_>>(),
+        "two-body density matrices",
+    )?;
+    let relaxed = variational_gradient::relaxed_densities(integrals, reference, model, &one, &two)?;
+    if (relaxed.energy - expected).abs() > 1e-7 {
+        return Err(invalid(
+            "the force RDMs and molecular orbitals do not reconstruct the variational Hamiltonian energy",
+        ));
+    }
+    let analytic = integrals.fixed_density_gradient(&relaxed.densities)?;
+    let size = 3 * integrals.geometry.numbers().len();
+    let _workspace = ctx.reserve(product(&[size, size + 8, 16])?)?;
+    let projector = if internal {
+        let q = rigid::internal(ctx, integrals.geometry.positions())?.matrix;
+        Some((&q * q.transpose(), q.ncols()))
+    } else {
+        None
+    };
+    let total = if supercell {
+        super::periodic::paw::per_cell(integrals, analytic.total.as_slice())?
+    } else {
+        let mut out = ctx.allocate::<f64>(size)?;
+        match &projector {
+            Some((p, _)) => {
+                let projected = p * nalgebra::DVector::from_column_slice(analytic.total.as_slice());
+                out.as_mut_slice().copy_from_slice(projected.as_slice());
+            }
+            None => out
+                .as_mut_slice()
+                .copy_from_slice(analytic.total.as_slice()),
+        }
+        out
+    };
+    let rows = total.as_slice().len();
+    Ok(Gradient {
+        gradient: total,
+        stationarity,
+        energy,
+        directions: projector.as_ref().map_or(rows, |(_, k)| *k),
+        scheme: "analytic",
+        reference_stationarity: relaxed.stationarity,
+        cphf_residual: relaxed.cphf_residual,
+        forms: relaxed.densities.two.len(),
+    })
+}
+
+/// The analytic gradient (Hartree per Bohr) of the state `state` of `problem`, built on
+/// `model` of `reference`. PAW-LCAO only: the all-electron basis raises by name.
+pub fn gradient(
+    integrals: &MolecularIntegrals,
+    reference: &MeanField,
+    model: &Model,
+    problem: &QuantumProblem,
+    state: &[C64],
+    options: &Options<'_>,
+) -> Result<Gradient> {
     integrals.context.run(|| {
         let ctx = &integrals.context;
-        let norm = state.iter().map(|v| v.norm_sqr()).sum::<f64>();
-        if (norm - 1.).abs() > 1e-9 {
-            return Err(invalid("variational forces require a normalized state"));
-        }
-        let action = problem.hamiltonian.apply(ctx, basis, state)?;
-        let energy = crate::quantum::evolution::inner(state, action.as_slice()).re;
-        drop(action);
+        let (supercell, basis, energy) = validate_response_setup(
+            integrals,
+            reference,
+            model,
+            problem,
+            state,
+            options.internal,
+        )?;
         let residual = options
             .ansatz
             .map(|ansatz| problem.lagrangian(&ansatz, state, &options.lagrangian))
@@ -214,7 +317,13 @@ pub fn gradient(
             Some(Residual::Corrected { z, .. }) => {
                 let (plus, minus) = (z.plus.complex128()?, z.minus.complex128()?);
                 let mut chi = ctx.allocate::<C64>(state.len())?;
-                for (((c, s), p), m) in chi.as_mut_slice().iter_mut().zip(state).zip(plus).zip(minus) {
+                for (((c, s), p), m) in chi
+                    .as_mut_slice()
+                    .iter_mut()
+                    .zip(state)
+                    .zip(plus)
+                    .zip(minus)
+                {
                     *c = s - (p - m) / z.scale;
                 }
                 (Some(chi), energy - z.z_dot_g)
@@ -224,72 +333,139 @@ pub fn gradient(
         let ket = chi.as_ref().map_or(state, |c| c.as_slice());
         let rdm = properties::spatial_transition_rdms(ctx, &problem.encoding, basis, state, ket)?;
         drop(chi);
-        let m = rdm.m;
-        let (t1, t2) = (rdm.one.as_slice(), rdm.two.as_slice());
-        let one = real(
-            &(0..m * m).map(|k| 0.5 * (t1[k] + t1[(k % m) * m + k / m].conj())).collect::<Vec<_>>(),
-            "one-body density matrices",
-        )?;
-        let two = real(
-            &(0..m.pow(4))
-                .map(|k| {
-                    let (p, q, r, s) = (k / (m * m * m), (k / (m * m)) % m, (k / m) % m, k % m);
-                    0.5 * (t2[k] + t2[((r * m + s) * m + p) * m + q].conj())
-                })
-                .collect::<Vec<_>>(),
-            "two-body density matrices",
-        )?;
-        drop(rdm);
-        let relaxed = variational_gradient::relaxed_densities(integrals, reference, model, &one, &two)?;
-        if (relaxed.energy - expected).abs() > 1e-7 {
-            return Err(invalid("the force RDMs and molecular orbitals do not reconstruct the variational Hamiltonian energy"));
-        }
-        let analytic = integrals.fixed_density_gradient(&relaxed.densities)?;
-        let size = 3 * integrals.geometry.numbers().len();
-        let _workspace = ctx.reserve(product(&[size, size + 8, 16])?)?;
-        let projector = if options.internal {
-            let q = rigid::internal(ctx, integrals.geometry.positions())?.matrix;
-            Some((&q * q.transpose(), q.ncols()))
-        } else {
-            None
-        };
-        let output = |values: &[f64]| -> Result<Buffer<f64>> {
-            let mut out = ctx.allocate::<f64>(size)?;
-            match &projector {
-                Some((p, _)) => {
-                    let projected = p * nalgebra::DVector::from_column_slice(values);
-                    out.as_mut_slice().copy_from_slice(projected.as_slice());
-                }
-                None => out.as_mut_slice().copy_from_slice(values),
-            }
-            Ok(out)
-        };
-        // A supercell's force is the derivative of the energy per cell, per primitive atom.
-        let total = if supercell {
-            super::periodic::paw::per_cell(integrals, analytic.total.as_slice())?
-        } else {
-            output(analytic.total.as_slice())?
-        };
-        let rows = total.as_slice().len();
         let stationarity = match &residual {
             None => Stationarity::Assumed,
-            Some(Residual::Stationary { gradient_norm }) => Stationarity::Stationary { gradient_norm: *gradient_norm },
+            Some(Residual::Stationary { gradient_norm }) => Stationarity::Stationary {
+                gradient_norm: *gradient_norm,
+            },
             Some(Residual::Corrected { gradient_norm, z }) => Stationarity::Lagrangian {
                 gradient_norm: *gradient_norm,
                 z_norm: z.z_norm,
                 solve: z.solve.clone(),
             },
         };
-        Ok(Gradient {
-            gradient: total,
-            stationarity,
+        finish_analytic_gradient(
+            integrals,
+            reference,
+            model,
+            supercell,
+            options.internal,
             energy,
-            directions: projector.as_ref().map_or(rows, |(_, k)| *k),
-            scheme: "analytic",
-            reference_stationarity: relaxed.stationarity,
-            cphf_residual: relaxed.cphf_residual,
-            forms: relaxed.densities.two.len(),
-        })
+            expected,
+            rdm.m,
+            rdm.one.as_slice(),
+            rdm.two.as_slice(),
+            stationarity,
+        )
+    })
+}
+
+/// The analytic nuclear gradient (Hartree per Bohr) of any Rayleigh–Ritz eigenstate
+/// `eigenstate` obtained from a subspace variational calculation (`Subspace-VQE`,
+/// `Subspace-ADAPT-VQE`, `Subspace-VASQA`, `Subspace-VALSQA`).
+pub fn subspace_gradient(
+    integrals: &MolecularIntegrals,
+    reference: &MeanField,
+    model: &Model,
+    problem: &QuantumProblem,
+    eigenstate: &[C64],
+    options: &SubspaceOptions<'_>,
+) -> Result<Gradient> {
+    integrals.context.run(|| {
+        let ctx = &integrals.context;
+        let (supercell, basis, energy) = validate_response_setup(
+            integrals,
+            reference,
+            model,
+            problem,
+            eigenstate,
+            options.internal,
+        )?;
+        let rdm = properties::spatial_transition_rdms(
+            ctx,
+            &problem.encoding,
+            basis,
+            eigenstate,
+            eigenstate,
+        )?;
+        let m = rdm.m;
+        let mut t1 = rdm.one.as_slice().to_vec();
+        let mut t2 = rdm.two.as_slice().to_vec();
+        drop(rdm);
+        let residual = options
+            .ansatz
+            .map(|ansatz| {
+                problem.subspace_lagrangian(
+                    &ansatz,
+                    options.weights,
+                    eigenstate,
+                    &options.lagrangian,
+                )
+            })
+            .transpose()?;
+        let (expected, stationarity) = match &residual {
+            None => (energy, Stationarity::Assumed),
+            Some(SubspaceResidual::Stationary { gradient_norm }) => (
+                energy,
+                Stationarity::Stationary {
+                    gradient_norm: *gradient_norm,
+                },
+            ),
+            Some(SubspaceResidual::Corrected {
+                gradient_norm,
+                z_norm,
+                z_dot_g_ens,
+                solve,
+                terms,
+                ..
+            }) => {
+                let mut ket = ctx.allocate::<C64>(eigenstate.len())?;
+                for term in terms {
+                    if term.scale == 0. {
+                        continue;
+                    }
+                    let (plus, minus) = (term.plus.complex128()?, term.minus.complex128()?);
+                    let factor = -term.weight / term.scale;
+                    for ((o, &p), &m_val) in ket.as_mut_slice().iter_mut().zip(plus).zip(minus) {
+                        *o = (p - m_val) * factor;
+                    }
+                    let corr = properties::spatial_transition_rdms(
+                        ctx,
+                        &problem.encoding,
+                        basis,
+                        term.state.complex128()?,
+                        ket.as_slice(),
+                    )?;
+                    for (acc, &val) in t1.iter_mut().zip(corr.one.as_slice()) {
+                        *acc += val;
+                    }
+                    for (acc, &val) in t2.iter_mut().zip(corr.two.as_slice()) {
+                        *acc += val;
+                    }
+                }
+                (
+                    energy - z_dot_g_ens,
+                    Stationarity::Lagrangian {
+                        gradient_norm: *gradient_norm,
+                        z_norm: *z_norm,
+                        solve: solve.clone(),
+                    },
+                )
+            }
+        };
+        finish_analytic_gradient(
+            integrals,
+            reference,
+            model,
+            supercell,
+            options.internal,
+            energy,
+            expected,
+            m,
+            &t1,
+            &t2,
+            stationarity,
+        )
     })
 }
 
@@ -375,21 +551,27 @@ pub fn device_gradient(
         None => (&[][..], &no_shift),
     };
     let parameters = z.len();
-    if !sized(base) || shifted_circuits.iter().any(|(_, c, d)| !c.is_finite() || !sized(d)) {
+    if !sized(base)
+        || shifted_circuits
+            .iter()
+            .any(|(_, c, d)| !c.is_finite() || !sized(d))
+    {
         return Err(invalid("measured density matrices must be finite, m^2 and m^4, over the model's active orbitals"));
     }
     if z.iter().any(|v| !v.is_finite())
         || shifted_circuits.iter().any(|(k, _, _)| *k >= parameters)
-        || correction
-            .and_then(|c| c.z_covariance)
-            .is_some_and(|cov| cov.len() != parameters * parameters || cov.iter().any(|v| !v.is_finite()))
+        || correction.and_then(|c| c.z_covariance).is_some_and(|cov| {
+            cov.len() != parameters * parameters || cov.iter().any(|v| !v.is_finite())
+        })
     {
         return Err(invalid(
             "the Z vector, its covariance (n x n) and the shifted circuits' parameters must be finite and agree",
         ));
     }
-    let shifted: Vec<(f64, &MeasuredDensities<'_>)> =
-        shifted_circuits.iter().map(|(k, c, d)| (z[*k] * c, d)).collect();
+    let shifted: Vec<(f64, &MeasuredDensities<'_>)> = shifted_circuits
+        .iter()
+        .map(|(k, c, d)| (z[*k] * c, d))
+        .collect();
     integrals.context.run(|| {
         let ctx = &integrals.context;
         let mut one = base.one.to_vec();

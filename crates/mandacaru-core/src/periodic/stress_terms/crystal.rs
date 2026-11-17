@@ -53,7 +53,7 @@ pub struct SpinOrbitInputs<'a> {
 
 /// The crystals this stress does not differentiate, from the crystal itself: DFT+U (AS-7) and a k
 /// mesh reduced by space-group symmetry whose operations the snapshot does not carry (CF-6: with
-/// them the stress is averaged over the group; a spin-orbit crystal or a hybrid needs the whole
+/// them the stress is averaged over the group; a magnetic spin-orbit crystal needs the whole
 /// mesh). Float32 data and more than two spin channels are refused by [`check_request`]
 /// from the layout (a hybrid goes through its own entry).
 pub fn refuse(c: &Crystal) -> Result<()> {
@@ -76,15 +76,7 @@ pub fn refuse(c: &Crystal) -> Result<()> {
     if c.screened_exchange()?.is_some() && c.hybrid.is_none() {
         return no("a hybrid crystal without the PAW spheres of its sites block");
     }
-    let identity = c.qsym.as_slice().iter().enumerate().all(|(i, v)| {
-        let want = if i / c.channels == i % c.channels {
-            1.
-        } else {
-            0.
-        };
-        (v - C64::new(want, 0.)).norm() < 1e-12
-    });
-    if !c.permutations.is_empty() || !identity {
+    if crate::periodic::gradient::scf::is_reduced(c) {
         if let Err(cause) = crate::periodic::gradient::scf::reduced_mesh(c) {
             return no(&cause);
         }

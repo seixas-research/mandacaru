@@ -27,8 +27,14 @@ fn an_energy_shift_below_the_minimum_is_refused_and_the_minimum_is_accepted() {
     let message = Recipe::from_json(&request(MIN_ENERGY_SHIFT / 2.), None)
         .unwrap_err()
         .to_string();
-    assert!(message.contains("energy_shift must be at least"), "{message}");
+    assert!(
+        message.contains("energy_shift must be at least"),
+        "{message}"
+    );
     assert!(Recipe::from_json(&request(MIN_ENERGY_SHIFT), None).is_ok());
     let unconfined = json!({"zetas": 1, "polarizations": 0, "energy_shift": null});
-    assert_eq!(Recipe::from_json(&unconfined, None).unwrap().energy_shift, None);
+    assert_eq!(
+        Recipe::from_json(&unconfined, None).unwrap().energy_shift,
+        None
+    );
 }

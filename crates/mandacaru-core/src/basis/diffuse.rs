@@ -361,19 +361,28 @@ pub fn build_tables(
     linear_dependence_tol: f64,
 ) -> Result<(Vec<Table>, Vec<Row>)> {
     if recipe.count == 0 {
-        return Err(invalid("a diffuse recipe needs at least one shell per channel"));
+        return Err(invalid(
+            "a diffuse recipe needs at least one shell per channel",
+        ));
     }
     let mut n_by_l = std::collections::BTreeMap::new();
     let mut existing_by_l: std::collections::BTreeMap<usize, Vec<(&[f64], &[f64])>> =
         std::collections::BTreeMap::new();
     for &(n, l, r, values) in existing {
-        n_by_l.entry(l).and_modify(|cur: &mut usize| *cur = (*cur).max(n)).or_insert(n);
+        n_by_l
+            .entry(l)
+            .and_modify(|cur: &mut usize| *cur = (*cur).max(n))
+            .or_insert(n);
         existing_by_l.entry(l).or_default().push((r, values));
     }
     let (mut tables, mut rows) = (Vec::new(), Vec::new());
     for &(l, reference_l, reference_rms) in channels {
-        let first = recipe.rms_radius.unwrap_or(recipe.rms_ratio * reference_rms);
-        let targets: Vec<f64> = (0..recipe.count).map(|k| first * recipe.ratio.powi(k as i32)).collect();
+        let first = recipe
+            .rms_radius
+            .unwrap_or(recipe.rms_ratio * reference_rms);
+        let targets: Vec<f64> = (0..recipe.count)
+            .map(|k| first * recipe.ratio.powi(k as i32))
+            .collect();
         let (_alpha, widest) = parameters(l, targets[recipe.count - 1], recipe.cutoff_norm)?;
         let r = extended_grid(r_base, grid_reach * widest)?;
         let mut same: Vec<Vec<f64>> = Vec::new();
@@ -384,13 +393,36 @@ pub fn build_tables(
         for (k, &rms) in targets.iter().enumerate() {
             let (mut values, alpha, r_cut) = radial(&r, l, rms, recipe.cutoff_norm)?;
             if let Some(k_c) = filter_wavevector {
-                values = super::filter::filter(ctx, &r, &values, l, k_c, &super::filter::Options::default())?.0;
+                values = super::filter::filter(
+                    ctx,
+                    &r,
+                    &values,
+                    l,
+                    k_c,
+                    &super::filter::Options::default(),
+                )?
+                .0;
             }
             let views: Vec<&[f64]> = same.iter().map(Vec::as_slice).collect();
-            let shell = orthogonalize(&r, &views, &values, filter_wavevector.is_some(), linear_dependence_tol)?;
+            let shell = orthogonalize(
+                &r,
+                &views,
+                &values,
+                filter_wavevector.is_some(),
+                linear_dependence_tol,
+            )?;
             rows.push(Row {
-                l, index: k, n: n_next + k, reference_l, reference_rms, rms, alpha, r_cut,
-                residual: shell.residual, accepted: shell.accepted, r_max: r[r.len() - 1],
+                l,
+                index: k,
+                n: n_next + k,
+                reference_l,
+                reference_rms,
+                rms,
+                alpha,
+                r_cut,
+                residual: shell.residual,
+                accepted: shell.accepted,
+                r_max: r[r.len() - 1],
             });
             if shell.accepted {
                 tables.push((r.clone(), shell.values.clone(), n_next + k, l));

@@ -153,7 +153,10 @@ fn both_kinds_are_assessed_and_the_ranker_draws_from_its_own_scores() {
     assert_eq!(model.kind, Kind::Graph);
     assert!(model.ranker.is_some() && model.parameters.is_some());
     let within = &model.report["curve"][0]["within_state"];
-    assert!(within["ranker"]["spearman"].is_number() && within["graph"]["spearman"].is_number(), "{within}");
+    assert!(
+        within["ranker"]["spearman"].is_number() && within["graph"]["spearman"].is_number(),
+        "{within}"
+    );
     assert_eq!(model.report["kinds"], json!(["ranker", "graph"]));
     // A ranker model round-trips and scores with the ranker alone.
     let mut ranker = model;
@@ -162,26 +165,46 @@ fn both_kinds_are_assessed_and_the_ranker_draws_from_its_own_scores() {
     assert_eq!(restored.kind, Kind::Ranker);
     assert_eq!(restored.ranker, ranker.ranker);
     let state = &data.states[0];
-    let scores = restored.scores(&context, &state.graph, &state.rows).unwrap();
+    let scores = restored
+        .scores(&context, &state.graph, &state.rows)
+        .unwrap();
     let r = restored.ranker.as_ref().unwrap();
     for (row, score) in (0..state.rows.descriptors.nrows()).zip(&scores) {
         let x: [f64; 9] = std::array::from_fn(|c| state.rows.descriptors[(row, c)]);
         assert_eq!(*score, r.score(&x));
     }
     // A ranker-only fit holds no network, and its file says so.
-    let only = training::fit(&context, &data, &Options { kinds: vec![Kind::Ranker], ..options.clone() }).unwrap();
+    let only = training::fit(
+        &context,
+        &data,
+        &Options {
+            kinds: vec![Kind::Ranker],
+            ..options.clone()
+        },
+    )
+    .unwrap();
     assert!(only.parameters.is_none() && only.as_json().get("weights").is_none());
     let mut missing = only.as_json();
     missing["kind"] = json!("graph");
     assert!(Model::from_json(&context, &missing.to_string()).is_err());
-    assert!(training::fit(&context, &data, &Options { kinds: vec![], ..options.clone() }).is_err());
+    assert!(training::fit(
+        &context,
+        &data,
+        &Options {
+            kinds: vec![],
+            ..options.clone()
+        }
+    )
+    .is_err());
     drop((ranker, restored, only, data));
     assert_eq!(context.memory_used(), 0);
 }
 
 #[test]
 fn the_gradient_teaches_only_the_first_stage_of_training() {
-    use mandacaru_core::quantum::search::learning::training::{first_choice, taught_choice, teacher_weight, softmax};
+    use mandacaru_core::quantum::search::learning::training::{
+        first_choice, softmax, taught_choice, teacher_weight,
+    };
     // The weight starts at `mixing` and reaches zero at the fraction of the steps, then stays there.
     assert_eq!(teacher_weight(0.3, 0.2, 0, 100), 0.3);
     assert!((teacher_weight(0.3, 0.2, 10, 100) - 0.15).abs() < 1e-15);
@@ -189,7 +212,10 @@ fn the_gradient_teaches_only_the_first_stage_of_training() {
     assert_eq!(teacher_weight(0.3, 0.2, 99, 100), 0.);
     let (scores, targets, teacher) = ([0.2, -0.4, 1.1], [0.5, -0.2, 0.1], [0.6, 0.3, 0.1]);
     // Weight zero is the observed likelihood; weight one has the teacher as its target.
-    assert_eq!(taught_choice(&scores, &targets, 0.7, &teacher, 0.).unwrap(), first_choice(&scores, &targets, 0.7).unwrap());
+    assert_eq!(
+        taught_choice(&scores, &targets, 0.7, &teacher, 0.).unwrap(),
+        first_choice(&scores, &targets, 0.7).unwrap()
+    );
     let (_, adjoint) = taught_choice(&scores, &targets, 0.7, &teacher, 1.).unwrap();
     let p = softmax(&scores);
     for i in 0..3 {
@@ -204,4 +230,157 @@ fn the_gradient_teaches_only_the_first_stage_of_training() {
         down[i] -= 1e-6;
         assert!(((loss(&up) - loss(&down)) / 2e-6 - adjoint[i]).abs() < 1e-8);
     }
+}
+
+#[test]
+fn edit_dataset_ingests_insert_delete_and_replace_with_optional_curvatures() {
+    use mandacaru_core::quantum::search::learning::data::{EditDataset, EditKind};
+
+    let context = Context::new(Some(1), 64 << 20).unwrap();
+    let problem = json!({
+        "format": "mandacaru-search-problem",
+        "version": 1,
+        "num_qubits": 4,
+        "spatial_orbitals": 2,
+        "num_particles": [1, 0],
+        "mapping": "jordan_wigner",
+        "hamiltonian": [["ZIII", 0.3, 0.], ["XXII", 0.2, 0.]],
+        "pool": [[["YIII", 0., 1.]], [["IYII", 0., 1.]], [["IIYI", 0., 1.]]],
+        "composition": [[1, 2]],
+    });
+    let records = json!([
+        {"format": "mandacaru-search-edit", "version": 1, "move": "insert", "position": 0, "operator": 0,
+         "problem_id": "p0", "source": [], "source_parameters": [], "source_energy": 0.0,
+         "source_gradients": [0.1, 0.2, 0.3], "source_curvatures": [-0.5, -0.4, -0.3],
+         "delta_energy": -0.02, "energy": -0.02},
+        {"format": "mandacaru-search-edit", "version": 1, "move": "insert", "position": 0, "operator": 1,
+         "problem_id": "p0", "source": [], "source_parameters": [], "source_energy": 0.0,
+         "source_gradients": [0.1, 0.2, 0.3], "source_curvatures": [-0.5, -0.4, -0.3],
+         "delta_energy": -0.01, "energy": -0.01},
+        {"format": "mandacaru-search-edit", "version": 1, "move": "delete", "position": 0, "operator": null,
+         "problem_id": "p0", "source": [0, 1], "source_parameters": [0.1, 0.2], "source_energy": -0.05,
+         "source_gradients": [0.05, 0.1, 0.2], "delta_energy": 0.01, "energy": -0.04},
+        {"format": "mandacaru-search-edit", "version": 1, "move": "delete", "position": 1, "operator": null,
+         "problem_id": "p0", "source": [0, 1], "source_parameters": [0.1, 0.2], "source_energy": -0.05,
+         "source_gradients": [0.05, 0.1, 0.2], "delta_energy": 0.02, "energy": -0.03},
+        {"format": "mandacaru-search-edit", "version": 1, "move": "replace", "position": 0, "operator": 2,
+         "problem_id": "p0", "source": [0], "source_parameters": [0.1], "source_energy": -0.02,
+         "source_gradients": [0.05, 0.1, 0.2], "delta_energy": -0.03, "energy": -0.05},
+        {"format": "mandacaru-search-edit", "version": 1, "move": "replace", "position": 0, "operator": 1,
+         "problem_id": "p0", "source": [0], "source_parameters": [0.1], "source_energy": -0.02,
+         "source_gradients": [0.05, 0.1, 0.2], "delta_energy": -0.01, "energy": -0.03},
+    ]);
+    let payload = json!({"problems": {"p0": problem}, "records": records}).to_string();
+    let dataset = EditDataset::from_json(
+        &context,
+        &payload,
+        "molecule",
+        &[EditKind::Insert, EditKind::Delete, EditKind::Replace],
+    )
+    .unwrap();
+    assert_eq!(dataset.counts, [2, 2, 2]);
+    assert_eq!(dataset.states.len(), 3);
+    assert!(dataset
+        .states
+        .iter()
+        .find(|s| s.kind == EditKind::Insert)
+        .unwrap()
+        .curvatures
+        .is_some());
+    assert_eq!(
+        dataset
+            .states
+            .iter()
+            .find(|s| s.kind == EditKind::Delete)
+            .unwrap()
+            .rows
+            .operators,
+        vec![0, 1]
+    );
+}
+
+#[test]
+fn fit_edit_model_fits_insert_delete_and_replace_heads() {
+    use mandacaru_core::quantum::search::learning::{
+        data::{EditDataset, EditKind},
+        training::fit_edit_model,
+    };
+
+    let context = Context::new(Some(1), 64 << 20).unwrap();
+    let problem = json!({
+        "format": "mandacaru-search-problem",
+        "version": 1,
+        "num_qubits": 4,
+        "spatial_orbitals": 2,
+        "num_particles": [1, 0],
+        "mapping": "jordan_wigner",
+        "hamiltonian": [["ZIII", 0.3, 0.], ["XXII", 0.2, 0.]],
+        "pool": [[["YIII", 0., 1.]], [["IYII", 0., 1.]], [["IIYI", 0., 1.]]],
+        "composition": [[1, 2]],
+    });
+    let records = json!([
+        {"format": "mandacaru-search-edit", "version": 1, "move": "insert", "position": 0, "operator": 0,
+         "problem_id": "p0", "source": [], "source_parameters": [], "source_energy": 0.0,
+         "source_gradients": [0.4, 0.1, 0.05], "source_curvatures": [-0.8, -0.2, -0.1],
+         "delta_energy": -0.04, "energy": -0.04},
+        {"format": "mandacaru-search-edit", "version": 1, "move": "insert", "position": 0, "operator": 1,
+         "problem_id": "p0", "source": [], "source_parameters": [], "source_energy": 0.0,
+         "source_gradients": [0.4, 0.1, 0.05], "source_curvatures": [-0.8, -0.2, -0.1],
+         "delta_energy": -0.01, "energy": -0.01},
+        {"format": "mandacaru-search-edit", "version": 1, "move": "delete", "position": 0, "operator": null,
+         "problem_id": "p0", "source": [0, 1], "source_parameters": [0.1, 0.2], "source_energy": -0.05,
+         "source_gradients": [0.05, 0.1, 0.2], "delta_energy": 0.005, "energy": -0.045},
+        {"format": "mandacaru-search-edit", "version": 1, "move": "delete", "position": 1, "operator": null,
+         "problem_id": "p0", "source": [0, 1], "source_parameters": [0.1, 0.2], "source_energy": -0.05,
+         "source_gradients": [0.05, 0.1, 0.2], "delta_energy": 0.03, "energy": -0.02},
+        {"format": "mandacaru-search-edit", "version": 1, "move": "replace", "position": 0, "operator": 2,
+         "problem_id": "p0", "source": [0], "source_parameters": [0.1], "source_energy": -0.02,
+         "source_gradients": [0.05, 0.1, 0.4], "delta_energy": -0.03, "energy": -0.05},
+        {"format": "mandacaru-search-edit", "version": 1, "move": "replace", "position": 0, "operator": 1,
+         "problem_id": "p0", "source": [0], "source_parameters": [0.1], "source_energy": -0.02,
+         "source_gradients": [0.05, 0.1, 0.4], "delta_energy": -0.01, "energy": -0.03},
+    ]);
+    let payload = json!({"problems": {"p0": problem}, "records": records}).to_string();
+    let dataset = EditDataset::from_json(
+        &context,
+        &payload,
+        "molecule",
+        &[EditKind::Insert, EditKind::Delete, EditKind::Replace],
+    )
+    .unwrap();
+    let model = fit_edit_model(&dataset, 1e-2).unwrap();
+    assert!(model.insert.is_some());
+    assert!(model.delete.is_some());
+    assert!(model.replace.is_some());
+    for state in &dataset.states {
+        let scores = model.score(state).unwrap();
+        assert_eq!(scores.len(), state.targets.len());
+        assert!(scores.iter().all(|v| v.is_finite()));
+        // Lower target (larger energy decrease) must get higher predicted score.
+        if state.targets[0] < state.targets[1] {
+            assert!(scores[0] > scores[1]);
+        } else {
+            assert!(scores[1] > scores[0]);
+        }
+    }
+    let fitted: serde_json::Value = serde_json::from_str(
+        &mandacaru_core::quantum::search::learning::training::fit_edit_json(
+            &context,
+            &payload,
+            "molecule",
+            1e-2,
+            &[EditKind::Insert, EditKind::Delete, EditKind::Replace],
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(fitted["format"], "mandacaru-edit-proposal-model");
+    assert_eq!(fitted["features"], 12);
+    assert_eq!(
+        fitted["counts"],
+        json!({"insert": 2, "delete": 2, "replace": 2})
+    );
+    assert!(fitted["insert"]["weights"].as_array().unwrap().len() == 12);
+    assert!(fitted["delete"]["weights"].as_array().unwrap().len() == 12);
+    assert!(fitted["replace"]["weights"].as_array().unwrap().len() == 12);
 }

@@ -2,7 +2,7 @@
 //! over the grid with a field centered on an atom: the short-range local
 //! potential, the long-range ionic potential and the partial core density.
 use super::{
-    super::{distance, local_sphere_radius, long_range, sphere, Setup, LOCAL},
+    super::{distance, local_sphere, long_range, sphere_panels, Setup, LOCAL},
     radial::{core_slope, long_range_slope},
     Occupied,
 };
@@ -30,7 +30,7 @@ pub(super) fn local_force(
     let compute_atom = |a: usize| -> Result<Vec<f64>> {
         let s = setup.atoms[a];
         let species = &setup.species[s];
-        let radius = local_sphere_radius(species, sigma);
+        let (radius, edges) = local_sphere(species, sigma);
         let mut local_force = vec![0.; 3 * positions.len()];
         let mut phi = vec![0.; m];
         let mut half = vec![0.; m];
@@ -49,16 +49,23 @@ pub(super) fn local_force(
                 };
                 let d = distance(positions[a], orbital.center);
                 if d <= radius + r_cut {
-                    Some((i, if r_cut.is_finite() { r_cut * r_cut } else { f64::INFINITY }))
+                    Some((
+                        i,
+                        if r_cut.is_finite() {
+                            r_cut * r_cut
+                        } else {
+                            f64::INFINITY
+                        },
+                    ))
                 } else {
                     None
                 }
             })
             .collect();
 
-        sphere(
+        sphere_panels(
             radius,
-            species.local_radius,
+            &edges,
             LOCAL[0],
             LOCAL[1],
             LOCAL[2],
@@ -81,10 +88,8 @@ pub(super) fn local_force(
                 }
                 half.fill(0.);
                 for o in occupied {
-                    let amplitude: f64 = active_orbitals
-                        .iter()
-                        .map(|&(i, _)| o.ao[i] * phi[i])
-                        .sum();
+                    let amplitude: f64 =
+                        active_orbitals.iter().map(|&(i, _)| o.ao[i] * phi[i]).sum();
                     if amplitude == 0. {
                         continue;
                     }
@@ -133,9 +138,7 @@ pub(super) fn local_force(
     integrals.context.run(|| {
         std::thread::scope(|scope| {
             let handles: Vec<_> = (0..n_atoms)
-                .map(|a| {
-                    mandacaru_kernels::runtime::spawn(scope, move || compute_atom(a))
-                })
+                .map(|a| mandacaru_kernels::runtime::spawn(scope, move || compute_atom(a)))
                 .collect();
             for handle in handles {
                 let part = handle.join().unwrap().unwrap();
@@ -193,7 +196,11 @@ pub(super) fn core_force(
     let dv = integrals.grid.index.dv();
     let shape = integrals.grid.index.shape();
     let [_, ny, nz] = shape;
-    let inv_step = integrals.grid.step.try_inverse().unwrap_or(nalgebra::Matrix3::identity());
+    let inv_step = integrals
+        .grid
+        .step
+        .try_inverse()
+        .unwrap_or(nalgebra::Matrix3::identity());
     let row_norms = [
         (inv_step[(0, 0)].powi(2) + inv_step[(0, 1)].powi(2) + inv_step[(0, 2)].powi(2)).sqrt(),
         (inv_step[(1, 0)].powi(2) + inv_step[(1, 1)].powi(2) + inv_step[(1, 2)].powi(2)).sqrt(),
@@ -202,9 +209,19 @@ pub(super) fn core_force(
     let mut force = vec![0.; 3 * positions.len()];
     for (a, &s) in setup.atoms.iter().enumerate() {
         let center = positions[a];
-        let r_core = *setup.species[s].xc_core.knots.as_slice().last().unwrap_or(&0.0);
+        let r_core = *setup.species[s]
+            .xc_core
+            .knots
+            .as_slice()
+            .last()
+            .unwrap_or(&0.0);
         let r_tau = if tau.is_some() {
-            *setup.species[s].xc_core_tau.knots.as_slice().last().unwrap_or(&0.0)
+            *setup.species[s]
+                .xc_core_tau
+                .knots
+                .as_slice()
+                .last()
+                .unwrap_or(&0.0)
         } else {
             0.0
         };
@@ -212,7 +229,8 @@ pub(super) fn core_force(
         if r_cut <= 0. {
             continue;
         }
-        let c_center = inv_step * (nalgebra::Vector3::from(center) - nalgebra::Vector3::from(integrals.grid.origin));
+        let c_center = inv_step
+            * (nalgebra::Vector3::from(center) - nalgebra::Vector3::from(integrals.grid.origin));
         let mut min_idx = [0; 3];
         let mut max_idx = [0; 3];
         let mut inside = true;
@@ -247,7 +265,8 @@ pub(super) fn core_force(
                         continue;
                     }
                     let (_, slope) = core_slope(&setup.species[s].xc_core, d);
-                    let tau_slope = tau.map_or(0., |_| core_slope(&setup.species[s].xc_core_tau, d).1);
+                    let tau_slope =
+                        tau.map_or(0., |_| core_slope(&setup.species[s].xc_core_tau, d).1);
                     let weight = potential[k] * slope + tau.map_or(0., |t| t[k]) * tau_slope;
                     if weight == 0. {
                         continue;

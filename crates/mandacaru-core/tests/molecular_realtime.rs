@@ -9,6 +9,11 @@
 //! - R5: the initial slope of the dipole is the finite-basis f-sum `4 d^T (A - B) d`;
 //! - R16(a): the r2SCAN current-density term of `A - B` is the derivative of the propagated Fock
 //!   matrix (with `tau~`) along an imaginary density change, and V9 holds for r2SCAN;
+//! - R16(b), measured: after a length kick in the finite basis plain `tau` and `tau~` shift at the
+//!   kick's order, the basis's defect far above the partial core's share
+//!   `(1 - n_v / n) n_v kappa^2 / 2` that `tau~` alone should keep (not resolved here);
+//! - the momentum observable is `dE / dA` at fixed `D`, with the exchange-correlation current of
+//!   r2SCAN's `tau~` with a partial core;
 //! - refusals of the references the propagation does not take.
 mod paw_molecular_support;
 
@@ -306,7 +311,10 @@ fn check_current_term(integrals: &MolecularIntegrals, state: &MeanField, label: 
         let fock = |h: f64| {
             let up = d + &change * C64::new(h, 0.);
             let down = d + &change * C64::new(sign * h, 0.);
-            fock_matrices(integrals, state, &[up, down]).unwrap().0[0].clone()
+            fock_matrices(integrals, state, &[up, down], None)
+                .unwrap()
+                .0[0]
+                .clone()
         };
         let imaginary = ((fock(1e-4) - fock(-1e-4)) / C64::new(2e-4, 0.)).map(|z| z.im);
         let projected = c.columns(0, o).transpose() * imaginary * c.columns(o, v);
@@ -901,6 +909,363 @@ fn stability_map_on_water() {
                         scheme.name()
                     )
                 }
+            }
+        }
+    }
+}
+
+/// R16(b) on library water (its datasets carry a partial core): after the propagation's length
+/// kick `exp(i kappa X)` of the occupied orbitals, plain `tau` shifts by `kappa^2 n_v / 2` and the
+/// gauge-invariant `tau~ = tau - |j|^2 / (2 n)` only by the partial core's share
+/// `(1 - n_v / n) n_v kappa^2 / 2` (13.6.1, item 3), each up to the finite basis's defect of the
+/// kick (`molecular::dft::kinetic_fields`). Measured at two kicks, as integrals over the points
+/// where the valence density exceeds 1e-4. In this basis the kick's defect (`j` against
+/// `kappa n_v`, about 30 %) is far above the core term (7.3e-6 of `int kappa^2 n_v / 2`): `tau~`
+/// still shifts by about 0.6 of the boost against plain `tau`'s 0.72. Asserted: every defect is
+/// of the kick's order (`kappa^2`, `kappa` for `j`: the same relative miss at both kicks), and
+/// the core's part of `tau~`, `|j|^2 / 2 (1 / n_v - 1 / n)`, is the core term to within the
+/// current's defect, `(1 + d_j)^2 - 1`. The core term itself is resolved by subtracting the
+/// defect measured without the core: on the same kicked state, `tau~` less the core-free
+/// `tau - |j|^2 / (2 n_v)` is the core's share `(1 - n_v / n) |j|^2 / (2 n_v)` at the measured
+/// current, with `n = n_v + n_c / 2` from the integrals' own partial core (not from the
+/// accessor), so the kick's defect cancels. The accessor forms `n_s` with the builder's code
+/// (`add_partial_core`, `subtract_current`).
+#[test]
+fn after_a_length_kick_the_kinetic_densities_shift_at_the_order_of_the_kick() {
+    use mandacaru_core::molecular::dft::kinetic_fields;
+    let ctx = Context::new(Some(2), 1 << 30).unwrap();
+    let integrals = library_water(&ctx);
+    let state = integrals
+        .kohn_sham("lda", [5, 5], false, &options())
+        .unwrap();
+    assert!(state.converged);
+    let m = integrals.m();
+    let n = integrals.grid.index.points();
+    let c64 = |x: f64| nalgebra::Complex::new(x, 0.);
+    let (occupation, vectors) = real_eigen(state.densities[0].map(|z| z.re)).unwrap();
+    let occupied: Vec<usize> = (0..m).filter(|&i| occupation[i] > 0.5).collect();
+    assert_eq!(occupied.len(), 5);
+    let orbitals = DMatrix::from_fn(m, 5, |a, i| c64(vectors[(a, occupied[i])]));
+    let x = position_integrals(&integrals, [0.; 3]).unwrap()[0].clone();
+    let (positions, frame) = real_eigen(x).unwrap();
+    let ground = kinetic_fields(&integrals, &[&orbitals * orbitals.adjoint()], None).unwrap();
+    let partial = integrals
+        .corrections
+        .as_ref()
+        .and_then(|c| c.dft.as_ref())
+        .map(|paw| paw.core.as_slice().to_vec())
+        .expect("library water carries a partial core");
+    let mut measured = vec![];
+    for kappa in [0.05, 0.1] {
+        let phases = DMatrix::from_fn(m, m, |a, b| {
+            (0..m)
+                .map(|l| {
+                    nalgebra::Complex::from_polar(
+                        frame[(a, l)] * frame[(b, l)],
+                        kappa * positions[l],
+                    )
+                })
+                .sum::<nalgebra::Complex<f64>>()
+        });
+        let kicked = &phases * &orbitals;
+        let fields = kinetic_fields(&integrals, &[&kicked * kicked.adjoint()], None).unwrap();
+        // Sums over the points, each relative to `int kappa^2 n_v / 2` (`scale`) or, for the
+        // current, to `int kappa n_v`.
+        let [mut scale, mut plain, mut plain_miss, mut tilde, mut tilde_miss, mut core] = [0f64; 6];
+        let [mut flow, mut flow_miss, mut nlcc, mut nlcc_miss] = [0f64; 4];
+        let [mut held, mut held_miss, mut held_boost] = [0f64; 3];
+        let mut clamped = 0usize;
+        for s in 0..2 {
+            for k in 0..n {
+                let valence = ground.valence.as_slice()[s * n + k];
+                if valence <= 1e-4 {
+                    continue;
+                }
+                let total = ground.density.as_slice()[s * n + k];
+                let boost = 0.5 * kappa * kappa * valence;
+                let share = (1. - valence / total) * boost;
+                let d_plain =
+                    fields.plain.as_slice()[s * n + k] - ground.plain.as_slice()[s * n + k];
+                let d_tilde = fields.gauge_invariant.as_slice()[s * n + k]
+                    - ground.gauge_invariant.as_slice()[s * n + k];
+                let j: Vec<f64> = (0..3)
+                    .map(|axis| fields.current.as_slice()[(s * 3 + axis) * n + k])
+                    .collect();
+                let j2: f64 = j.iter().map(|v| v * v).sum();
+                scale += boost;
+                plain += d_plain.abs();
+                plain_miss += (d_plain - boost).abs();
+                tilde += d_tilde.abs();
+                tilde_miss += (d_tilde - share).abs();
+                core += share;
+                flow += kappa * valence;
+                flow_miss += ((j[0] - kappa * valence).powi(2) + j[1] * j[1] + j[2] * j[2]).sqrt();
+                // The core's part of tau~ alone: `|j|^2 / 2 (1 / n_v - 1 / n)` against the kick's
+                // `(1 - n_v / n) kappa^2 n_v / 2`.
+                let part = 0.5 * j2 * (1. / valence - 1. / total);
+                nlcc += share;
+                nlcc_miss += (part - share).abs();
+                // The subtraction: tau~ with the core less the core-free tau~ of the same
+                // (kicked) state, whose own valence density the basis kick has changed.
+                let moved = fields.valence.as_slice()[s * n + k];
+                let reference = moved + 0.5 * partial[k];
+                let with_core = fields.gauge_invariant.as_slice()[s * n + k];
+                let without = fields.plain.as_slice()[s * n + k] - 0.5 * j2 / moved;
+                if with_core <= 0. || without <= 0. {
+                    clamped += 1;
+                } else {
+                    let expected = (1. - moved / reference) * 0.5 * j2 / moved;
+                    held += expected;
+                    held_miss += ((with_core - without) - expected).abs();
+                    held_boost += share;
+                }
+            }
+        }
+        eprintln!(
+            "R16(b) water, kappa {kappa}: relative to int kappa^2 n_v / 2, plain tau shifts by \
+             {:.3e} (misses kappa^2 n_v / 2 by {:.3e}), tau~ by {:.3e} (misses the core term by \
+             {:.3e}); the core term {:.3e}; j misses kappa n_v by {:.3e} of int kappa n_v; the \
+             core's part of tau~ misses the core term by {:.3e} of it",
+            plain / scale,
+            plain_miss / scale,
+            tilde / scale,
+            tilde_miss / scale,
+            core / scale,
+            flow_miss / flow,
+            nlcc_miss / nlcc
+        );
+        eprintln!(
+            "R16(b) water, kappa {kappa}, the subtraction: the core term at the measured current \
+             {:.4e} of the boost ({:.4e} at kappa n_v), missed by {:.2e} of itself; {clamped} \
+             clamped points skipped",
+            held / scale,
+            held_boost / scale,
+            held_miss / held
+        );
+        // Measured 2026-11-16: 9.0e-9 of the core term (the cancellation floor of the two
+        // tau~, each of the size of tau); without the core in n_s (a red check) it is 1.
+        assert!(held_miss < 1e-7 * held, "{held_miss:e} of {held:e}");
+        assert!(held > 1e-6 * scale, "{held:e}");
+        measured.push([
+            plain_miss / scale,
+            tilde_miss / scale,
+            flow_miss / flow,
+            nlcc_miss / nlcc,
+        ]);
+    }
+    for (a, b) in measured[0].iter().zip(&measured[1]) {
+        assert!((a - b).abs() < 2e-2 * a.max(1e-12), "{measured:?}");
+    }
+    let [_, _, current, core] = measured[1];
+    assert!(core <= (1. + current).powi(2) - 1., "{measured:?}");
+}
+
+/// The velocity gauge and the partial core (R16(b), vera's note of the sixteenth session): in a
+/// uniform vector potential `A = kappa e_x` the ground state's kinetic fields are exactly the
+/// length kick's in a complete basis, `j = kappa n_v` and `tau = tau_0 + kappa^2 n_v / 2`, so
+/// `tau~` shifts by the partial core's share `(1 - n_v / n) n_v kappa^2 / 2`, the length kick's
+/// core term at the kick's current (`after_a_length_kick_...`, whose basis kick misses that
+/// current by 0.30). No basis defect enters here: the state is the basis's own. Without the
+/// field in the fields (the code before) the share is lost entirely, which the red line shows.
+#[test]
+fn in_the_velocity_gauge_tau_tilde_keeps_the_partial_cores_share() {
+    use mandacaru_core::molecular::dft::kinetic_fields;
+    let ctx = Context::new(Some(2), 1 << 30).unwrap();
+    let integrals = library_water(&ctx);
+    let state = integrals
+        .kohn_sham("lda", [5, 5], false, &options())
+        .unwrap();
+    assert!(state.converged);
+    let n = integrals.grid.index.points();
+    let d = [state.densities[0].clone()];
+    let ground = kinetic_fields(&integrals, &d, None).unwrap();
+    for kappa in [0.05, 0.1] {
+        let moved = kinetic_fields(&integrals, &d, Some([kappa, 0., 0.])).unwrap();
+        let [mut scale, mut core, mut tilde_miss, mut plain_miss, mut flow, mut flow_miss] =
+            [0f64; 6];
+        let mut clamped = 0usize;
+        for s in 0..2 {
+            for k in 0..n {
+                let valence = ground.valence.as_slice()[s * n + k];
+                if valence <= 1e-4 {
+                    continue;
+                }
+                let total = ground.density.as_slice()[s * n + k];
+                let boost = 0.5 * kappa * kappa * valence;
+                let share = (1. - valence / total) * boost;
+                let (before, after) = (
+                    ground.gauge_invariant.as_slice()[s * n + k],
+                    moved.gauge_invariant.as_slice()[s * n + k],
+                );
+                if before <= 0. {
+                    clamped += 1;
+                    continue;
+                }
+                scale += boost;
+                core += share;
+                tilde_miss += ((after - before) - share).abs();
+                plain_miss += ((moved.plain.as_slice()[s * n + k]
+                    - ground.plain.as_slice()[s * n + k])
+                    - boost)
+                    .abs();
+                flow += kappa * valence;
+                flow_miss += (0..3)
+                    .map(|axis| {
+                        let j = moved.current.as_slice()[(s * 3 + axis) * n + k];
+                        let expected = if axis == 0 { kappa * valence } else { 0. };
+                        (j - expected).abs()
+                    })
+                    .sum::<f64>();
+            }
+        }
+        eprintln!(
+            "velocity gauge, water, kappa {kappa}: the core term {:.4e} of int kappa^2 n_v / 2 \
+             (the length kick's at kappa n_v), tau~ misses it by {:.2e} of itself, plain tau \
+             misses kappa^2 n_v / 2 by {:.2e}, j misses kappa n_v by {:.2e}; {clamped} clamped \
+             points skipped; red (no field in tau~): 1.00",
+            core / scale,
+            tilde_miss / core,
+            plain_miss / scale,
+            flow_miss / flow
+        );
+        assert!(
+            tilde_miss < 1e-8 * core && core > 1e-6 * scale,
+            "{tilde_miss:e} of {core:e}"
+        );
+        assert!(plain_miss < 1e-12 * scale && flow_miss < 1e-12 * flow);
+    }
+}
+
+/// The velocity gauge's meta-GGA Fock matrix with a partial core is the derivative of its energy
+/// at a nonzero vector potential, along a complex Hermitian density change (real and imaginary
+/// parts, so the current moves): `dE / de = 2 Re tr(F dD)` of one restricted channel, central
+/// differences at 1e-4 and 5e-5 (Richardson), on library water (r2SCAN, oxygen's partial core).
+/// The field enters `tau~` through the kinetic fields, and both current terms of the Fock matrix
+/// through `u = j - n_s A`.
+#[test]
+#[ignore = "slow: 24 s (measured 2026-11-16 at load 15; r2SCAN on library water, needs MANDACARU_PAW_PATH); run: cargo test --profile release-test -p mandacaru-core --test molecular_realtime -- --ignored the_velocity_gauge_meta_gga"]
+fn the_velocity_gauge_meta_gga_fock_is_the_derivative_of_its_energy_with_a_partial_core() {
+    use mandacaru_core::quantum::C64;
+    let ctx = Context::new(Some(2), 1 << 30).unwrap();
+    let integrals = library_water(&ctx);
+    let state = integrals
+        .kohn_sham("r2scan", [5, 5], false, &options())
+        .unwrap();
+    assert!(state.converged);
+    let m = integrals.m();
+    let d = state.densities[0].clone();
+    let change = DMatrix::from_fn(m, m, |a, b| {
+        let (i, j) = (a.min(b) as f64, a.max(b) as f64);
+        let real = ((i + 1.) * 0.37 + (j + 1.) * 0.91).sin() / (1. + i + j);
+        let imaginary = ((i + 2.) * 0.53 - (j + 1.) * 0.29).cos() / (1. + i + j);
+        C64::new(
+            real,
+            if a < b {
+                imaginary
+            } else if a > b {
+                -imaginary
+            } else {
+                0.
+            },
+        )
+    });
+    for field in [None, Some([0.1, 0., 0.]), Some([0.03, -0.05, 0.08])] {
+        let energy = |h: f64| {
+            fock_matrices(&integrals, &state, &[&d + &change * C64::new(h, 0.)], field)
+                .unwrap()
+                .1
+        };
+        let slope = |h: f64| (energy(h) - energy(-h)) / (2. * h);
+        let numeric = (4. * slope(5e-5) - slope(1e-4)) / 3.;
+        let (focks, _) = fock_matrices(&integrals, &state, &[d.clone()], field).unwrap();
+        let analytic = 2. * (&focks[0] * &change).trace().re;
+        eprintln!(
+            "velocity-gauge r2SCAN water, A {field:?}: dE/de {numeric:.12e}, 2 Re tr(F dD) \
+             {analytic:.12e}, relative {:.3e}",
+            (numeric - analytic) / analytic.abs()
+        );
+        assert!(
+            (numeric - analytic).abs() < 1e-7 * analytic.abs(),
+            "{field:?}"
+        );
+    }
+}
+
+/// The momentum observable is the energy's slope in the vector potential (item 4, molecules):
+/// with a partial core `tau~` depends on `A`, so `dE / dA` at fixed `D` is
+/// `g tr[D (P + A)] + dE_xc / dA`, `dE_xc / dA = sum_s int v_tau,s (1 - n_v,s / n_s) j_s` with the
+/// kinetic `j_s`. Library water (r2SCAN, oxygen's partial core) after a length kick
+/// `exp(i kappa X)` of its density matrix (a state that carries a current), in the length gauge
+/// (`A = 0`) and at `A = (0.03, -0.05, 0.08)`: `realtime::momentum` against central differences of
+/// `E(A) = E_bare(D, A) + 2 (A . tr[D P] + A^2 / 2 tr D)` at 1e-3 and 5e-4 (Richardson). Red: the
+/// observable without its exchange-correlation term (the code before) misses by that term, read on
+/// the kick's axis.
+#[test]
+#[ignore = "slow: about 20 s (36 s with the velocity-gauge Fock test, measured 2026-11-16 at load 10; r2SCAN on library water, needs MANDACARU_PAW_PATH); run: cargo test --profile release-test -p mandacaru-core --test molecular_realtime -- --ignored the_momentum_is_the_energys_slope"]
+fn the_momentum_is_the_energys_slope_in_the_vector_potential_with_a_partial_core() {
+    use mandacaru_core::{molecular::realtime::momentum, quantum::C64};
+    let ctx = Context::new(Some(2), 1 << 30).unwrap();
+    let integrals = library_water(&ctx);
+    let state = integrals
+        .kohn_sham("r2scan", [5, 5], false, &options())
+        .unwrap();
+    assert!(state.converged);
+    let m = integrals.m();
+    let x = position_integrals(&integrals, [0.; 3]).unwrap()[0].clone();
+    let (positions, frame) = real_eigen(x).unwrap();
+    let kappa = 0.1;
+    let phases = DMatrix::from_fn(m, m, |a, b| {
+        (0..m)
+            .map(|l| C64::from_polar(frame[(a, l)] * frame[(b, l)], kappa * positions[l]))
+            .sum::<C64>()
+    });
+    let d = &phases * &state.densities[0] * phases.adjoint();
+    let gradients = gradient_integrals(&integrals).unwrap();
+    let orbital = |a: [f64; 3]| -> [f64; 3] {
+        std::array::from_fn(|k| {
+            let trace: f64 = (0..m)
+                .flat_map(|i| (0..m).map(move |j| (i, j)))
+                .map(|(i, j)| d[(i, j)].im * gradients[k][(j, i)])
+                .sum();
+            2. * (trace + a[k] * d.trace().re)
+        })
+    };
+    let energy = |a: [f64; 3]| {
+        let bare = fock_matrices(&integrals, &state, &[d.clone()], Some(a))
+            .unwrap()
+            .1;
+        let t = orbital([0.; 3]);
+        bare + (0..3).map(|k| a[k] * t[k]).sum::<f64>()
+            + a.iter().map(|v| v * v).sum::<f64>() * d.trace().re
+    };
+    for field in [None, Some([0.03, -0.05, 0.08])] {
+        let a = field.unwrap_or([0.; 3]);
+        let observable = momentum(&integrals, &state, &[d.clone()], field).unwrap();
+        let without = orbital(a);
+        for axis in 0..3 {
+            let slope = |h: f64| {
+                let (mut up, mut down) = (a, a);
+                up[axis] += h;
+                down[axis] -= h;
+                (energy(up) - energy(down)) / (2. * h)
+            };
+            let numeric = (4. * slope(5e-4) - slope(1e-3)) / 3.;
+            let miss = (numeric - observable[axis]).abs();
+            let exchange = observable[axis] - without[axis];
+            eprintln!(
+                "r2SCAN water, kappa {kappa}, A {field:?}, axis {axis}: dE/dA {numeric:.12e}, the \
+                 momentum {:.12e} (miss {miss:.2e}), its exchange-correlation part {exchange:.6e} \
+                 (red: without it the miss is {:.2e})",
+                observable[axis],
+                (numeric - without[axis]).abs()
+            );
+            assert!(
+                miss < 1e-8 * observable[axis].abs().max(1.),
+                "{field:?} {axis}"
+            );
+            // The kick's axis carries the signal (the others' currents are 1e-4 of it).
+            if axis == 0 {
+                assert!(exchange.abs() > 1e3 * miss, "{field:?} {axis}: no signal");
             }
         }
     }

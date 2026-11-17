@@ -13,7 +13,9 @@ use super::shapes::Shapes;
 use crate::{
     paw::{
         multipole::{gaunt, gaunt_grid, multipole_range},
-        multipole_pairs::{pair_cut, radial_moments, radial_remainder, smooth_waves, ChannelWaves, Pair},
+        multipole_pairs::{
+            pair_cut, radial_moments, radial_remainder, smooth_waves, ChannelWaves, Pair,
+        },
         onecenter::{one_center_tensor, Basis, Channel, Projector, Sphere, Tensor},
         record::PawDataset,
     },

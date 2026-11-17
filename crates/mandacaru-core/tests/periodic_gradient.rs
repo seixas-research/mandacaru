@@ -453,7 +453,10 @@ fn unsupported_requests_raise() {
     for functional in ["pbe", "pbe+rvv10"] {
         let mut d = ToyDerivatives::new(&s.model);
         d.layout.request.functional = functional.into();
-        assert!(gradient(&d, &s.solution.state, None).is_ok(), "{functional}");
+        assert!(
+            gradient(&d, &s.solution.state, None).is_ok(),
+            "{functional}"
+        );
     }
     let mut d = ToyDerivatives::new(&s.model);
     d.layout.request.functional = "not-a-functional".into();

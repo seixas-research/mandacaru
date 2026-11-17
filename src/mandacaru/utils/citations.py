@@ -45,30 +45,20 @@ _MAPPING_KEYS = {
     "bravyi_kitaev": ("BravyiKitaev2002", "Seeley2012"),
 }
 
+_VASQA_KEYS = ("Peruzzo2014", "Grimsley2019", "Metropolis1953", "Hastings1970", "Kirkpatrick1983")
 _METHOD_KEYS = {
     "rhf": ("Roothaan1951",),
     "uhf": ("PopleNesbet1954",),
     "ghf": ("JimenezHoyos2011",),
     "dft": ("HohenbergKohn1964", "KohnSham1965"),
-    # The circuit a fixed-ansatz VQE optimizes -- here and in subspace-vqe --
-    # is cited through _ANSATZ_KEYS.
     "vqe": ("Peruzzo2014",),
     "adapt-vqe": ("Peruzzo2014", "Grimsley2019"),
     "subspace-vqe": ("Peruzzo2014", "Nakanishi2019"),
     "subspace-adapt-vqe": ("Peruzzo2014", "Grimsley2019", "Nakanishi2019"),
-    # The chain searches ansatz structures; each is relaxed by VQE.  The
-    # annealing paper is cited with the rest because the default temperature
-    # is annealed.
-    # Grimsley2019 for the pool gradient the default proposal draws from.
-    "vasqa": ("Peruzzo2014", "Grimsley2019", "Metropolis1953",
-              "Hastings1970", "Kirkpatrick1983"),
-    # VALSQA is the same chain; its learned proposal is either a pairwise
-    # Bradley-Terry ranker on the insertion descriptors or a message-passing
-    # network over the Hamiltonian (the Gaussian-process proposal was retired,
-    # so it is not cited).
-    "valsqa": ("Peruzzo2014", "Grimsley2019", "Metropolis1953",
-               "Hastings1970", "Kirkpatrick1983", "Gilmer2017",
-               "BradleyTerry1952"),
+    "vasqa": _VASQA_KEYS,
+    "valsqa": _VASQA_KEYS + ("Gilmer2017", "BradleyTerry1952"),
+    "subspace-vasqa": ("Peruzzo2014", "Grimsley2019", "Nakanishi2019", "Metropolis1953", "Hastings1970", "Kirkpatrick1983"),
+    "subspace-valsqa": ("Peruzzo2014", "Grimsley2019", "Nakanishi2019", "Metropolis1953", "Hastings1970", "Kirkpatrick1983", "Gilmer2017", "BradleyTerry1952"),
     "qpe": ("Kitaev1995", "AspuruGuzik2005"),
 }
 
@@ -83,7 +73,7 @@ _PERIODIC_KEYS = ("BornKarman1912", "MonkhorstPack1976", "Ewald1921",
 #: The methods whose energy a circuit can measure (``shots`` or
 #: ``execute_circuits``); their gradients are then parameter-shift differences.
 _CIRCUIT_METHODS = ("vqe", "adapt-vqe", "subspace-vqe", "subspace-adapt-vqe",
-                    "vasqa", "valsqa")
+                    "vasqa", "valsqa", "subspace-vasqa", "subspace-valsqa")
 _PARAMETER_SHIFT_KEYS = ("Mitarai2018", "Schuld2019")
 
 #: ``trotter=True`` applies the ansatz as an ordered product of exponentials.

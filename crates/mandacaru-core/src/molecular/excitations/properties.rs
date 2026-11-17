@@ -82,6 +82,7 @@ pub(super) fn assemble(
         transitions: Vec::with_capacity(count),
         nto_weights: Vec::with_capacity(count),
         one_center_hartree: one_center.as_ref().map(|_| Vec::with_capacity(count)),
+        one_center_xc: None,
         channels: vec![Channel {
             occupied: o,
             virtual_orbitals: v,
@@ -143,7 +144,58 @@ pub(super) fn assemble(
         out.plus.push(vec![plus]);
         out.minus.push(vec![minus]);
     }
+    out.one_center_xc = one_center_xc(integrals, reference, &out)?;
     Ok(out)
+}
+
+/// The one-center exchange-correlation shift of every root ([`Excitations::one_center_xc`]):
+/// per atom, the projected transition density `P^T T P` of each spin moved about the reference
+/// atom. A spin-adapted singlet moves both spins by `T / sqrt(2)` (its charge by `sqrt(2) T`),
+/// a triplet by `+-T / sqrt(2)`, an unrestricted root each spin by its own `T_s`. `None` off
+/// PAW-LCAO Kohn-Sham, and for functionals other than LDA and PBE.
+fn one_center_xc(
+    integrals: &MolecularIntegrals,
+    reference: &MeanField,
+    out: &Excitations,
+) -> Result<Option<Vec<f64>>> {
+    let (Some(setup), Some(functional), Some(projections)) = (
+        &integrals.paw_setup,
+        reference.functional.as_deref(),
+        integrals
+            .corrections
+            .as_ref()
+            .and_then(|c| c.projections.as_ref()),
+    ) else {
+        return Ok(None);
+    };
+    if !["lda", "pbe"].contains(&functional) {
+        return Ok(None);
+    }
+    let spheres = setup.xc_spheres(functional)?;
+    let half = std::f64::consts::FRAC_1_SQRT_2;
+    let mut shifts = Vec::with_capacity(out.energies.len());
+    for root in 0..out.energies.len() {
+        let (first, second, scale) = match out.spin {
+            Spin::Singlet => (out.transition_density(root, 0)?, None, [half, half]),
+            Spin::Triplet => (out.transition_density(root, 0)?, None, [half, -half]),
+            _ => (
+                out.transition_density(root, 0)?,
+                Some(out.transition_density(root, 1)?),
+                [1., 1.],
+            ),
+        };
+        let mut shift = 0.;
+        for (atom, c) in projections.iter().enumerate() {
+            let up = c.transpose() * &first * c * scale[0];
+            let down = match &second {
+                Some(t) => c.transpose() * t * c * scale[1],
+                None => &up * (scale[1] / scale[0]),
+            };
+            shift += spheres.second_change(atom, &up, &down)?;
+        }
+        shifts.push(shift);
+    }
+    Ok(Some(shifts))
 }
 
 /// The dominant transitions of a root, largest weight first: at most [`MOST_TRANSITIONS`], those
@@ -306,6 +358,7 @@ pub(super) fn assemble_unrestricted(
         transitions: Vec::with_capacity(count),
         nto_weights: Vec::with_capacity(count),
         one_center_hartree: one_center.as_ref().map(|_| Vec::with_capacity(count)),
+        one_center_xc: None,
         channels,
         spin_squared: Some(Vec::with_capacity(count)),
         reference_spin_squared: Some(reference_spin_squared),
@@ -381,6 +434,7 @@ pub(super) fn assemble_unrestricted(
         out.plus.push(plus.to_vec());
         out.minus.push(minus.to_vec());
     }
+    out.one_center_xc = one_center_xc(integrals, reference, &out)?;
     Ok(out)
 }
 

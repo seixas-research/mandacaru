@@ -175,8 +175,10 @@ pub struct RealTime {
     /// The induced dipole (the spin dipole for a spin kick), electrons only, atomic units; zero
     /// at `t = 0`.
     pub dipole: Vec<[f64; 3]>,
-    /// The electrons' kinetic momentum `sum_s g tr[D_s (P + A)]` (`g` 2 for one restricted
-    /// channel; the spin momentum for a spin kick), atomic units; zero in the ground state.
+    /// The electrons' momentum `dE / dA` at fixed `D`, `sum_s g tr[D_s (P + A)] + dE_xc / dA`
+    /// (`g` 2 for one restricted channel; the exchange-correlation current of a meta-GGA's `tau~`
+    /// with a partial core, zero otherwise; the spin momentum for a spin kick), atomic units; zero
+    /// in the ground state.
     pub momentum: Vec<[f64; 3]>,
     /// The induced dipole along the kick direction (the signal of the spectra).
     pub along: Vec<f64>,
@@ -285,15 +287,17 @@ pub fn check_molecular_options(kernel: &str, kpts: Option<[usize; 3]>) -> Result
     Ok(())
 }
 
-/// The matrices the propagation steps with, without a field, and the energy, at the complex
-/// orthonormal-frame `densities` (one per-spin matrix of a restricted reference, or both spins):
-/// the builder of the reference read at complex densities (the meta-GGA's `tau~` with its
-/// current, +U on complex occupations, the complex exchange). The oracle of the antisymmetric
-/// kernel checks (V1b, R16a).
+/// The matrices the propagation steps with and the energy, at the complex orthonormal-frame
+/// `densities` (one per-spin matrix of a restricted reference, or both spins): the builder of the
+/// reference read at complex densities (the meta-GGA's `tau~` with its current, +U on complex
+/// occupations, the complex exchange), in the uniform vector potential `field` (Bohr^-1; the
+/// velocity gauge's, which a meta-GGA's kinetic fields carry) without the field's one-body terms
+/// `A e.P + A^2 / 2`. The oracle of the antisymmetric kernel checks (V1b, R16a).
 pub fn fock_matrices(
     integrals: &MolecularIntegrals,
     reference: &MeanField,
     densities: &[Matrix],
+    field: Option<[f64; 3]>,
 ) -> Result<(Vec<Matrix>, f64)> {
     check_reference(integrals, reference)?;
     let m = integrals.m();
@@ -304,7 +308,75 @@ pub fn fock_matrices(
         ));
     }
     integrals.context.run(|| {
-        fock::MolecularMap::new(integrals, reference.functional.as_deref())?.bare(densities)
+        let mut map = fock::MolecularMap::new(integrals, reference.functional.as_deref())?;
+        map.set_potential(field);
+        map.bare(densities)
+    })
+}
+
+/// The momentum observable of a run ([`RealTime::momentum`]) at the complex orthonormal-frame
+/// `densities` in the uniform vector potential `field` (`None`: the length gauge's `A = 0`):
+/// `dE / dA` at fixed `D` of the energy [`fock_matrices`] gives with the field's one-body terms
+/// `g (A . tr[D P] + A^2 / 2 tr D)`. The oracle of its exchange-correlation current.
+pub fn momentum(
+    integrals: &MolecularIntegrals,
+    reference: &MeanField,
+    densities: &[Matrix],
+    field: Option<[f64; 3]>,
+) -> Result<[f64; 3]> {
+    check_reference(integrals, reference)?;
+    let m = integrals.m();
+    if densities.is_empty() || densities.len() > 2 || densities.iter().any(|d| d.shape() != (m, m))
+    {
+        return Err(invalid("momentum needs one or two m x m density matrices"));
+    }
+    integrals.context.run(|| {
+        let gradients = multipoles::gradient_integrals(integrals)?;
+        let mut map = fock::MolecularMap::new(integrals, reference.functional.as_deref())?;
+        map.set_potential(field);
+        map.bare(densities)?;
+        Ok(kinetic_momentum(
+            &gradients,
+            densities,
+            field.unwrap_or([0.; 3]),
+            &map.xc_current,
+            |_| 1.,
+        ))
+    })
+}
+
+/// `sum_s sign_s (g tr[D_s (P + A)] + dE_xc / dA_s)` with `P = -i <a|grad|b>` from the gradient
+/// integrals (`Re tr[D P_k] = sum_ab Im D_ab G_k,ba`), `g` 2 for one restricted channel (whose
+/// exchange-correlation current is both spins'), `A` the vector potential `field` and `xc` the
+/// per-spin `dE_xc / dA` of the state's build.
+fn kinetic_momentum(
+    gradients: &[DMatrix<f64>; 3],
+    states: &[Matrix],
+    field: [f64; 3],
+    xc: &[[f64; 3]; 2],
+    sign: impl Fn(usize) -> f64,
+) -> [f64; 3] {
+    let m = gradients[0].nrows();
+    let degeneracy = if states.len() == 1 { 2. } else { 1. };
+    std::array::from_fn(|k| {
+        let orbital: f64 = states
+            .iter()
+            .enumerate()
+            .map(|(s, d)| {
+                sign(s)
+                    * ((0..m)
+                        .flat_map(|a| (0..m).map(move |b| (a, b)))
+                        .map(|(a, b)| d[(a, b)].im * gradients[k][(b, a)])
+                        .sum::<f64>()
+                        + field[k] * d.trace().re)
+            })
+            .sum();
+        let exchange = if states.len() == 1 {
+            xc[0][k] + xc[1][k]
+        } else {
+            (0..2).map(|s| sign(s) * xc[s][k]).sum()
+        };
+        degeneracy * orbital + exchange
     })
 }
 
@@ -436,7 +508,7 @@ fn run(
             }
             // P = -i <a|grad|b>, Hermitian for the antisymmetric gradient integrals.
             let g = along(&gradients);
-            map.set_field(g * C64::new(0., -1.), request.strength);
+            map.set_field(g * C64::new(0., -1.), request.strength, direction);
         }
     }
     let spin_sign = |s: usize| {
@@ -465,30 +537,20 @@ fn run(
         }
         out
     };
-    // The electrons' kinetic momentum sum_s g tr[D_s (P + A)], P = -i <a|grad|b>: the velocity
-    // observable (the spin momentum for a spin kick). Re tr[D P_k] = sum_ab Im D_ab G_k,ba.
+    // The velocity observable dE/dA (the spin momentum for a spin kick), at the state of the
+    // propagator's last build, whose exchange-correlation current the map holds.
     let field = match request.gauge {
-        Gauge::Velocity => request.strength,
-        Gauge::Length => 0.,
+        Gauge::Velocity => direction.map(|e| request.strength * e),
+        Gauge::Length => [0.; 3],
     };
-    let momentum_of = |states: &[Matrix]| -> [f64; 3] {
-        let mut out = [0.; 3];
-        for (k, value) in out.iter_mut().enumerate() {
-            *value = degeneracy
-                * states
-                    .iter()
-                    .enumerate()
-                    .map(|(s, d)| {
-                        spin_sign(s)
-                            * ((0..m)
-                                .flat_map(|a| (0..m).map(move |b| (a, b)))
-                                .map(|(a, b)| d[(a, b)].im * gradients[k][(b, a)])
-                                .sum::<f64>()
-                                + field * direction[k] * d.trace().re)
-                    })
-                    .sum::<f64>();
-        }
-        out
+    let momentum_of = |propagator: &Propagator<fock::MolecularMap<'_>>| -> [f64; 3] {
+        kinetic_momentum(
+            &gradients,
+            &propagator.densities(),
+            field,
+            &propagator.map().xc_current,
+            spin_sign,
+        )
     };
     let origin = dipole_of(&densities);
     let mut options = Options::new(request.scheme, request.time_step);
@@ -499,7 +561,7 @@ fn run(
     let kick_energy = initial - ground_energy;
     let mut times = vec![0.];
     let mut dipole = vec![[0.; 3]];
-    let mut momentum = vec![momentum_of(&propagator.densities())];
+    let mut momentum = vec![momentum_of(&propagator)];
     let mut energy = vec![initial];
     let mut norm_error = vec![propagator
         .channels()
@@ -516,7 +578,7 @@ fn run(
         let now = dipole_of(&propagator.densities());
         times.push(step.time);
         dipole.push([now[0] - origin[0], now[1] - origin[1], now[2] - origin[2]]);
-        momentum.push(momentum_of(&propagator.densities()));
+        momentum.push(momentum_of(&propagator));
         energy.push(step.energy);
         norm_error.push(step.norm_error);
         if kick_energy > 0. {

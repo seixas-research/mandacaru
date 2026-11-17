@@ -10,12 +10,7 @@ use super::{
     symmetry::{Geometry, Symmetry},
     PeriodicSetup, Pins,
 };
-use crate::{
-    math::SpatialGrid,
-    paw::record::PawDataset,
-    periodic::invalid,
-    Context, Result,
-};
+use crate::{math::SpatialGrid, paw::record::PawDataset, periodic::invalid, Context, Result};
 use nalgebra::Matrix3;
 use serde_json::Value;
 use std::sync::Arc;
@@ -39,9 +34,10 @@ pub struct SetupInput {
     pub weights: Vec<f64>,
     /// A Monkhorst-Pack mesh `(size, gamma)` the setup reduces itself (by the operations that keep
     /// it, then time reversal; whole for a magnetic crystal with `symmetry` off and a
-    /// non-time-reversal spinor crystal; a hybrid by time reversal alone, the half its exact
-    /// exchange unfolds). When set, `kpoints_frac` and `weights` are its output and must be empty
-    /// on input.
+    /// non-time-reversal spinor crystal; a hybrid by the same operations when they reduce it
+    /// beyond time reversal, its exact exchange rotating the states of each star, and otherwise by
+    /// time reversal alone). When set, `kpoints_frac` and `weights` are its output and must be
+    /// empty on input.
     pub mesh: Option<([usize; 3], bool)>,
     pub functional: String,
     pub precision: String,
@@ -77,45 +73,68 @@ pub fn create_setup(
         return Err(invalid("periodic setup needs at least one atom"));
     }
     if input.mesh.is_some() != input.kpoints_frac.is_empty() {
-        return Err(invalid("periodic setup needs either a k mesh or explicit k-points"));
+        return Err(invalid(
+            "periodic setup needs either a k mesh or explicit k-points",
+        ));
     }
-    let hybrid = crate::models::functional(&input.functional)?.screened_exchange.is_some();
+    let hybrid = crate::models::functional(&input.functional)?
+        .screened_exchange
+        .is_some();
     if let Some(request) = &input.hubbard_u {
         request.require_scope(&input.functional, &input.precision)?;
     }
     let (zeta_count, polarization_count) = match input.basis_size.to_ascii_uppercase().as_str() {
-        "SZ" => (1, 0), "SZP" => (1, 1),
-        "DZ" => (2, 0), "DZP" => (2, 1), "DZ2P" => (2, 2),
-        "TZ" => (3, 0), "TZP" => (3, 1), "TZ2P" => (3, 2),
-        "QZ" => (4, 0), "QZP" => (4, 1), "QZ2P" => (4, 2),
-        _ => return Err(crate::Error::Unsupported(
-            "unsupported native periodic basis size".into(),
-        )),
+        "SZ" => (1, 0),
+        "SZP" => (1, 1),
+        "DZ" => (2, 0),
+        "DZP" => (2, 1),
+        "DZ2P" => (2, 2),
+        "TZ" => (3, 0),
+        "TZP" => (3, 1),
+        "TZ2P" => (3, 2),
+        "QZ" => (4, 0),
+        "QZP" => (4, 1),
+        "QZ2P" => (4, 2),
+        _ => {
+            return Err(crate::Error::Unsupported(
+                "unsupported native periodic basis size".into(),
+            ))
+        }
     };
     if input.grid_shape.contains(&0)
         || input.lattice.iter().any(|x| !x.is_finite())
         || input.lattice.determinant().abs() < 1e-12
-        || input.atoms.iter().any(|a| {
-            !a.moment.is_finite()
-                || a.fractional.iter().any(|x| !x.is_finite())
-        })
+        || input
+            .atoms
+            .iter()
+            .any(|a| !a.moment.is_finite() || a.fractional.iter().any(|x| !x.is_finite()))
     {
         return Err(invalid("invalid lattice, grid or atom coordinates"));
     }
-    if input.mesh.is_none() && (input.kpoints_frac.len() != input.weights.len()
-        || input.kpoints_frac.iter().flatten().any(|x| !x.is_finite())
-        || input.weights.iter().any(|w| !w.is_finite() || *w <= 0.)
-        || (input.weights.iter().sum::<f64>() - 1.).abs() > 1e-10)
+    if input.mesh.is_none()
+        && (input.kpoints_frac.len() != input.weights.len()
+            || input.kpoints_frac.iter().flatten().any(|x| !x.is_finite())
+            || input.weights.iter().any(|w| !w.is_finite() || *w <= 0.)
+            || (input.weights.iter().sum::<f64>() - 1.).abs() > 1e-10)
     {
-        return Err(invalid("k-point coordinates and positive normalized weights must agree"));
+        return Err(invalid(
+            "k-point coordinates and positive normalized weights must agree",
+        ));
     }
     if input.atoms.iter().any(|a| a.species >= datasets.len()) {
         return Err(invalid("atom dataset index is out of range"));
     }
-    if input.atoms.iter().any(|a| !a.symbol.is_empty() && a.symbol != datasets[a.species].symbol) {
+    if input
+        .atoms
+        .iter()
+        .any(|a| !a.symbol.is_empty() && a.symbol != datasets[a.species].symbol)
+    {
         return Err(invalid("atom symbol does not match its PAW dataset"));
     }
-    let has_spin_orbit = input.atoms.iter().any(|a| !datasets[a.species].spin_orbit.is_empty());
+    let has_spin_orbit = input
+        .atoms
+        .iter()
+        .any(|a| !datasets[a.species].spin_orbit.is_empty());
     if let Some(request) = &input.hubbard_u {
         if has_spin_orbit {
             crate::periodic::hubbard_table::check_datasets(request, true, &[])?;
@@ -132,17 +151,29 @@ pub fn create_setup(
         ));
     }
     let relativistic = datasets[input.atoms[0].species].relativistic_exchange;
-    if input.atoms.iter().any(|a| datasets[a.species].relativistic_exchange != relativistic) {
-        return Err(invalid("datasets mix relativistic and non-relativistic exchange"));
+    if input
+        .atoms
+        .iter()
+        .any(|a| datasets[a.species].relativistic_exchange != relativistic)
+    {
+        return Err(invalid(
+            "datasets mix relativistic and non-relativistic exchange",
+        ));
     }
-    if input.filter_cutoff.is_some_and(|v| !v.is_finite() || v <= 0.)
+    if input
+        .filter_cutoff
+        .is_some_and(|v| !v.is_finite() || v <= 0.)
         || input.sigma.is_some_and(|v| !v.is_finite() || v <= 0.)
     {
-        return Err(invalid("filter cutoff and sigma must be finite and positive"));
+        return Err(invalid(
+            "filter cutoff and sigma must be finite and positive",
+        ));
     }
-    if input.dataset_files.as_ref().is_some_and(|files| {
-        files.len() != input.atoms.len() && files.len() != datasets.len()
-    }) {
+    if input
+        .dataset_files
+        .as_ref()
+        .is_some_and(|files| files.len() != input.atoms.len() && files.len() != datasets.len())
+    {
         return Err(invalid("dataset provenance must match atoms or species"));
     }
 
@@ -158,13 +189,16 @@ pub fn create_setup(
     }
     let grid = SpatialGrid::new(shape, [0.; 3], step, true)?;
 
-    let spacing = grid.step.column(0).norm()
+    let spacing = grid
+        .step
+        .column(0)
+        .norm()
         .max(grid.step.column(1).norm())
         .max(grid.step.column(2).norm());
 
-    let k_c = input.filter_cutoff.unwrap_or_else(|| {
-        std::f64::consts::PI / spacing.max(1e-12)
-    });
+    let k_c = input
+        .filter_cutoff
+        .unwrap_or_else(|| std::f64::consts::PI / spacing.max(1e-12));
 
     let sigma = input.sigma.unwrap_or(1.4 * spacing);
 
@@ -199,8 +233,12 @@ pub fn create_setup(
     let recipe_of = |symbol: &str| -> Result<Recipe> {
         match &input.recipes {
             None => Ok(Recipe::new(zeta_count, polarization_count, Some(k_c))),
-            Some(table) => Recipe::from_json(table.get(symbol).ok_or_else(|| invalid(format!(
-                "the basis recipes name no recipe for {symbol}")))?, Some(k_c)),
+            Some(table) => Recipe::from_json(
+                table.get(symbol).ok_or_else(|| {
+                    invalid(format!("the basis recipes name no recipe for {symbol}"))
+                })?,
+                Some(k_c),
+            ),
         }
     };
     let mut species_shells: Vec<Option<Vec<(usize, usize, Arc<Radial>)>>> =
@@ -217,7 +255,10 @@ pub fn create_setup(
                 let table_idx = tables.len();
                 let radial = Arc::new(Radial::new(ctx, ds.r.as_slice(), &shell.values, None)?);
                 tables.push(crate::periodic::description::Table {
-                    l: shell.l, r: ds.r.as_slice().to_vec(), values: shell.values, confinement: None,
+                    l: shell.l,
+                    r: ds.r.as_slice().to_vec(),
+                    values: shell.values,
+                    confinement: None,
                 });
                 cached.push((shell.l, table_idx, radial));
             }
@@ -253,22 +294,35 @@ pub fn create_setup(
         for (atom, &species) in atoms_species.iter().enumerate() {
             let ds = &datasets[species];
             for (&l, entry) in &ds.spin_orbit {
-                let channel = ds.channels.get(&l)
+                let channel = ds
+                    .channels
+                    .get(&l)
                     .ok_or_else(|| invalid("spin-orbit channel has no scalar channel"))?;
-                let radials: Vec<_> = entry.projectors.iter().map(|t| {
-                    Radial::new(ctx, ds.r.as_slice(), t.as_slice(), None).map(Arc::new)
-                }).collect::<Result<_>>()?;
+                let radials: Vec<_> = entry
+                    .projectors
+                    .iter()
+                    .map(|t| Radial::new(ctx, ds.r.as_slice(), t.as_slice(), None).map(Arc::new))
+                    .collect::<Result<_>>()?;
                 for m in -(l as i32)..=l as i32 {
                     for (index, radial) in radials.iter().enumerate() {
                         spin_orbit_projectors.push(Projector {
-                            atom, l: l as usize, m, index, center: centers[atom],
-                            r_cut: channel.r_cut.max(ds.r_cut_local), radial: radial.clone(),
+                            atom,
+                            l: l as usize,
+                            m,
+                            index,
+                            center: centers[atom],
+                            r_cut: channel.r_cut.max(ds.r_cut_local),
+                            radial: radial.clone(),
                         });
                     }
                 }
-                spin_orbit_couplings.insert((atom, l as usize), crate::models::spin_orbit::Coupling {
-                    radial: entry.coupling.shape()[0], values: entry.coupling.data().to_vec(),
-                });
+                spin_orbit_couplings.insert(
+                    (atom, l as usize),
+                    crate::models::spin_orbit::Coupling {
+                        radial: entry.coupling.shape()[0],
+                        values: entry.coupling.data().to_vec(),
+                    },
+                );
             }
         }
     }
@@ -277,7 +331,11 @@ pub fn create_setup(
     let dual = match input.projector_basis.as_str() {
         "raw" => false,
         "dual" => true,
-        other => return Err(invalid(format!("projector_basis must be raw or dual, got {other:?}"))),
+        other => {
+            return Err(invalid(format!(
+                "projector_basis must be raw or dual, got {other:?}"
+            )))
+        }
     };
 
     // Build Projectors list
@@ -294,8 +352,13 @@ pub fn create_setup(
                 if channel.raw_projectors.len() != channel.projectors.len() {
                     return Err(invalid("raw projector count does not match the channel"));
                 }
-                let tables = if dual { &channel.projectors } else { &channel.raw_projectors };
-                let radials = tables.iter()
+                let tables = if dual {
+                    &channel.projectors
+                } else {
+                    &channel.raw_projectors
+                };
+                let radials = tables
+                    .iter()
                     .map(|t| Radial::new(ctx, ds.r.as_slice(), t.as_slice(), None).map(Arc::new))
                     .collect::<Result<Vec<_>>>()?;
                 cached.push((l as usize, radials));
@@ -329,10 +392,7 @@ pub fn create_setup(
     for (_atom_idx, &species_idx) in atoms_species.iter().enumerate() {
         let ds = &datasets[species_idx];
         if species_potentials[species_idx].is_none() {
-            species_potentials[species_idx] = Some(LocalPotential::new(
-                ctx, ds.r.as_slice(), ds.v_local.as_slice(), ds.valence_charge,
-                ds.r_cut_local,
-            )?);
+            species_potentials[species_idx] = Some(LocalPotential::from_dataset(ctx, ds)?);
         }
         potentials.push(species_potentials[species_idx].as_ref().unwrap().clone());
     }
@@ -343,7 +403,15 @@ pub fn create_setup(
     // element and the SAME signed moment (the density of each spin channel is then symmetrized
     // channel by channel). An operation that would send a moment to its opposite needs a spin flip
     // of the channels: it is not kept (the moment-preserving subgroup of the magnetic group).
-    let symmetry = if input.symmetry && !input.spinor && !hybrid {
+    // A spinor crystal keeps the operations only when it is time-reversal symmetric: it then carries
+    // the charge and its multipoles alone, scalars under the spin rotation of an operation. A
+    // magnetic or spin-polarized spinor needs that rotation on its magnetization and keeps the whole
+    // mesh.
+    let spin_rotation_free = !input.spinor || (!input.spin && !magnetic);
+    // A hybrid's exchange rotates the states of the listed points to their stars (`periodic::star`):
+    // the setup reduces its mesh by the space group only when it builds the mesh itself.
+    let hybrid_reducible = !hybrid || input.mesh.is_some();
+    let symmetry = if input.symmetry && spin_rotation_free && hybrid_reducible {
         let mut keys: Vec<(u32, i64)> = Vec::new();
         let labels: Vec<u32> = atomic_numbers
             .iter()
@@ -366,9 +434,20 @@ pub fn create_setup(
             labels: &labels,
             grid: shape,
             symprec: 1e-4,
-            max_l: 4.max(atoms_species.iter().map(|&species| {
-                2 * datasets[species].channels.keys().copied().max().unwrap_or(0) as usize
-            }).max().unwrap_or(0)),
+            max_l: 4.max(
+                atoms_species
+                    .iter()
+                    .map(|&species| {
+                        2 * datasets[species]
+                            .channels
+                            .keys()
+                            .copied()
+                            .max()
+                            .unwrap_or(0) as usize
+                    })
+                    .max()
+                    .unwrap_or(0),
+            ),
         };
         Some(Symmetry::new(&geom)?)
     } else {
@@ -378,14 +457,35 @@ pub fn create_setup(
     // The k mesh, reduced here when the request names one.
     let mut symmetry = symmetry;
     if let Some((size, gamma)) = input.mesh {
+        let whole = magnetic || (input.spinor && input.spin);
         let reduced = if let Some(sym) = symmetry.take() {
             let kept = sym.keeping_mesh(size, gamma)?;
             let reduced = kept.mesh(ctx, size, gamma)?;
-            symmetry = Some(kept);
-            reduced
+            let halved = if hybrid {
+                Some(crate::periodic::spectrum::mesh(
+                    ctx,
+                    size,
+                    gamma,
+                    &[],
+                    true,
+                )?)
+            } else {
+                None
+            };
+            match halved {
+                // The operations reduce a hybrid's mesh no further than time reversal does: it keeps
+                // the mesh it had without them (halved, whole when magnetic) and no operations
+                // (nothing to rotate).
+                Some(halved) if halved.points.len() == reduced.points.len() => {
+                    crate::periodic::spectrum::mesh(ctx, size, gamma, &[], !whole)?
+                }
+                _ => {
+                    symmetry = Some(kept);
+                    reduced
+                }
+            }
         } else {
-            // A hybrid (never given a point group, above) is halved by time reversal alone.
-            let whole = magnetic || (input.spinor && input.spin);
+            // Without operations the mesh is halved by time reversal alone (whole when magnetic).
             crate::periodic::spectrum::mesh(ctx, size, gamma, &[], !whole)?
         };
         input.kpoints_frac = reduced.points.clone();
@@ -393,9 +493,10 @@ pub fn create_setup(
     }
 
     // Convert fractional k-points to Cartesian k-points: k = 2 pi (lattice^-1)^T f
-    let inv_lattice = input.lattice.try_inverse().ok_or_else(|| {
-        invalid("singular crystal lattice matrix")
-    })?;
+    let inv_lattice = input
+        .lattice
+        .try_inverse()
+        .ok_or_else(|| invalid("singular crystal lattice matrix"))?;
     let rec_lattice = 2.0 * std::f64::consts::PI * inv_lattice.transpose();
 
     let mut kpoints_cart = Vec::with_capacity(input.kpoints_frac.len());
@@ -404,7 +505,6 @@ pub fn create_setup(
         let k = rec_lattice * f_vec;
         kpoints_cart.push([k[0], k[1], k[2]]);
     }
-
 
     // Compensation shapes channels: (atom, l, m)
     let mut channels = Vec::new();
@@ -442,7 +542,9 @@ pub fn create_setup(
     let operations = symmetry.as_ref().filter(|sym| sym.len() > 0).map(|sym| {
         let mut map = vec![0; n_atoms];
         let mut out = crate::periodic::description::Operations {
-            rotations: vec![], translations: vec![], atom_maps: vec![],
+            rotations: vec![],
+            translations: vec![],
+            atom_maps: vec![],
         };
         for k in 0..sym.len() {
             let w = sym.rotation(k);
@@ -473,18 +575,41 @@ pub fn create_setup(
 
     let hubbard = if let Some(ref request) = input.hubbard_u {
         use crate::periodic::hubbard_table::{build_paw, PawLayout, Projector as HubbardProjector};
-        let labels: Vec<_> = projectors.iter().map(|p| HubbardProjector {
-            symbol: datasets[atoms_species[p.atom]].symbol.clone(), basis: input.projector_basis.clone(),
-            atom: p.atom, l: p.l, m: p.m as i64, index: p.index,
-        }).collect();
-        let sources: Vec<_> = (0..datasets.len()).map(|species| {
-            atoms_species.iter().position(|&s| s == species)
-                .map(|atom| dataset_files[atom].0.clone()).unwrap_or_default()
-        }).collect();
-        Some(build_paw(ctx, request, &PawLayout { projectors: &labels,
-            species_of_atom: &atoms_species, species: &datasets, sources: &sources,
-            moments: &moments, spin_orbit: has_spin_orbit })?)
-    } else { None };
+        let labels: Vec<_> = projectors
+            .iter()
+            .map(|p| HubbardProjector {
+                symbol: datasets[atoms_species[p.atom]].symbol.clone(),
+                basis: input.projector_basis.clone(),
+                atom: p.atom,
+                l: p.l,
+                m: p.m as i64,
+                index: p.index,
+            })
+            .collect();
+        let sources: Vec<_> = (0..datasets.len())
+            .map(|species| {
+                atoms_species
+                    .iter()
+                    .position(|&s| s == species)
+                    .map(|atom| dataset_files[atom].0.clone())
+                    .unwrap_or_default()
+            })
+            .collect();
+        Some(build_paw(
+            ctx,
+            request,
+            &PawLayout {
+                projectors: &labels,
+                species_of_atom: &atoms_species,
+                species: &datasets,
+                sources: &sources,
+                moments: &moments,
+                spin_orbit: has_spin_orbit,
+            },
+        )?)
+    } else {
+        None
+    };
 
     let description = Some(crate::periodic::description::Description::from_parts(
         ctx,
@@ -520,7 +645,13 @@ pub fn create_setup(
         functional: input.functional,
         precision,
         relativistic,
-        spins: if input.spinor { 1 } else if input.spin || magnetic { 2 } else { 1 },
+        spins: if input.spinor {
+            1
+        } else if input.spin || magnetic {
+            2
+        } else {
+            1
+        },
         moments,
         spinor: input.spinor,
         time_reversal: input.spinor && !input.spin && !magnetic,
@@ -535,7 +666,6 @@ pub fn create_setup(
         recipe: Some(recipe),
     })
 }
-
 
 /// Parse a JSON `"periodic-paw-input"` specification into [`SetupInput`].
 pub fn parse_input_json(v: &Value) -> Result<SetupInput> {
@@ -556,7 +686,12 @@ pub fn parse_input_json(v: &Value) -> Result<SetupInput> {
     }
     // A basis option belongs to an element's recipe (`recipes`), never to the request itself:
     // refused rather than ignored.
-    for name in ["energy_shift", "confinement_potential", "polarization_method", "zeta_split"] {
+    for name in [
+        "energy_shift",
+        "confinement_potential",
+        "polarization_method",
+        "zeta_split",
+    ] {
         if v.get(name).is_some() {
             return Err(crate::Error::Unsupported(format!(
                 "the basis option {name:?} is an entry of each element's recipe (\"recipes\"), \
@@ -565,13 +700,17 @@ pub fn parse_input_json(v: &Value) -> Result<SetupInput> {
         }
     }
     fn triple(value: &Value, name: &str) -> Result<[f64; 3]> {
-        let array = value.as_array().ok_or_else(|| invalid(format!("{name} must contain three numbers")))?;
+        let array = value
+            .as_array()
+            .ok_or_else(|| invalid(format!("{name} must contain three numbers")))?;
         if array.len() != 3 {
             return Err(invalid(format!("{name} must contain three numbers")));
         }
         let mut out = [0.; 3];
         for (to, value) in out.iter_mut().zip(array) {
-            *to = value.as_f64().filter(|v| v.is_finite())
+            *to = value
+                .as_f64()
+                .filter(|v| v.is_finite())
                 .ok_or_else(|| invalid(format!("{name} must contain three finite numbers")))?;
         }
         Ok(out)
@@ -585,8 +724,10 @@ pub fn parse_input_json(v: &Value) -> Result<SetupInput> {
     let mut lattice = Matrix3::zeros();
     for i in 0..3 {
         for j in 0..3 {
-            lattice[(i, j)] = lattice_vals[i * 3 + j].as_f64()
-                .filter(|v| v.is_finite()).ok_or_else(|| invalid("lattice must contain finite numbers"))?;
+            lattice[(i, j)] = lattice_vals[i * 3 + j]
+                .as_f64()
+                .filter(|v| v.is_finite())
+                .ok_or_else(|| invalid("lattice must contain finite numbers"))?;
         }
     }
 
@@ -598,7 +739,10 @@ pub fn parse_input_json(v: &Value) -> Result<SetupInput> {
     }
     let mut grid_shape = [0usize; 3];
     for (to, value) in grid_shape.iter_mut().zip(shape_arr) {
-        *to = value.as_u64().and_then(|v| usize::try_from(v).ok()).filter(|v| *v > 0)
+        *to = value
+            .as_u64()
+            .and_then(|v| usize::try_from(v).ok())
+            .filter(|v| *v > 0)
             .ok_or_else(|| invalid("grid_shape must contain three positive integers"))?;
     }
 
@@ -607,17 +751,24 @@ pub fn parse_input_json(v: &Value) -> Result<SetupInput> {
         for item in arr {
             let species = match item.get("species") {
                 None => 0,
-                Some(value) => value.as_u64().and_then(|v| usize::try_from(v).ok())
+                Some(value) => value
+                    .as_u64()
+                    .and_then(|v| usize::try_from(v).ok())
                     .ok_or_else(|| invalid("atom species must be a nonnegative dataset index"))?,
             };
             let symbol = match item.get("symbol") {
                 None => String::new(),
-                Some(value) => value.as_str().ok_or_else(|| invalid("atom symbol must be a string"))?.to_string(),
+                Some(value) => value
+                    .as_str()
+                    .ok_or_else(|| invalid("atom symbol must be a string"))?
+                    .to_string(),
             };
             let fractional = triple(&item["fractional"], "atom fractional")?;
             let moment = match item.get("moment") {
                 None => 0.,
-                Some(value) => value.as_f64().filter(|v| v.is_finite())
+                Some(value) => value
+                    .as_f64()
+                    .filter(|v| v.is_finite())
                     .ok_or_else(|| invalid("atom moment must be finite"))?,
             };
             atoms.push(AtomSpec {
@@ -637,24 +788,38 @@ pub fn parse_input_json(v: &Value) -> Result<SetupInput> {
             if v.get("kpoints").is_some() {
                 return Err(invalid("give either 'mesh' or 'kpoints', not both"));
             }
-            let size = value["size"].as_array().filter(|a| a.len() == 3)
-                .and_then(|a| a.iter().map(|x| x.as_u64().and_then(|n| usize::try_from(n).ok())
-                    .filter(|n| *n > 0)).collect::<Option<Vec<_>>>())
+            let size = value["size"]
+                .as_array()
+                .filter(|a| a.len() == 3)
+                .and_then(|a| {
+                    a.iter()
+                        .map(|x| {
+                            x.as_u64()
+                                .and_then(|n| usize::try_from(n).ok())
+                                .filter(|n| *n > 0)
+                        })
+                        .collect::<Option<Vec<_>>>()
+                })
                 .ok_or_else(|| invalid("mesh size must be three positive integers"))?;
-            let gamma = value["gamma"].as_bool()
+            let gamma = value["gamma"]
+                .as_bool()
                 .ok_or_else(|| invalid("mesh gamma must be a boolean"))?;
             Some(([size[0], size[1], size[2]], gamma))
         }
     };
     if mesh.is_some() {
     } else if let Some(value) = v.get("kpoints") {
-        let k_arr = value.as_array().filter(|a| !a.is_empty())
+        let k_arr = value
+            .as_array()
+            .filter(|a| !a.is_empty())
             .ok_or_else(|| invalid("kpoints must be a nonempty array"))?;
         for item in k_arr {
             let frac = triple(&item["fractional"], "kpoint fractional")?;
             let w = match item.get("weight") {
                 None => 1.,
-                Some(value) => value.as_f64().filter(|v| v.is_finite())
+                Some(value) => value
+                    .as_f64()
+                    .filter(|v| v.is_finite())
                     .ok_or_else(|| invalid("k-point weight must be finite"))?,
             };
             kpoints_frac.push(frac);
@@ -668,20 +833,27 @@ pub fn parse_input_json(v: &Value) -> Result<SetupInput> {
     let string_option = |name: &str, default: &str| -> Result<String> {
         match v.get(name) {
             None => Ok(default.to_string()),
-            Some(value) => value.as_str().map(str::to_string)
+            Some(value) => value
+                .as_str()
+                .map(str::to_string)
                 .ok_or_else(|| invalid(format!("{name} must be a string"))),
         }
     };
     let bool_option = |name: &str, default: bool| -> Result<bool> {
         match v.get(name) {
             None => Ok(default),
-            Some(value) => value.as_bool().ok_or_else(|| invalid(format!("{name} must be a boolean"))),
+            Some(value) => value
+                .as_bool()
+                .ok_or_else(|| invalid(format!("{name} must be a boolean"))),
         }
     };
     let number_option = |name: &str| -> Result<Option<f64>> {
         match v.get(name) {
             None | Some(Value::Null) => Ok(None),
-            Some(value) => value.as_f64().filter(|x| x.is_finite()).map(Some)
+            Some(value) => value
+                .as_f64()
+                .filter(|x| x.is_finite())
+                .map(Some)
                 .ok_or_else(|| invalid(format!("{name} must be a finite number"))),
         }
     };
@@ -694,7 +866,10 @@ pub fn parse_input_json(v: &Value) -> Result<SetupInput> {
     let filter_cutoff = number_option("filter_cutoff")?;
     let sigma = number_option("sigma")?;
     let charge = number_option("charge")?;
-    let dataset_files = if let Some(arr) = v["dataset_files"].as_array().or_else(|| v["sites"]["datasets"].as_array()) {
+    let dataset_files = if let Some(arr) = v["dataset_files"]
+        .as_array()
+        .or_else(|| v["sites"]["datasets"].as_array())
+    {
         let mut files = Vec::new();
         for item in arr {
             let file = item["file"].as_str().unwrap_or("").to_string();
@@ -708,9 +883,14 @@ pub fn parse_input_json(v: &Value) -> Result<SetupInput> {
 
     let recipes = match v.get("recipes") {
         None | Some(Value::Null) => None,
-        Some(value) => Some(value.as_object()
-            .ok_or_else(|| invalid("recipes must map element symbols to basis recipes"))?
-            .iter().map(|(symbol, recipe)| (symbol.clone(), recipe.clone())).collect()),
+        Some(value) => Some(
+            value
+                .as_object()
+                .ok_or_else(|| invalid("recipes must map element symbols to basis recipes"))?
+                .iter()
+                .map(|(symbol, recipe)| (symbol.clone(), recipe.clone()))
+                .collect(),
+        ),
     };
     let projector_basis = string_option("projector_basis", "raw")?;
     Ok(SetupInput {
@@ -731,7 +911,9 @@ pub fn parse_input_json(v: &Value) -> Result<SetupInput> {
         filter_cutoff,
         sigma,
         dataset_files,
-        hubbard_u: v.get("hubbard_u").filter(|v| !v.is_null())
+        hubbard_u: v
+            .get("hubbard_u")
+            .filter(|v| !v.is_null())
             .map(|v| crate::models::hubbard_request::Request::parse(&v.to_string()))
             .transpose()?,
         charge,

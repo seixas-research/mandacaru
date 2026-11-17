@@ -136,14 +136,7 @@ impl Case {
         (0..self.atoms())
             .map(|a| {
                 let ds = self.dataset(ctx, a);
-                LocalPotential::new(
-                    ctx,
-                    ds.r.as_slice(),
-                    ds.v_local.as_slice(),
-                    ds.valence_charge,
-                    ds.r_cut_local,
-                )
-                .unwrap()
+                LocalPotential::from_dataset(ctx, &ds).unwrap()
             })
             .collect()
     }

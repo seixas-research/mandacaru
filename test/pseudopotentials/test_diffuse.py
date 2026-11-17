@@ -130,7 +130,12 @@ class TestFrozenPythonOutputs:
     """The Rust radial functions against the Python ones they replace
     (``test/migration/reference/paw/diffuse.npz``, inputs in the JSON).  The
     closed forms agree to 1e-9 (measured 3e-11); the tables behind the
-    Fourier filter and the projection too."""
+    Fourier filter and the projection too.
+
+    Since 2026-11-16 the keys that read the shipped library are self-pins of the production
+    routine on the regenerated library (file format 3): the ``library_refreeze`` entry of the
+    JSON beside the reference lists them with the library digests and the extension; the other
+    keys keep their Python-era values."""
 
     def test_the_width_and_the_support(self):
         for l, rms, cutoff, alpha, r_cut, cut, unit in FROZEN["parameters"]:

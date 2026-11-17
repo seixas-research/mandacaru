@@ -81,7 +81,10 @@ pub fn surface_normals(triangles: &[isosurface::Triangle]) -> Vec<[f64; 3]> {
 
 /// The flat color of every triangle: `positive` for a positive lobe (`sign > 0`), else `negative`.
 pub fn surface_colors(signs: &[i64], positive: [f64; 3], negative: [f64; 3]) -> Vec<[f64; 3]> {
-    signs.iter().map(|&s| if s > 0 { positive } else { negative }).collect()
+    signs
+        .iter()
+        .map(|&s| if s > 0 { positive } else { negative })
+        .collect()
 }
 
 /// The face colors of a surface lit by a headlight above and to the left of the eye:
@@ -96,7 +99,10 @@ pub fn surface_rgba(
     if normals.len() != base.len() {
         return Err(invalid("a surface has one base color per normal"));
     }
-    let (e, a) = ((elevation + 25.0).to_radians(), (azimuth - 30.0).to_radians());
+    let (e, a) = (
+        (elevation + 25.0).to_radians(),
+        (azimuth - 30.0).to_radians(),
+    );
     // The sine and the cosine of one angle are two calls of the C library: the compiler must not
     // fuse them into `sincos`, whose last bit differs.
     let (cos_e, cos_a) = (e.cos(), a.cos());
@@ -153,12 +159,18 @@ pub fn mean_point(points: &[[f64; 3]]) -> Result<[f64; 3]> {
 /// The half-width of the view at zoom one: `1.05` times the larger of the farthest nucleus from
 /// `center` plus `0.5` and the `percentile` (in percent) of the shown points' distances along the
 /// worst axis (a percentile, not the maximum, so a few far points do not shrink the picture).
-pub fn view_extent(nuclei: &[[f64; 3]], center: [f64; 3], shown: &[[f64; 3]], percentile_q: f64) -> Result<f64> {
+pub fn view_extent(
+    nuclei: &[[f64; 3]],
+    center: [f64; 3],
+    shown: &[[f64; 3]],
+    percentile_q: f64,
+) -> Result<f64> {
     let apart: Vec<f64> = nuclei
         .iter()
         .flat_map(|n| (0..3).map(move |i| (n[i] - center[i]).abs()))
         .collect();
-    let mut reach = maximum(&apart).ok_or_else(|| invalid("a picture has at least one nucleus"))? + 0.5;
+    let mut reach =
+        maximum(&apart).ok_or_else(|| invalid("a picture has at least one nucleus"))? + 0.5;
     if !shown.is_empty() {
         let worst: Vec<f64> = shown
             .iter()
@@ -268,7 +280,10 @@ pub fn camera_path(
     } else {
         vec![0.0]
     };
-    let angles: Vec<f64> = poses.iter().flat_map(|p| [p.elevation, p.azimuth]).collect();
+    let angles: Vec<f64> = poses
+        .iter()
+        .flat_map(|p| [p.elevation, p.azimuth])
+        .collect();
     let angles = keyframe_values(&angles, 2, &times, false)?;
     let zooms: Vec<f64> = poses.iter().map(|p| p.zoom).collect();
     let mut zooms = keyframe_values(&zooms, 1, &times, true)?;

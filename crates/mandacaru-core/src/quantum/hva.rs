@@ -1,5 +1,5 @@
 //! Hamiltonian variational groups with shared-angle product-formula stages.
-use super::{algebra::Generator, CachedProblem, Operator, C64};
+use super::{algebra::Generator, Operator, QuantumProblem, C64};
 use crate::{product, Error, Reservation, Result};
 pub struct HVA {
     stages: Vec<Vec<(Operator, f64)>>,
@@ -48,7 +48,7 @@ impl HVA {
         Ok(out)
     }
 }
-impl CachedProblem {
+impl QuantumProblem {
     pub fn use_hva(
         &mut self,
         layers: usize,

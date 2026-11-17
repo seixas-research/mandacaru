@@ -907,7 +907,8 @@ impl PyOneCenterHybrid {
                     }
                     entries.sort_by_key(|e| e.0);
                     let ls: Vec<usize> = entries.iter().map(|e| e.0).collect();
-                    let vs: Vec<PyReadonlyArray2<'_, f64>> = entries.into_iter().map(|e| e.1).collect();
+                    let vs: Vec<PyReadonlyArray2<'_, f64>> =
+                        entries.into_iter().map(|e| e.1).collect();
                     block_ls.push(ls);
                     blocks_per_sphere.push(vs);
                 }
@@ -934,25 +935,26 @@ impl PyOneCenterHybrid {
         let mut all_real = true;
         for i in 0..count {
             let tensor_any = &tensors[i];
-            let tensor_buf = if let Ok(t_c) = tensor_any.extract::<PyReadonlyArrayDyn<'_, Complex64>>() {
-                all_real = false;
-                let (buf, hold) = copy(&ctx, &t_c)?;
-                keep.push(hold);
-                buf
-            } else if let Ok(t_r) = tensor_any.extract::<PyReadonlyArrayDyn<'_, f64>>() {
-                let view = t_r.as_array();
-                let len = view.len();
-                let bytes = product(&[len, std::mem::size_of::<Complex64>()]).map_err(error)?;
-                let hold = ctx.reserve(bytes).map_err(error)?;
-                let mut data = Vec::with_capacity(len);
-                for &src in view.iter() {
-                    data.push(Complex64::new(src, 0.0));
-                }
-                keep.push(hold);
-                data
-            } else {
-                return Err(invalid("tensor must be a float or complex array"));
-            };
+            let tensor_buf =
+                if let Ok(t_c) = tensor_any.extract::<PyReadonlyArrayDyn<'_, Complex64>>() {
+                    all_real = false;
+                    let (buf, hold) = copy(&ctx, &t_c)?;
+                    keep.push(hold);
+                    buf
+                } else if let Ok(t_r) = tensor_any.extract::<PyReadonlyArrayDyn<'_, f64>>() {
+                    let view = t_r.as_array();
+                    let len = view.len();
+                    let bytes = product(&[len, std::mem::size_of::<Complex64>()]).map_err(error)?;
+                    let hold = ctx.reserve(bytes).map_err(error)?;
+                    let mut data = Vec::with_capacity(len);
+                    for &src in view.iter() {
+                        data.push(Complex64::new(src, 0.0));
+                    }
+                    keep.push(hold);
+                    data
+                } else {
+                    return Err(invalid("tensor must be a float or complex array"));
+                };
 
             let layout = layout_rows(&layouts[i])?;
             if layout.len() != members[i].len() {

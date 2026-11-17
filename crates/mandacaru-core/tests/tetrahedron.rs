@@ -177,7 +177,15 @@ fn the_spin_sum_weights_each_channel_and_takes_the_k_points_in_any_order() {
     let projections: Vec<f64> = (0..2 * ordered.len()).flat_map(|_| [0.25, 0.75]).collect();
     let axis = [-4., -1., 0.5, 2., 6.];
     let (dos, integrated, projected) = mesh
-        .spin_summed(&reversed, &levels, 2, 1, Some((&projections, 2)), 1.5, &axis)
+        .spin_summed(
+            &reversed,
+            &levels,
+            2,
+            1,
+            Some((&projections, 2)),
+            1.5,
+            &axis,
+        )
         .unwrap();
     let (d_up, n_up) = mesh.dos(&up, 1, &axis).unwrap();
     let (d_down, n_down) = mesh.dos(&down, 1, &axis).unwrap();
@@ -189,6 +197,10 @@ fn the_spin_sum_weights_each_channel_and_takes_the_k_points_in_any_order() {
         assert!((projected[2 * i] - 0.25 * want).abs() < 1e-12);
         assert!((projected[2 * i] + projected[2 * i + 1] - dos[i]).abs() < 1e-12);
     }
-    assert!(mesh.spin_summed(&reversed, &levels, 2, 1, None, 0., &axis).is_err());
-    assert!(mesh.spin_summed(&reversed, &levels[1..], 2, 1, None, 1., &axis).is_err());
+    assert!(mesh
+        .spin_summed(&reversed, &levels, 2, 1, None, 0., &axis)
+        .is_err());
+    assert!(mesh
+        .spin_summed(&reversed, &levels[1..], 2, 1, None, 1., &axis)
+        .is_err());
 }

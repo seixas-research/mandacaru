@@ -241,7 +241,10 @@ impl<'p> Pending<'p> {
     }
     fn gradient(&mut self) -> Result<&[f64]> {
         if self.gradient.is_none() {
-            let probe = self.probe.take().expect("a pending probe holds its gradient");
+            let probe = self
+                .probe
+                .take()
+                .expect("a pending probe holds its gradient");
             self.gradient = Some(probe.checked_gradient(self.n)?);
         }
         Ok(self.gradient.as_deref().expect("just computed"))
@@ -371,7 +374,8 @@ pub fn minimize_deferred_from<'p>(
         Some(values) => {
             if values.len() != n * n || values.iter().any(|v| !v.is_finite()) {
                 return Err(Error::Invalid(
-                    "the carried inverse Hessian must be finite and n x n for the n parameters".into(),
+                    "the carried inverse Hessian must be finite and n x n for the n parameters"
+                        .into(),
                 ));
             }
             inverse.as_mut_slice().copy_from_slice(values);

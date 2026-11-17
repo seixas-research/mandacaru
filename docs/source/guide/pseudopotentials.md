@@ -21,7 +21,8 @@ bases ([Basis sets](basis_sets.md)). PAW-LCAO is the recommended family and the
 one to use for [forces and geometry optimization](forces_relaxation.md), because
 the smooth valence orbitals are resolved on the real-space grid and an
 all-electron core is not. `"UPAW-LCAO"` is the unitary variant, with no overlap
-correction; it is optional and reads its own library.
+correction; it is optional and reads its own library, which currently has no
+format-3 data ([the dataset libraries](#paw-lcao-libraries)).
 
 The dataset gives the basis, the local potential, the projectors and the
 compensation charges. Oxygen keeps its six valence electrons. The engine builds
@@ -41,7 +42,7 @@ options and hands the dataset and the basis recipe to it.
 | Geometry | molecules; a crystal reads its own datasets through the periodic setup |
 
 The following raise, or are not yet available ([open items](#not-yet-available)):
-a Hartree–Fock frozen core without stored core states or with a partially filled subshell (`ValueError`, naming the element); any method other than `dft` on a
+a Hartree–Fock frozen core with a partially filled subshell (`ValueError`, naming the element); any method other than `dft` on a
 molecule with a spin-orbit dataset (`NotImplementedError`: "a molecule with a
 spin-orbit dataset needs method='dft' (spinor Kohn-Sham)"), and DFT+U there;
 molecular stress; `precision="float32"` forces of the quantum methods (the
@@ -152,7 +153,13 @@ with `diffuse` is refused.
 The datasets live in the `mandacaru-paw` repository, one folder per set, and
 `MANDACARU_PAW_PATH` names the checkout (see [Installation](../installation.md)).
 An optional `mandacaru-upaw` checkout serves `"UPAW-LCAO"` through
-`MANDACARU_UPAW_PATH`, set with `mandacaru-paw --set-upaw DIR`.
+`MANDACARU_UPAW_PATH`, set with `mandacaru-paw --set-upaw DIR`. That library
+currently has no format-3 data, the only format the reader takes ([below](#paw-lcao-format-versions)).
+Where it has no file for an element, whether the variable is unset or its folder lacks
+the file, `"UPAW-LCAO"` generates that element's dataset on demand: a `RuntimeWarning`
+says so, it takes a few seconds per element, and the dataset is cached for the
+process. A `paw_dataset=` folder that lacks the element raises `FileNotFoundError`
+instead.
 
 | Folder | Set |
 | --- | --- |
@@ -195,40 +202,41 @@ A library dataset is read with a context of its own, with the default thread
 count and memory budget, so the `parallelization` and the `memory_limit_bytes` of a
 calculator do not limit the decoding of its dataset files.
 
-The files already in a library were written by the previous writer and were not
-regenerated; they load unchanged. Files saved by this build use the native
-writer, whose zstd works at its fastest level, so a regenerated file can be larger
-than the one it replaces.
+The installed library is regenerated. Every file is format 3 ([below](#paw-lcao-format-versions)),
+written by the native generator with the core states of its element and, in `lda-fr/` and
+`pbe-fr/`, with the spin-orbit coupling calibrated during generation: the generator
+scales each shell's stored coupling until the engine's isolated atom reproduces the Dirac
+splitting of the record, a factor derived from the atom and not tabulated. A file saved by
+this build uses the native writer, whose zstd works at its fastest level, so a file can be
+larger than one compressed at a higher level.
+
+All 368 files of the library (92 elements in each of the four sets) pass the native
+validator, including its gate G5 row "format version 3 with the core states". The reader
+itself refuses a file of an older format, or without its core states, by name.
 
 (paw-lcao-format-versions)=
-#### Format versions and core states
+#### Format 3 and core states
 
-A dataset file carries a format version. Version 2 holds the valence data; version 3
-adds the **core states**: the occupied core subshells of the reference atom, each as
-`n`, `l`, its occupation, its eigenvalue and its radial orbital `u = r R` in a column
-`core_wave_n{n}_l{l}`, one state per `(n, l)` (at most 28). They are the orbitals that
-the stored core density was summed from. The reader takes versions 1 to 3 and raises on
-a newer one; a version-3 file without its states, a version-2 file with them, a
-malformed or duplicated state and more core electrons than the nuclear charge are
-refused by name.
+Format 3 is the only dataset format. A file carries, besides the valence data, the
+**core states**: the occupied core subshells of the reference atom, each as `n`, `l`, its
+occupation, its eigenvalue and its radial orbital `u = r R` in a column
+`core_wave_n{n}_l{l}`, one state per `(n, l)` (at most 28; a hydrogen file has an empty
+core). They are the orbitals that the stored core density was summed from. A file of an
+older format is refused by name, and so are a file without its states, a malformed or
+duplicated state, and more core electrons than the nuclear charge.
 
-Which writer produces which version:
+The development tool `mandacaru-build` (`mandacaru.pseudopotentials.build_cli`, not an
+installed console command; generating a dataset is otherwise outside this manual)
+generates, writes, reads back and checks a dataset inside the native engine. The record
+never crosses into Python on its way to the file.
 
-- The development tool `mandacaru-build` (`mandacaru.pseudopotentials.build_cli`, not an
-  installed console command; generating a dataset is otherwise outside this manual)
-  generates, writes, reads back and checks a dataset inside the native engine, and
-  writes version 3 with the core states of the element (a hydrogen file has an empty
-  core). The record never crosses into Python on its way to the file.
-- `save_pseudopotential` of a dataset loaded into Python writes version 2, without core
-  states: the Python view does not model them, so loading a version-3 file and saving it
-  again drops them.
-- The shipped library was not regenerated, so its files carry no core states.
-
-The core states are stored and read back; no calculation reads them yet. Hartree–Fock
-does not use them, and its multi-shell core exchange is still open ([native
-cutover](../development/native_cutover.md)). The content digest that a saved crystal pins
-a dataset by (`content_sha256`, [Kohn–Sham density functional theory](dft.md)) leaves the
-core states out, so a version-2 file and its version-3 upgrade have the same digest.
+Hartree–Fock reads the core states: the exchange of the frozen core with the valence
+orbitals comes from the stored states, for an empty core or a core of closed subshells
+(1s 2s 2p for Si and Cu). A partially filled core subshell, and states that do not
+reproduce the stored core density, leave Hartree–Fock without a core exchange, and it
+refuses by name; the screened hybrid refuses any core beyond an empty one or a single
+closed 1s shell. Kohn–Sham never reads the core states
+([native cutover](../development/native_cutover.md)).
 
 ## Why the family is the basis
 

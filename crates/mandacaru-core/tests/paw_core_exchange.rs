@@ -24,7 +24,6 @@ use mandacaru_core::math::angular::real;
 use mandacaru_core::molecular::ScfOptions;
 use mandacaru_core::paw::{
     core_exchange::{core_valence_exchange, CoreShell, FrozenCore, StoredShell},
-    generate::core_states::add_core_states,
     molecular::hartree_fock_onsite_channels,
     onecenter_radial::three_j_squared,
     pair_tables::coulomb,
@@ -181,65 +180,6 @@ fn extent(r: &[f64], core: &[f64]) -> usize {
     r.len()
 }
 
-#[test]
-#[ignore = "slow: 17 s (16 reference atoms solved again); run: MANDACARU_PAW_PATH=... cargo test --profile release-test -p mandacaru-core --test paw_core_exchange -- --ignored"]
-fn the_solved_1s_orbital_gives_the_term_of_the_stored_density_for_li_to_ne() {
-    let root = PathBuf::from(std::env::var_os("MANDACARU_PAW_PATH").expect("MANDACARU_PAW_PATH"));
-    let ctx = Context::new(Some(1), 2 << 30).unwrap();
-    for set in ["lda-sr", "pbe-sr"] {
-        for symbol in ["Li", "Be", "B", "C", "N", "O", "F", "Ne"] {
-            let path = root.join(set).join(format!("{symbol}.parquet"));
-            let mut dataset = PawDataset::read(&ctx, &path).unwrap();
-            let r = dataset.r.as_slice().to_vec();
-            let density = dataset.core_density.as_slice().to_vec();
-            // A format-3 record carries its core states: solve them again from the record.
-            dataset.core_states = None;
-            let (upgraded, found) = add_core_states(&ctx, dataset).unwrap();
-            let states = upgraded.core_states.as_ref().unwrap();
-            assert_eq!(states.len(), 1, "{set}/{symbol}: one closed 1s core");
-            let solved: Vec<f64> = states[0]
-                .orbital
-                .as_slice()
-                .iter()
-                .zip(&r)
-                .map(|(u, x)| (u / x).abs())
-                .collect();
-            let from_density: Vec<f64> = density.iter().map(|n| (2. * PI * n).sqrt()).collect();
-            let size = extent(&r, &density);
-            let mut worst = 0f64;
-            for (&l, channel) in &upgraded.channels {
-                let waves: Vec<Vec<f64>> = channel
-                    .ae_waves
-                    .iter()
-                    .map(|w| w.as_slice().to_vec())
-                    .collect();
-                let shell = |radial| CoreShell {
-                    l: 0,
-                    occupation: 2.,
-                    radial,
-                };
-                let old =
-                    core_valence_exchange(&r, l as usize, &waves, &[shell(&from_density)], size)
-                        .unwrap();
-                let new =
-                    core_valence_exchange(&r, l as usize, &waves, &[shell(&solved)], size).unwrap();
-                let scale = old.iter().fold(0f64, |m, v| m.max(v.abs()));
-                let deviation = (&new - &old).iter().fold(0f64, |m, v| m.max(v.abs())) / scale;
-                worst = worst.max(deviation);
-            }
-            println!(
-                "{set}/{symbol}: density deviation {:.2e}, exchange deviation {worst:.2e}",
-                found.density_deviation
-            );
-            assert!(
-                worst <= 2. * found.density_deviation + 1e-12,
-                "{set}/{symbol}: {worst:e} against 2 x {:e}",
-                found.density_deviation
-            );
-        }
-    }
-}
-
 /// The stored states of `dataset` as the wiring reads them.
 fn stored(dataset: &PawDataset) -> Vec<StoredShell<'_>> {
     dataset
@@ -259,7 +199,9 @@ fn stored(dataset: &PawDataset) -> Vec<StoredShell<'_>> {
 /// `V^-1 X V^-T`, the operator of a channel in the raw projector basis from its bare `X`.
 fn raw_basis(vanderbilt: &[f64], x: &DMatrix<f64>) -> DMatrix<f64> {
     let n = x.nrows();
-    let inverse = DMatrix::from_row_slice(n, n, vanderbilt).try_inverse().unwrap();
+    let inverse = DMatrix::from_row_slice(n, n, vanderbilt)
+        .try_inverse()
+        .unwrap();
     &inverse * x * inverse.transpose()
 }
 
@@ -272,16 +214,28 @@ fn largest(m: &DMatrix<f64>) -> f64 {
 fn synthetic_core() -> (Vec<f64>, Vec<f64>, Vec<(u32, u32, f64, Vec<f64>)>) {
     let r: Vec<f64> = (1..=600).map(|i| 0.01 * i as f64).collect();
     let u = |l: u32, k: f64| -> Vec<f64> {
-        r.iter().map(|x| x.powi(l as i32 + 1) * (-k * x).exp()).collect()
+        r.iter()
+            .map(|x| x.powi(l as i32 + 1) * (-k * x).exp())
+            .collect()
     };
     let norm = |u: &mut Vec<f64>| {
-        let s: f64 = u.windows(2).zip(r.windows(2)).map(|(v, x)| 0.5 * (x[1] - x[0]) * (v[0].powi(2) + v[1].powi(2))).sum();
+        let s: f64 = u
+            .windows(2)
+            .zip(r.windows(2))
+            .map(|(v, x)| 0.5 * (x[1] - x[0]) * (v[0].powi(2) + v[1].powi(2)))
+            .sum();
         u.iter_mut().for_each(|v| *v /= s.sqrt());
     };
-    let mut states = vec![(1, 0, 2., u(0, 6.)), (2, 0, 2., u(0, 2.)), (2, 1, 6., u(1, 2.5))];
+    let mut states = vec![
+        (1, 0, 2., u(0, 6.)),
+        (2, 0, 2., u(0, 2.)),
+        (2, 1, 6., u(1, 2.5)),
+    ];
     states.iter_mut().for_each(|s| norm(&mut s.3));
     let density = (0..r.len())
-        .map(|k| states.iter().map(|s| s.2 * s.3[k].powi(2)).sum::<f64>() / (4. * PI * r[k].powi(2)))
+        .map(|k| {
+            states.iter().map(|s| s.2 * s.3[k].powi(2)).sum::<f64>() / (4. * PI * r[k].powi(2))
+        })
         .collect();
     (r, density, states)
 }
@@ -289,7 +243,12 @@ fn synthetic_core() -> (Vec<f64>, Vec<f64>, Vec<(u32, u32, f64, Vec<f64>)>) {
 fn shells_of(states: &[(u32, u32, f64, Vec<f64>)]) -> Vec<StoredShell<'_>> {
     states
         .iter()
-        .map(|s| StoredShell { n: s.0, l: s.1, occupation: s.2, orbital: &s.3 })
+        .map(|s| StoredShell {
+            n: s.0,
+            l: s.1,
+            occupation: s.2,
+            orbital: &s.3,
+        })
         .collect()
 }
 
@@ -299,7 +258,9 @@ fn a_core_the_states_cannot_describe_is_refused_by_name() {
     let electrons = 10.;
     assert!(FrozenCore::from_states("Xx", &r, &density, electrons, &shells_of(&states)).is_ok());
     let reason = |states: &[(u32, u32, f64, Vec<f64>)], electrons: f64, density: &[f64]| {
-        FrozenCore::from_states("Xx", &r, density, electrons, &shells_of(states)).err().unwrap()
+        FrozenCore::from_states("Xx", &r, density, electrons, &shells_of(states))
+            .err()
+            .unwrap()
     };
     // No states, an open subshell, a different charge, a different density: each names the element
     // and what is wrong.
@@ -307,13 +268,19 @@ fn a_core_the_states_cannot_describe_is_refused_by_name() {
     let mut open = states.clone();
     open[2].2 = 4.;
     let text = reason(&open, electrons, &density);
-    assert!(text.contains("Xx") && text.contains("partially filled"), "{text}");
+    assert!(
+        text.contains("Xx") && text.contains("partially filled"),
+        "{text}"
+    );
     let text = reason(&states, 9., &density);
     assert!(text.contains("Xx") && text.contains("hold"), "{text}");
     let mut bent = density.clone();
     bent[100] *= 1.01;
     let text = reason(&states, electrons, &bent);
-    assert!(text.contains("Xx") && text.contains("stored core density"), "{text}");
+    assert!(
+        text.contains("Xx") && text.contains("stored core density"),
+        "{text}"
+    );
     let mut short = states.clone();
     short[0].3.pop();
     assert!(reason(&short, electrons, &density).contains("points on a grid"));
@@ -324,16 +291,30 @@ fn the_exchange_of_a_frozen_core_is_the_sum_of_its_subshells() {
     let (r, density, states) = synthetic_core();
     let core = FrozenCore::from_states("Xx", &r, &density, 10., &shells_of(&states)).unwrap();
     let waves: Vec<Vec<f64>> = (0..2)
-        .map(|k| r.iter().map(|x| x.powi(2) * (-(0.8 + k as f64) * x).exp()).collect())
+        .map(|k| {
+            r.iter()
+                .map(|x| x.powi(2) * (-(0.8 + k as f64) * x).exp())
+                .collect()
+        })
         .collect();
     for l in 0..=3usize {
         let total = core.exchange(&r, l, &waves).unwrap();
         let mut sum = DMatrix::zeros(2, 2);
         for s in &states {
             // The subshell alone, on its own density.
-            let rho: Vec<f64> = (0..r.len()).map(|k| s.2 * s.3[k].powi(2) / (4. * PI * r[k].powi(2))).collect();
-            let alone = [StoredShell { n: s.0, l: s.1, occupation: s.2, orbital: &s.3 }];
-            sum += FrozenCore::from_states("Xx", &r, &rho, s.2, &alone).unwrap().exchange(&r, l, &waves).unwrap();
+            let rho: Vec<f64> = (0..r.len())
+                .map(|k| s.2 * s.3[k].powi(2) / (4. * PI * r[k].powi(2)))
+                .collect();
+            let alone = [StoredShell {
+                n: s.0,
+                l: s.1,
+                occupation: s.2,
+                orbital: &s.3,
+            }];
+            sum += FrozenCore::from_states("Xx", &r, &rho, s.2, &alone)
+                .unwrap()
+                .exchange(&r, l, &waves)
+                .unwrap();
         }
         // Each subshell is cut where its own charge is complete to 1e-14 (its extent), the sum
         // where the whole core's is: the terms differ by the tail beyond the smaller extents, which
@@ -344,7 +325,10 @@ fn the_exchange_of_a_frozen_core_is_the_sum_of_its_subshells() {
         assert!(gap <= 1e-7, "l = {l}: {gap:e}");
         // The valence's exchange with a core is attractive: negative semidefinite.
         let eigenvalues = total.symmetric_eigen().eigenvalues;
-        assert!(eigenvalues.iter().all(|v| *v <= 1e-14), "l = {l}: {eigenvalues}");
+        assert!(
+            eigenvalues.iter().all(|v| *v <= 1e-14),
+            "l = {l}: {eigenvalues}"
+        );
     }
 }
 
@@ -357,16 +341,33 @@ fn the_operator_of_li_to_ne_is_the_closed_1s_term_in_the_raw_basis() {
             let data = dataset::read(&ctx, set, symbol);
             let r = data.r.as_slice();
             let size = extent(r, data.core_density.as_slice());
-            let from_density: Vec<f64> = data.core_density.as_slice().iter().map(|n| (2. * PI * n).sqrt()).collect();
+            let from_density: Vec<f64> = data
+                .core_density
+                .as_slice()
+                .iter()
+                .map(|n| (2. * PI * n).sqrt())
+                .collect();
             let operator = hartree_fock_onsite_channels(&ctx, &data).unwrap();
             for (channel, found) in data.channels.values().zip(&operator) {
-                let waves: Vec<Vec<f64>> = channel.ae_waves.iter().map(|w| w.as_slice().to_vec()).collect();
-                let shell = CoreShell { l: 0, occupation: 2., radial: &from_density };
+                let waves: Vec<Vec<f64>> = channel
+                    .ae_waves
+                    .iter()
+                    .map(|w| w.as_slice().to_vec())
+                    .collect();
+                let shell = CoreShell {
+                    l: 0,
+                    occupation: 2.,
+                    radial: &from_density,
+                };
                 let old = core_valence_exchange(r, found.l, &waves, &[shell], size).unwrap();
                 let old = raw_basis(channel.vanderbilt.data(), &old);
                 let deviation = largest(&(&found.core_exchange - &old)) / largest(&old);
                 worst = worst.max(deviation);
-                assert!(deviation < 1e-8, "{set}/{symbol} l = {}: {deviation:e}", found.l);
+                assert!(
+                    deviation < 1e-8,
+                    "{set}/{symbol} l = {}: {deviation:e}",
+                    found.l
+                );
             }
         }
     }
@@ -376,15 +377,25 @@ fn the_operator_of_li_to_ne_is_the_closed_1s_term_in_the_raw_basis() {
 #[test]
 fn silicon_and_copper_carry_their_multi_shell_core_exchange() {
     let ctx = Context::new(Some(1), 2 << 30).unwrap();
-    for (set, symbol, electrons) in [("lda-sr", "Si", 10.), ("lda-sr", "Cu", 10.), ("pbe-sr", "Si", 10.)] {
+    for (set, symbol, electrons) in [
+        ("lda-sr", "Si", 10.),
+        ("lda-sr", "Cu", 10.),
+        ("pbe-sr", "Si", 10.),
+    ] {
         let data = dataset::read(&ctx, set, symbol);
         let r = data.r.as_slice();
         let shells = stored(&data);
         assert!(shells.len() > 1, "{symbol} has a multi-shell core");
-        let core = FrozenCore::from_states(symbol, r, data.core_density.as_slice(), electrons, &shells).unwrap();
+        let core =
+            FrozenCore::from_states(symbol, r, data.core_density.as_slice(), electrons, &shells)
+                .unwrap();
         let operator = hartree_fock_onsite_channels(&ctx, &data).unwrap();
         for (channel, found) in data.channels.values().zip(&operator) {
-            let waves: Vec<Vec<f64>> = channel.ae_waves.iter().map(|w| w.as_slice().to_vec()).collect();
+            let waves: Vec<Vec<f64>> = channel
+                .ae_waves
+                .iter()
+                .map(|w| w.as_slice().to_vec())
+                .collect();
             let bare = core.exchange(r, found.l, &waves).unwrap();
             // The wiring is the bare term in the raw projector basis.
             let want = raw_basis(channel.vanderbilt.data(), &bare);
@@ -392,7 +403,11 @@ fn silicon_and_copper_carry_their_multi_shell_core_exchange() {
             // Attractive and symmetric (the bare term, in the basis of the waves).
             assert!(largest(&(&bare - bare.transpose())) <= 1e-12 * largest(&bare));
             let eigenvalues = bare.clone().symmetric_eigen().eigenvalues;
-            assert!(eigenvalues.iter().all(|v| *v <= 1e-12), "{symbol} l = {}: {eigenvalues}", found.l);
+            assert!(
+                eigenvalues.iter().all(|v| *v <= 1e-12),
+                "{symbol} l = {}: {eigenvalues}",
+                found.l
+            );
             // Shell by shell, the multipoles of `(l L l_c)`: the term of one subshell with the
             // `q_c / 2` weight equals the sum of its multipoles, `-(q_c/2) (l L l_c)^2 R^L`.
             let (rows, columns) = (bare.nrows(), bare.ncols());
@@ -400,9 +415,17 @@ fn silicon_and_copper_carry_their_multi_shell_core_exchange() {
             let size = extent(r, data.core_density.as_slice());
             for s in &shells {
                 let radial: Vec<f64> = s.orbital.iter().zip(r).map(|(u, x)| u / x).collect();
-                let pairs: Vec<Vec<f64>> = waves.iter().map(|w| (0..size).map(|k| w[k] * radial[k]).collect()).collect();
+                let pairs: Vec<Vec<f64>> = waves
+                    .iter()
+                    .map(|w| (0..size).map(|k| w[k] * radial[k]).collect())
+                    .collect();
                 let (l, lc) = (found.l, s.l as usize);
-                let mut line = format!("{symbol} ({}{}) q = {} channel l = {l}:", s.n, ["s", "p", "d", "f"][lc], s.occupation);
+                let mut line = format!(
+                    "{symbol} ({}{}) q = {} channel l = {l}:",
+                    s.n,
+                    ["s", "p", "d", "f"][lc],
+                    s.occupation
+                );
                 for big_l in l.abs_diff(lc)..=l + lc {
                     let angular = three_j_squared(l, big_l, lc).unwrap();
                     if angular == 0. {
@@ -411,8 +434,12 @@ fn silicon_and_copper_carry_their_multi_shell_core_exchange() {
                     let mut part = DMatrix::zeros(bare.nrows(), bare.ncols());
                     for i in 0..part.nrows() {
                         for j in 0..part.ncols() {
-                            part[(i, j)] = -0.5 * s.occupation * angular * 0.5
-                                * (coulomb(&r[..size], &pairs[i], &pairs[j], big_l) + coulomb(&r[..size], &pairs[j], &pairs[i], big_l));
+                            part[(i, j)] = -0.5
+                                * s.occupation
+                                * angular
+                                * 0.5
+                                * (coulomb(&r[..size], &pairs[i], &pairs[j], big_l)
+                                    + coulomb(&r[..size], &pairs[j], &pairs[i], big_l));
                         }
                     }
                     line += &format!("  L = {big_l}: X[0,0] = {:.6e}", part[(0, 0)]);
@@ -421,9 +448,17 @@ fn silicon_and_copper_carry_their_multi_shell_core_exchange() {
                 println!("{line}");
             }
             let gap = largest(&(&bare - &by_multipole)) / largest(&bare);
-            println!("{symbol} l = {}: multipole sum against the operator {gap:.2e}", found.l);
+            println!(
+                "{symbol} l = {}: multipole sum against the operator {gap:.2e}",
+                found.l
+            );
             assert!(gap <= 1e-9, "{symbol} l = {}: {gap:e}", found.l);
-            println!("{set}/{symbol} l = {}: X[0,0] = {:.6e} Ha, largest |X| = {:.6e} Ha", found.l, bare[(0, 0)], largest(&bare));
+            println!(
+                "{set}/{symbol} l = {}: X[0,0] = {:.6e} Ha, largest |X| = {:.6e} Ha",
+                found.l,
+                bare[(0, 0)],
+                largest(&bare)
+            );
         }
     }
 }
@@ -434,11 +469,23 @@ fn a_record_without_core_states_or_with_an_open_subshell_is_refused_by_name() {
     let mut data = dataset::read(&ctx, "lda-sr", "Si");
     assert!(hartree_fock_onsite_channels(&ctx, &data).is_ok());
     data.core_states.as_mut().unwrap()[2].occupation = 5.;
-    let text = hartree_fock_onsite_channels(&ctx, &data).err().unwrap().to_string();
-    assert!(text.contains("Si") && text.contains("partially filled"), "{text}");
+    let text = hartree_fock_onsite_channels(&ctx, &data)
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(
+        text.contains("Si") && text.contains("partially filled"),
+        "{text}"
+    );
     data.core_states = None;
-    let text = hartree_fock_onsite_channels(&ctx, &data).err().unwrap().to_string();
-    assert!(text.contains("Si") && text.contains("no core states"), "{text}");
+    let text = hartree_fock_onsite_channels(&ctx, &data)
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(
+        text.contains("Si") && text.contains("no core states"),
+        "{text}"
+    );
     // A core-free record needs no states.
     let hydrogen = dataset::read(&ctx, "lda-sr", "H");
     assert!(hartree_fock_onsite_channels(&ctx, &hydrogen).is_ok());
@@ -447,17 +494,40 @@ fn a_record_without_core_states_or_with_an_open_subshell_is_refused_by_name() {
 /// RHF (Hartree) of `integrals`: the total energy with the nuclear repulsion, and the iterations.
 fn rhf_energy(integrals: &mandacaru_core::molecular::MolecularIntegrals) -> (f64, usize) {
     let n = integrals.neutral_electrons();
-    let options = ScfOptions { tolerance: 1e-10, max_iterations: 300, ..Default::default() };
-    let state = integrals.mean_field("rhf", [n / 2, n / 2], &options).unwrap();
-    assert!(state.converged, "RHF did not converge in {} iterations", state.iterations.len());
-    (state.electronic_energy + integrals.nuclear, state.iterations.len())
+    let options = ScfOptions {
+        tolerance: 1e-10,
+        max_iterations: 300,
+        ..Default::default()
+    };
+    let state = integrals
+        .mean_field("rhf", [n / 2, n / 2], &options)
+        .unwrap();
+    assert!(
+        state.converged,
+        "RHF did not converge in {} iterations",
+        state.iterations.len()
+    );
+    (
+        state.electronic_energy + integrals.nuclear,
+        state.iterations.len(),
+    )
 }
 
 /// A molecule in a cubic box on the real atomic basis, for the library's `lda-sr` datasets.
-fn in_a_box(ctx: &Context, atoms: &[(&'static str, [f64; 3])], side_angstrom: f64, spacing_angstrom: f64) -> mandacaru_core::periodic::setup::PeriodicSetup {
+fn in_a_box(
+    ctx: &Context,
+    atoms: &[(&'static str, [f64; 3])],
+    side_angstrom: f64,
+    spacing_angstrom: f64,
+) -> mandacaru_core::periodic::setup::PeriodicSetup {
     let bohr = 1. / 0.529177210903;
     let nodes = (side_angstrom / spacing_angstrom).round() as usize;
-    paw_supercell_support::molecule_in_a_box(ctx, atoms, nodes as f64 * spacing_angstrom * bohr, nodes)
+    paw_supercell_support::molecule_in_a_box(
+        ctx,
+        atoms,
+        nodes as f64 * spacing_angstrom * bohr,
+        nodes,
+    )
 }
 
 #[test]
@@ -472,12 +542,14 @@ fn the_molecular_hartree_fock_of_silane_and_dicopper_converges() {
         ("H", [-d, -d, d]),
     ];
     let setup = in_a_box(&ctx, &silane, 7., 0.25);
-    let (energy, iterations) = rhf_energy(&paw_supercell_support::molecular_integrals(&ctx, &setup));
+    let (energy, iterations) =
+        rhf_energy(&paw_supercell_support::molecular_integrals(&ctx, &setup));
     println!("SiH4 RHF {energy:.8} Ha ({iterations} iterations)");
     assert!(energy.is_finite());
     let copper = vec![("Cu", [-2.3, 0., 0.]), ("Cu", [2.3, 0., 0.])];
     let setup = in_a_box(&ctx, &copper, 8., 0.25);
-    let (energy, iterations) = rhf_energy(&paw_supercell_support::molecular_integrals(&ctx, &setup));
+    let (energy, iterations) =
+        rhf_energy(&paw_supercell_support::molecular_integrals(&ctx, &setup));
     println!("Cu2 RHF {energy:.8} Ha ({iterations} iterations)");
     assert!(energy.is_finite());
 }
@@ -488,9 +560,17 @@ fn the_silicon_supercell_builds_its_one_center_operator_and_runs_hartree_fock() 
     use std::sync::Arc;
     let ctx = Context::new(Some(4), 3 << 30).unwrap();
     for mesh in [[1, 1, 1], [2, 1, 1]] {
-        let setup = paw_supercell_support::cells_of(&ctx, "lda-sr", false, &paw_supercell_support::silicon_cell(), 1, [0.; 3]);
+        let setup = paw_supercell_support::cells_of(
+            &ctx,
+            "lda-sr",
+            false,
+            &paw_supercell_support::silicon_cell(),
+            1,
+            [0.; 3],
+        );
         let started = std::time::Instant::now();
-        let integrals = MolecularIntegrals::paw_supercell(&ctx, Arc::new(setup), mesh, None).unwrap();
+        let integrals =
+            MolecularIntegrals::paw_supercell(&ctx, Arc::new(setup), mesh, None).unwrap();
         assert_eq!(integrals.kind(), HamiltonianKind::PawSupercell);
         let built = started.elapsed().as_secs_f64();
         let (energy, iterations) = rhf_energy(&integrals);
@@ -528,7 +608,14 @@ fn the_library_cores_are_all_accepted_or_refused_by_name() {
             checked += 1;
             let result = match data.core_states.as_ref() {
                 None => Err(format!("{}: no core states", data.symbol)),
-                Some(_) => FrozenCore::from_states(&data.symbol, data.r.as_slice(), data.core_density.as_slice(), electrons, &stored(&data)).map(|_| ()),
+                Some(_) => FrozenCore::from_states(
+                    &data.symbol,
+                    data.r.as_slice(),
+                    data.core_density.as_slice(),
+                    electrons,
+                    &stored(&data),
+                )
+                .map(|_| ()),
             };
             if let Err(reason) = result {
                 refused.push(format!("{set}/{reason}"));

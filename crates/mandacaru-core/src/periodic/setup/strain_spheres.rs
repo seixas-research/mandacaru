@@ -29,7 +29,7 @@ use super::{
 use crate::{
     math::angular,
     paw::{
-        local_split::{angular_rule, radial_rule, short_range_potential_derivative},
+        local_split::{lattice_angular_rule, radial_rule, short_range_potential_derivative},
         multipole::shape_function,
     },
     periodic::invalid,
@@ -94,7 +94,8 @@ pub fn linear_strain(
         .map(|p| p.reach(sigma))
         .collect::<Result<Vec<_>>>()?;
     let mut out = vec![[[Complex64::default(); 3]; 3]; sites.channels.len()];
-    let (axes, angular_weights) = angular_rule(SPHERE_POLAR, SPHERE_AZIMUTHAL)?;
+    let (axes, angular_weights) =
+        lattice_angular_rule(ctx, &sites.lattice, SPHERE_POLAR, SPHERE_AZIMUTHAL)?;
     let directions: Vec<[f64; 3]> = (0..angular_weights.len())
         .map(|j| [axes[0][j], axes[1][j], axes[2][j]])
         .collect();

@@ -454,7 +454,8 @@ fn rotated_gauge(gauge: &[Matrix], seed: u64, size: f64) -> Result<Vec<Matrix>> 
         .enumerate()
         .map(|(k, u)| {
             let n = u.ncols();
-            let mut state = 0x9e37_79b9_7f4a_7c15u64 ^ (seed.wrapping_mul(0x2545_f491_4f6c_dd1d))
+            let mut state = 0x9e37_79b9_7f4a_7c15u64
+                ^ (seed.wrapping_mul(0x2545_f491_4f6c_dd1d))
                 ^ ((k as u64 + 1).wrapping_mul(0xbf58_476d_1ce4_e5b9));
             let mut next = || {
                 state ^= state << 13;

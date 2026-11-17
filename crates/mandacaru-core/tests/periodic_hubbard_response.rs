@@ -3,11 +3,11 @@ mod hubbard_support;
 
 use hubbard_support::{load, HARTREE_EV};
 use mandacaru_core::{
+    models::hubbard_response::Probe,
     periodic::{
         hubbard_response::{hubbard_response, sum_over_states_chi0, PeriodicProbe},
         Crystal, Options, PeriodicResult,
     },
-    models::hubbard_response::Probe,
     Context,
 };
 
@@ -67,7 +67,10 @@ fn cuh_linear_response_returns_valid_matrices_and_positive_u() {
     let chi = res.chi[(0, 0)];
     let u = res.u_matrix[(0, 0)];
 
-    println!("CuH chi0: {chi0:.6} Ha^-1, chi: {chi:.6} Ha^-1, U: {u:.6} Ha ({} eV)", u * HARTREE_EV);
+    println!(
+        "CuH chi0: {chi0:.6} Ha^-1, chi: {chi:.6} Ha^-1, U: {u:.6} Ha ({} eV)",
+        u * HARTREE_EV
+    );
 
     // Occupations must fall as shift rises -> chi0 and chi negative
     assert!(chi0 < 0.0, "chi0 must be negative");
@@ -76,13 +79,23 @@ fn cuh_linear_response_returns_valid_matrices_and_positive_u() {
     assert!(chi > chi0, "dielectric screening must reduce response");
     // Therefore U = (chi0)^-1 - (chi)^-1 > 0
     assert!(u > 0.0, "screened Hubbard U must be positive");
-    assert!((res.u_charge[(0, 0)] - u).abs() < 1e-12, "u_charge equals u for 1 channel");
+    assert!(
+        (res.u_charge[(0, 0)] - u).abs() < 1e-12,
+        "u_charge equals u for 1 channel"
+    );
 
     // Also verify that sum_over_states_chi0 agrees closely with finite-difference chi0
     let analytic_chi0 = sum_over_states_chi0(&c, &state).unwrap();
     let diff = (analytic_chi0[(0, 0)] - chi0).abs();
-    println!("CuH sum-over-states chi0: {:.6}, diff from FD: {:.3e}", analytic_chi0[(0, 0)], diff);
-    assert!(diff < 1e-3, "sum-over-states chi0 must match finite difference");
+    println!(
+        "CuH sum-over-states chi0: {:.6}, diff from FD: {:.3e}",
+        analytic_chi0[(0, 0)],
+        diff
+    );
+    assert!(
+        diff < 1e-3,
+        "sum-over-states chi0 must match finite difference"
+    );
 }
 
 #[test]
@@ -111,18 +124,29 @@ fn nio_linear_response_spin_resolved_kernel_and_j() {
     assert!(u_ni0 > 0.0, "effective U on Ni(0) must be positive");
     assert!(u_ni1 > 0.0, "effective U on Ni(1) must be positive");
     // Due to symmetry between the two Ni sites, their U should be very close
-    assert!((u_ni0 - u_ni1).abs() < 0.2, "Ni sites must have similar U values");
+    assert!(
+        (u_ni0 - u_ni1).abs() < 0.2,
+        "Ni sites must have similar U values"
+    );
 
     // j_response should be Some with 2 entries
     let j = res.j_response.as_ref().unwrap();
     assert_eq!(j.len(), 2);
-    println!("NiO j_response: {:.3} eV, {:.3} eV", j[0] * HARTREE_EV, j[1] * HARTREE_EV);
+    println!(
+        "NiO j_response: {:.3} eV, {:.3} eV",
+        j[0] * HARTREE_EV,
+        j[1] * HARTREE_EV
+    );
 
     // Compare with sum-over-states chi0
     let sos_chi0 = sum_over_states_chi0(&c, &state).unwrap();
     assert_eq!(sos_chi0.nrows(), 4);
     for i in 0..4 {
-        println!("NiO diag chi0[{i}] FD: {:.4}, SOS: {:.4}", res.chi0[(i, i)], sos_chi0[(i, i)]);
+        println!(
+            "NiO diag chi0[{i}] FD: {:.4}, SOS: {:.4}",
+            res.chi0[(i, i)],
+            sos_chi0[(i, i)]
+        );
         assert!(res.chi0[(i, i)] < 0.0);
         assert!(sos_chi0[(i, i)] < 0.0);
     }

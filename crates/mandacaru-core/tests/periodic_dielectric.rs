@@ -23,7 +23,7 @@ use mandacaru_core::{
     periodic::{
         bloch_mesh::{MeshIndex, Sampler},
         optics::{
-            dielectric::{dielectric, pairs, Kernel, Request},
+            dielectric::{dielectric, pairs, Dielectric, Kernel, Request},
             momentum::transitions,
             realtime::{self, propagate},
         },
@@ -251,7 +251,12 @@ fn the_long_range_kernel_reduces_to_the_local_fields_and_raises_epsilon() {
     let sampler = solved.sampler();
     let mesh = MeshIndex::new([2, 1, 1], [0.; 3]).unwrap();
     let frequencies = vec![0.05, 0.2];
-    let hartree = dielectric(&sampler, &mesh, &Request::new(frequencies.clone(), 0.05, Kernel::Hartree)).unwrap();
+    let hartree = dielectric(
+        &sampler,
+        &mesh,
+        &Request::new(frequencies.clone(), 0.05, Kernel::Hartree),
+    )
+    .unwrap();
     let mut request = Request::new(frequencies.clone(), 0.05, Kernel::LongRange);
     request.alpha = Some(0.);
     let zero = dielectric(&sampler, &mesh, &request).unwrap();
@@ -276,10 +281,16 @@ fn the_long_range_kernel_reduces_to_the_local_fields_and_raises_epsilon() {
     assert!(strong.static_tensor[0][0] > weak.static_tensor[0][0]);
     assert!(weak.static_tensor[0][0] > hartree.static_tensor[0][0]);
     request.alpha = Some(4. * PI);
-    assert!(dielectric(&sampler, &mesh, &request).unwrap_err().to_string().contains("alpha"));
+    assert!(dielectric(&sampler, &mesh, &request)
+        .unwrap_err()
+        .to_string()
+        .contains("alpha"));
     let mut wrong = Request::new(frequencies, 0.05, Kernel::Hartree);
     wrong.alpha = Some(0.1);
-    assert!(dielectric(&sampler, &mesh, &wrong).unwrap_err().to_string().contains("long-range"));
+    assert!(dielectric(&sampler, &mesh, &wrong)
+        .unwrap_err()
+        .to_string()
+        .contains("long-range"));
 }
 
 #[test]
@@ -518,10 +529,14 @@ fn unsupported_requests_are_refused_by_name() {
     let mut meta = lih("lda-sr");
     meta.functional = "r2scan";
     let meta = solve(&meta);
-    assert!(dielectric(&meta.sampler(), &mesh, &Request::new(vec![0.], 0.05, Kernel::Hartree))
-        .unwrap_err()
-        .to_string()
-        .contains("meta-GGA"));
+    assert!(dielectric(
+        &meta.sampler(),
+        &mesh,
+        &Request::new(vec![0.], 0.05, Kernel::Hartree)
+    )
+    .unwrap_err()
+    .to_string()
+    .contains("meta-GGA"));
     let mut negative = Request::new(vec![0.], -0.1, Kernel::Independent);
     assert!(dielectric(&sampler, &mesh, &negative)
         .unwrap_err()
@@ -612,16 +627,27 @@ fn the_dielectric_function_of_silicon_converges_with_the_mesh() {
     let meshes: Vec<usize> = std::env::var("MESHES")
         .map(|v| v.split(',').map(|m| m.parse().unwrap()).collect())
         .unwrap_or_else(|_| vec![4, 6, 8]);
-    let scf: usize = std::env::var("SCF").map(|v| v.parse().unwrap()).unwrap_or(4);
+    let scf: usize = std::env::var("SCF")
+        .map(|v| v.parse().unwrap())
+        .unwrap_or(4);
     for size in &sizes {
         let solved = solve_sized(&silicon(scf), "raw", size);
         let sampler = solved.sampler();
         for &n in &meshes {
             let started = std::time::Instant::now();
             let mesh = MeshIndex::new([n; 3], [0.; 3]).unwrap();
-            let independent =
-                pairs(&sampler, &mesh, &Request::new(vec![0.], 0., Kernel::Independent)).unwrap();
-            let local = pairs(&sampler, &mesh, &Request::new(vec![0.], 0., Kernel::Hartree)).unwrap();
+            let independent = pairs(
+                &sampler,
+                &mesh,
+                &Request::new(vec![0.], 0., Kernel::Independent),
+            )
+            .unwrap();
+            let local = pairs(
+                &sampler,
+                &mesh,
+                &Request::new(vec![0.], 0., Kernel::Hartree),
+            )
+            .unwrap();
             let e_ip = independent.tensor(C64::new(0., 0.)).unwrap()[0][0].re;
             let e_lf = local.tensor(C64::new(0., 0.)).unwrap()[0][0].re;
             eprintln!(
@@ -690,7 +716,8 @@ fn the_three_band_sums_of_silicon_converge_with_the_mesh() {
         let bands: Vec<usize> = (0..crystal.bands()).collect();
         let o = (crystal.electrons / 2.).round() as usize;
         let g = sampler.degeneracy();
-        let shift = sampler.reciprocal.try_inverse().unwrap() * nalgebra::Vector3::new(strength, 0., 0.);
+        let shift =
+            sampler.reciprocal.try_inverse().unwrap() * nalgebra::Vector3::new(strength, 0., 0.);
         for &n in &meshes {
             let started = std::time::Instant::now();
             let mesh = MeshIndex::new([n; 3], [0.; 3]).unwrap();
@@ -711,11 +738,21 @@ fn the_three_band_sums_of_silicon_converge_with_the_mesh() {
                 let weights = vec![1. / fractional.len() as f64; fractional.len()];
                 let points = setup.matrices_at(ctx, &fractional, &weights).unwrap();
                 for j in 0..last - first {
-                    let cart = |f: [f64; 3]| -> [f64; 3] { (sampler.reciprocal * nalgebra::Vector3::from(f)).into() };
-                    let here = Frame::from_point(crystal, &solved.state, &points[3 * j], 0, &bands).unwrap();
-                    let p = &band_momenta(ctx, setup, &grid_mesh, &here, cart(fractional[3 * j]), &one_center)
-                        .unwrap()
-                        .matrices[0];
+                    let cart = |f: [f64; 3]| -> [f64; 3] {
+                        (sampler.reciprocal * nalgebra::Vector3::from(f)).into()
+                    };
+                    let here = Frame::from_point(crystal, &solved.state, &points[3 * j], 0, &bands)
+                        .unwrap();
+                    let p = &band_momenta(
+                        ctx,
+                        setup,
+                        &grid_mesh,
+                        &here,
+                        cart(fractional[3 * j]),
+                        &one_center,
+                    )
+                    .unwrap()
+                    .matrices[0];
                     let e = here.energies.as_slice();
                     for v in 0..o {
                         for c in o..bands.len() {
@@ -724,9 +761,14 @@ fn the_three_band_sums_of_silicon_converge_with_the_mesh() {
                     }
                     for (s, sign) in [1f64, -1.].iter().enumerate() {
                         let at = 3 * j + 1 + s;
-                        let there = Frame::from_point(crystal, &solved.state, &points[at], 0, &bands).unwrap();
-                        let overlap = sampler.overlap(&here, &there, [sign * strength, 0., 0.]).unwrap();
-                        let amplitudes = Matrix::from_fn(bands.len(), o, |m, v| overlap[(v, m)].conj());
+                        let there =
+                            Frame::from_point(crystal, &solved.state, &points[at], 0, &bands)
+                                .unwrap();
+                        let overlap = sampler
+                            .overlap(&here, &there, [sign * strength, 0., 0.])
+                            .unwrap();
+                        let amplitudes =
+                            Matrix::from_fn(bands.len(), o, |m, v| overlap[(v, m)].conj());
                         let (values, vectors) = eigen(amplitudes.adjoint() * &amplitudes).unwrap();
                         for value in &values {
                             defect = defect.max((1. - value).abs());
@@ -739,9 +781,16 @@ fn the_three_band_sums_of_silicon_converge_with_the_mesh() {
                             * vectors.adjoint();
                         let moved = &amplitudes * root;
                         let levels = there.energies.as_slice();
-                        let pt = &band_momenta(ctx, setup, &grid_mesh, &there, cart(fractional[at]), &one_center)
-                            .unwrap()
-                            .matrices[0];
+                        let pt = &band_momenta(
+                            ctx,
+                            setup,
+                            &grid_mesh,
+                            &there,
+                            cart(fractional[at]),
+                            &one_center,
+                        )
+                        .unwrap()
+                        .matrices[0];
                         let current = (moved.adjoint() * pt * &moved).trace().re;
                         let ground: f64 = (0..o).map(|v| pt[(v, v)].re).sum();
                         mixed += 0.5 * w * g * (current - ground) / (sign * strength);
@@ -762,4 +811,379 @@ fn the_three_band_sums_of_silicon_converge_with_the_mesh() {
             );
         }
     }
+}
+
+/// T8 crystals, the collinear limit: LiH on `lda-fr` solved with two-component states and its
+/// spin-orbit couplings scaled to zero (a spinor crystal without spin-orbit coupling,
+/// Kramers-unpolarized) has the collinear tensor, independent and with local fields, the same
+/// first moment and four times the transitions.
+#[test]
+fn a_spinor_crystal_without_spin_orbit_coupling_has_the_collinear_tensor() {
+    let collinear = solve_without_spin_orbit(&lih("lda-fr"));
+    let spinor = solve_without_spin_orbit(&Cell {
+        spinor: true,
+        ..lih("lda-fr")
+    });
+    let mesh = MeshIndex::new([2, 1, 1], [0.; 3]).unwrap();
+    let frequencies = vec![0., 0.1, 0.25, 0.4];
+    for kernel in [Kernel::Independent, Kernel::Hartree] {
+        let mut request = Request::new(frequencies.clone(), 0.05, kernel);
+        request.cutoff = 2.;
+        let a = dielectric(&collinear.sampler(), &mesh, &request).unwrap();
+        let b = dielectric(&spinor.sampler(), &mesh, &request).unwrap();
+        let (worst, moment) = differences(&a, &b);
+        eprintln!(
+            "LiH {}: spinor against collinear, tensor {worst:.2e}, first moment {moment:.2e} \
+             (eps_xx(0) {:.10} / {:.10}); transitions {} / {}, windows {:?} / {:?}",
+            kernel.name(),
+            a.static_tensor[0][0],
+            b.static_tensor[0][0],
+            a.transitions,
+            b.transitions,
+            a.window,
+            b.window
+        );
+        assert!(worst < 1e-8, "{}: {worst:e}", kernel.name());
+        assert!(moment < 1e-8, "{}: {moment:e}", kernel.name());
+        assert_eq!(b.transitions, 4 * a.transitions);
+    }
+}
+
+/// The largest relative difference of two tensors over every frequency and element, and of
+/// their first moments' diagonals.
+fn differences(a: &Dielectric, b: &Dielectric) -> (f64, f64) {
+    let mut worst = 0f64;
+    for (x, y) in a.tensor.iter().zip(&b.tensor) {
+        for i in 0..3 {
+            for j in 0..3 {
+                worst = worst.max((x[i][j] - y[i][j]).norm() / x[0][0].norm());
+            }
+        }
+    }
+    let moment = (0..3)
+        .map(|i| (a.sum_rule[i][i] - b.sum_rule[i][i]).abs() / a.sum_rule[i][i])
+        .fold(0f64, f64::max);
+    (worst, moment)
+}
+
+/// T8 crystals with spin-orbit coupling, the finite-field gate of the term's velocity on solid
+/// xenon (`lda-fr`, SZP, at a k-point of no symmetry): `i [h^SO, r]` (`spin_orbit::velocity`)
+/// is the derivative of the gauge-transformed term `exp(-i A.r) h^SO exp(i A.r)` along `A`, built
+/// from projectors times their gauge phase (`phased_projections`), by central differences at
+/// two steps and their Richardson value; element by element in the basis, and between the bands
+/// (`c^dagger v c`, the part `band_momenta` adds). The band coefficients are those of the raw
+/// `(spin, function)` basis the velocity is assembled in: `c^dagger S c = 1`; and the term at
+/// zero field is the Hamiltonian's own spin-orbit matrix at that k (`matrices_at`), so the
+/// velocity and the Hamiltonian read one operator at the same k.
+#[test]
+fn the_spin_orbit_velocity_is_the_field_derivative_of_the_gauge_transformed_term() {
+    use mandacaru_core::{
+        models::spin_orbit::{channels, pair, Projectors},
+        periodic::{
+            setup::{
+                spheres::phased_projections,
+                spin_orbit::{labels, velocity},
+            },
+            wannier::sampling::Frame,
+        },
+    };
+    use nalgebra::{DMatrix, Vector3};
+    let solved = solve_scaled_spin_orbit(&xenon("lda-fr", true), "SZP", 1.);
+    let (ctx, setup) = (&solved.ctx, &*solved.setup);
+    let sampler = solved.sampler();
+    let fractional = [0.13, 0.27, 0.41];
+    let k: [f64; 3] = (sampler.reciprocal * Vector3::from(fractional)).into();
+    let (projectors, couplings) = (&setup.spin_orbit_projectors, &setup.spin_orbit_couplings);
+    let m = setup.shells.functions();
+    let n = 2 * m;
+    let found = channels(ctx, &labels(projectors), couplings, false).unwrap();
+    let term = |field: [f64; 3]| {
+        let c = phased_projections(ctx, &setup.shells, &setup.lattice, &[k], projectors, field)
+            .unwrap();
+        let h = pair(
+            ctx,
+            Projectors {
+                left: c.as_slice(),
+                right: c.as_slice(),
+                rows: m,
+                columns: m,
+                count: projectors.len(),
+            },
+            &found,
+            false,
+        )
+        .unwrap();
+        DMatrix::from_row_slice(n, n, h.as_slice())
+    };
+    let analytic = velocity(ctx, &setup.shells, &setup.lattice, k, projectors, couplings).unwrap();
+    let points = setup.matrices_at(ctx, &[fractional], &[1.]).unwrap();
+    let bands: Vec<usize> = (0..solved.crystal.bands()).collect();
+    let frame = Frame::from_point(&solved.crystal, &solved.state, &points[0], 0, &bands).unwrap();
+    let c = &frame.coefficients;
+    let overlap = DMatrix::from_fn(n, n, |i, j| {
+        if i / m == j / m {
+            points[0].overlap[(i % m, j % m)]
+        } else {
+            C64::new(0., 0.)
+        }
+    });
+    let metric = (c.adjoint() * overlap * c - DMatrix::<C64>::identity(n, n)).camax();
+    let mut worst = [0f64; 2];
+    for axis in 0..3 {
+        let v = DMatrix::from_row_slice(n, n, analytic[axis].as_slice());
+        let step = |a: f64| {
+            let along = |sign: f64| std::array::from_fn(|i| if i == axis { sign * a } else { 0. });
+            (term(along(1.)) - term(along(-1.))) / C64::new(2. * a, 0.)
+        };
+        let (coarse, fine) = (step(2e-3), step(1e-3));
+        let richardson = (&fine * C64::new(4., 0.) - &coarse) / C64::new(3., 0.);
+        let scale = v.camax();
+        let basis = [
+            (&coarse - &v).camax(),
+            (&fine - &v).camax(),
+            (&richardson - &v).camax(),
+        ]
+        .map(|x| x / scale);
+        let banded =
+            (c.adjoint() * (&richardson - &v) * c).camax() / (c.adjoint() * &v * c).camax();
+        let hermitian = (&v - v.adjoint()).camax() / scale;
+        eprintln!(
+            "Xe SZP axis {axis}: largest |v^SO| {scale:.6e}; field difference against it, steps \
+             2e-3 / 1e-3 / Richardson {:.2e} / {:.2e} / {:.2e} (relative); bands {banded:.2e}; \
+             anti-Hermitian {hermitian:.1e}",
+            basis[0], basis[1], basis[2]
+        );
+        worst = [worst[0].max(basis[2]), worst[1].max(banded)];
+        assert!(hermitian < 1e-14, "{hermitian:e}");
+    }
+    let own = points[0]
+        .spin_orbit
+        .as_ref()
+        .expect("a spinor point has its spin-orbit matrix");
+    let same = (term([0.; 3]) - own).camax() / own.camax();
+    eprintln!("Xe SZP: c^dagger S c - 1 {metric:.2e}; the zero-field term against the Hamiltonian's {same:.2e} (largest |h^SO| {:.6e})", own.camax());
+    assert!(worst[0] < 1e-8 && worst[1] < 1e-8, "{worst:?}");
+    assert!(metric < 1e-10, "{metric:e}");
+    assert!(same < 1e-12, "{same:e}");
+}
+
+/// T8 crystals with spin-orbit coupling on solid xenon (`lda-fr`, SZP, at Gamma): with the couplings
+/// scaled to zero the spinor tensor is the collinear one (independent and with local fields),
+/// and at full coupling the dielectric function runs with the term's velocity in `P`: its tensor
+/// is symmetric (time reversal), its static limit and onset are printed beside the collinear
+/// ones, and the first moment is the band sum of the same transitions.
+#[test]
+#[ignore = "slow (17 s with 3 threads, timed alone 2026-11-16: three xenon SCFs): run: cargo test --profile release-test -p mandacaru-core --test periodic_dielectric -- --ignored xenon_with_spin_orbit_coupling"]
+fn xenon_with_spin_orbit_coupling_has_its_dielectric_function_and_the_collinear_limit() {
+    let size = "SZP";
+    let collinear = solve_edited(
+        &xenon("lda-fr", false),
+        "raw",
+        size,
+        Context::new(Some(2), 1 << 30).unwrap(),
+        true,
+        |_| {},
+    );
+    let zero = solve_scaled_spin_orbit(&xenon("lda-fr", true), size, 0.);
+    let coupled = solve_scaled_spin_orbit(&xenon("lda-fr", true), size, 1.);
+    // The 5p spin-orbit splitting at Gamma, with and without the term.
+    for (label, solved) in [("zero coupling", &zero), ("full coupling", &coupled)] {
+        let points = solved
+            .setup
+            .matrices_at(&solved.ctx, &[[0.; 3]], &[1.])
+            .unwrap();
+        let bands: Vec<usize> = (0..solved.crystal.bands()).collect();
+        let frame = mandacaru_core::periodic::wannier::sampling::Frame::from_point(
+            &solved.crystal,
+            &solved.state,
+            &points[0],
+            0,
+            &bands,
+        )
+        .unwrap();
+        let levels: Vec<String> = frame.energies.as_slice()[..10]
+            .iter()
+            .map(|e| format!("{:.5}", e * 27.211386245988))
+            .collect();
+        eprintln!("Xe {size} Gamma levels ({label}), eV: {}", levels.join(" "));
+    }
+    let mesh = MeshIndex::new([1, 1, 1], [0.; 3]).unwrap();
+    let frequencies = vec![0., 0.2, 0.35, 0.5];
+    for kernel in [Kernel::Independent, Kernel::Hartree] {
+        let mut request = Request::new(frequencies.clone(), 0.05, kernel);
+        request.cutoff = 1.5;
+        let a = dielectric(&collinear.sampler(), &mesh, &request).unwrap();
+        let b = dielectric(&zero.sampler(), &mesh, &request).unwrap();
+        let s = dielectric(&coupled.sampler(), &mesh, &request).unwrap();
+        let (worst, moment) = differences(&a, &b);
+        let symmetric = s
+            .tensor
+            .iter()
+            .flat_map(|t| (0..3).flat_map(move |i| (0..3).map(move |j| (t[i][j] - t[j][i]).norm())))
+            .fold(0f64, f64::max)
+            / s.tensor[0][0][0].norm();
+        let band_sum = transitions(&coupled.sampler(), &mesh, [1., 0., 0.]).unwrap();
+        let n_dia = band_sum.diamagnetic(1).total;
+        eprintln!(
+            "Xe {size} {}: zero coupling against collinear, tensor {worst:.2e}, first moment \
+             {moment:.2e}; full coupling eps_xx(0) {:.6} (collinear {:.6}), onset {:.6} / {:.6} \
+             Ha, first moment {:.6} (band sum {n_dia:.6}, collinear {:.6}), symmetric to \
+             {symmetric:.1e}, transitions {} / {}",
+            kernel.name(),
+            s.static_tensor[0][0],
+            a.static_tensor[0][0],
+            s.onset,
+            a.onset,
+            s.sum_rule[0][0],
+            a.sum_rule[0][0],
+            s.transitions,
+            a.transitions
+        );
+        assert!(worst < 1e-8, "{}: {worst:e}", kernel.name());
+        assert!(moment < 1e-8, "{}: {moment:e}", kernel.name());
+        assert!(symmetric < 1e-8, "{symmetric:e}");
+        if kernel == Kernel::Independent {
+            assert!((s.sum_rule[0][0] - n_dia).abs() < 1e-8 * n_dia);
+        }
+    }
+}
+
+/// The default window (`bands=None` of the dielectric function, `TDDFT_PLAN.md` section 4.5,
+/// DECISIONS.md 2026-11-16 fifteenth session) on the H2 chain DZP (Gamma). With the static
+/// criterion off (`tolerance` 1) it is the smallest window that holds every transition up to the
+/// top of the energy range: for four tops the windowed transitions at or below the top are
+/// exactly the full set's, one band fewer of either kind (where the window holds more than one)
+/// loses one of them, and a top above every transition gives every band. With the static
+/// criterion at `tolerance` the transitions it omits carry at most that share of the
+/// independent-particle `eps(0) - 1` (its trace) and one conduction band fewer carries more; at
+/// the shipped [`STATIC_TOLERANCE`] the window's static tensor is every band's.
+#[test]
+fn the_default_window_holds_the_range_and_the_static_limit() {
+    use mandacaru_core::periodic::optics::dielectric::{default_window, Pairs, STATIC_TOLERANCE};
+    let solved = solve_sized(&h2_chain("lda-sr", "lda"), "raw", "DZP");
+    let sampler = solved.sampler();
+    let mesh = MeshIndex::new([1, 1, 1], [0.; 3]).unwrap();
+    let request = Request::new(vec![0.], 0.05, Kernel::Independent);
+    let all = pairs(&sampler, &mesh, &request).unwrap();
+    let below = |p: &Pairs, top: f64| p.energies.iter().filter(|e| **e <= top).count();
+    let mut sorted = all.energies.clone();
+    sorted.sort_by(f64::total_cmp);
+    let last = sorted[sorted.len() - 1];
+    let windowed = |window: (usize, usize)| {
+        let mut r = request.clone();
+        r.window = Some(window);
+        pairs(&sampler, &mesh, &r).unwrap()
+    };
+    let trace = |p: &Pairs| {
+        let t = p.tensor(C64::new(0., 0.)).unwrap();
+        (0..3).map(|a| t[a][a].re - 1.).sum::<f64>()
+    };
+    let whole = trace(&all);
+    for top in [
+        sorted[0] + 1e-9,
+        sorted[sorted.len() / 3],
+        sorted[2 * sorted.len() / 3],
+        last,
+    ] {
+        let window = default_window(&sampler, &mesh, top, 0., 1.).unwrap();
+        let held = windowed(window);
+        let lost: Vec<usize> = [(window.0 - 1, window.1), (window.0, window.1 - 1)]
+            .into_iter()
+            .filter(|w| w.0 >= 1 && w.1 >= 1)
+            .map(|w| below(&all, top) - below(&windowed(w), top))
+            .collect();
+        eprintln!(
+            "H2 chain DZP: top {top:.6} Ha, range window {window:?} of {:?}, transitions at or \
+             below it {} of {} (all: {}), one band fewer loses {lost:?}; static eps_xx {:.6} \
+             against every band's {:.6}",
+            all.window[0],
+            below(&held, top),
+            held.energies.len(),
+            below(&all, top),
+            held.tensor(C64::new(0., 0.)).unwrap()[0][0].re,
+            all.tensor(C64::new(0., 0.)).unwrap()[0][0].re
+        );
+        assert_eq!(below(&held, top), below(&all, top));
+        assert!(lost.iter().all(|&n| n > 0), "{lost:?}");
+    }
+    assert_eq!(
+        default_window(&sampler, &mesh, last + 1., 0., 1.).unwrap(),
+        all.window[0]
+    );
+    for tolerance in [1e-1, 1e-2, 1e-3, STATIC_TOLERANCE] {
+        let window = default_window(&sampler, &mesh, sorted[0] + 1e-9, 0., tolerance).unwrap();
+        let omitted = 1. - trace(&windowed(window)) / whole;
+        let fewer = (window.1 > 1).then(|| 1. - trace(&windowed((window.0, window.1 - 1))) / whole);
+        eprintln!(
+            "H2 chain DZP, lowest top: tolerance {tolerance:.0e}, window {window:?}, omitted \
+             share of eps(0) - 1 {omitted:.3e}, one conduction band fewer {fewer:?}"
+        );
+        assert!(omitted <= tolerance * (1. + 1e-9), "{omitted:e}");
+        assert!(fewer.is_none_or(|f| f > tolerance), "{fewer:?}");
+    }
+}
+
+/// The refusal of a window above the memory budget names the largest window that fits
+/// (`dielectric::largest_window`, the most transitions per mesh point, the larger conduction
+/// count on a tie): the search on its own, then end to end on LiH DZP with local fields, the
+/// context's free memory lowered step by step by a held reservation until the requested window's
+/// columns (reserved before any other work) no longer fit. Under the same reservation the named
+/// window's columns fit and one more conduction band's do not.
+#[test]
+fn a_window_above_the_memory_budget_names_the_largest_that_fits() {
+    use mandacaru_core::periodic::optics::dielectric::largest_window;
+    assert_eq!(largest_window(4, 9, |v, c| v * c <= 12), Some((2, 6)));
+    assert_eq!(largest_window(4, 9, |v, c| v <= 1 && c <= 3), Some((1, 3)));
+    assert_eq!(largest_window(4, 9, |_, _| false), None);
+    let solved = solve_sized(&lih("lda-sr"), "raw", "DZP");
+    let sampler = solved.sampler();
+    let ctx = &solved.crystal.context;
+    let mesh = MeshIndex::new([2, 1, 1], [0.; 3]).unwrap();
+    let mut request = Request::new(vec![0.], 0.05, Kernel::Hartree);
+    request.cutoff = 4.;
+    let full = pairs(&sampler, &mesh, &request).unwrap();
+    let stored = full.energies.len() * 2 * full.rows * 16;
+    let mut free = 2 * stored;
+    let (message, hog) = loop {
+        assert!(free > 0, "the columns never failed first");
+        let hog = ctx
+            .reserve(ctx.memory_limit() - ctx.memory_used() - free)
+            .unwrap();
+        // Above the columns' size the later grid-sized work may fail instead: keep lowering.
+        if let Err(e) = pairs(&sampler, &mesh, &request) {
+            if e.to_string().contains("dielectric function of") {
+                break (e.to_string(), hog);
+            }
+        }
+        drop(hog);
+        free = free * 7 / 8;
+    };
+    let named = message
+        .split("bands=(")
+        .nth(2)
+        .and_then(|rest| rest.split(')').next())
+        .map(|pair| {
+            let mut it = pair.split(", ").map(|x| x.parse::<usize>().unwrap());
+            (it.next().unwrap(), it.next().unwrap())
+        })
+        .unwrap_or_else(|| panic!("no window named: {message}"));
+    let stored_fits = |window: (usize, usize)| {
+        let mut smaller = request.clone();
+        smaller.window = Some(window);
+        pairs(&sampler, &mesh, &smaller)
+            .err()
+            .is_none_or(|e| !e.to_string().contains("dielectric function of"))
+    };
+    let (named_fits, wider_fits) = (stored_fits(named), stored_fits((named.0, named.1 + 1)));
+    eprintln!(
+        "LiH DZP: every band {:?} ({} transitions, {} rows, columns {stored} B); refused at {free} \
+         B free: {message}; under it the named window's columns fit: {named_fits}, one more \
+         conduction band's: {wider_fits}",
+        full.window,
+        full.energies.len(),
+        full.rows,
+    );
+    drop(hog);
+    assert!(named.0 * named.1 < full.window[0].0 * full.window[0].1);
+    assert!(named_fits && !wider_fits);
 }

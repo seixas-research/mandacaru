@@ -2,12 +2,14 @@ use super::{array, copy, error, Array};
 use mandacaru_core::{
     math::storage::Precision,
     quantum::{
-        optimizer, Amplitude, Basis, CachedProblem, Encoding, Operator, SolveOptions, Space, State,
-        C64,
+        optimizer, Amplitude, Basis, Encoding, Operator, QuantumProblem, SolveOptions, Space,
+        State, C64,
     },
     Context, Reservation,
 };
-use numpy::{Complex32, PyReadonlyArray1, PyReadonlyArray2, PyReadonlyArrayDyn, PyUntypedArrayMethods};
+use numpy::{
+    Complex32, PyReadonlyArray1, PyReadonlyArray2, PyReadonlyArrayDyn, PyUntypedArrayMethods,
+};
 use pyo3::{
     exceptions::{PyTypeError, PyValueError},
     prelude::*,
@@ -25,7 +27,14 @@ fn call_executor(
     Python::attach(|py| {
         let batch: Vec<_> = requests
             .iter()
-            .map(|r| (r.labels.clone(), r.angles.clone(), r.observables.clone(), r.priced))
+            .map(|r| {
+                (
+                    r.labels.clone(),
+                    r.angles.clone(),
+                    r.observables.clone(),
+                    r.priced,
+                )
+            })
             .collect();
         let response = executor.bind(py).call1((batch,))?;
         if let Ok(stop) = response.get_item("stop") {
@@ -43,7 +52,9 @@ fn call_executor(
             }
             Ok(Response::States(owned))
         } else {
-            Ok(Response::Expectations(response.get_item("expectations")?.extract()?))
+            Ok(Response::Expectations(
+                response.get_item("expectations")?.extract()?,
+            ))
         }
     })
 }
@@ -89,7 +100,7 @@ pub(crate) fn space(register_free: bool, sector: bool) -> Space {
     }
 }
 /// Build the sparse Hamiltonian matrix of `problem` (refused when it is register-free).
-pub(crate) fn attach_sparse(py: Python<'_>, problem: &mut CachedProblem) -> PyResult<()> {
+pub(crate) fn attach_sparse(py: Python<'_>, problem: &mut QuantumProblem) -> PyResult<()> {
     let matrix = py
         .detach(|| {
             mandacaru_core::quantum::sparse::SparseMatrix::new(
@@ -295,9 +306,14 @@ impl PyOperator {
     }
     /// `(lo, hi)`: `window`, or the Gershgorin bound widened by `1 + 2/2^t` (`dynamics::qpe_window`).
     #[pyo3(signature=(evaluation_qubits, window=None))]
-    fn qpe_window(&self, evaluation_qubits: usize, window: Option<[f64; 2]>) -> PyResult<(f64, f64)> {
-        let [lo, hi] = mandacaru_core::quantum::dynamics::qpe_window(&self.inner, evaluation_qubits, window)
-            .map_err(error)?;
+    fn qpe_window(
+        &self,
+        evaluation_qubits: usize,
+        window: Option<[f64; 2]>,
+    ) -> PyResult<(f64, f64)> {
+        let [lo, hi] =
+            mandacaru_core::quantum::dynamics::qpe_window(&self.inner, evaluation_qubits, window)
+                .map_err(error)?;
         Ok((lo, hi))
     }
     #[getter]
@@ -441,12 +457,136 @@ pub fn optimizer_evaluation_bound(
 }
 
 #[pyclass(name = "QuantumProblem", module = "mandacaru._native", frozen)]
-pub struct PyProblem {
-    pub inner: CachedProblem,
+pub struct PyQuantumProblem {
+    pub inner: QuantumProblem,
 }
+
+#[allow(clippy::too_many_arguments)]
+fn build_search_options(
+    max_steps: usize,
+    transfer_steps: Option<usize>,
+    max_length: usize,
+    move_weights: [f64; 3],
+    temperatures: [f64; 2],
+    length_penalty: f64,
+    proposal_temperature: f64,
+    proposal: &str,
+    warm_start: bool,
+    replace_start: &str,
+    screen_insertions: usize,
+    record: bool,
+    seed: u64,
+    optimizer: &str,
+    max_iterations: usize,
+    max_evaluations: usize,
+    tolerance: Option<f64>,
+    track_best: bool,
+    replicas: usize,
+    replica_spacing: f64,
+    carry_hessian: bool,
+    memoize_warm: bool,
+    early_reject: bool,
+    strip_zero_operators: bool,
+    seeded_temperatures: Option<[f64; 2]>,
+    sparse_kernels: bool,
+    screen_hamiltonian_terms: Option<usize>,
+) -> PyResult<mandacaru_core::quantum::search::vasqa::SearchOptions> {
+    if !["gradient", "uniform"].contains(&proposal) || !["zero", "inherit"].contains(&replace_start)
+    {
+        return Err(PyValueError::new_err(
+            "search proposals are gradient or uniform; replacement starts are zero or inherit",
+        ));
+    }
+    Ok(mandacaru_core::quantum::search::vasqa::SearchOptions {
+        max_steps,
+        transfer_steps,
+        max_length,
+        move_weights,
+        temperatures,
+        length_penalty,
+        proposal_temperature,
+        uniform: proposal == "uniform",
+        warm_start,
+        replace_inherit: replace_start == "inherit",
+        screen_insertions,
+        record,
+        seed,
+        optimizer: optimizer::Options {
+            method: optimizer::Method::parse(optimizer).map_err(error)?,
+            max_iterations,
+            max_evaluations,
+            tolerance,
+            seed,
+            track_best,
+            ..Default::default()
+        },
+        replicas,
+        replica_spacing,
+        carry_hessian,
+        memoize_warm,
+        sparse_kernels,
+        early_reject,
+        strip_zero_operators,
+        seeded_temperatures,
+        screen_hamiltonian_terms,
+        record_curvatures: false,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn search_details_json(
+    acceptance: [(usize, usize); 3],
+    optimal_cost: f64,
+    best_energy: f64,
+    best_energy_indices: &[usize],
+    best_energy_parameters: &[f64],
+    final_energy: f64,
+    final_indices: &[usize],
+    final_parameters: &[f64],
+    num_architectures: usize,
+    num_screenings: usize,
+    failures: &[(usize, String)],
+    seed: u64,
+    num_importance_evaluations: usize,
+    num_gradient_evaluations: usize,
+    replicas: usize,
+    swap_acceptance: (usize, usize),
+    swaps: Vec<serde_json::Value>,
+    steps: Vec<serde_json::Value>,
+    records: Vec<serde_json::Value>,
+    checkpoint: &mandacaru_core::quantum::search::vasqa::SearchCheckpoint,
+) -> PyResult<String> {
+    let mut details = serde_json::json!({
+        "acceptance_by_move": acceptance,
+        "optimal_cost_ha": optimal_cost,
+        "best_energy_ha": best_energy,
+        "best_energy_indices": best_energy_indices,
+        "best_energy_parameters": best_energy_parameters,
+        "final_energy_ha": final_energy,
+        "final_indices": final_indices,
+        "final_parameters": final_parameters,
+        "num_architectures": num_architectures,
+        "num_screenings": num_screenings,
+        "optimizer_failures": failures,
+        "seed": seed,
+        "completed": true,
+        "num_importance_evaluations": num_importance_evaluations,
+        "num_gradient_evaluations": num_gradient_evaluations,
+        "search_chain": checkpoint.to_json(),
+    });
+    if replicas > 1 {
+        details["swap_acceptance"] = serde_json::json!(swap_acceptance);
+        details["swaps"] = serde_json::Value::Array(swaps);
+    }
+    details["steps"] = serde_json::Value::Array(steps);
+    details["records"] = serde_json::Value::Array(records);
+    serde_json::to_string(&details).map_err(|e| PyValueError::new_err(e.to_string()))
+}
+
 #[pymethods]
-impl PyProblem {
-    #[pyo3(signature=(*,max_steps=200,max_length=20,move_weights=[1.0;3],temperatures=[0.003674932217565499,0.00003674932217565499],length_penalty=0.0,proposal_temperature=0.1,proposal="gradient",warm_start=true,replace_start="zero",screen_insertions=0,record=false,seed=0,optimizer="BFGS",max_iterations=300,max_evaluations=5000,tolerance=Some(1e-9),track_best=true,initial_indices=None,initial_parameters=None,proposal_model=None,transfer_steps=None,replicas=1,replica_spacing=2.0))]
+impl PyQuantumProblem {
+    #[pyo3(signature=(*,max_steps=200,max_length=20,move_weights=[1.0;3],temperatures=[0.003674932217565499,0.00003674932217565499],length_penalty=0.0,proposal_temperature=0.1,proposal="gradient",warm_start=true,replace_start="zero",screen_insertions=0,record=false,seed=0,optimizer="BFGS",max_iterations=300,max_evaluations=5000,tolerance=Some(1e-9),track_best=true,initial_indices=None,initial_parameters=None,proposal_model=None,transfer_steps=None,replicas=1,replica_spacing=2.0,carry_hessian=false,memoize_warm=false,early_reject=false,strip_zero_operators=false,seeded_temperatures=None,sparse_kernels=true,screen_hamiltonian_terms=None,executor=None,shots=0,resume_json=None))]
+    #[allow(clippy::too_many_arguments)]
     fn search<'py>(
         &self,
         py: Python<'py>,
@@ -473,21 +613,23 @@ impl PyProblem {
         transfer_steps: Option<usize>,
         replicas: usize,
         replica_spacing: f64,
+        carry_hessian: bool,
+        memoize_warm: bool,
+        early_reject: bool,
+        strip_zero_operators: bool,
+        seeded_temperatures: Option<[f64; 2]>,
+        sparse_kernels: bool,
+        screen_hamiltonian_terms: Option<usize>,
+        executor: Option<Py<PyAny>>,
+        shots: u64,
+        resume_json: Option<&str>,
     ) -> PyResult<Bound<'py, PyDict>> {
-        use mandacaru_core::quantum::search::driver::Options;
         if self.inner.taper.is_some() {
             return Err(PyValueError::new_err(
                 "architecture search builds its reference from the untapered register and cannot run on a tapered one",
             ));
         }
-        if !["gradient", "uniform"].contains(&proposal)
-            || !["zero", "inherit"].contains(&replace_start)
-        {
-            return Err(pyo3::exceptions::PyValueError::new_err(
-                "search proposals are gradient or uniform; replacement starts are zero or inherit",
-            ));
-        }
-        let options = Options {
+        let options = build_search_options(
             max_steps,
             transfer_steps,
             max_length,
@@ -495,24 +637,195 @@ impl PyProblem {
             temperatures,
             length_penalty,
             proposal_temperature,
-            uniform: proposal == "uniform",
+            proposal,
             warm_start,
-            replace_inherit: replace_start == "inherit",
+            replace_start,
             screen_insertions,
             record,
             seed,
-            optimizer: optimizer::Options {
-                method: optimizer::Method::parse(optimizer).map_err(error)?,
-                max_iterations,
-                max_evaluations,
-                tolerance,
-                seed,
-                track_best,
-                ..Default::default()
-            },
+            optimizer,
+            max_iterations,
+            max_evaluations,
+            tolerance,
+            track_best,
             replicas,
             replica_spacing,
-        };
+            carry_hessian,
+            memoize_warm,
+            early_reject,
+            strip_zero_operators,
+            seeded_temperatures,
+            sparse_kernels,
+            screen_hamiltonian_terms,
+        )?;
+        let resume_ckpt = resume_json
+            .map(|raw| {
+                let v: serde_json::Value =
+                    serde_json::from_str(raw).map_err(|e| PyValueError::new_err(e.to_string()))?;
+                mandacaru_core::quantum::search::vasqa::SearchCheckpoint::from_json(
+                    &v,
+                    self.inner.pool.len(),
+                    options.max_length,
+                )
+                .map_err(error)
+            })
+            .transpose()?;
+        let mut execution_error = None;
+        let result_or_err = py.detach(|| {
+            let model = proposal_model
+                .map(|s| {
+                    mandacaru_core::quantum::search::learning::training::Model::from_json(
+                        &self.inner.context,
+                        s,
+                    )
+                })
+                .transpose()?;
+            let init_idx = initial_indices.unwrap_or_default();
+            let init_params = initial_parameters.unwrap_or_default();
+            if let Some(executor) = executor.as_ref() {
+                use mandacaru_core::quantum::execution::{CircuitExecution, Request};
+                let mut invoke = |requests: &[Request]| {
+                    call_executor(&self.inner.context, executor, requests).map_err(|error| {
+                        execution_error = Some(error);
+                        mandacaru_core::Error::Kernel("circuit execution failed".into())
+                    })
+                };
+                let mut exec = CircuitExecution::new(&mut invoke).with_shots(shots);
+                if let Some(ckpt) = resume_ckpt.as_ref() {
+                    self.inner
+                        .resume_search(&options, ckpt, model.as_ref(), Some(&mut exec))
+                } else {
+                    self.inner.search_with_execution(
+                        &options,
+                        &init_idx,
+                        &init_params,
+                        model.as_ref(),
+                        Some(&mut exec),
+                    )
+                }
+            } else if let Some(ckpt) = resume_ckpt.as_ref() {
+                self.inner
+                    .resume_search(&options, ckpt, model.as_ref(), None)
+            } else {
+                self.inner
+                    .search_with_model(&options, &init_idx, &init_params, model.as_ref())
+            }
+        });
+        if let Some(err) = execution_error {
+            return Err(err);
+        }
+        let mut result = result_or_err.map_err(error)?;
+        let details = search_details_json(
+            result.acceptance,
+            result.optimal_cost,
+            result.best_energy,
+            &result.best_energy_indices,
+            &result.best_energy_parameters,
+            result.final_energy,
+            &result.final_indices,
+            &result.final_parameters,
+            result.num_architectures,
+            result.num_screenings,
+            &result.failures,
+            seed,
+            result.num_importance_evaluations,
+            result.num_gradient_evaluations,
+            replicas,
+            result.swap_acceptance,
+            std::mem::take(&mut result.swaps),
+            std::mem::take(&mut result.steps),
+            std::mem::take(&mut result.records),
+            &result.checkpoint,
+        )?;
+        let out = solution_dict(py, result.solution)?;
+        out.set_item("search_json", details)?;
+        Ok(out)
+    }
+    #[pyo3(signature=(weights,*,max_steps=200,max_length=20,move_weights=[1.0;3],temperatures=[0.003674932217565499,0.00003674932217565499],length_penalty=0.0,proposal_temperature=0.1,proposal="gradient",warm_start=true,replace_start="zero",screen_insertions=0,record=false,seed=0,optimizer="BFGS",max_iterations=300,max_evaluations=5000,tolerance=Some(1e-9),track_best=true,initial_indices=None,initial_parameters=None,proposal_model=None,transfer_steps=None,replicas=1,replica_spacing=2.0,carry_hessian=false,memoize_warm=true,early_reject=false,strip_zero_operators=false,seeded_temperatures=None,sparse_kernels=true,screen_hamiltonian_terms=None,resume_json=None))]
+    #[allow(clippy::too_many_arguments)]
+    fn search_subspace<'py>(
+        &self,
+        py: Python<'py>,
+        weights: Vec<f64>,
+        max_steps: usize,
+        max_length: usize,
+        move_weights: [f64; 3],
+        temperatures: [f64; 2],
+        length_penalty: f64,
+        proposal_temperature: f64,
+        proposal: &str,
+        warm_start: bool,
+        replace_start: &str,
+        screen_insertions: usize,
+        record: bool,
+        seed: u64,
+        optimizer: &str,
+        max_iterations: usize,
+        max_evaluations: usize,
+        tolerance: Option<f64>,
+        track_best: bool,
+        initial_indices: Option<Vec<usize>>,
+        initial_parameters: Option<Vec<f64>>,
+        proposal_model: Option<&str>,
+        transfer_steps: Option<usize>,
+        replicas: usize,
+        replica_spacing: f64,
+        carry_hessian: bool,
+        memoize_warm: bool,
+        early_reject: bool,
+        strip_zero_operators: bool,
+        seeded_temperatures: Option<[f64; 2]>,
+        sparse_kernels: bool,
+        screen_hamiltonian_terms: Option<usize>,
+        resume_json: Option<&str>,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        if self.inner.taper.is_some() {
+            return Err(PyValueError::new_err(
+                "architecture search builds its reference from the untapered register and cannot run on a tapered one",
+            ));
+        }
+        let options = build_search_options(
+            max_steps,
+            transfer_steps,
+            max_length,
+            move_weights,
+            temperatures,
+            length_penalty,
+            proposal_temperature,
+            proposal,
+            warm_start,
+            replace_start,
+            screen_insertions,
+            record,
+            seed,
+            optimizer,
+            max_iterations,
+            max_evaluations,
+            tolerance,
+            track_best,
+            replicas,
+            replica_spacing,
+            carry_hessian,
+            memoize_warm,
+            early_reject,
+            strip_zero_operators,
+            seeded_temperatures,
+            sparse_kernels,
+            screen_hamiltonian_terms,
+        )?;
+        let resume_ckpt = resume_json
+            .map(|raw| {
+                let v: serde_json::Value =
+                    serde_json::from_str(raw).map_err(|e| PyValueError::new_err(e.to_string()))?;
+                mandacaru_core::quantum::search::vasqa::SearchCheckpoint::from_json(
+                    &v,
+                    self.inner.pool.len(),
+                    options.max_length,
+                )
+                .map_err(error)
+            })
+            .transpose()?;
+        let dimension = self.dimension()?;
         let mut result = py
             .detach(|| {
                 let model = proposal_model
@@ -523,29 +836,50 @@ impl PyProblem {
                         )
                     })
                     .transpose()?;
-                self.inner.search_with_model(
-                    &options,
-                    &initial_indices.unwrap_or_default(),
-                    &initial_parameters.unwrap_or_default(),
-                    model.as_ref(),
-                )
+                if let Some(ckpt) = resume_ckpt.as_ref() {
+                    self.inner
+                        .resume_search_subspace(&options, &weights, ckpt, model.as_ref())
+                } else {
+                    self.inner.search_subspace_with_model(
+                        &options,
+                        &weights,
+                        &initial_indices.unwrap_or_default(),
+                        &initial_parameters.unwrap_or_default(),
+                        model.as_ref(),
+                    )
+                }
             })
             .map_err(error)?;
-        let mut details = serde_json::json!({"acceptance_by_move":result.acceptance,"optimal_cost_ha":result.optimal_cost,
-            "best_energy_ha":result.best_energy,"best_energy_indices":result.best_energy_indices,"best_energy_parameters":result.best_energy_parameters,
-            "final_energy_ha":result.final_energy,"final_indices":result.final_indices,
-            "final_parameters":result.final_parameters,"num_architectures":result.num_architectures,"num_screenings":result.num_screenings,
-            "optimizer_failures":result.failures,"seed":seed,"completed":true,
-            "num_importance_evaluations":result.num_importance_evaluations,"num_gradient_evaluations":result.num_gradient_evaluations});
-        if replicas > 1 {
-            details["swap_acceptance"] = serde_json::json!(result.swap_acceptance);
-            details["swaps"] = serde_json::Value::Array(std::mem::take(&mut result.swaps));
-        }
-        details["steps"] = serde_json::Value::Array(std::mem::take(&mut result.steps));
-        details["records"] = serde_json::Value::Array(std::mem::take(&mut result.records));
-        let details = serde_json::to_string(&details)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        let details = search_details_json(
+            result.acceptance,
+            result.optimal_cost,
+            result.best_energy,
+            &result.best_energy_indices,
+            &result.best_energy_parameters,
+            result.final_energy,
+            &result.final_indices,
+            &result.final_parameters,
+            result.num_architectures,
+            result.num_screenings,
+            &result.failures,
+            seed,
+            result.num_importance_evaluations,
+            result.num_gradient_evaluations,
+            replicas,
+            result.swap_acceptance,
+            std::mem::take(&mut result.swaps),
+            std::mem::take(&mut result.steps),
+            std::mem::take(&mut result.records),
+            &result.checkpoint,
+        )?;
         let out = solution_dict(py, result.solution)?;
+        out.set_item("energies_ha", result.energies)?;
+        out.set_item("ensemble_energies_ha", result.ensemble_energies)?;
+        out.set_item(
+            "states",
+            state_array(py, &[weights.len(), dimension], result.states)?,
+        )?;
+        out.set_item("reference_indices", result.reference_indices)?;
         out.set_item("search_json", details)?;
         Ok(out)
     }
@@ -589,7 +923,7 @@ impl PyProblem {
                     self.inner.encoding.particles,
                 )?;
                 let h = self.inner.hamiltonian.copy_into(&self.inner.context)?;
-                let mut problem = CachedProblem::new_in(
+                let mut problem = QuantumProblem::new_in(
                     &self.inner.context,
                     encoding,
                     h,
@@ -836,7 +1170,8 @@ impl PyProblem {
             inner,
         })
     }
-    #[pyo3(signature=(weights,*,adapt=false,trotter=false,optimizer="BFGS",max_iterations=300,max_evaluations=5000,tolerance=Some(1e-9),track_best=true,max_growth=50,gradient_tolerance=Some(1e-7),energy_tolerance=None,initial_parameters=None,resume=None))]
+    #[pyo3(signature=(weights,*,adapt=false,trotter=false,optimizer="BFGS",max_iterations=300,max_evaluations=5000,tolerance=Some(1e-9),track_best=true,max_growth=50,gradient_tolerance=Some(1e-7),energy_tolerance=None,initial_parameters=None,resume=None,sparse_kernels=true,reuse_evaluations=true))]
+    #[allow(clippy::too_many_arguments)]
     fn solve_subspace<'py>(
         &self,
         py: Python<'py>,
@@ -853,6 +1188,8 @@ impl PyProblem {
         energy_tolerance: Option<f64>,
         initial_parameters: Option<Vec<f64>>,
         resume: Option<&super::persistence::PySnapshot>,
+        sparse_kernels: bool,
+        reuse_evaluations: bool,
     ) -> PyResult<Bound<'py, PyDict>> {
         let method = optimizer::Method::parse(optimizer).map_err(error)?;
         if resume.is_some() && initial_parameters.is_some() {
@@ -872,6 +1209,8 @@ impl PyProblem {
             max_growth,
             gradient_tolerance,
             energy_tolerance,
+            sparse_kernels,
+            reuse_evaluations,
             optimizer: optimizer::Options {
                 method,
                 max_iterations,
@@ -883,14 +1222,18 @@ impl PyProblem {
             },
             hessian: None,
             continuation: false,
+            ..Default::default()
         };
         let dimension = self.dimension()?;
         let result = py
             .detach(|| match resume {
-                Some(snapshot) => snapshot.inner.resume_subspace(&self.inner, &options, &weights),
-                None => self
+                Some(snapshot) => snapshot
                     .inner
-                    .solve_subspace(&options, &weights, initial_parameters.as_deref()),
+                    .resume_subspace(&self.inner, &options, &weights),
+                None => {
+                    self.inner
+                        .solve_subspace(&options, &weights, initial_parameters.as_deref())
+                }
             })
             .map_err(error)?;
         let out = PyDict::new(py);
@@ -931,6 +1274,21 @@ impl PyProblem {
         out.set_item("elapsed_seconds", result.elapsed_seconds)?;
         Ok(out)
     }
+    /// Filter the operator pool to Bloch crystal-momentum conserving excitations modulo `mesh`.
+    fn with_momentum(
+        &self,
+        py: Python<'_>,
+        mesh: [usize; 3],
+        orbital_k: Vec<[i64; 3]>,
+    ) -> PyResult<Self> {
+        let inner = py
+            .detach(|| {
+                let momentum = mandacaru_core::quantum::CrystalMomentum::new(mesh, orbital_k)?;
+                self.inner.with_momentum(&momentum)
+            })
+            .map_err(error)?;
+        Ok(Self { inner })
+    }
     #[getter]
     fn num_qubits(&self) -> usize {
         self.inner.n_qubits()
@@ -952,7 +1310,11 @@ impl PyProblem {
         out.set_item("generators", taper.labels())?;
         out.set_item(
             "dropped",
-            self.inner.dropped.iter().map(|(_, label)| label.clone()).collect::<Vec<_>>(),
+            self.inner
+                .dropped
+                .iter()
+                .map(|(_, label)| label.clone())
+                .collect::<Vec<_>>(),
         )?;
         Ok(Some(out))
     }
@@ -969,7 +1331,11 @@ impl PyProblem {
         out.set_item("bases", plan.measurement_bases())?;
         out.set_item(
             "rotations",
-            plan.bases.iter().map(|b| b.rotation.len() / 2).max().unwrap_or(0),
+            plan.bases
+                .iter()
+                .map(|b| b.rotation.len() / 2)
+                .max()
+                .unwrap_or(0),
         )?;
         out.set_item("truncation_error", plan.truncation_error)?;
         Ok(Some(out))
@@ -1114,7 +1480,11 @@ impl PyProblem {
     }
     /// The (labels, angles) of the ansatz circuit at `indices` and `parameters`
     /// (`quantum::execution::circuit_rotations`).
-    fn circuit(&self, indices: Vec<usize>, parameters: Vec<f64>) -> PyResult<(Vec<String>, Vec<f64>)> {
+    fn circuit(
+        &self,
+        indices: Vec<usize>,
+        parameters: Vec<f64>,
+    ) -> PyResult<(Vec<String>, Vec<f64>)> {
         mandacaru_core::quantum::execution::circuit_rotations(&self.inner, &indices, &parameters)
             .map_err(error)
     }
@@ -1122,9 +1492,19 @@ impl PyProblem {
     /// circuits)`, the circuits of a `sampled` device counted in the bases of the energy measured
     /// with its error (`quantum::execution::device_hessian_plan`).
     #[pyo3(signature=(indices,parameters,*,sampled=false))]
-    fn device_hessian_plan(&self, indices: Vec<usize>, parameters: Vec<f64>, sampled: bool) -> PyResult<(usize, usize, usize)> {
-        mandacaru_core::quantum::execution::device_hessian_plan(&self.inner, &indices, &parameters, sampled)
-            .map_err(error)
+    fn device_hessian_plan(
+        &self,
+        indices: Vec<usize>,
+        parameters: Vec<f64>,
+        sampled: bool,
+    ) -> PyResult<(usize, usize, usize)> {
+        mandacaru_core::quantum::execution::device_hessian_plan(
+            &self.inner,
+            &indices,
+            &parameters,
+            sampled,
+        )
+        .map_err(error)
     }
     /// The energy, gradient and Hessian measured on the device through `executor` (one call),
     /// and the Z vector of the native truncated solve (`None` under the gradient floor). On a
@@ -1158,7 +1538,8 @@ impl PyProblem {
                     })
                 };
                 let mut execution = CircuitExecution::new(&mut invoke).with_shots(shots);
-                let measured = execution.gradient_and_hessian(&self.inner, &indices, &parameters)?;
+                let measured =
+                    execution.gradient_and_hessian(&self.inner, &indices, &parameters)?;
                 let solved = mandacaru_core::quantum::lagrangian::measured_z(
                     &measured.gradient,
                     &measured.hessian,
@@ -1172,11 +1553,21 @@ impl PyProblem {
         let n = measured.gradient.len();
         out.set_item("energy", measured.energy)?;
         out.set_item("gradient", array(py, &[n], measured.gradient.clone())?)?;
-        out.set_item("hessian", array(py, &[n, n], measured.hessian.transpose().iter().copied().collect())?)?;
+        out.set_item(
+            "hessian",
+            array(
+                py,
+                &[n, n],
+                measured.hessian.transpose().iter().copied().collect(),
+            )?,
+        )?;
         out.set_item("rotations", measured.rotations)?;
         out.set_item("energy_evaluations", measured.energy_evaluations)?;
         out.set_item("circuits", measured.circuits)?;
-        out.set_item("hessian_error_unavailable", measured.error_unavailable.clone())?;
+        out.set_item(
+            "hessian_error_unavailable",
+            measured.error_unavailable.clone(),
+        )?;
         out.set_item("gradient_norm", solved.gradient_norm)?;
         match solved.solution {
             None => out.set_item("z", py.None())?,
@@ -1188,11 +1579,20 @@ impl PyProblem {
                 out.set_item("hessian_highest_curvature", solution.eigenvalues[n - 1])?;
                 out.set_item("z_vector_dropped", solution.dropped)?;
                 out.set_item("z_vector_dropped_gradient_norm", solution.dropped_rhs)?;
-                out.set_item("hessian_lowest_curvature_error", solved.lowest_curvature_error)?;
-                out.set_item("hessian_curvature_significance", solved.curvature_significance)?;
+                out.set_item(
+                    "hessian_lowest_curvature_error",
+                    solved.lowest_curvature_error,
+                )?;
+                out.set_item(
+                    "hessian_curvature_significance",
+                    solved.curvature_significance,
+                )?;
                 match &solved.z_covariance {
                     None => out.set_item("z_covariance", py.None())?,
-                    Some(cov) => out.set_item("z_covariance", array(py, &[n, n], cov.transpose().iter().copied().collect())?)?,
+                    Some(cov) => out.set_item(
+                        "z_covariance",
+                        array(py, &[n, n], cov.transpose().iter().copied().collect())?,
+                    )?,
                 }
             }
         }
@@ -1206,7 +1606,8 @@ impl PyProblem {
         parameters: Vec<f64>,
         z: Vec<f64>,
     ) -> PyResult<Vec<(Vec<String>, Vec<f64>, usize, f64)>> {
-        mandacaru_core::quantum::execution::shifted_circuits(&self.inner, &indices, &parameters, &z).map_err(error)
+        mandacaru_core::quantum::execution::shifted_circuits(&self.inner, &indices, &parameters, &z)
+            .map_err(error)
     }
     #[pyo3(signature=(state,*,two_body=true))]
     fn rdms<'py>(
@@ -1225,6 +1626,48 @@ impl PyProblem {
             rdms.two
                 .map(|two| array(py, &[n, n, n, n], two.as_slice().to_vec()))
                 .transpose()?,
+        ))
+    }
+    /// Total spin expectation `<psi | S^2 | psi> / <psi | psi>` on a spin-blocked fermionic state.
+    fn spin_squared(&self, py: Python<'_>, state: &Bound<'_, PyAny>) -> PyResult<f64> {
+        let input = input_state(&self.inner.context, self.inner.precision, state)?;
+        py.detach(|| typed!(input, values => self.inner.spin_squared(values)))
+            .map_err(error)
+    }
+    /// Exact diagonal second derivatives `<psi | [[H, G_i], G_i] | psi>` for every pool generator.
+    fn pool_curvatures<'py>(
+        &self,
+        py: Python<'py>,
+        state: &Bound<'_, PyAny>,
+    ) -> PyResult<Array<'py, f64>> {
+        let input = input_state(&self.inner.context, self.inner.precision, state)?;
+        let values = py
+            .detach(|| typed!(input, values => self.inner.pool_curvatures_of(values)))
+            .map_err(error)?;
+        array(py, &[values.len()], values)
+    }
+    /// Spin-summed spatial transition density matrices `(<bra | E_pq | ket>, ...)` of two states.
+    fn transition_rdms<'py>(
+        &self,
+        py: Python<'py>,
+        bra: &Bound<'py, PyAny>,
+        ket: &Bound<'py, PyAny>,
+    ) -> PyResult<(Array<'py, C64>, Array<'py, C64>)> {
+        let bra_in = input_state(&self.inner.context, self.inner.precision, bra)?;
+        let ket_in = input_state(&self.inner.context, self.inner.precision, ket)?;
+        let rdms = py
+            .detach(|| match (bra_in, ket_in) {
+                (Input::Float64(b, _), Input::Float64(k, _)) => self.inner.transition_rdms(&b, &k),
+                (Input::Float32(b, _), Input::Float32(k, _)) => self.inner.transition_rdms(&b, &k),
+                _ => Err(mandacaru_core::Error::Invalid(
+                    "transition_rdms requires bra and ket of matching precision".into(),
+                )),
+            })
+            .map_err(error)?;
+        let m = rdms.m;
+        Ok((
+            array(py, &[m, m], rdms.one.as_slice().to_vec())?,
+            array(py, &[m, m, m, m], rdms.two.as_slice().to_vec())?,
         ))
     }
     #[getter]
@@ -1290,11 +1733,12 @@ impl PyProblem {
                 "a mid-run checkpoint needs both a path and a positive cadence",
             ));
         }
-        let checkpoint = checkpoint_path.map(|path| mandacaru_core::quantum::solver::Checkpointing {
-            path: path.into(),
-            every: checkpoint_every,
-            method: if adapt { "adapt-vqe" } else { "vqe" }.into(),
-        });
+        let checkpoint =
+            checkpoint_path.map(|path| mandacaru_core::quantum::solver::Checkpointing {
+                path: path.into(),
+                every: checkpoint_every,
+                method: if adapt { "adapt-vqe" } else { "vqe" }.into(),
+            });
         let options = SolveOptions {
             adapt,
             trotter,
@@ -1316,6 +1760,7 @@ impl PyProblem {
             },
             hessian: initial_hessian.map(|h| h.as_array().iter().copied().collect()),
             continuation: false,
+            ..Default::default()
         };
         if resume.is_some() && (initial_parameters.is_some() || initial_indices.is_some()) {
             return Err(pyo3::exceptions::PyValueError::new_err(
@@ -1333,7 +1778,11 @@ impl PyProblem {
         let mut energy_error_reason: Option<String> = None;
         // Shots per basis of the executor's device (0 for an exact one), for the energy errors.
         let shots: u64 = match executor.as_ref() {
-            Some(executor) => executor.bind(py).getattr("shots").and_then(|s| s.extract()).unwrap_or(0),
+            Some(executor) => executor
+                .bind(py)
+                .getattr("shots")
+                .and_then(|s| s.extract())
+                .unwrap_or(0),
             None => 0,
         };
         if executor.is_some() && (resume.is_some() || (!adapt && !trotter)) {
@@ -1558,7 +2007,9 @@ fn complex_values(
         "integrals must be float64 or complex128 arrays",
     ))
 }
-fn fermion_term_list(terms: Vec<mandacaru_core::quantum::fermion_terms::FermionTerm>) -> FermionTerms {
+fn fermion_term_list(
+    terms: Vec<mandacaru_core::quantum::fermion_terms::FermionTerm>,
+) -> FermionTerms {
     terms
         .into_iter()
         .map(|(ladders, c)| (ladders, c.re, c.im))
@@ -1666,7 +2117,7 @@ pub fn fermion_spatial_terms(
     Ok((n, fermion_term_list(terms)))
 }
 
-impl PyProblem {
+impl PyQuantumProblem {
     /// The state-vector register, refusing by name when the problem is register-free.
     fn register(&self, what: &str) -> PyResult<&Basis> {
         self.inner.register(what).map_err(error)
@@ -1736,12 +2187,18 @@ impl PyRdmMeasurement {
         Option<Array<'py, f64>>,
     )> {
         let (rdms, spread) = py
-            .detach(|| self.inner.assemble(&self.context, &values, errors.as_deref(), shots))
+            .detach(|| {
+                self.inner
+                    .assemble(&self.context, &values, errors.as_deref(), shots)
+            })
             .map_err(error)?;
         let m = rdms.m;
         let real = |v: &[mandacaru_core::quantum::C64]| v.iter().map(|c| c.re).collect::<Vec<_>>();
         let (one_error, two_error) = match spread {
-            Some((a, b)) => (Some(array(py, &[m, m], a)?), Some(array(py, &[m, m, m, m], b)?)),
+            Some((a, b)) => (
+                Some(array(py, &[m, m], a)?),
+                Some(array(py, &[m, m, m, m], b)?),
+            ),
             None => (None, None),
         };
         Ok((
@@ -1752,7 +2209,7 @@ impl PyRdmMeasurement {
         ))
     }
 }
-impl PyProblem {
+impl PyQuantumProblem {
     fn rdms_of<A: Amplitude>(
         &self,
         state: &[A],
@@ -1811,10 +2268,7 @@ pub fn periodic_quantum_stress_fd<'py>(
         "sigma",
         array(py, &[3, 3], result.sigma.into_iter().flatten().collect())?,
     )?;
-    out.set_item(
-        "voigt",
-        array(py, &[6], result.voigt.to_vec())?,
-    )?;
+    out.set_item("voigt", array(py, &[6], result.voigt.to_vec())?)?;
     out.set_item("volume", result.volume)?;
     out.set_item("scheme", result.scheme)?;
     Ok(out)
@@ -1834,13 +2288,21 @@ pub fn periodic_quantum_forces_analytic<'py>(
     w_matrix: Option<PyReadonlyArrayDyn<'_, C64>>,
     ewald_forces: Vec<[f64; 3]>,
 ) -> PyResult<Bound<'py, PyDict>> {
-    let rdm1_slice = rdm1.as_slice().map_err(|e| PyValueError::new_err(e.to_string()))?;
+    let rdm1_slice = rdm1
+        .as_slice()
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
     let rdm2_slice = match &rdm2 {
-        Some(a) => Some(a.as_slice().map_err(|e| PyValueError::new_err(e.to_string()))?),
+        Some(a) => Some(
+            a.as_slice()
+                .map_err(|e| PyValueError::new_err(e.to_string()))?,
+        ),
         None => None,
     };
     let w_slice = match &w_matrix {
-        Some(w) => Some(w.as_slice().map_err(|e| PyValueError::new_err(e.to_string()))?),
+        Some(w) => Some(
+            w.as_slice()
+                .map_err(|e| PyValueError::new_err(e.to_string()))?,
+        ),
         None => None,
     };
     let dg_ref = dg_atomic.as_deref();
@@ -1886,13 +2348,21 @@ pub fn periodic_quantum_stress_analytic<'py>(
     w_matrix: Option<PyReadonlyArrayDyn<'_, C64>>,
     ewald_stress: [[f64; 3]; 3],
 ) -> PyResult<Bound<'py, PyDict>> {
-    let rdm1_slice = rdm1.as_slice().map_err(|e| PyValueError::new_err(e.to_string()))?;
+    let rdm1_slice = rdm1
+        .as_slice()
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
     let rdm2_slice = match &rdm2 {
-        Some(a) => Some(a.as_slice().map_err(|e| PyValueError::new_err(e.to_string()))?),
+        Some(a) => Some(
+            a.as_slice()
+                .map_err(|e| PyValueError::new_err(e.to_string()))?,
+        ),
         None => None,
     };
     let w_slice = match &w_matrix {
-        Some(w) => Some(w.as_slice().map_err(|e| PyValueError::new_err(e.to_string()))?),
+        Some(w) => Some(
+            w.as_slice()
+                .map_err(|e| PyValueError::new_err(e.to_string()))?,
+        ),
         None => None,
     };
     let dg_ref = dg_strain.as_ref();
@@ -1919,12 +2389,8 @@ pub fn periodic_quantum_stress_analytic<'py>(
         "sigma",
         array(py, &[3, 3], result.sigma.into_iter().flatten().collect())?,
     )?;
-    out.set_item(
-        "voigt",
-        array(py, &[6], result.voigt.to_vec())?,
-    )?;
+    out.set_item("voigt", array(py, &[6], result.voigt.to_vec())?)?;
     out.set_item("volume", result.volume)?;
     out.set_item("scheme", result.scheme)?;
     Ok(out)
 }
-

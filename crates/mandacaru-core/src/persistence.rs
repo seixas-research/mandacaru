@@ -4,7 +4,7 @@ use crate::{
     parquet::{self, Codec, Table, WriteOptions},
     product,
     quantum::{
-        evolution, solver::by_precision, Amplitude, Basis, CachedProblem, Encoding, Operator,
+        evolution, solver::by_precision, Amplitude, Basis, Encoding, Operator, QuantumProblem,
         SolveOptions, SolveResult, Space, State, C64,
     },
     snapshot_table, Buffer, Context, Error, Reservation, Result,
@@ -363,7 +363,9 @@ impl Document {
     pub fn two_body(&self) -> Result<Option<TwoBodyRecord>> {
         let p = &self.payload;
         if p["format"] != HAMILTONIAN {
-            return Err(invalid("a two-body record belongs to a qubit-Hamiltonian file"));
+            return Err(invalid(
+                "a two-body record belongs to a qubit-Hamiltonian file",
+            ));
         }
         let record = &p["metadata"]["two_body"];
         if record.is_null() {
@@ -430,7 +432,7 @@ impl Document {
         sector: bool,
         dense: bool,
         singles: bool,
-    ) -> Result<CachedProblem> {
+    ) -> Result<QuantumProblem> {
         let space = if sector {
             Space::Sector
         } else {
@@ -445,7 +447,7 @@ impl Document {
         space: Space,
         dense: bool,
         singles: bool,
-    ) -> Result<CachedProblem> {
+    ) -> Result<QuantumProblem> {
         let p = &self.payload;
         if p["format"] != HAMILTONIAN {
             return Err(invalid("expected a Hamiltonian snapshot"));
@@ -468,7 +470,7 @@ impl Document {
                 h.decomposition.push(Self::embedded(ctx, group, h.n)?);
             }
         }
-        CachedProblem::new_in(ctx, encoding, h, space, dense, singles)
+        QuantumProblem::new_in(ctx, encoding, h, space, dense, singles)
     }
     /// The state this checkpoint prepares, stored in `precision` (complex128
     /// or complex64); the generators and parameters stay float64.
@@ -535,7 +537,7 @@ impl Document {
     }
     /// The checks every resume makes: the register (mapping, width, tapering), the Hamiltonian,
     /// the reference determinant and the particle and orbital counts are the problem's.
-    fn check_register(&self, problem: &CachedProblem) -> Result<()> {
+    fn check_register(&self, problem: &QuantumProblem) -> Result<()> {
         let p = &self.payload;
         if p["format"] != CHECKPOINT
             || p["mapping"] != problem.encoding.mapping
@@ -569,7 +571,7 @@ impl Document {
         Ok(())
     }
     /// The stored generators as pool indices, with their parameters.
-    fn sequence(&self, problem: &CachedProblem) -> Result<(Vec<usize>, Vec<f64>)> {
+    fn sequence(&self, problem: &QuantumProblem) -> Result<(Vec<usize>, Vec<f64>)> {
         let ctx = &problem.context;
         let n = problem.n_qubits();
         let operators = self.payload["operators"].as_array().unwrap();
@@ -602,7 +604,11 @@ impl Document {
     /// unusable after a deliberate change of optimizer for what is only a starting guess. A
     /// version-3 file without an entry was written by another optimizer or a fixed ansatz and
     /// starts from the identity silently.
-    fn with_stored_hessian(&self, options: &SolveOptions, count: usize) -> Result<(SolveOptions, Vec<String>)> {
+    fn with_stored_hessian(
+        &self,
+        options: &SolveOptions,
+        count: usize,
+    ) -> Result<(SolveOptions, Vec<String>)> {
         let p = &self.payload;
         let mut options = options.clone();
         let mut notes = Vec::new();
@@ -649,13 +655,17 @@ impl Document {
     /// stored Hessian, or relaxing it first when the file has none).
     pub fn resume_subspace(
         &self,
-        problem: &CachedProblem,
+        problem: &QuantumProblem,
         options: &SolveOptions,
         weights: &[f64],
     ) -> Result<crate::quantum::subspace::SubspaceResult> {
         let p = &self.payload;
         self.check_register(problem)?;
-        let method = if options.adapt { "subspace-adapt-vqe" } else { "subspace-vqe" };
+        let method = if options.adapt {
+            "subspace-adapt-vqe"
+        } else {
+            "subspace-vqe"
+        };
         if p["method"] != method {
             return Err(invalid("checkpoint method differs from solver"));
         }
@@ -666,7 +676,9 @@ impl Document {
         }
         let (indices, parameters) = self.sequence(problem)?;
         if indices.len() > 1 && (p["preparation"] == "sum") == (options.adapt || options.trotter) {
-            return Err(invalid("checkpoint preparation differs from ansatz evolution"));
+            return Err(invalid(
+                "checkpoint preparation differs from ansatz evolution",
+            ));
         }
         if !options.adapt && indices != (0..problem.pool.len()).collect::<Vec<_>>() {
             return Err(invalid(
@@ -683,12 +695,12 @@ impl Document {
         result.notes.extend(notes);
         Ok(result)
     }
-    pub fn resume(&self, problem: &CachedProblem, options: &SolveOptions) -> Result<SolveResult> {
+    pub fn resume(&self, problem: &QuantumProblem, options: &SolveOptions) -> Result<SolveResult> {
         self.resume_observed(problem, options, None)
     }
     pub fn resume_observed(
         &self,
-        problem: &CachedProblem,
+        problem: &QuantumProblem,
         options: &SolveOptions,
         observer: Option<&mut crate::quantum::solver::GrowthObserver<'_>>,
     ) -> Result<SolveResult> {
@@ -769,7 +781,7 @@ impl Document {
 }
 /// The Z2 tapering a checkpoint was written on (`null` for an untapered register): its anchors,
 /// the sector signs and the generators, so a resume on another register is refused.
-fn taper_record(problem: &CachedProblem) -> Value {
+fn taper_record(problem: &QuantumProblem) -> Value {
     problem.taper.as_ref().map_or(
         Value::Null,
         |t| json!({"anchors": t.anchors, "signs": t.signs, "generators": t.labels()}),
@@ -789,24 +801,35 @@ fn same_operator(a: &Operator, b: &Operator) -> bool {
 /// (another optimizer, a fixed ansatz) adds nothing. Checkpoint schema version 3 introduced
 /// the key (a file of an older version that lacks it recorded none because it could not); a
 /// version-3 entry without `optimizer` was written when only SLSQP carried one.
-pub fn status_with_hessian(mut status: Value, optimizer: &str, hessian: Option<&[f64]>) -> Result<Value> {
+pub fn status_with_hessian(
+    mut status: Value,
+    optimizer: &str,
+    hessian: Option<&[f64]>,
+) -> Result<Value> {
     let Some(values) = hessian else {
         return Ok(status);
     };
-    let n = (0..=values.len()).find(|n| n * n >= values.len()).unwrap_or(0);
+    let n = (0..=values.len())
+        .find(|n| n * n >= values.len())
+        .unwrap_or(0);
     if n * n != values.len() || values.iter().any(|v| !v.is_finite()) {
-        return Err(invalid("a checkpoint Hessian must be a finite n x n matrix"));
+        return Err(invalid(
+            "a checkpoint Hessian must be a finite n x n matrix",
+        ));
     }
     status
         .as_object_mut()
         .ok_or_else(|| invalid("a checkpoint status must be a JSON object"))?
-        .insert("hessian".into(), json!({"optimizer": optimizer, "dimension": n, "values": values}));
+        .insert(
+            "hessian".into(),
+            json!({"optimizer": optimizer, "dimension": n, "values": values}),
+        );
     Ok(status)
 }
 #[allow(clippy::too_many_arguments)]
 pub fn checkpoint(
     ctx: &Context,
-    problem: &CachedProblem,
+    problem: &QuantumProblem,
     indices: &[usize],
     parameters: &[f64],
     product_form: bool,
@@ -818,8 +841,17 @@ pub fn checkpoint(
         || indices.iter().any(|&i| i >= problem.pool.len())
         || parameters.iter().any(|x| !x.is_finite())
         || !energy.is_finite()
-        || !["vqe", "adapt-vqe", "vasqa", "valsqa", "subspace-vqe", "subspace-adapt-vqe"]
-            .contains(&method)
+        || ![
+            "vqe",
+            "adapt-vqe",
+            "vasqa",
+            "valsqa",
+            "subspace-vqe",
+            "subspace-adapt-vqe",
+            "subspace-vasqa",
+            "subspace-valsqa",
+        ]
+        .contains(&method)
         || (!["vqe", "subspace-vqe"].contains(&method) && !product_form)
     {
         return Err(invalid("invalid checkpoint ansatz parameters or energy"));
@@ -860,7 +892,7 @@ pub fn checkpoint(
 #[allow(clippy::too_many_arguments)]
 pub fn subspace_checkpoint(
     ctx: &Context,
-    problem: &CachedProblem,
+    problem: &QuantumProblem,
     indices: &[usize],
     parameters: &[f64],
     adapt: bool,
@@ -878,8 +910,27 @@ pub fn subspace_checkpoint(
             "a subspace checkpoint needs one finite weight and energy per state and no HVA ansatz",
         ));
     }
-    let method = if adapt { "subspace-adapt-vqe" } else { "subspace-vqe" };
-    let mut doc = checkpoint(ctx, problem, indices, parameters, product_form, method, status, energies[0])?;
+    let method = if adapt {
+        "subspace-adapt-vqe"
+    } else if status.get("search_chain").is_some() {
+        match status.get("search_method").and_then(|v| v.as_str()) {
+            Some("subspace-vasqa") => "subspace-vasqa",
+            Some("subspace-valsqa") => "subspace-valsqa",
+            _ => "subspace-vqe",
+        }
+    } else {
+        "subspace-vqe"
+    };
+    let mut doc = checkpoint(
+        ctx,
+        problem,
+        indices,
+        parameters,
+        product_form,
+        method,
+        status,
+        energies[0],
+    )?;
     doc.payload["subspace"] = json!({"weights": weights, "energies": energies});
     Ok(doc)
 }

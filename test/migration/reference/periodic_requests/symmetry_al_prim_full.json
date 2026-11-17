@@ -1,0 +1,68 @@
+{
+ "lattice": [
+  0.0,
+  3.8266954023671844,
+  3.8266954023671844,
+  3.8266954023671844,
+  0.0,
+  3.8266954023671844,
+  3.8266954023671844,
+  3.8266954023671844,
+  0.0
+ ],
+ "grid_shape": [
+  6,
+  6,
+  6
+ ],
+ "atoms": [
+  {
+   "species": 0,
+   "symbol": "Al",
+   "fractional": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "moment": 0.0
+  }
+ ],
+ "mesh": {
+  "size": [
+   3,
+   3,
+   3
+  ],
+  "gamma": true
+ },
+ "functional": "lda",
+ "precision": "float64",
+ "basis_size": "SZ",
+ "spinor": false,
+ "spin": false,
+ "symmetry": false,
+ "charge": 0.0,
+ "projector_basis": "raw",
+ "recipes": {
+  "Al": {
+   "zetas": 1,
+   "polarizations": 0,
+   "cutoff": 3.834022544308001,
+   "energy_shift": 0.1,
+   "wall": [
+    12.0,
+    0.6
+   ],
+   "split_norm": 0.15,
+   "tail_norms": [
+    0.15,
+    0.31,
+    0.54
+   ],
+   "polarization": "gaussian",
+   "diffuse": null
+  }
+ },
+ "filter_cutoff": 3.834022544308001,
+ "_dataset_set": "lda-sr"
+}

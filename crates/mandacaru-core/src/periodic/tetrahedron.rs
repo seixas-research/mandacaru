@@ -234,7 +234,9 @@ impl TetrahedronMesh {
         }
         if let Some((weights, channels)) = projections {
             if weights.len() != product(&[spins, nk, bands, channels])? {
-                return Err(invalid("projections must be (spins, kpoints, bands, channels)"));
+                return Err(invalid(
+                    "projections must be (spins, kpoints, bands, channels)",
+                ));
             }
         }
         let mut dos = vec![0.; axis.len()];

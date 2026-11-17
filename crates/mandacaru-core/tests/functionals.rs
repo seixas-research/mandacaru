@@ -280,6 +280,9 @@ fn the_hse06_range_separation_and_fraction_have_one_definition() {
     );
     // The semilocal part is the one the registry names, and no other functional is screened.
     for name in ["lda", "pbe", "r2scan", "pbe+rvv10", "r2scan+rvv10"] {
-        assert!(functional(name).unwrap().screened_exchange.is_none(), "{name}");
+        assert!(
+            functional(name).unwrap().screened_exchange.is_none(),
+            "{name}"
+        );
     }
 }

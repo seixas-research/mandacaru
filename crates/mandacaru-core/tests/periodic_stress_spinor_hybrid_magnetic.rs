@@ -2,7 +2,7 @@
 //! spinor (`time_reversal = false`, four live field channels, the sphere remainder of SH-2 in the
 //! one-center operator) with a zero spin-orbit matrix, against the Richardson-reconverged free
 //! energy of the COLLINEAR spin-polarized crystal of the same discretized functional
-//! (`freeze_periodic_strain.py case h2_hse06`). With a zero coupling the energy is invariant under
+//! (`periodic_freeze_snapshot.rs`, MANDACARU_FREEZE_KIND=strain, case h2_hse06). With a zero coupling the energy is invariant under
 //! a global spin rotation, so the unrestricted derivative is the oracle of every moment direction
 //! (all nine entries, unsymmetrized). The converged moment is asserted FIRST: it survives, it
 //! points along the start, and its transverse components are populated.

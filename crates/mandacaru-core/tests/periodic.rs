@@ -137,9 +137,15 @@ fn a_hybrid_crystal_needs_the_whole_k_mesh_or_its_time_reversal_half() {
     // The fixture is the irreducible wedge of the 2x2x2 mesh (weights 1/8, 1/2, 3/8, 24
     // operations): the plain functional loads it, the hybrid must not.
     assert!(load(&|_| {}).is_ok());
-    let error = load(&hybrid).err().expect("a wedge must be refused").to_string();
+    let error = load(&hybrid)
+        .err()
+        .expect("a wedge must be refused")
+        .to_string();
     assert!(error.contains("time-reversal half"), "{error}");
-    assert!(matches!(load(&hybrid), Err(mandacaru_core::Error::Unsupported(_))));
+    assert!(matches!(
+        load(&hybrid),
+        Err(mandacaru_core::Error::Unsupported(_))
+    ));
     // One point is the whole mesh when it is Gamma or any time-reversal-invariant point, even
     // beside the symmetry table; a point that is not its own mirror image stands for itself and
     // its partner at -k, the time-reversal half of that pair.
@@ -167,7 +173,10 @@ fn a_hybrid_crystal_needs_the_whole_k_mesh_or_its_time_reversal_half() {
         v["kpoints"] = json!([a, b]);
         v["permutations"] = json!([]);
     };
-    let half = load(&uneven).err().expect("unequal unfolded weights").to_string();
+    let half = load(&uneven)
+        .err()
+        .expect("unequal unfolded weights")
+        .to_string();
     assert!(half.contains("time-reversal half"), "{half}");
     // Two points with equal weights are still refused beside a symmetry table, and kept without.
     let pair = |table: bool| {

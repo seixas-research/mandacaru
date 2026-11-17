@@ -8,9 +8,7 @@ pub mod shift;
 pub mod standard;
 
 use super::invalid;
-use crate::math::lattice::{
-    lattice_rotations, selling_reduce, unimodular_inverse, validate_cell,
-};
+use crate::math::lattice::{lattice_rotations, selling_reduce, unimodular_inverse, validate_cell};
 use crate::Result;
 pub use classify::{classify_point_group, CrystalSystem, PointGroupInfo};
 use closure::find_closed_cosets;
@@ -87,7 +85,9 @@ pub fn identify(ops: &Operations, cell: &Cell) -> Result<Identity> {
                 pure_taus.push(*t);
             }
         }
-        if let Ok(prim_owned) = standard::primitive_cell_from_pure_translations(&pure_taus, cell, ops.tolerance_used) {
+        if let Ok(prim_owned) =
+            standard::primitive_cell_from_pure_translations(&pure_taus, cell, ops.tolerance_used)
+        {
             let prim_cell = prim_owned.as_cell();
             if let Ok(prim_ops) = find(&prim_cell, ops.tolerance_requested) {
                 if prim_ops.point_group.order > ops.point_group.order {
@@ -179,9 +179,12 @@ pub fn find(cell: &Cell, tol: f64) -> Result<Operations> {
     // 2. Fractional coordinates in reduced basis: x_B = x_in * U^-1
     let mut xb = Vec::with_capacity(n);
     for p in cell.fractional {
-        let x0 = p[0] * u_inv[(0, 0)] as f64 + p[1] * u_inv[(1, 0)] as f64 + p[2] * u_inv[(2, 0)] as f64;
-        let x1 = p[0] * u_inv[(0, 1)] as f64 + p[1] * u_inv[(1, 1)] as f64 + p[2] * u_inv[(2, 1)] as f64;
-        let x2 = p[0] * u_inv[(0, 2)] as f64 + p[1] * u_inv[(1, 2)] as f64 + p[2] * u_inv[(2, 2)] as f64;
+        let x0 =
+            p[0] * u_inv[(0, 0)] as f64 + p[1] * u_inv[(1, 0)] as f64 + p[2] * u_inv[(2, 0)] as f64;
+        let x1 =
+            p[0] * u_inv[(0, 1)] as f64 + p[1] * u_inv[(1, 1)] as f64 + p[2] * u_inv[(2, 1)] as f64;
+        let x2 =
+            p[0] * u_inv[(0, 2)] as f64 + p[1] * u_inv[(1, 2)] as f64 + p[2] * u_inv[(2, 2)] as f64;
         xb.push([x0.rem_euclid(1.0), x1.rem_euclid(1.0), x2.rem_euclid(1.0)]);
     }
 
@@ -258,14 +261,10 @@ pub fn find(cell: &Cell, tol: f64) -> Result<Operations> {
     // Sort: identity first, then by (rotation, translation)
     let identity = Matrix3::identity();
     all_ops.sort_by(|a, b| {
-        let is_id_a = a.0 == identity
-            && a.1[0].abs() < 1e-6
-            && a.1[1].abs() < 1e-6
-            && a.1[2].abs() < 1e-6;
-        let is_id_b = b.0 == identity
-            && b.1[0].abs() < 1e-6
-            && b.1[1].abs() < 1e-6
-            && b.1[2].abs() < 1e-6;
+        let is_id_a =
+            a.0 == identity && a.1[0].abs() < 1e-6 && a.1[1].abs() < 1e-6 && a.1[2].abs() < 1e-6;
+        let is_id_b =
+            b.0 == identity && b.1[0].abs() < 1e-6 && b.1[1].abs() < 1e-6 && b.1[2].abs() < 1e-6;
         match (is_id_a, is_id_b) {
             (true, false) => std::cmp::Ordering::Less,
             (false, true) => std::cmp::Ordering::Greater,

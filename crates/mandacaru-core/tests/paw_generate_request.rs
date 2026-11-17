@@ -17,7 +17,10 @@ fn nothing_named_is_the_table() {
         recipe,
         Recipe::for_dataset("O", "lda", Treatment::Scalar).unwrap()
     );
-    assert!(!pinned.any(), "nothing was named and a PAW-LCAO table pins nothing");
+    assert!(
+        !pinned.any(),
+        "nothing was named and a PAW-LCAO table pins nothing"
+    );
     let (upaw, _) = resolve(
         "Cr",
         Family::UpawLcao,

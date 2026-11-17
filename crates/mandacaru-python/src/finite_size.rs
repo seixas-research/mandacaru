@@ -295,11 +295,14 @@ pub fn ccmh_reciprocal_vectors<'py>(
 ) -> PyResult<(Array<'py, i64>, Array<'py, f64>)> {
     layout(&cell)?;
     if cell.shape() != [3, 3] {
-        return Err(pyo3::exceptions::PyValueError::new_err("cell must be (3, 3)"));
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "cell must be (3, 3)",
+        ));
     }
     let c: [f64; 9] = cell.as_slice()?.try_into().expect("a (3, 3) cell");
     let (triples, kvectors) =
-        mandacaru_core::periodic::finite_size::ccmh::reciprocal_triples(&c, limit).map_err(error)?;
+        mandacaru_core::periodic::finite_size::ccmh::reciprocal_triples(&c, limit)
+            .map_err(error)?;
     let n = triples.len() / 3;
     Ok((array(py, &[n, 3], triples)?, array(py, &[n, 3], kvectors)?))
 }
@@ -359,12 +362,28 @@ pub fn compute_structure_factor<'py>(
         )));
     }
 
-    let (psi, cell, a) = (psi.as_slice()?.to_vec(), cell.as_slice()?.to_vec(), a_matrix.as_slice()?.to_vec());
+    let (psi, cell, a) = (
+        psi.as_slice()?.to_vec(),
+        cell.as_slice()?.to_vec(),
+        a_matrix.as_slice()?.to_vec(),
+    );
     let (d, gamma) = (d_slice.to_vec(), gamma_slice.to_vec());
     let ctx = &context.inner;
     let out = py
-        .detach(|| mandacaru_core::periodic::finite_size::structure_factor(
-            ctx, &psi, [nx, ny, nz], dv, &cell, limit, &a, a_cols, &d, &gamma))
+        .detach(|| {
+            mandacaru_core::periodic::finite_size::structure_factor(
+                ctx,
+                &psi,
+                [nx, ny, nz],
+                dv,
+                &cell,
+                limit,
+                &a,
+                a_cols,
+                &d,
+                &gamma,
+            )
+        })
         .map_err(error)?;
     let n_triples = out.values.len();
     let dict = PyDict::new(py);
@@ -380,7 +399,6 @@ pub fn compute_structure_factor<'py>(
 // MPC functions
 // ---------------------------------------------------------------------------
 
-
 #[pyfunction]
 pub fn voxel_self_potential(step: PyReadonlyArray2<f64>) -> PyResult<f64> {
     layout(&step)?;
@@ -393,9 +411,7 @@ pub fn voxel_self_potential(step: PyReadonlyArray2<f64>) -> PyResult<f64> {
     }
     let slice = step.as_slice()?;
     let step_matrix = Matrix3::new(
-        slice[0], slice[1], slice[2],
-        slice[3], slice[4], slice[5],
-        slice[6], slice[7], slice[8],
+        slice[0], slice[1], slice[2], slice[3], slice[4], slice[5], slice[6], slice[7], slice[8],
     );
     core_voxel_self_potential(&step_matrix).map_err(error)
 }
@@ -419,9 +435,7 @@ pub fn wigner_seitz_kernel<'py>(
     }
     let slice = step.as_slice()?;
     let step_array = [
-        slice[0], slice[1], slice[2],
-        slice[3], slice[4], slice[5],
-        slice[6], slice[7], slice[8],
+        slice[0], slice[1], slice[2], slice[3], slice[4], slice[5], slice[6], slice[7], slice[8],
     ];
 
     let ctx = match _context {
@@ -429,13 +443,8 @@ pub fn wigner_seitz_kernel<'py>(
         None => mandacaru_core::Context::new(None, 64 << 20).map_err(error)?,
     };
 
-    let grid = SpatialGrid::new(
-        [shape.0, shape.1, shape.2],
-        [0.0; 3],
-        step_array,
-        true,
-    )
-    .map_err(error)?;
+    let grid =
+        SpatialGrid::new([shape.0, shape.1, shape.2], [0.0; 3], step_array, true).map_err(error)?;
 
     let kernel_buf = minimum_image_kernel(&ctx, &grid, shells).map_err(error)?;
     let data = kernel_buf.as_slice().to_vec();
@@ -595,12 +604,9 @@ pub fn spatial_rdms<'py>(
         }
     }
     let g2 = gamma2.as_ref().map(|g| g.as_slice()).transpose()?;
-    let (d, g) = mandacaru_core::periodic::finite_size::two_body::spatial_rdms(
-        gamma.as_slice()?,
-        g2,
-        m,
-    )
-    .map_err(error)?;
+    let (d, g) =
+        mandacaru_core::periodic::finite_size::two_body::spatial_rdms(gamma.as_slice()?, g2, m)
+            .map_err(error)?;
     let g = g.map(|g| array(py, &[m, m, m, m], g)).transpose()?;
     Ok((array(py, &[m, m], d)?, g))
 }
@@ -618,11 +624,21 @@ pub fn compute_pair_densities<'py>(
 }
 
 fn optional_real(a: Option<PyReadonlyArray2<'_, f64>>) -> PyResult<Option<Vec<f64>>> {
-    a.map(|a| { layout(&a)?; Ok(a.as_slice()?.to_vec()) }).transpose()
+    a.map(|a| {
+        layout(&a)?;
+        Ok(a.as_slice()?.to_vec())
+    })
+    .transpose()
 }
 
-fn optional_complex(a: Option<PyReadonlyArray2<'_, Complex64>>) -> PyResult<Option<Vec<Complex64>>> {
-    a.map(|a| { layout(&a)?; Ok(a.as_slice()?.to_vec()) }).transpose()
+fn optional_complex(
+    a: Option<PyReadonlyArray2<'_, Complex64>>,
+) -> PyResult<Option<Vec<Complex64>>> {
+    a.map(|a| {
+        layout(&a)?;
+        Ok(a.as_slice()?.to_vec())
+    })
+    .transpose()
 }
 
 /// `A = X V` (`periodic::finite_size::two_body::orbital_rotation`).
@@ -635,8 +651,12 @@ pub fn orbital_rotation<'py>(
     v: Option<PyReadonlyArray2<'py, Complex64>>,
 ) -> PyResult<Array<'py, Complex64>> {
     let (x, v) = (optional_real(x)?, optional_complex(v)?);
-    let a = mandacaru_core::periodic::finite_size::two_body::orbital_rotation(m, x.as_deref(), v.as_deref())
-        .map_err(super::error)?;
+    let a = mandacaru_core::periodic::finite_size::two_body::orbital_rotation(
+        m,
+        x.as_deref(),
+        v.as_deref(),
+    )
+    .map_err(super::error)?;
     array(py, &[m, m], a)
 }
 
@@ -657,11 +677,15 @@ pub fn rotated_density<'py>(
     let (x, v) = (optional_real(x)?, optional_complex(v)?);
     let (psi, d) = (psi.as_slice()?.to_vec(), d.as_slice()?.to_vec());
     let ctx = &context.inner;
-    let out = py.detach(|| {
-        use mandacaru_core::periodic::finite_size::two_body::{orbital_rotation, rotated_density};
-        let a = orbital_rotation(m, x.as_deref(), v.as_deref())?;
-        rotated_density(ctx, &psi, points, &a, &d, m)
-    }).map_err(super::error)?;
+    let out = py
+        .detach(|| {
+            use mandacaru_core::periodic::finite_size::two_body::{
+                orbital_rotation, rotated_density,
+            };
+            let a = orbital_rotation(m, x.as_deref(), v.as_deref())?;
+            rotated_density(ctx, &psi, points, &a, &d, m)
+        })
+        .map_err(super::error)?;
     array(py, &[points], out)
 }
 
@@ -687,12 +711,32 @@ pub fn pair_two_body<'py>(
     }
     let points = rho.shape()[1];
     let (rho, phi) = (rho.as_slice()?.to_vec(), phi.as_slice()?.to_vec());
-    let x = x.map(|a| { layout(&a)?; Ok::<_, PyErr>(a.as_slice()?.to_vec()) }).transpose()?;
-    let v = v.map(|a| { layout(&a)?; Ok::<_, PyErr>(a.as_slice()?.to_vec()) }).transpose()?;
+    let x = x
+        .map(|a| {
+            layout(&a)?;
+            Ok::<_, PyErr>(a.as_slice()?.to_vec())
+        })
+        .transpose()?;
+    let v = v
+        .map(|a| {
+            layout(&a)?;
+            Ok::<_, PyErr>(a.as_slice()?.to_vec())
+        })
+        .transpose()?;
     let ctx = &context.inner;
     let out = py
-        .detach(|| mandacaru_core::periodic::finite_size::two_body::pair_two_body(
-            ctx, &rho, &phi, points, dv, x.as_deref(), v.as_deref(), m))
+        .detach(|| {
+            mandacaru_core::periodic::finite_size::two_body::pair_two_body(
+                ctx,
+                &rho,
+                &phi,
+                points,
+                dv,
+                x.as_deref(),
+                v.as_deref(),
+                m,
+            )
+        })
         .map_err(super::error)?;
     array(py, &[m, m, m, m], out)
 }

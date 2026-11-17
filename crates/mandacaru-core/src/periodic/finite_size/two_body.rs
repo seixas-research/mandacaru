@@ -21,7 +21,9 @@ pub fn pair_two_body(
 ) -> Result<Vec<f64>> {
     let m2 = product(&[m, m])?;
     if rho.len() != product(&[m2, points])? || phi.len() != rho.len() || !dv.is_finite() {
-        return Err(invalid("the pair densities and potentials must both be (M^2, points)"));
+        return Err(invalid(
+            "the pair densities and potentials must both be (M^2, points)",
+        ));
     }
     // The raw product, the tensor and the four rotation scratches.
     let _memory = ctx.reserve(product(&[m2, m2, 6, std::mem::size_of::<f64>()])?)?;
@@ -222,7 +224,9 @@ pub fn orbital_rotation(
     }
     let mut a: Vec<C64> = match x {
         Some(x) => x.iter().map(|&value| C64::new(value, 0.)).collect(),
-        None => (0..mm).map(|k| C64::new(if k / m == k % m { 1. } else { 0. }, 0.)).collect(),
+        None => (0..mm)
+            .map(|k| C64::new(if k / m == k % m { 1. } else { 0. }, 0.))
+            .collect(),
     };
     if let Some(v) = v {
         let mut out = vec![C64::new(0., 0.); mm];
@@ -255,9 +259,11 @@ pub fn rotated_density(
     if psi.len() != product(&[m, points])? || a.len() != mm || d.len() != mm {
         return Err(invalid("psi is (M, points), A and D are (M, M)"));
     }
-    let _memory = ctx.reserve(product(&[m, points, std::mem::size_of::<C64>()])?
-        .checked_add(product(&[points, std::mem::size_of::<f64>()])?)
-        .ok_or(crate::Error::Overflow)?)?;
+    let _memory = ctx.reserve(
+        product(&[m, points, std::mem::size_of::<C64>()])?
+            .checked_add(product(&[points, std::mem::size_of::<f64>()])?)
+            .ok_or(crate::Error::Overflow)?,
+    )?;
     let mut phi = vec![C64::new(0., 0.); m * points];
     for p in 0..m {
         for mu in 0..m {
@@ -265,7 +271,8 @@ pub fn rotated_density(
             if coefficient == C64::new(0., 0.) {
                 continue;
             }
-            for (out, &value) in phi[p * points..(p + 1) * points].iter_mut()
+            for (out, &value) in phi[p * points..(p + 1) * points]
+                .iter_mut()
                 .zip(&psi[mu * points..(mu + 1) * points])
             {
                 *out += coefficient * value;

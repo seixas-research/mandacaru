@@ -66,7 +66,10 @@ fn the_one_center_momentum_of_lithium_hydride_is_hermitian() {
         let solved = solve_in(&lih("lda-sr"), basis);
         let blocks = one_center_momentum(&solved.ctx, &solved.setup).unwrap();
         let scale = blocks.iter().map(|b| b.camax()).fold(0f64, f64::max);
-        let defect = blocks.iter().map(|b| (b - b.adjoint()).camax()).fold(0f64, f64::max);
+        let defect = blocks
+            .iter()
+            .map(|b| (b - b.adjoint()).camax())
+            .fold(0f64, f64::max);
         eprintln!("LiH {basis}: Delta p scale {scale:.3e}, anti-Hermitian {defect:.3e}");
         assert!(defect < 1e-10 * scale, "{basis}: not Hermitian, {defect:e}");
     }

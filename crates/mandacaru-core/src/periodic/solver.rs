@@ -227,7 +227,14 @@ pub(super) fn derivative(
     let n = c.grid.index.points();
     let mut work = c.context.allocate::<C64>(n)?;
     let mut real = c.context.allocate::<f64>(n)?;
-    derivative_into(c, fft, input, axis, work.as_mut_slice(), real.as_mut_slice())?;
+    derivative_into(
+        c,
+        fft,
+        input,
+        axis,
+        work.as_mut_slice(),
+        real.as_mut_slice(),
+    )?;
     Ok(real)
 }
 struct Electro {
@@ -678,7 +685,16 @@ pub fn diagonalize_with_solver_ws(
             previous_y,
         );
     }
-    let h = hamiltonian(c, data, v, w, kinetic_potential, hubbard, exchange, projector_ws)?;
+    let h = hamiltonian(
+        c,
+        data,
+        v,
+        w,
+        kinetic_potential,
+        hubbard,
+        exchange,
+        projector_ws,
+    )?;
     let h_ortho = data.lowdin.adjoint() * h * &data.lowdin;
     let h_ortho = (&h_ortho + h_ortho.adjoint()) * C64::new(0.5, 0.);
 
@@ -744,7 +760,8 @@ pub(super) fn hamiltonian(
     let ws = match projector_ws {
         Some(ws) => ws,
         None => {
-            fallback_ws = crate::math::projection::ComplexProjectorWorkspace::new(&c.context, m, n)?;
+            fallback_ws =
+                crate::math::projection::ComplexProjectorWorkspace::new(&c.context, m, n)?;
             &mut fallback_ws
         }
     };
@@ -773,7 +790,12 @@ pub(super) fn bare_fields(c: &Crystal) -> Result<(Buffer<f64>, Buffer<C64>)> {
     let n = c.grid.index.points();
     let mut fft = Fft3::new(&c.context, c.grid.index.shape())?;
     let empty = c.context.allocate::<f64>(n)?;
-    let field = electrostatic(c, &mut fft, empty.as_slice(), &vec![C64::default(); c.channels])?;
+    let field = electrostatic(
+        c,
+        &mut fft,
+        empty.as_slice(),
+        &vec![C64::default(); c.channels],
+    )?;
     Ok((field.potential, field.moments))
 }
 
@@ -815,7 +837,12 @@ pub fn hartree_energy(c: &Crystal, matrices: &[crate::math::storage::StoredMatri
     let zero = c.context.allocate::<f64>(n)?;
     let plus = electrostatic_energy(c, &mut fft, &rho.as_slice()[..n], q.as_slice())?;
     let minus = electrostatic_energy(c, &mut fft, minus.as_slice(), &negative)?;
-    let none = electrostatic_energy(c, &mut fft, zero.as_slice(), &vec![C64::default(); q.as_slice().len()])?;
+    let none = electrostatic_energy(
+        c,
+        &mut fft,
+        zero.as_slice(),
+        &vec![C64::default(); q.as_slice().len()],
+    )?;
     Ok(0.5 * (plus + minus) - none)
 }
 
@@ -851,7 +878,9 @@ pub(super) fn accumulate_densities<'a>(
     let tile = density_tile(n);
     let tiles = n.div_ceil(tile);
     let lanes = c.context.lanes(Level::Threads, tiles);
-    let bounds: Vec<usize> = (0..=lanes).map(|l| (l * tiles / lanes * tile).min(n)).collect();
+    let bounds: Vec<usize> = (0..=lanes)
+        .map(|l| (l * tiles / lanes * tile).min(n))
+        .collect();
     // Lane `l` owns points `bounds[l]..bounds[l + 1]` of every channel.
     let mut ranges: Vec<(usize, Vec<&mut [f64]>)> =
         (0..lanes).map(|l| (bounds[l], Vec::new())).collect();
@@ -862,21 +891,22 @@ pub(super) fn accumulate_densities<'a>(
             field = rest;
         }
     }
-    c.context.run_lanes(Level::Threads, &mut ranges, |_, (first, fields)| {
-        for t in 0..terms {
-            let (point, matrix, weight, channel) = term(t)?;
-            hermitian_density_tiles_accumulate_range(
-                &c.context,
-                &point.psi,
-                &matrix,
-                n,
-                weight,
-                *first,
-                fields[channel],
-            )?;
-        }
-        Ok(())
-    })
+    c.context
+        .run_lanes(Level::Threads, &mut ranges, |_, (first, fields)| {
+            for t in 0..terms {
+                let (point, matrix, weight, channel) = term(t)?;
+                hermitian_density_tiles_accumulate_range(
+                    &c.context,
+                    &point.psi,
+                    &matrix,
+                    n,
+                    weight,
+                    *first,
+                    fields[channel],
+                )?;
+            }
+            Ok(())
+        })
 }
 
 pub(super) fn density(
@@ -904,7 +934,12 @@ pub(super) fn density(
             nk,
             |k| {
                 let point = &c.points[k];
-                Ok((point, (*matrices[s * nk + k].matrix(&c.context)?).clone(), point.weight, 0))
+                Ok((
+                    point,
+                    (*matrices[s * nk + k].matrix(&c.context)?).clone(),
+                    point.weight,
+                    0,
+                ))
             },
             raw.as_mut_slice(),
         )?;
@@ -962,12 +997,7 @@ pub(super) fn energy(
     } else {
         collinear_xc_energy(c, fft, rho, c.spins)?
     };
-    Ok([
-        band,
-        electro_energy,
-        xc_energy,
-        c.constant,
-    ])
+    Ok([band, electro_energy, xc_energy, c.constant])
 }
 fn pack(c: &Crystal, rho: &[f64], q: &[C64], tau: Option<&[f64]>) -> Vec<C64> {
     let n = c.grid.index.points();
@@ -1026,10 +1056,19 @@ fn unpack(c: &Crystal, x: &[C64], rho: &mut [f64], q: &mut [C64], tau: Option<&m
         }
     }
 }
+/// The growth of the squared residual, over the smallest one the history holds, at which a
+/// restarting mixer drops its history ([`Crystal::solve_with`]): 4 is a doubling of the norm.
+/// Measured on the flipped-moment Ni triangle with U (`periodic_magnetic_symmetry`): a doubling
+/// converges the stalled run in 116 iterations, tripling it in 189, and 1.4 times not within 200.
+const MIXER_RESTART: f64 = 4.;
+
 struct Mixer {
     history: Vec<(StoredMatrix, StoredMatrix)>,
     gram: Vec<Vec<f64>>,
     spec: Option<Buffer<C64>>,
+    /// `Some(factor)`: start the history again when the residual grows past `factor` times the
+    /// smallest squared residual in it. `None` is the plain mixer.
+    restart: Option<f64>,
 }
 impl Mixer {
     fn next(
@@ -1096,6 +1135,22 @@ impl Mixer {
                 })
                 .sum();
             new_row.push(self_dot);
+            // A residual that has grown past the best one stored means the steps in the history
+            // describe a region the iteration has left (an unstable direction of the mixed
+            // state): the extrapolation from them is no longer a descent. Start the history again.
+            if let Some(factor) = self.restart {
+                let smallest = self
+                    .gram
+                    .iter()
+                    .enumerate()
+                    .map(|(i, row)| row[i])
+                    .fold(f64::INFINITY, f64::min);
+                if self_dot > factor * smallest {
+                    self.history.clear();
+                    self.gram.clear();
+                    new_row = vec![self_dot];
+                }
+            }
             self.gram.push(new_row);
 
             self.history.push((
@@ -1179,11 +1234,86 @@ impl Crystal {
         self.solve_with(options, None, None)
     }
 
+    /// The SCF from `initial` (or the crystal's own start) with optional `shifts`.
+    ///
+    /// A run that ends at `max_iterations` unconverged is repeated, and a repeat that converges
+    /// replaces it; every run that converges is the first one, untouched. Two repeats, in order:
+    ///
+    /// * DFT+U from the shell table's moment seed can fail to settle: a shell with a partly
+    ///   filled d or f set (an isolated Ni atom) has a ring of nearly degenerate orbital
+    ///   orderings of its holes, and the spherical start sits on a saddle between them. The SCF
+    ///   is repeated from every integer diagonal start the table's electron counts allow
+    ///   ([`Spec::integer_starts`]), and the converged run of lowest free energy replaces it.
+    ///   A run given an `initial` state, one seeded with explicit occupations and one for
+    ///   which no start converges are not repeated this way.
+    /// * A magnetic crystal can start on a saddle of the mixed state (the Ni triangle with
+    ///   flipped moments and U: the moment collapses to 0.01 Bohr magneton in a few iterations and
+    ///   the extrapolation of the stored steps then wanders on a plateau 7.7 mHa above the state
+    ///   it cannot leave). The SCF is repeated from the same start with a mixer that drops its
+    ///   history when the residual grows ([`MIXER_RESTART`]).
     pub fn solve_with(
         &self,
         options: &Options,
         initial: Option<&PeriodicResult>,
         shifts: Option<&[Matrix]>,
+    ) -> Result<PeriodicResult> {
+        let first = self.solve_from(options, initial, shifts, None, None)?;
+        if first.converged {
+            return Ok(first);
+        }
+        let retained = |error: &crate::Error| {
+            // The retry holds the first run's arrays too: a budget it cannot fit keeps the first.
+            matches!(
+                error,
+                crate::Error::Budget { .. }
+                    | crate::Error::Allocation
+                    | crate::Error::LayoutBudget(_)
+            )
+        };
+        if let Some(spec) = self.hubbard.as_ref().filter(|h| {
+            initial.is_none()
+                && h.is_active()
+                && h.shells
+                    .iter()
+                    .all(|s| matches!(s.seed, super::hubbard::Seed::Moment { .. }))
+        }) {
+            let mut best: Option<PeriodicResult> = None;
+            for start in spec.integer_starts(self)? {
+                let run = match self.solve_from(options, None, shifts, Some(&start), None) {
+                    Ok(run) => run,
+                    Err(error) if retained(&error) => break,
+                    Err(error) => return Err(error),
+                };
+                if run.converged
+                    && best
+                        .as_ref()
+                        .is_none_or(|b| run.free_energy < b.free_energy)
+                {
+                    best = Some(run);
+                }
+            }
+            if let Some(best) = best {
+                return Ok(best);
+            }
+        }
+        if options.algorithm == ScfAlgorithm::Diis && options.history > 1 {
+            match self.solve_from(options, initial, shifts, None, Some(MIXER_RESTART)) {
+                Ok(run) if run.converged => return Ok(run),
+                Ok(_) => {}
+                Err(error) if retained(&error) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(first)
+    }
+
+    fn solve_from(
+        &self,
+        options: &Options,
+        initial: Option<&PeriodicResult>,
+        shifts: Option<&[Matrix]>,
+        start: Option<&[Vec<C64>]>,
+        restart: Option<f64>,
     ) -> Result<PeriodicResult> {
         let c = self;
         let ctx = &c.context;
@@ -1206,9 +1336,7 @@ impl Crystal {
         // A meta-GGA (r2SCAN, r2SCAN+rVV10) uses the spinor kinetic density in the same frame
         // (`fields::kinetic_density`, `spinor::exchange_correlation`).
         let definition = crate::models::functional(&c.functional)?;
-        if c.spinor
-            && hybrid.is_none()
-            && !matches!(definition.semilocal, "lda" | "pbe" | "r2scan")
+        if c.spinor && hybrid.is_none() && !matches!(definition.semilocal, "lda" | "pbe" | "r2scan")
         {
             return Err(invalid(
                 "periodic spinor XC currently requires LDA, PBE, r2SCAN, their rVV10 forms or HSE06",
@@ -1216,7 +1344,9 @@ impl Crystal {
         }
         if let Some(sh) = shifts {
             if sh.len() != c.spins || sh.iter().any(|m| m.nrows() != c.p || m.ncols() != c.p) {
-                return Err(invalid("shift operators must match spins and projector dimension"));
+                return Err(invalid(
+                    "shift operators must match spins and projector dimension",
+                ));
             }
         }
         if options.max_iterations == 0
@@ -1273,7 +1403,9 @@ impl Crystal {
                 Level::Kpts,
                 lanes,
                 transient
-                    .checked_add(crate::math::projection::ComplexProjectorWorkspace::bytes(m, n)?)
+                    .checked_add(crate::math::projection::ComplexProjectorWorkspace::bytes(
+                        m, n,
+                    )?)
                     .ok_or(crate::Error::Overflow)?,
             )?;
             let _projector_work = ctx.reserve(product(&[c.p, c.p, 16, 12, lanes])?)?;
@@ -1295,7 +1427,8 @@ impl Crystal {
                         rho.as_mut_slice()[k] = c.initial.as_slice()[k];
                         if !c.time_reversal {
                             for a in 0..3 {
-                                rho.as_mut_slice()[(a + 1) * n + k] = c.initial_m.as_slice()[a * n + k];
+                                rho.as_mut_slice()[(a + 1) * n + k] =
+                                    c.initial_m.as_slice()[a * n + k];
                             }
                         }
                     } else if c.spins == 1 {
@@ -1324,7 +1457,12 @@ impl Crystal {
             };
             let mut previous = None;
             let mut history = vec![];
-            let mut mixer = Mixer { history: vec![], gram: vec![], spec: None };
+            let mut mixer = Mixer {
+                history: vec![],
+                gram: vec![],
+                spec: None,
+                restart,
+            };
             let mut projector_ws: Vec<_> = (0..lanes)
                 .map(|_| crate::math::projection::ComplexProjectorWorkspace::new(ctx, m, n).ok())
                 .collect();
@@ -1337,7 +1475,10 @@ impl Crystal {
                         h.start(c)?
                     }
                 }
-                (Some(h), _) if active => h.start(c)?,
+                (Some(h), _) if active => match start {
+                    Some(start) => start.to_vec(),
+                    None => h.start(c)?,
+                },
                 _ => vec![],
             };
             // Exact exchange of a hybrid: K_in defines the diagonalization, is mixed with the density
@@ -1377,7 +1518,9 @@ impl Crystal {
                 };
                 let mut eigenvalues = vec![];
                 let mut coefficients = vec![];
-                let current_residual = history.last().map_or(f64::INFINITY, |it: &Iteration| it.residual);
+                let current_residual = history
+                    .last()
+                    .map_or(f64::INFINITY, |it: &Iteration| it.residual);
                 // One task per spin channel and k-point (index `s * nk + k`), each today's serial
                 // eigensolve on its own lane; the results are taken in index order, so they do
                 // not depend on the layout.
@@ -1738,13 +1881,10 @@ impl Crystal {
                     let (eps, coeff, _) = diagonalize_with_exchange(
                         c,
                         data,
-                        if c.spinor {
-                            v
-                        } else {
-                            &v[s * n..(s + 1) * n]
-                        },
+                        if c.spinor { v } else { &v[s * n..(s + 1) * n] },
                         w,
-                        kinetic_potential.map(|v| if c.spinor { v } else { &v[s * n..(s + 1) * n] }),
+                        kinetic_potential
+                            .map(|v| if c.spinor { v } else { &v[s * n..(s + 1) * n] }),
                         op.as_ref(),
                         None,
                     )?;
@@ -1784,12 +1924,11 @@ impl Crystal {
                 .zip(&occupations)
                 .map(|(c, f)| {
                     let c = c.matrix(ctx)?;
-                    let d = &*c
-                        * Matrix::from_diagonal(&nalgebra::DVector::from_iterator(
+                    let d =
+                        &*c * Matrix::from_diagonal(&nalgebra::DVector::from_iterator(
                             m,
                             f.iter().map(|f| C64::new(*f, 0.)),
-                        ))
-                        * c.adjoint();
+                        )) * c.adjoint();
                     StoredMatrix::new(ctx, d, archive_matrices)
                 })
                 .collect::<Result<Vec<_>>>()?;

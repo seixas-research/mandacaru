@@ -94,6 +94,12 @@ field.write("density.xsf")         # the extension chooses cube or xsf
 (`.cube` or `.xsf`). A field carries `data`, `grid`, the nuclei (`numbers`,
 `positions`, `charges`) and the `norm`.
 
+The same field object carries the transition density of a linear-response excitation,
+from `Excitations.transition_density(root)` ([excited states](#excited-states)). It is
+not a `quantity` of `write_cube` or `volumetric_field`: it comes from the excitation view,
+in e/Bohr³ on the calculation's own integration grid by default, and `field.write` saves
+it as `.cube` or `.xsf` as above. It is signed, so draw both signs of an isosurface.
+
 ## Grid, origin and units
 
 Everything in a cube file is in **Bohr**, and a density is in electrons per

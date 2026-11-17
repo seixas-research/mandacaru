@@ -8,11 +8,32 @@ Hartree-Fock). The induced dipole as a function of time is the signal, and its F
 transform is the absorption spectrum. The numbers are computed in Rust
 (`molecular::realtime`, `math::propagator` and `models::time_spectrum`); the returned
 `mandacaru.analysis.real_time.RealTime` view converts units and holds no arithmetic of its
-own. The references that run are `method="dft"` with `xc="lda"`, `"pbe"` or `"hse06"`, with
-or without `hubbard_u`, and `method="rhf"` or `"uhf"`, each closed shell or open shell.
-Only molecules are supported: [What raises](#real-time-refusals) lists every refused
-request, and [the not-yet-available table](#not-yet-available) what is planned (crystals and
-`r2scan` among it).
+own. The references that run are `method="dft"` with `xc="lda"`, `"pbe"`, `"r2scan"` or
+`"hse06"`, with or without `hubbard_u`, and `method="rhf"` or `"uhf"`, each closed shell or
+open shell. This guide covers molecules. The same call propagates an insulating crystal in
+the velocity gauge, and `get_dielectric_function` gives its frequency-domain response; this
+guide has no section on them yet, and the docstrings of `Mandacaru.get_real_time` and
+`Mandacaru.get_dielectric_function` ([the API reference](#options-reference)) list the
+crystal keywords (`kpts=`, `kernel=`) and what a crystal refuses. `get_real_time` refuses
+every spinor crystal (a crystal on a spin-orbit dataset; a crystal given moment vectors is
+refused at setup), because the noncollinear kernel is not implemented;
+`get_dielectric_function` takes one. `get_dielectric_function` takes `kernel="hartree"` (the
+default: the random-phase approximation with local fields), `"independent"` (independent
+particles), `"bse"` (the Tamm-Dancoff Bethe-Salpeter equation of the singlets: local fields
+and the statically screened electron-hole attraction) or `"long-range"` (local fields and the
+model kernel `-alpha / |q + G|^2`, with `alpha` given or fitted as `4.615 / eps_inf - 0.213`
+to the computed local-field `eps_inf`); the view's `kernel` attribute holds the name that
+ran, and `kernel="adiabatic"` raises `NotImplementedError`. With `bands=None`, `get_dielectric_function` keeps the smallest window of
+bands that holds every transition up to the highest requested energy, `scissor` included,
+and whose omitted transitions carry at most 1e-5 of the independent-particle `eps(0) - 1`
+(its trace), so the view's `static_tensor` keeps its static limit. That usually comes to
+every band, so `kernel="bse"` builds the full Bethe-Salpeter operator by default. When the
+window does not fit the memory budget the request raises `NotImplementedError`, and the
+message names the largest `bands=(valence, conduction)` that fits (or says that not even
+`bands=(1, 1)` does). `bands=(valence, conduction)` fixes the window instead, and a window
+cut at the requested range leaves the higher transitions out of the view's `static_tensor`.
+[What raises](#real-time-refusals) lists every refused molecular request, and
+[the not-yet-available table](#not-yet-available) what is planned.
 
 This is the time-domain companion of [linear-response TD-DFT](excited_states.md). It is not
 the route to the excited states of a quantum run: a calculator with a quantum method raises
@@ -114,15 +135,20 @@ signature is
 ```python
 calc.get_real_time(duration=40.0, time_step=0.005, *, direction="x", strength=0.002,
                    kick="density", gauge=None, propagator="etrs",
-                   corrector_tolerance=1e-6, max_energy_drift=0.05)
+                   corrector_tolerance=1e-6, max_energy_drift=0.05,
+                   kernel="adiabatic", kpts=None)
 ```
+
+`kernel` and `kpts` are options of a crystal: on a molecule a `kernel` other than
+`"adiabatic"` raises `NotImplementedError` and `kpts` raises `ValueError`.
 
 `duration` and `time_step` are in femtoseconds (atomic time units with
 `atomic_units=True`); the number of steps is their ratio, rounded, and a duration that rounds to
 zero steps raises `ValueError`. `direction` is `"x"`, `"y"`, `"z"` or a three-vector,
 which is normalized before use (the run log records it as given). `strength` is in
 1/Angstrom (1/Bohr with `atomic_units=True`). `gauge=None` is the length gauge. A tensor
-needs one call per axis: `direction="all"` is not offered.
+needs one call per axis: `direction="all"` is a crystal's option and raises
+`NotImplementedError` on a molecule.
 
 ## The view
 
@@ -293,14 +319,13 @@ raises `ValueError` and names the accepted ones.
 | Any quantum method ([the methods table](#methods-table)) | `ValueError`: the propagation needs a mean-field state |
 | `method="ghf"` | `ValueError` |
 | A spin-orbit (fully relativistic) dataset, whose Kohn-Sham state is a spinor | `NotImplementedError`; a scalar-relativistic dataset runs |
-| `xc="r2scan"` | `NotImplementedError` naming it: its Fock matrix of a kicked state needs the current-density correction of the kinetic energy density, which is not implemented |
-| `xc="pbe+rvv10"` | `NotImplementedError`: the nonlocal correlation is not implemented in real time |
-| `xc="r2scan+rvv10"` | `NotImplementedError` for the kinetic-density reason of `r2scan`, which is checked first |
-| A crystal (`pbc`, or `load_crystal=`) | `NotImplementedError` |
+| `xc="pbe+rvv10"` or `"r2scan+rvv10"` | `NotImplementedError`: the nonlocal correlation is not implemented in real time |
+| `kpts=`, or a `kernel` other than `"adiabatic"`, or `direction="all"` on a molecule | `ValueError` for `kpts=`, `NotImplementedError` for the other two: they are options of a crystal |
+| A crystal that is a spinor (with or without spin-orbit coupling), a hybrid or an rVV10 one, a metal, fractional occupations, `gauge="length"`, `kick="spin"` | `NotImplementedError` (`ValueError` for the gauge and the kick): see the docstring of `Mandacaru.get_real_time` |
 | `precision="float32"` | `ValueError`: the propagation runs in `float64` only |
 | An unconverged SCF | `ValueError` |
 | Fractional occupations ([Occupations](#dft-degenerate-shell)), or a state that is not aufbau | `NotImplementedError`; give the spin state explicitly instead |
-| `rhf` or `uhf` of a molecule whose PAW frozen core has no stored core states or a partially filled subshell | `ValueError`, naming the element: the Hartree-Fock exchange of that core is not available (Kohn-Sham runs on every element) |
+| `rhf` or `uhf` of a molecule whose PAW frozen core has a partially filled subshell | `ValueError`, naming the element: the Hartree-Fock exchange of that core is not available (Kohn-Sham runs on every element) |
 | `hubbard_u=` where the ground state refuses it (a screened hybrid, a spin-orbit dataset, `float32`; [DFT+U on molecules](#dft-u-molecules)) | The ground state's own error |
 | A reference that is not a fixed point of its Fock matrix | `ValueError` |
 | `kick="spin"` with `gauge="velocity"` | `ValueError` |

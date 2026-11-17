@@ -121,12 +121,17 @@ impl Translations {
             }
             for (p, &q) in map.iter().enumerate() {
                 if q >= m || back[q] != usize::MAX {
-                    return Err(invalid("a translation must be a permutation of the orbitals"));
+                    return Err(invalid(
+                        "a translation must be a permutation of the orbitals",
+                    ));
                 }
                 back[q] = p;
             }
         }
-        if orbital.first().is_some_and(|t| t.iter().enumerate().any(|(p, &q)| p != q)) {
+        if orbital
+            .first()
+            .is_some_and(|t| t.iter().enumerate().any(|(p, &q)| p != q))
+        {
             return Err(invalid("translation 0 must be the identity"));
         }
         Ok(Self { orbital, inverse })
@@ -217,7 +222,9 @@ impl Eri {
         match self {
             Self::Cholesky {
                 m, rank, factors, ..
-            } => DMatrix::from_fn(*m, *m, |p, q| factors.as_slice()[pair(p, q) * rank + column]),
+            } => DMatrix::from_fn(*m, *m, |p, q| {
+                factors.as_slice()[pair(p, q) * rank + column]
+            }),
             Self::Translated {
                 m,
                 stored,
@@ -391,7 +398,13 @@ pub fn cholesky_from_columns(
 ) -> Result<Eri> {
     let ones = fixed_pivots.map(|p| vec![1; p.len()]);
     let fixed = fixed_pivots.zip(ones.as_deref());
-    let orbits = factor_orbits(ctx, columns, &Translations::identity(columns.m()), tolerance, fixed)?;
+    let orbits = factor_orbits(
+        ctx,
+        columns,
+        &Translations::identity(columns.m()),
+        tolerance,
+        fixed,
+    )?;
     let mut pivots = ctx.allocate::<usize>(orbits.stored.max(1))?;
     pivots.as_mut_slice()[..orbits.stored].copy_from_slice(&orbits.pivots);
     Ok(Eri::Cholesky {
@@ -472,7 +485,9 @@ fn factor_orbits(
         let mut seen = vec![false; n];
         for &pivot in pivots {
             if pivot >= n || std::mem::replace(&mut seen[pivot], true) {
-                return Err(invalid("fixed Coulomb pivots must be distinct orbital pairs"));
+                return Err(invalid(
+                    "fixed Coulomb pivots must be distinct orbital pairs",
+                ));
             }
         }
         if kept.len() != pivots.len() {
@@ -493,7 +508,10 @@ fn factor_orbits(
             .collect()
     };
     let (forward, back) = if cells > 1 {
-        (on_pairs(&translations.orbital), on_pairs(&translations.inverse))
+        (
+            on_pairs(&translations.orbital),
+            on_pairs(&translations.inverse),
+        )
     } else {
         (Vec::new(), Vec::new())
     };
@@ -611,7 +629,10 @@ fn factor_orbits(
             *slot -= if cells == 1 {
                 v[a] * v[a]
             } else {
-                members.iter().map(|&(t, _)| v[back[t][a]] * v[back[t][a]]).sum::<f64>()
+                members
+                    .iter()
+                    .map(|&(t, _)| v[back[t][a]] * v[back[t][a]])
+                    .sum::<f64>()
             };
         }
         factors.push(v)?;
@@ -1128,7 +1149,11 @@ impl MolecularIntegrals {
     /// (and the MP2 natural orbitals and correlating partners an active space selects with),
     /// local MP2 and the analytic variational force.
     pub fn require_hartree_fock_core(&self) -> Result<()> {
-        if let Some(reason) = self.corrections.as_ref().and_then(|c| c.core_refusal.as_ref()) {
+        if let Some(reason) = self
+            .corrections
+            .as_ref()
+            .and_then(|c| c.core_refusal.as_ref())
+        {
             return Err(invalid(format!(
                 "native PAW frozen-core exchange is not available: {reason}. Hartree-Fock of this \
                  molecule, its excitations and every Hamiltonian over its frozen core (the model \
@@ -1146,15 +1171,14 @@ impl MolecularIntegrals {
             return Ok(value.clone());
         }
         if let Some(source) = &self.paw_supercell {
-            let fixed = match (&self.fixed_pivots, &self.fixed_kept) {
-                (Some(pivots), Some(kept)) => Some((pivots.as_slice(), kept.as_slice())),
-                (None, _) => None,
-                (Some(_), None) => {
-                    return Err(invalid(
+            let fixed =
+                match (&self.fixed_pivots, &self.fixed_kept) {
+                    (Some(pivots), Some(kept)) => Some((pivots.as_slice(), kept.as_slice())),
+                    (None, _) => None,
+                    (Some(_), None) => return Err(invalid(
                         "fixed Coulomb pivots of a supercell need the kept counts of their orbits",
-                    ))
-                }
-            };
+                    )),
+                };
             let base = Arc::new(cholesky_by_translation_orbits(
                 &self.context,
                 source.columns.as_ref(),
@@ -1389,7 +1413,17 @@ impl MolecularIntegrals {
         if grid.periodic {
             return Err(invalid("molecular integrals require an isolated grid; a periodic cell is built by molecular::periodic (the Born-von Karman supercell)"));
         }
-        Self::assemble(ctx, geometry, grid, basis, samples, kinetic, cholesky, corrections, None)
+        Self::assemble(
+            ctx,
+            geometry,
+            grid,
+            basis,
+            samples,
+            kinetic,
+            cholesky,
+            corrections,
+            None,
+        )
     }
     /// The shared assembly: isolated electrostatics when `periodic` is `None`, the
     /// lattice sums of `molecular::periodic` otherwise (then `samples` are image-summed).
@@ -1445,8 +1479,13 @@ impl MolecularIntegrals {
         let mut overlap = ctx.allocate::<f64>(product(&[m, m])?)?;
         let mut t = ctx.allocate::<f64>(product(&[m, m])?)?;
         let mut v = ctx.allocate::<f64>(product(&[m, m])?)?;
-        if periodic.as_ref().is_some_and(|p| p.external.as_slice().len() != g) {
-            return Err(invalid("the periodic external potential does not match the grid"));
+        if periodic
+            .as_ref()
+            .is_some_and(|p| p.external.as_slice().len() != g)
+        {
+            return Err(invalid(
+                "the periodic external potential does not match the grid",
+            ));
         }
         let mut external = ctx.allocate::<f64>(g)?;
         let softening = 0.5 * grid.spacings().into_iter().fold(f64::INFINITY, f64::min);

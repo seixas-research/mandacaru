@@ -36,6 +36,8 @@ use std::mem::size_of;
 type Matrix = DMatrix<C64>;
 pub const MAX_SHELLS: usize = 4096;
 const MAX_WEIGHTS: usize = 8;
+/// Most integer starts [`Spec::integer_starts`] offers a stalled run.
+pub const MAX_INTEGER_STARTS: usize = 64;
 /// Heap bytes one parsed shell holds at most (logical sizes): eight weights, the `7 x 8`
 /// projector indices of an f shell and a two-spin explicit seed. `Spec::parse` takes no
 /// `Context`: this bound times [`MAX_SHELLS`] (about 9 MB, 2x with `Vec` slack) is all the table
@@ -53,7 +55,8 @@ pub enum Seed {
     /// `n_sigma = clamp((N +- moment) / (2 (2l+1)), 0, 1)` times the identity; the first spin
     /// channel takes `+ moment`, the shell's own signed moment (an antiferromagnetic seed gives
     /// its sites opposite signs). A restricted run has none: `N / (2 (2l+1))`; a nonzero moment
-    /// there is refused at parse time.
+    /// there is refused at parse time. A run that this seed leaves unconverged is repeated from
+    /// [`Spec::integer_starts`] (`Crystal::solve_with`).
     Moment { n_electrons: f64, moment: f64 },
     /// One Hermitian `p x p` row-major matrix per spin channel.
     Occupations(Vec<Vec<C64>>),
@@ -353,6 +356,98 @@ impl Spec {
             }
         }
         Ok(out)
+    }
+    /// Integer diagonal starts for a run that the moment seed leaves unconverged, in
+    /// `[spin * shells + shell]` layout like [`Spec::seed`].
+    ///
+    /// Every channel of a shell holds `(N +- moment) / 2` electrons (`N / 2` restricted); when
+    /// that is a whole number `e` strictly between 0 and `2l+1`, the start fills `e` of the
+    /// `2l+1` orbitals with one electron and empties the rest. Channels of equal element, `l`
+    /// and `e` share one choice of orbitals (the sites of an ordered crystal order alike), and
+    /// one start is returned for every combination of choices, in increasing order of the bit mask of the
+    /// occupied orbitals. The list is empty when a shell does not start from the moment seed,
+    /// a channel's electron count is not whole, or the combinations exceed
+    /// [`MAX_INTEGER_STARTS`]; starts that break the symmetry of the crystal's reduced mesh are
+    /// left out ([`super::hubbard_symmetry::check_seed`]).
+    pub fn integer_starts(&self, c: &Crystal) -> Result<Vec<Vec<Vec<C64>>>> {
+        let (spins, k) = (c.spins, self.shells.len());
+        let mut counts = vec![0usize; spins * k];
+        // (element, l, electrons, the orbital choices of that class)
+        let mut classes: Vec<(&str, usize, usize, Vec<usize>)> = vec![];
+        for (index, shell) in self.shells.iter().enumerate() {
+            let Seed::Moment {
+                n_electrons,
+                moment,
+            } = &shell.seed
+            else {
+                return Ok(vec![]);
+            };
+            let p = shell.size();
+            for spin in 0..spins {
+                let electrons = match spins {
+                    1 => n_electrons / 2.,
+                    _ => (n_electrons + if spin == 0 { *moment } else { -moment }) / 2.,
+                };
+                let whole = electrons.round();
+                if (electrons - whole).abs() > 1e-9 || whole < 0. || whole > p as f64 {
+                    return Ok(vec![]);
+                }
+                let whole = whole as usize;
+                counts[spin * k + index] = whole;
+                if 0 < whole
+                    && whole < p
+                    && !classes
+                        .iter()
+                        .any(|(s, l, e, _)| *s == shell.symbol && *l == shell.l && *e == whole)
+                {
+                    let choices: Vec<usize> = (0..1usize << p)
+                        .filter(|mask| mask.count_ones() as usize == whole)
+                        .collect();
+                    classes.push((&shell.symbol, shell.l, whole, choices));
+                }
+            }
+        }
+        let mut total = 1usize;
+        for (_, _, _, choices) in &classes {
+            total = total.saturating_mul(choices.len());
+        }
+        if total > MAX_INTEGER_STARTS {
+            return Ok(vec![]);
+        }
+        let mut starts = Vec::with_capacity(total);
+        for combination in 0..total {
+            let mut rest = combination;
+            let mut picked = vec![0usize; classes.len()];
+            for (slot, (_, _, _, choices)) in picked.iter_mut().zip(&classes).rev() {
+                *slot = choices[rest % choices.len()];
+                rest /= choices.len();
+            }
+            let mut start = vec![vec![]; spins * k];
+            for (index, shell) in self.shells.iter().enumerate() {
+                let p = shell.size();
+                for spin in 0..spins {
+                    let whole = counts[spin * k + index];
+                    let mask = match classes
+                        .iter()
+                        .position(|(s, l, e, _)| *s == shell.symbol && *l == shell.l && *e == whole)
+                    {
+                        Some(class) => picked[class],
+                        None if whole == 0 => 0,
+                        None => (1usize << p) - 1,
+                    };
+                    start[spin * k + index] = (0..p * p)
+                        .map(|i| {
+                            let filled = i / p == i % p && mask >> (i / p) & 1 == 1;
+                            C64::new(if filled { 1. } else { 0. }, 0.)
+                        })
+                        .collect();
+                }
+            }
+            if super::hubbard_symmetry::check_seed(self, c, &start).is_ok() {
+                starts.push(start);
+            }
+        }
+        Ok(starts)
     }
     /// [`Spec::seed`] of the crystal's spin channels, refused when it breaks the symmetry the
     /// crystal's mesh was reduced with ([`super::hubbard_symmetry::check_seed`]).

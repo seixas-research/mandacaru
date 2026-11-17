@@ -1,9 +1,8 @@
 //! Parquet round trips, determinism, atomic writes, budgets and the frozen
 //! fixtures, through the public API of `mandacaru_core::parquet`.
 //!
-//! Hostile input lives in `parquet_errors.rs`; foreign writers, the shipped
-//! libraries and the layout other readers rely on live in
-//! `parquet_interop.rs`.
+//! Hostile input lives in `parquet_errors.rs`; foreign writers and the layout
+//! other readers rely on live in `parquet_interop.rs`.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -370,7 +369,6 @@ fn an_empty_table_keeps_its_columns_and_metadata() {
 
 #[test]
 fn a_five_megabyte_metadata_value_round_trips() {
-    // The largest shipped key-value value is 4,477,748 bytes.
     let ctx = context();
     let dir = Directory::new();
     {
@@ -1205,7 +1203,7 @@ fn every_readable_fixture_matches_the_digests_pyarrow_recorded() {
         assert_eq!(ctx.memory_used(), 0, "{name}");
         read += 1;
     }
-    assert!(read >= 38, "only {read} fixtures read");
+    assert!(read >= 32, "only {read} fixtures read");
 }
 
 #[test]
@@ -1215,7 +1213,7 @@ fn the_fixture_folder_is_what_the_references_describe() {
     let references = references();
     let listed: Vec<&String> = references["fixtures"].as_object().unwrap().keys().collect();
     let mut found = Vec::new();
-    for folder in ["generic", "hamiltonian", "negative", "pseudopotential"] {
+    for folder in ["generic", "hamiltonian", "negative"] {
         for entry in fs::read_dir(fixtures().join(folder)).unwrap() {
             let name = entry.unwrap().file_name().into_string().unwrap();
             if name.ends_with(".parquet") {

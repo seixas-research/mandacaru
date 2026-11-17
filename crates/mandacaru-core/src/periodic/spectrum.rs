@@ -309,7 +309,12 @@ pub fn occupations_and_entropy(
         * eigenvalues
             .iter()
             .zip(weights)
-            .map(|(e, w)| w * e.iter().map(|e| method.entropy((e - mu) / width)).sum::<f64>())
+            .map(|(e, w)| {
+                w * e
+                    .iter()
+                    .map(|e| method.entropy((e - mu) / width))
+                    .sum::<f64>()
+            })
             .sum::<f64>();
     (occupations, entropy)
 }

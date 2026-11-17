@@ -696,4 +696,3 @@ pub unsafe fn kb_project(
         }
     });
 }
-

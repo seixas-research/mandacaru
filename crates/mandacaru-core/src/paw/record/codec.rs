@@ -154,13 +154,13 @@ fn channel(
 }
 
 // ---------------------------------------------------------------------------
-// The core states (format version 3).
+// The core states.
 // ---------------------------------------------------------------------------
 
 /// A declared core state before its table is taken: `(n, l, occupation, energy)`.
 type CoreEntry = (u32, u32, f64, f64);
 
-/// The `core_states` list of a version-3 payload, every size bounded by what a core can hold:
+/// The `core_states` list of a payload, every size bounded by what a core can hold:
 /// at most [`MAX_CORE_STATES`] entries, `1 <= n <= 7`, `l < n`, `0 < occupation <= 2 (2l + 1)`,
 /// a finite energy, each `(n, l)` once, and the column name the state's own
 /// ([`PawDataset::core_table`]). The tables and the bound of the total charge by `Z` are checked
@@ -251,9 +251,18 @@ pub(crate) fn assemble(
         other => return Err(fail(what, format!("format {other} is not {FORMAT_TAG:?}"))),
     }
     let version = take(&mut payload, "version", what)?;
-    let version = match version.as_u64() {
-        Some(v) if (1..=FORMAT_VERSION).contains(&v) => v,
-        Some(v) if v > FORMAT_VERSION => {
+    match version.as_u64() {
+        Some(FORMAT_VERSION) => {}
+        Some(v) if v < FORMAT_VERSION => {
+            return Err(fail(
+                what,
+                format!(
+                    "pseudopotential format version {v} is not supported: only format \
+                     {FORMAT_VERSION} is read"
+                ),
+            ))
+        }
+        Some(v) => {
             return Err(fail(
                 what,
                 format!(
@@ -314,17 +323,12 @@ pub(crate) fn assemble(
     let defects = defects(take(&mut payload, "defects", what)?)?;
     let spin_orbit_value = take(&mut payload, "spin_orbit", what)?;
     let channels_value = take(&mut payload, "channels", what)?;
-    // Version 3 carries the core states and must; an older file has no such key, and the
-    // `nothing_left` below refuses one that does.
-    let core_entries = if version >= FORMAT_VERSION {
-        Some(core_entries(take(&mut payload, "core_states", what)?)?)
-    } else {
-        None
-    };
-    // Optional at version 3, one of the named schemes; an older file has no such key.
-    let core_scheme = match (version >= FORMAT_VERSION, payload.remove("core_scheme")) {
-        (_, None) => None,
-        (true, Some(value)) => {
+    // Every record carries its core states.
+    let core_entries = Some(core_entries(take(&mut payload, "core_states", what)?)?);
+    // Optional, one of the named schemes.
+    let core_scheme = match payload.remove("core_scheme") {
+        None => None,
+        Some(value) => {
             let name = string(value, "core_scheme")?;
             if !CORE_SCHEMES.contains(&name.as_str()) {
                 return Err(fail(
@@ -333,12 +337,6 @@ pub(crate) fn assemble(
                 ));
             }
             Some(name)
-        }
-        (false, Some(_)) => {
-            return Err(fail(
-                what,
-                "the key \"core_scheme\" is not part of the schema",
-            ))
         }
     };
     nothing_left(&payload, what)?;
@@ -444,8 +442,8 @@ pub(crate) fn assemble(
             ));
         }
     }
-    // A version-3 record that lists its core states lists every one: a cored record with an empty
-    // list (a version-2 view saved as version 3, say) is refused, not read as a core-free species.
+    // A record lists every core state: a cored record with an empty list is refused, not read as a
+    // core-free species.
     // Summed in place (trapezoid of `4 pi r^2 n_c`): nothing is allocated outside the reservation.
     if dataset.core_states.as_ref().is_some_and(Vec::is_empty) {
         let (grid, density) = (dataset.r.as_slice(), dataset.core_density.as_slice());

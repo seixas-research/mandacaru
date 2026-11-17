@@ -1,7 +1,5 @@
 use mandacaru_core::{
-    models::ts::{
-        fermi_damping, free_atom_params, functional_s_r, tkatchenko_scheffler,
-    },
+    models::ts::{fermi_damping, free_atom_params, functional_s_r, tkatchenko_scheffler},
     Geometry, LengthUnit,
 };
 
@@ -75,9 +73,7 @@ fn ts_h2_dimer_reproduces_ase_reference() {
 
     // Forces sum to zero
     for a in 0..3 {
-        assert!(
-            (res.forces_ev_angstrom[0][a] + res.forces_ev_angstrom[1][a]).abs() < 1e-12
-        );
+        assert!((res.forces_ev_angstrom[0][a] + res.forces_ev_angstrom[1][a]).abs() < 1e-12);
     }
 }
 
@@ -174,10 +170,7 @@ fn ts_periodic_diamond_reproduces_ase_and_net_forces_vanish() {
         [a / 2.0, 0.0, a / 2.0],
         [a / 2.0, a / 2.0, 0.0],
     ];
-    let pos_angstrom = [
-        [0.0, 0.0, 0.0],
-        [a / 4.0, a / 4.0, a / 4.0],
-    ];
+    let pos_angstrom = [[0.0, 0.0, 0.0], [a / 4.0, a / 4.0, a / 4.0]];
 
     let geom = Geometry::new(
         vec![6, 6],

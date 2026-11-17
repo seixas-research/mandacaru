@@ -1,7 +1,7 @@
 use super::{integrals::Eri, invalid};
 use crate::quantum::{
-    algebra::Term, factorized_measurement::FactorizedMeasurement, CachedProblem, Encoding,
-    Operator, Space, C64,
+    algebra::Term, factorized_measurement::FactorizedMeasurement, Encoding, Operator,
+    QuantumProblem, Space, C64,
 };
 use crate::{product, Buffer, Context, Reservation, Result};
 use nalgebra::DMatrix;
@@ -507,7 +507,7 @@ impl Model {
         sector: bool,
         dense: bool,
         singles: bool,
-    ) -> Result<CachedProblem> {
+    ) -> Result<QuantumProblem> {
         let space = if sector {
             Space::Sector
         } else {
@@ -523,7 +523,7 @@ impl Model {
         space: Space,
         dense: bool,
         singles: bool,
-    ) -> Result<CachedProblem> {
+    ) -> Result<QuantumProblem> {
         if self.spinor {
             return Err(invalid(
                 "the native GHF (spinor) model has no quantum handoff: a quantum solve needs an RHF or UHF reference",
@@ -531,6 +531,6 @@ impl Model {
         }
         let encoding = Encoding::new(mapping, 2 * self.m, self.particles)?;
         let h = self.operator(ctx, mapping)?;
-        CachedProblem::new_in(ctx, encoding, h, space, dense, singles)
+        QuantumProblem::new_in(ctx, encoding, h, space, dense, singles)
     }
 }

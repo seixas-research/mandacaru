@@ -243,7 +243,12 @@ pub trait Derivatives: Sync {
     fn core_overlap(&self, fields: &Self::Fields, atom: usize, axis: usize) -> Result<f64>;
     /// E6, a meta-GGA only: `<v_tau | d tau_core>`, the partial core's kinetic density moving
     /// with its atom. A provider that does not implement it raises; it never returns a zero.
-    fn core_kinetic_overlap(&self, _fields: &Self::Fields, _atom: usize, _axis: usize) -> Result<f64> {
+    fn core_kinetic_overlap(
+        &self,
+        _fields: &Self::Fields,
+        _atom: usize,
+        _axis: usize,
+    ) -> Result<f64> {
         Err(Error::Unsupported(
             "this geometry provider has no meta-GGA core kinetic-density term".into(),
         ))
@@ -543,7 +548,9 @@ pub(crate) fn kpoint_windows<T: Send>(
             Some(ctx) => ctx.map_tasks(Level::Kpts, &mut units[..count], count, |_, i| {
                 produce(first + i)
             })?,
-            None => (first..first + count).map(&produce).collect::<Result<Vec<_>>>()?,
+            None => (first..first + count)
+                .map(&produce)
+                .collect::<Result<Vec<_>>>()?,
         };
         for (i, data) in window.into_iter().enumerate() {
             consume(first + i, data)?;

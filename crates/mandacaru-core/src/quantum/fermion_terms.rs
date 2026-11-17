@@ -41,7 +41,9 @@ pub fn from_spin_orbital(
 ) -> Result<Vec<FermionTerm>> {
     let n4 = product(&[n, n, n, n])?;
     if one.len() != n * n || two.is_some_and(|g| g.len() != n4) {
-        return Err(invalid("the integral arrays disagree with the orbital count"));
+        return Err(invalid(
+            "the integral arrays disagree with the orbital count",
+        ));
     }
     let count = count_above(one, tol) + two.map_or(0, |g| count_above(g, tol));
     let _memory = ctx.reserve(bytes(count)?)?;
@@ -92,7 +94,9 @@ pub fn from_spatial(
         || spin.is_some_and(|s| s.len() != n * n)
         || two.is_some_and(|g| g.len() != spins * spins * m4)
     {
-        return Err(invalid("the integral arrays disagree with the orbital count"));
+        return Err(invalid(
+            "the integral arrays disagree with the orbital count",
+        ));
     }
     let mut h = vec![C64::default(); n * n];
     for sigma in 0..2 {
@@ -163,7 +167,9 @@ pub fn from_spatial(
 /// `strength` in atomic units.
 pub fn field_vector(direction: [f64; 3], strength: f64) -> Result<[f64; 3]> {
     if direction.iter().any(|v| !v.is_finite()) {
-        return Err(invalid("field_direction must be a finite real Cartesian unit vector"));
+        return Err(invalid(
+            "field_direction must be a finite real Cartesian unit vector",
+        ));
     }
     let norm = direction.iter().map(|v| v * v).sum::<f64>().sqrt();
     if (norm - 1.).abs() > 1e-8 {
@@ -190,24 +196,34 @@ pub fn dipole_one_body(
     spatial: bool,
 ) -> Result<(Vec<C64>, usize, f64)> {
     if m == 0 || positions.len() != product(&[3, m, m])? {
-        return Err(invalid("position_integrals must have shape (3, m, m), m > 0"));
+        return Err(invalid(
+            "position_integrals must have shape (3, m, m), m > 0",
+        ));
     }
-    let hermitian = positions.iter().all(|v| v.re.is_finite() && v.im.is_finite())
+    let hermitian = positions
+        .iter()
+        .all(|v| v.re.is_finite() && v.im.is_finite())
         && (0..3).all(|a| {
             let block = &positions[a * m * m..(a + 1) * m * m];
-            (0..m).all(|p| (0..m).all(|q| (block[p * m + q] - block[q * m + p].conj()).norm() <= 1e-12))
+            (0..m).all(|p| {
+                (0..m).all(|q| (block[p * m + q] - block[q * m + p].conj()).norm() <= 1e-12)
+            })
         });
     if !hermitian {
         return Err(invalid("position_integrals must be finite and Hermitian"));
     }
     if field.iter().chain(&nuclear).any(|v| !v.is_finite()) {
-        return Err(invalid("field and nuclear_dipole must be finite real Cartesian vectors"));
+        return Err(invalid(
+            "field and nuclear_dipole must be finite real Cartesian vectors",
+        ));
     }
     let modes = if spatial { 2 * m } else { m };
     let mut h = vec![C64::default(); modes * modes];
     for p in 0..m {
         for q in 0..m {
-            let value: C64 = (0..3).map(|a| positions[(a * m + p) * m + q] * field[a]).sum();
+            let value: C64 = (0..3)
+                .map(|a| positions[(a * m + p) * m + q] * field[a])
+                .sum();
             h[p * modes + q] = value;
             if spatial {
                 h[(p + m) * modes + (q + m)] = value;

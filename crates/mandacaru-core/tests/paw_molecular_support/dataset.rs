@@ -66,7 +66,7 @@ pub fn species(ctx: &Context, arrays: &mut Arrays, dataset: &PawDataset) -> Valu
         vec![0.; n]
     };
     // The record's core states (`u = r R` of every closed core subshell), as the Python adapter
-    // hands them over inside the record; a version-2 dataset has none.
+    // hands them over inside the record.
     let core_states: Option<Vec<Value>> = dataset.core_states.as_ref().map(|states| {
         states
             .iter()

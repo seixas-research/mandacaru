@@ -113,9 +113,12 @@ impl Grid {
                 vectors.push(v);
             }
             if channels > 0 {
-                setup
-                    .shapes()
-                    .transforms(&sites, &vectors, &mut block[..channels * count], count)?;
+                setup.shapes().transforms(
+                    &sites,
+                    &vectors,
+                    &mut block[..channels * count],
+                    count,
+                )?;
                 for c in 0..channels {
                     shape.as_mut_slice()[c * points + start..][..count]
                         .copy_from_slice(&block[c * count..][..count]);
@@ -423,7 +426,8 @@ impl Streamed {
                 }
             }
             // Re M += Ar Tr - Ai Ti, Im M += Ar Ti + Ai Tr.
-            for (plane, l, t, alpha) in [(0, 0, 0, 1.), (0, 1, 1, -1.), (1, 0, 1, 1.), (1, 1, 0, 1.)]
+            for (plane, l, t, alpha) in
+                [(0, 0, 0, 1.), (0, 1, 1, -1.), (1, 0, 1, 1.), (1, 1, 0, 1.)]
             {
                 multiply(
                     MatrixRef {
@@ -514,7 +518,8 @@ impl Streamed {
                 let mut sum = C64::default();
                 for r in 0..n {
                     let phi = C64::new(functions[0][r + n * x], functions[1][r + n * x]);
-                    sum += phi.conj() * C64::new(product_planes[0][r + n * x], product_planes[1][r + n * x]);
+                    sum += phi.conj()
+                        * C64::new(product_planes[0][r + n * x], product_planes[1][r + n * x]);
                 }
                 out[start + x] = sum;
             }
@@ -655,7 +660,8 @@ impl Streamed {
         weights: &[Vec<C64>],
     ) -> Result<Vec<Vec<[C64; 3]>>> {
         let (n, grid) = (self.n, &*self.grid);
-        let (n2, points, cells, channels) = (n * n, grid.cell.points(), grid.cell.cells, grid.channels);
+        let (n2, points, cells, channels) =
+            (n * n, grid.cell.points(), grid.cell.cells, grid.channels);
         if weights.iter().any(|w| w.len() != n2) {
             return Err(invalid("a contracted density needs one weight per pair"));
         }
@@ -688,7 +694,8 @@ impl Streamed {
                 let u = grid.cell_of.as_slice()[g] as usize;
                 let mut moving = vec![C64::default(); atoms];
                 for c in 0..channels {
-                    moving[owner[c]] += grid.shape.as_slice()[c * points + g] * left_sums[c * cells + u];
+                    moving[owner[c]] +=
+                        grid.shape.as_slice()[c * points + g] * left_sums[c * cells + u];
                 }
                 let partner = work[g] + compact[g];
                 let partner = partner * k - compact[g] * outside;

@@ -279,7 +279,9 @@ pub fn open_shell_natural_orbitals(
     ctx.run(|| {
         let _workspace = ctx.reserve(product(&[m, m, 8, 32])?)?;
         let eri = integrals.eri()?;
-        let h = DMatrix::from_fn(m, m, |i, j| C64::new(integrals.one.as_slice()[i * m + j], 0.));
+        let h = DMatrix::from_fn(m, m, |i, j| {
+            C64::new(integrals.one.as_slice()[i * m + j], 0.)
+        });
         let density = |n: usize| {
             let c = model.columns(0, n);
             c * c.adjoint()
@@ -310,7 +312,9 @@ pub fn open_shell_natural_orbitals(
             let occupied = rotation.columns(0, n).into_owned();
             let virtuals = rotation.columns(n, m - n).into_owned();
             let f_ov = occupied.transpose() * &fock * &virtuals;
-            let t1 = DMatrix::from_fn(n, m - n, |i, a| f_ov[(i, a)] / gap(energies[i] - energies[n + a]));
+            let t1 = DMatrix::from_fn(n, m - n, |i, a| {
+                f_ov[(i, a)] / gap(energies[i] - energies[n + a])
+            });
             blocks.push(SpinBlock {
                 occupied,
                 virtuals,
@@ -323,7 +327,8 @@ pub fn open_shell_natural_orbitals(
         // <ij|ab> over semicanonical orbitals given as columns over the model orbitals.
         let block = |ci: &DMatrix<f64>, cj: &DMatrix<f64>, ca: &DMatrix<f64>, cb: &DMatrix<f64>| {
             let lift = |c: &DMatrix<f64>| model * c.map(|v| C64::new(v, 0.));
-            let values = super::transform::four(ctx, &eri, [&lift(ci), &lift(cj), &lift(ca), &lift(cb)])?;
+            let values =
+                super::transform::four(ctx, &eri, [&lift(ci), &lift(cj), &lift(ca), &lift(cb)])?;
             real(values.as_slice())?;
             Ok::<Vec<f64>, crate::Error>(values.as_slice().iter().map(|v| v.re).collect())
         };
@@ -343,7 +348,9 @@ pub fn open_shell_natural_orbitals(
                         for b in 0..v {
                             let anti = g[at(i, j, a, b)] - g[at(i, j, b, a)];
                             let value = anti
-                                / gap(s.eps_occupied[i] + s.eps_occupied[j] - s.eps_virtual[a] - s.eps_virtual[b]);
+                                / gap(s.eps_occupied[i] + s.eps_occupied[j]
+                                    - s.eps_virtual[a]
+                                    - s.eps_virtual[b]);
                             t[at(i, j, a, b)] = value;
                             correlation += 0.25 * anti * value;
                         }
@@ -360,7 +367,12 @@ pub fn open_shell_natural_orbitals(
             beta.eps_virtual.len(),
         );
         let g_ab = if oa > 0 && ob > 0 {
-            block(&alpha.occupied, &beta.occupied, &alpha.virtuals, &beta.virtuals)?
+            block(
+                &alpha.occupied,
+                &beta.occupied,
+                &alpha.virtuals,
+                &beta.virtuals,
+            )?
         } else {
             vec![]
         };
@@ -453,7 +465,8 @@ pub fn open_shell_natural_orbitals(
         }
         let mut gamma = DMatrix::<f64>::zeros(m, m);
         for (s, (oo, vv)) in blocks.iter().zip(d_occ.iter().zip(&d_vir)) {
-            gamma += &s.occupied * oo * s.occupied.transpose() + &s.virtuals * vv * s.virtuals.transpose();
+            gamma += &s.occupied * oo * s.occupied.transpose()
+                + &s.virtuals * vv * s.virtuals.transpose();
         }
         let gamma = (&gamma + gamma.transpose()) * 0.5;
         if !correlation.is_finite() || gamma.iter().any(|v| !v.is_finite()) {

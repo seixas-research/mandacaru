@@ -3,7 +3,7 @@ use mandacaru_core::{
     quantum::{
         execution::{CircuitExecution, Request, Response},
         optimizer::{Method, Options},
-        CachedProblem, SolveOptions,
+        QuantumProblem, SolveOptions,
     },
     Context, Error,
 };
@@ -12,17 +12,17 @@ use std::cell::{Cell, RefCell};
 fn context() -> Context {
     Context::new(Some(1), 64 << 20).unwrap()
 }
-fn h2(ctx: &Context) -> CachedProblem {
+fn h2(ctx: &Context) -> QuantumProblem {
     let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../test/migration/reference/h2_hamiltonian.json");
-    CachedProblem::load(ctx, &fixture, true, false, true).unwrap()
+    QuantumProblem::load(ctx, &fixture, true, false, true).unwrap()
 }
 
 /// A synthetic landscape: each Pauli string has a smooth expectation in the
 /// rotation angles. Records every energy it hands out and refuses to answer
 /// once `stop_at` calls have been made (1-based; 0 never stops).
 struct Executor<'p> {
-    problem: &'p CachedProblem,
+    problem: &'p QuantumProblem,
     stop_at: Cell<usize>,
     calls: Cell<usize>,
     after_stop: Cell<usize>,
@@ -33,7 +33,7 @@ struct Executor<'p> {
     measured_labels: usize,
 }
 impl<'p> Executor<'p> {
-    fn new(problem: &'p CachedProblem, stop_at: usize) -> Self {
+    fn new(problem: &'p QuantumProblem, stop_at: usize) -> Self {
         let labels = problem
             .hamiltonian
             .labels()
@@ -161,7 +161,10 @@ fn fixed_ansatz_stop_keeps_the_best_completed_point_for_every_derivative_free_me
             assert_eq!(result.history.len(), stop_at - 1, "{label}");
             let lowest = energies.iter().copied().fold(f64::INFINITY, f64::min);
             assert!((result.energy - lowest).abs() < 1e-12, "{label}");
-            assert!(result.state.len() == problem.register("test").unwrap().len(), "{label}");
+            assert!(
+                result.state.len() == problem.register("test").unwrap().len(),
+                "{label}"
+            );
         }
     }
     drop(problem);
@@ -384,13 +387,28 @@ fn adapt_stop_when_the_next_step_is_first_measured_reports_the_optimized_energy(
 fn measurement_cost_counts_jobs_and_shots_as_the_providers_submit_them() {
     use mandacaru_core::execution::measurement_cost;
     // One Estimator job carries every basis; split at 2 bases a job, 5 bases are 3 jobs.
-    assert_eq!(measurement_cost(5, None, false, 1000, 1, 1, 0).unwrap(), (1, 5000));
-    assert_eq!(measurement_cost(5, Some(2), false, 1000, 1, 1, 0).unwrap(), (3, 5000));
+    assert_eq!(
+        measurement_cost(5, None, false, 1000, 1, 1, 0).unwrap(),
+        (1, 5000)
+    );
+    assert_eq!(
+        measurement_cost(5, Some(2), false, 1000, 1, 1, 0).unwrap(),
+        (3, 5000)
+    );
     // Braket submits one task per basis; no basis is no job.
-    assert_eq!(measurement_cost(4, None, true, 100, 1, 1, 0).unwrap(), (4, 400));
-    assert_eq!(measurement_cost(0, None, false, 100, 1, 1, 0).unwrap(), (0, 0));
+    assert_eq!(
+        measurement_cost(4, None, true, 100, 1, 1, 0).unwrap(),
+        (4, 400)
+    );
+    assert_eq!(
+        measurement_cost(0, None, false, 100, 1, 1, 0).unwrap(),
+        (0, 0)
+    );
     // Three ZNE factors, and twirled instances sharing the shots: 32 x 64 per basis.
-    assert_eq!(measurement_cost(2, None, false, 2000, 3, 32, 64).unwrap(), (1, 2 * 3 * 32 * 64));
+    assert_eq!(
+        measurement_cost(2, None, false, 2000, 3, 32, 64).unwrap(),
+        (1, 2 * 3 * 32 * 64)
+    );
     assert!(measurement_cost(1, Some(0), false, 1, 1, 1, 0).is_err());
     assert!(measurement_cost(u64::MAX, None, false, 2, 1, 1, 0).is_err());
 }
@@ -413,25 +431,44 @@ fn count_statistics_give_each_string_its_mean_and_standard_error() {
 fn a_hamiltonian_is_grouped_with_its_identity_counted_once() {
     use mandacaru_core::execution::qwc_hamiltonian;
     let ctx = context();
-    let terms = vec![("I".to_string(), 2., 0.), ("Z".to_string(), 1., 0.), ("X".to_string(), 1e-14, 0.)];
+    let terms = vec![
+        ("I".to_string(), 2., 0.),
+        ("Z".to_string(), 1., 0.),
+        ("X".to_string(), 1e-14, 0.),
+    ];
     let dropped = qwc_hamiltonian(&ctx, &terms, true, 1e-12).unwrap();
     assert_eq!(dropped.identity, 2.);
-    assert_eq!(dropped.groups, vec![("Z".to_string(), vec![("Z".to_string(), 1., 0.)])]);
+    assert_eq!(
+        dropped.groups,
+        vec![("Z".to_string(), vec![("Z".to_string(), 1., 0.)])]
+    );
     let kept = qwc_hamiltonian(&ctx, &terms, false, 1e-12).unwrap();
     assert_eq!(kept.identity, 0.);
-    let measured: f64 = kept.groups.iter().flat_map(|(_, members)| members)
-        .filter(|(label, _, _)| label == "I").map(|(_, re, _)| re).sum();
+    let measured: f64 = kept
+        .groups
+        .iter()
+        .flat_map(|(_, members)| members)
+        .filter(|(label, _, _)| label == "I")
+        .map(|(_, re, _)| re)
+        .sum();
     assert_eq!(measured, 2.);
 }
 
 #[test]
 fn the_shot_noise_bound_is_the_coefficient_one_norm_over_the_root_shots() {
     use mandacaru_core::execution::shot_noise;
-    let terms = vec![("II".to_string(), -1., 0.), ("ZI".to_string(), 0.3, 0.), ("XX".to_string(), 0., 0.4)];
+    let terms = vec![
+        ("II".to_string(), -1., 0.),
+        ("ZI".to_string(), 0.3, 0.),
+        ("XX".to_string(), 0., 0.4),
+    ];
     assert!((shot_noise(&terms, 100, 1e-12).unwrap() - 0.07).abs() < 1e-15);
     let ratio = shot_noise(&terms, 100, 1e-12).unwrap() / shot_noise(&terms, 400, 1e-12).unwrap();
     assert!((ratio - 2.).abs() < 1e-12);
-    assert_eq!(shot_noise(&terms, 0, 1e-12).unwrap(), shot_noise(&terms, 1, 1e-12).unwrap());
+    assert_eq!(
+        shot_noise(&terms, 0, 1e-12).unwrap(),
+        shot_noise(&terms, 1, 1e-12).unwrap()
+    );
 }
 
 #[test]
@@ -449,17 +486,36 @@ fn twirled_instances_share_the_shots_by_the_estimator_rule() {
 fn basis_chunks_keep_whole_bases_and_batches_count_strings_and_bases() {
     use mandacaru_core::execution::{basis_chunks, batch_size};
     let ctx = context();
-    let labels: Vec<String> = ["ZI", "XI", "IZ", "IX"].iter().map(|s| s.to_string()).collect();
+    let labels: Vec<String> = ["ZI", "XI", "IZ", "IX"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
     // Two bases: ZZ (ZI, IZ) and XX (XI, IX).
     let chunks = basis_chunks(&ctx, &labels, None, Some(1)).unwrap();
     assert_eq!(chunks.len(), 2);
-    let mut sorted: Vec<Vec<usize>> = chunks.into_iter().map(|mut c| { c.sort(); c }).collect();
+    let mut sorted: Vec<Vec<usize>> = chunks
+        .into_iter()
+        .map(|mut c| {
+            c.sort();
+            c
+        })
+        .collect();
     sorted.sort();
     assert_eq!(sorted, vec![vec![0, 2], vec![1, 3]]);
-    assert_eq!(basis_chunks(&ctx, &labels, None, Some(2)).unwrap(), vec![vec![0, 1, 2, 3]]);
-    assert_eq!(basis_chunks(&ctx, &labels, None, None).unwrap(), vec![vec![0, 1, 2, 3]]);
+    assert_eq!(
+        basis_chunks(&ctx, &labels, None, Some(2)).unwrap(),
+        vec![vec![0, 1, 2, 3]]
+    );
+    assert_eq!(
+        basis_chunks(&ctx, &labels, None, None).unwrap(),
+        vec![vec![0, 1, 2, 3]]
+    );
     assert!(basis_chunks(&ctx, &[], None, Some(1)).unwrap().is_empty());
-    let requests = vec![vec!["ZI".to_string(), "IZ".to_string()], vec!["XX".to_string()], vec![]];
+    let requests = vec![
+        vec!["ZI".to_string(), "IZ".to_string()],
+        vec!["XX".to_string()],
+        vec![],
+    ];
     assert_eq!(batch_size(&ctx, &requests).unwrap(), (3, 2));
 }
 
@@ -484,11 +540,19 @@ fn state_expectations_read_the_exact_value_of_each_string() {
     // |01>: qubit zero (the most significant bit) empty, qubit one occupied.
     let mut state = vec![C64::default(); 4];
     state[1] = C64::new(1., 0.);
-    let labels: Vec<String> = ["ZI", "IZ", "XI", "ZZ", "II"].iter().map(|s| s.to_string()).collect();
+    let labels: Vec<String> = ["ZI", "IZ", "XI", "ZZ", "II"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
     let values = state_expectations(&ctx, &labels, &state).unwrap();
     assert_eq!(values, vec![1., -1., 0., -1., 1.]);
     // |+0>: <XI> = 1.
-    let plus = vec![C64::new(0.5f64.sqrt(), 0.), C64::default(), C64::new(0.5f64.sqrt(), 0.), C64::default()];
+    let plus = vec![
+        C64::new(0.5f64.sqrt(), 0.),
+        C64::default(),
+        C64::new(0.5f64.sqrt(), 0.),
+        C64::default(),
+    ];
     let values = state_expectations(&ctx, &["XI".to_string()], &plus).unwrap();
     assert!((values[0] - 1.).abs() < 1e-15);
     assert!(state_expectations(&ctx, &labels, &state[..2]).is_err());

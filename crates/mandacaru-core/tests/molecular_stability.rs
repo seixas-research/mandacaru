@@ -18,7 +18,12 @@ const NODES: usize = 32;
 
 /// The molecular PAW-LCAO Hamiltonian of the diatomic `a b` at `bond` Bohr along z.
 fn diatomic(ctx: &Context, a: &'static str, b: &'static str, bond: f64) -> MolecularIntegrals {
-    let setup = molecule_in_a_box(ctx, &[(a, [0., 0., -bond / 2.]), (b, [0., 0., bond / 2.])], SIDE, NODES);
+    let setup = molecule_in_a_box(
+        ctx,
+        &[(a, [0., 0., -bond / 2.]), (b, [0., 0., bond / 2.])],
+        SIDE,
+        NODES,
+    );
     molecular_integrals(ctx, &setup)
 }
 
@@ -68,16 +73,31 @@ fn stretched_nitrogen_is_not_returned_converged_on_a_saddle() {
         "N2 3.4: RHF {:.10} converged {}; lowest root dense {dense:.6e}, seeded Davidson {davidson:.6e}; curvature / root {ratio:.6}",
         rhf.electronic_energy, rhf.converged
     );
-    assert!(rhf.converged && !integrals.orbital_hessian(&rhf).unwrap().unwrap().is_complex());
+    assert!(
+        rhf.converged
+            && !integrals
+                .orbital_hessian(&rhf)
+                .unwrap()
+                .unwrap()
+                .is_complex()
+    );
     assert!(dense >= -STABILITY_TOLERANCE, "{dense:e}");
     assert!((dense - davidson).abs() < 1e-6, "{dense:e} {davidson:e}");
     // The minimum's lowest root is a soft rotation of the pi shells (9.1e-5), so the quartic term
     // of the 2e-3 rad difference shows at 1e-3 of it (UHF pins the factor on a stiff mode).
     assert!((ratio - 4.).abs() < 1e-2, "{ratio}");
     // The saddle the unit-vector search accepted lies 5.4e-2 Ha above.
-    assert!(rhf.electronic_energy < -26.3386383731 - 4e-2, "{:.10}", rhf.electronic_energy);
+    assert!(
+        rhf.electronic_energy < -26.3386383731 - 4e-2,
+        "{:.10}",
+        rhf.electronic_energy
+    );
     // vera's dense-root emulation reached -26.3925378507.
-    assert!((rhf.electronic_energy + 26.3925378507).abs() < 1e-8, "{:.10}", rhf.electronic_energy);
+    assert!(
+        (rhf.electronic_energy + 26.3925378507).abs() < 1e-8,
+        "{:.10}",
+        rhf.electronic_energy
+    );
 }
 
 /// vera 1g: the singlet O2 cold-start UHF stopped 1.208e-4 Ha above the followed RHF, on the
@@ -96,7 +116,15 @@ fn singlet_oxygen_uhf_is_followed_below_the_rhf() {
         "O2 2.28 singlet: RHF {:.10} ({}), UHF {:.10} ({}); UHF lowest root dense {dense:.6e}, Davidson {davidson:.6e}; curvature / root {ratio:.6}",
         rhf.electronic_energy, rhf.converged, uhf.electronic_energy, uhf.converged
     );
-    assert!(rhf.converged && uhf.converged && !integrals.orbital_hessian(&uhf).unwrap().unwrap().is_complex());
+    assert!(
+        rhf.converged
+            && uhf.converged
+            && !integrals
+                .orbital_hessian(&uhf)
+                .unwrap()
+                .unwrap()
+                .is_complex()
+    );
     assert!(uhf.electronic_energy <= rhf.electronic_energy + 1e-8);
     assert!(dense >= -STABILITY_TOLERANCE && (dense - davidson).abs() < 1e-6);
     assert!((ratio - 2.).abs() < 1e-3, "{ratio}");
@@ -110,8 +138,12 @@ fn triplet_oxygen_ghf_projects_its_spin_rotations() {
     let ctx = Context::new(Some(4), 1800 << 20).unwrap();
     let integrals = diatomic(&ctx, "O", "O", 2.28);
     let n = integrals.neutral_electrons() / 2;
-    let uhf = integrals.mean_field("uhf", [n + 1, n - 1], &options()).unwrap();
-    let ghf = integrals.mean_field("ghf", [n + 1, n - 1], &options()).unwrap();
+    let uhf = integrals
+        .mean_field("uhf", [n + 1, n - 1], &options())
+        .unwrap();
+    let ghf = integrals
+        .mean_field("ghf", [n + 1, n - 1], &options())
+        .unwrap();
     let hessian = integrals.orbital_hessian(&ghf).unwrap().unwrap();
     let root = integrals.stability(&ghf).unwrap().unwrap();
     println!(
@@ -135,14 +167,22 @@ fn a_channel_without_occupied_orbitals_has_no_rotation() {
     let uhf = ion.mean_field("uhf", [1, 0], &options()).unwrap();
     let hessian = ion.orbital_hessian(&uhf).unwrap().unwrap();
     let root = ion.stability(&uhf).unwrap().unwrap();
-    println!("H2+ UHF {:.10} ({}); {} rotation(s), lowest root {root:.6e}", uhf.electronic_energy, uhf.converged, hessian.dimension());
+    println!(
+        "H2+ UHF {:.10} ({}); {} rotation(s), lowest root {root:.6e}",
+        uhf.electronic_energy,
+        uhf.converged,
+        hessian.dimension()
+    );
     assert!(uhf.converged && root >= -STABILITY_TOLERANCE);
     assert_eq!(hessian.dimension(), ion.m() - 1);
     let setup = molecule_in_a_box(&ctx, &[("H", [0., 0., 0.])], SIDE, NODES);
     let atom = molecular_integrals(&ctx, &setup);
     let state = atom.mean_field("uhf", [1, 0], &options()).unwrap();
     assert!(state.converged && atom.m() == 1);
-    assert!(atom.orbital_hessian(&state).unwrap().is_none() && atom.stability(&state).unwrap().is_none());
+    assert!(
+        atom.orbital_hessian(&state).unwrap().is_none()
+            && atom.stability(&state).unwrap().is_none()
+    );
 }
 
 /// `continue_mean_field` follows the same state and never leaves it for another: the stable N2
@@ -162,7 +202,10 @@ fn a_continued_state_is_never_a_converged_saddle() {
         continued.electronic_energy, continued.converged
     );
     assert!(start.converged);
-    assert!(!continued.converged || dense >= -STABILITY_TOLERANCE, "{dense:e}");
+    assert!(
+        !continued.converged || dense >= -STABILITY_TOLERANCE,
+        "{dense:e}"
+    );
 }
 
 /// Following through complex rotations, end to end: the stretched equilateral H3 (sides 3.0
@@ -193,7 +236,10 @@ fn a_frustrated_triangle_is_followed_off_its_collinear_ghf_saddle() {
     );
     assert!(uhf.converged && ghf.converged && hessian.is_complex());
     assert!(root >= -STABILITY_TOLERANCE, "{root:e}");
-    assert!(ghf.electronic_energy < uhf.electronic_energy - 1e-6, "the noncollinear state was not reached");
+    assert!(
+        ghf.electronic_energy < uhf.electronic_energy - 1e-6,
+        "the noncollinear state was not reached"
+    );
 }
 
 /// Following above [`DENSE_HESSIAN_LIMIT`] rotations, end to end (the seeded Davidson root, not
@@ -210,7 +256,14 @@ fn a_stretched_hydrogen_lattice_is_followed_above_the_dense_limit() {
     for i in 0..4 {
         for j in 0..4 {
             for k in 0..2 {
-                atoms.push(("H", [(i as f64 - 1.5) * spacing, (j as f64 - 1.5) * spacing, (k as f64 - 0.5) * spacing]));
+                atoms.push((
+                    "H",
+                    [
+                        (i as f64 - 1.5) * spacing,
+                        (j as f64 - 1.5) * spacing,
+                        (k as f64 - 0.5) * spacing,
+                    ],
+                ));
             }
         }
     }
@@ -280,12 +333,19 @@ fn the_stretched_diatomic_scan_has_no_converged_saddle() {
             uhf.converged,
             uhf.electronic_energy - rhf.electronic_energy
         );
-        for (name, state, dense, davidson) in [("RHF", &rhf, r_dense, r_davidson), ("UHF", &uhf, u_dense, u_davidson)] {
+        for (name, state, dense, davidson) in [
+            ("RHF", &rhf, r_dense, r_davidson),
+            ("UHF", &uhf, u_dense, u_davidson),
+        ] {
             if state.converged && dense < -STABILITY_TOLERANCE {
-                failures.push(format!("{a}{b} {bond} {name}: converged on a saddle, root {dense:e}"));
+                failures.push(format!(
+                    "{a}{b} {bond} {name}: converged on a saddle, root {dense:e}"
+                ));
             }
             if (dense - davidson).abs() > 1e-6 {
-                failures.push(format!("{a}{b} {bond} {name}: Davidson {davidson:e} against dense {dense:e}"));
+                failures.push(format!(
+                    "{a}{b} {bond} {name}: Davidson {davidson:e} against dense {dense:e}"
+                ));
             }
         }
         if rhf.converged && uhf.converged && uhf.electronic_energy > rhf.electronic_energy + 1e-8 {

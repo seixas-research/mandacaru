@@ -13,10 +13,6 @@ use periodic_hybrid_spinor_support::*;
 
 const FIXTURES: [&str; 2] = ["si_so_tr3.json", "si_so_tr4.json"];
 const GATE: f64 = 1e-11;
-/// The compensation charges break the covariance on the Nyquist planes of the grid alone (see
-/// `the_covariance_breaks_only_on_the_nyquist_planes_of_the_shape_transforms`): measured 5.1e-8
-/// (complex pair) and 2.0e-8 (Gamma) of the largest entry of K on this grid, gate 20x the largest.
-const COMPENSATED_GATE: f64 = 1e-6;
 
 fn mirror(pi: &Matrix, a: &Matrix) -> Matrix {
     pi * a.conjugate() * pi.transpose()
@@ -214,14 +210,14 @@ fn the_hybrid_exchange_is_time_reversal_covariant_at_complex_k() {
                 "K(-k) = K(k): the check cannot see a conjugation error"
             );
             assert!(
-                worst < COMPENSATED_GATE,
+                worst < GATE,
                 "{name} {exxdiv:?}: time-reversal covariance misses by {worst:e}"
             );
             for (slot, miss) in control.iter().enumerate() {
                 let what = wrong_u.get(slot).map_or("no conjugation", |t| t.0);
                 println!("  control ({what}): {miss:.2e}");
                 assert!(
-                    *miss > 100. * COMPENSATED_GATE,
+                    *miss > 100. * GATE,
                     "control '{what}' does not bite ({miss:e})"
                 );
             }
@@ -247,7 +243,7 @@ fn the_hybrid_exchange_is_time_reversal_covariant_at_complex_k() {
 }
 
 #[test]
-fn the_covariance_breaks_only_on_the_nyquist_planes_of_the_shape_transforms() {
+fn the_shape_transforms_are_time_reversal_covariant_on_the_nyquist_planes_too() {
     use mandacaru_core::periodic::screened_augmentation::Augmentation;
     let name = "si_so_tr3.json";
     let ctx = context();
@@ -259,10 +255,14 @@ fn the_covariance_breaks_only_on_the_nyquist_planes_of_the_shape_transforms() {
     let shape = c.grid.index.shape();
     let labels = &rig.geometry.channels;
     // conj(T_(A,L,M)(Q)) = (-1)^M T_(A,L,-M)(-Q), the identity that makes K time-reversal covariant.
+    // On a Nyquist plane `N/2` is its own negative: a single wrapped vector cannot satisfy it, so
+    // the shapes there are the mean of their aliases, both faces among them
+    // (`periodic_screened_augmentation_pairs.rs`
+    // holds the one-sided control that breaks it, at 2.4e-2 of the largest transform on Si).
     for kd in [[0.; 3], [1. / 3., 0., 0.]] {
         let plus = aug.pair_shapes(&c, kd).unwrap();
         let minus = aug.pair_shapes(&c, [-kd[0], -kd[1], -kd[2]]).unwrap();
-        let (mut inner, mut edge, mut scale) = (0f64, 0f64, 0f64);
+        let (mut inner, mut edge, mut scale, mut planes) = (0f64, 0f64, 0f64, 0usize);
         for (a, &(atom, l, order)) in labels.iter().enumerate() {
             let b = labels.iter().position(|&t| t == (atom, l, -order)).unwrap();
             let sign = if order % 2 == 0 { 1. } else { -1. };
@@ -281,19 +281,16 @@ fn the_covariance_breaks_only_on_the_nyquist_planes_of_the_shape_transforms() {
                     .norm();
                 scale = scale.max(plus.as_slice()[a * n + r].norm());
                 if nyquist {
-                    edge = edge.max(miss)
+                    edge = edge.max(miss);
+                    planes += 1;
                 } else {
                     inner = inner.max(miss)
                 }
             }
         }
         println!("k_diff {kd:?}: mirror miss off the Nyquist planes {:.2e}, on them {:.2e} (of the largest transform)", inner / scale, edge / scale);
-        // Exact off the planes, a convention (one of the two aliased vectors) on them.
+        assert!(planes > 0, "the grid has no Nyquist plane to test");
         assert!(inner / scale < 1e-14, "{:e}", inner / scale);
-        assert!(
-            edge / scale > 1e-3,
-            "the Nyquist planes carry the asymmetry ({:e})",
-            edge / scale
-        );
+        assert!(edge / scale < 1e-14, "{:e}", edge / scale);
     }
 }

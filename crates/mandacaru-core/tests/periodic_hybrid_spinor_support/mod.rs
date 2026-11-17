@@ -41,7 +41,9 @@ pub fn read(name: &str) -> Value {
         .iter()
         .map(|folder| root.join(folder).join(name))
         .find(|p| p.exists())
-        .unwrap_or_else(|| panic!("no fixture {name}: run test/migration/freeze_hybrid_spinor.py"));
+        .unwrap_or_else(|| {
+            panic!("no fixture {name}: re-freeze it with periodic_freeze_hybrid_spinor.rs")
+        });
     serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
 }
 

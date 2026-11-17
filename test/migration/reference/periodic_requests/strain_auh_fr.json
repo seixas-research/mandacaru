@@ -1,0 +1,96 @@
+{
+ "lattice": [
+  11.33835674775462,
+  0.0,
+  0.0,
+  0.0,
+  11.33835674775462,
+  0.0,
+  0.0,
+  0.0,
+  11.33835674775462
+ ],
+ "grid_shape": [
+  13,
+  13,
+  13
+ ],
+ "atoms": [
+  {
+   "species": 0,
+   "symbol": "Au",
+   "fractional": [
+    0.5,
+    0.5166666666666667,
+    0.4333333333333334
+   ],
+   "moment": 0.0
+  },
+  {
+   "species": 1,
+   "symbol": "H",
+   "fractional": [
+    0.5286666666666667,
+    0.48800000000000004,
+    0.7468333333333335
+   ],
+   "moment": 0.0
+  }
+ ],
+ "mesh": {
+  "size": [
+   1,
+   1,
+   1
+  ],
+  "gamma": true
+ },
+ "functional": "lda",
+ "precision": "float64",
+ "basis_size": "SZ",
+ "spinor": true,
+ "spin": false,
+ "symmetry": false,
+ "charge": 0.0,
+ "projector_basis": "raw",
+ "recipes": {
+  "Au": {
+   "zetas": 1,
+   "polarizations": 0,
+   "cutoff": 4.2865675181696945,
+   "energy_shift": 0.1,
+   "wall": [
+    12.0,
+    0.6
+   ],
+   "split_norm": 0.15,
+   "tail_norms": [
+    0.15,
+    0.31,
+    0.54
+   ],
+   "polarization": "gaussian",
+   "diffuse": null
+  },
+  "H": {
+   "zetas": 1,
+   "polarizations": 0,
+   "cutoff": 4.2865675181696945,
+   "energy_shift": 0.1,
+   "wall": [
+    12.0,
+    0.6
+   ],
+   "split_norm": 0.15,
+   "tail_norms": [
+    0.15,
+    0.31,
+    0.54
+   ],
+   "polarization": "gaussian",
+   "diffuse": null
+  }
+ },
+ "filter_cutoff": 4.2865675181696945,
+ "_dataset_set": "lda-fr"
+}

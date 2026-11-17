@@ -14,10 +14,11 @@
 //! so the work on the points does not grow with the number of k-points. Only the functions that
 //! reach the sphere contribute ([`Shells::reaching`]); the others are exactly zero on it.
 use super::images::{Images, Region};
+use super::ions::LocalPotential;
 use super::shells::{DenseRows, Radial, Sampling, Shells};
 use crate::{
     kernels::{self, ShellImages},
-    paw::local_split::{angular_rule, radial_rule},
+    paw::local_split::{lattice_angular_rule, radial_rule_panels},
     product, Buffer, Context, Error, Reservation, Result,
 };
 use nalgebra::{DMatrix, DMatrixView, Matrix3};
@@ -28,8 +29,8 @@ use std::{collections::BTreeMap, ops::Range, sync::Arc};
 pub const PROJECTION_RADIAL: usize = 64;
 pub const PROJECTION_POLAR: usize = 24;
 pub const PROJECTION_AZIMUTHAL: usize = 48;
-/// Radial, polar and azimuthal points of a short-range local sphere (two radial panels).
-pub const SHORT_RANGE_RADIAL: usize = 32;
+/// Radial points per panel, polar and azimuthal points of a short-range local sphere.
+pub const SHORT_RANGE_RADIAL: usize = 64;
 pub const SHORT_RANGE_POLAR: usize = 16;
 pub const SHORT_RANGE_AZIMUTHAL: usize = 36;
 /// Points per chunk of a streamed sphere, and the bytes of Bloch sums one chunk may hold. A
@@ -59,9 +60,11 @@ pub struct Sphere {
 
 impl Sphere {
     /// Gauss-Legendre in the radius (two panels when `panel` lies inside `(0, radius)`), a
-    /// Gauss-Legendre by midpoint product over the angles.
+    /// Gauss-Legendre by midpoint product over the angles, made invariant under the point group
+    /// of the Bravais lattice `lattice` ([`lattice_angular_rule`]).
     pub fn rule(
         ctx: &Context,
+        lattice: &Matrix3<f64>,
         center: [f64; 3],
         radius: f64,
         radial: usize,
@@ -69,13 +72,36 @@ impl Sphere {
         azimuthal: usize,
         panel: f64,
     ) -> Result<Self> {
+        Self::rule_panels(
+            ctx,
+            lattice,
+            center,
+            radius,
+            radial,
+            polar,
+            azimuthal,
+            &[panel],
+        )
+    }
+    /// [`Sphere::rule`] with one radial panel per gap of `panels` (the edges inside
+    /// `(0, radius)`; see [`radial_rule_panels`]).
+    pub fn rule_panels(
+        ctx: &Context,
+        lattice: &Matrix3<f64>,
+        center: [f64; 3],
+        radius: f64,
+        radial: usize,
+        polar: usize,
+        azimuthal: usize,
+        panels: &[f64],
+    ) -> Result<Self> {
         if !(radius.is_finite() && radius > 0.) || center.iter().any(|x| !x.is_finite()) {
             return Err(Error::Invalid(
                 "a sphere needs a finite center and a positive radius".into(),
             ));
         }
-        let (r, w_r) = radial_rule(radius, panel, radial)?;
-        let (directions, w_ang) = angular_rule(polar, azimuthal)?;
+        let (r, w_r) = radial_rule_panels(radius, panels, radial)?;
+        let (directions, w_ang) = lattice_angular_rule(ctx, lattice, polar, azimuthal)?;
         let n = r.len() * w_ang.len();
         let mut held = ctx.reserve(product(&[n, 6, 8])?)?;
         // Radial major, as the rule is generated; then the stable sort into bins.
@@ -115,11 +141,39 @@ impl Sphere {
             _held: held,
         })
     }
+    /// The rule of the short-range local potential of one atom: [`SHORT_RANGE_RADIAL`] points on
+    /// each radial panel, the edges of the panels at the corners of the potential
+    /// ([`LocalPotential::panel_edges`]) so that no node slides across one as the width `sigma`
+    /// moves the outer radius.
+    pub fn short_range(
+        ctx: &Context,
+        lattice: &Matrix3<f64>,
+        center: [f64; 3],
+        potential: &LocalPotential,
+        sigma: f64,
+    ) -> Result<Self> {
+        Self::rule_panels(
+            ctx,
+            lattice,
+            center,
+            potential.reach(sigma)?,
+            SHORT_RANGE_RADIAL,
+            SHORT_RANGE_POLAR,
+            SHORT_RANGE_AZIMUTHAL,
+            &potential.panel_edges(),
+        )
+    }
     /// The rule of a projector: [`PROJECTION_RADIAL`] x [`PROJECTION_POLAR`] x
     /// [`PROJECTION_AZIMUTHAL`] points on one panel.
-    pub fn projector(ctx: &Context, center: [f64; 3], r_cut: f64) -> Result<Self> {
+    pub fn projector(
+        ctx: &Context,
+        lattice: &Matrix3<f64>,
+        center: [f64; 3],
+        r_cut: f64,
+    ) -> Result<Self> {
         Self::rule(
             ctx,
+            lattice,
             center,
             r_cut,
             PROJECTION_RADIAL,
@@ -306,6 +360,86 @@ pub fn projection_slopes(
     projectors: &[Projector],
     axis: Option<usize>,
 ) -> Result<Buffer<Complex64>> {
+    weighted_projections(
+        ctx,
+        shells,
+        lattice,
+        kpoints,
+        projectors,
+        axis,
+        Weight::Plain,
+    )
+}
+
+/// [`projections`] with each projector times its Cartesian coordinate from its own center along
+/// `axis`: `<chi_{mu k} | (r - R_p)_axis p_p>`, the projections the commutator of a separable
+/// operator with the position needs.
+pub fn moment_projections(
+    ctx: &Context,
+    shells: &Shells,
+    lattice: &Matrix3<f64>,
+    kpoints: &[[f64; 3]],
+    projectors: &[Projector],
+    axis: usize,
+) -> Result<Buffer<Complex64>> {
+    if axis > 2 {
+        return Err(Error::Invalid("a moment axis is 0, 1 or 2".into()));
+    }
+    weighted_projections(
+        ctx,
+        shells,
+        lattice,
+        kpoints,
+        projectors,
+        None,
+        Weight::Moment(axis),
+    )
+}
+
+/// [`projections`] under a uniform vector potential `field` (Bohr^-1): each projector times the
+/// gauge phase `exp(-i A.(r - R_p))`, so `sum |p_A> W <p_A|` is `exp(-i A.r) h exp(i A.r)` of a
+/// separable `h`. The finite-field oracle of [`super::spin_orbit::velocity`].
+pub fn phased_projections(
+    ctx: &Context,
+    shells: &Shells,
+    lattice: &Matrix3<f64>,
+    kpoints: &[[f64; 3]],
+    projectors: &[Projector],
+    field: [f64; 3],
+) -> Result<Buffer<Complex64>> {
+    if field.iter().any(|a| !a.is_finite()) {
+        return Err(Error::Invalid("the vector potential must be finite".into()));
+    }
+    weighted_projections(
+        ctx,
+        shells,
+        lattice,
+        kpoints,
+        projectors,
+        None,
+        Weight::Phase(field),
+    )
+}
+
+/// What multiplies each projector on its sphere.
+#[derive(Clone, Copy)]
+enum Weight {
+    Plain,
+    /// `(r - R)_axis`.
+    Moment(usize),
+    /// `exp(-i A.(r - R))`.
+    Phase([f64; 3]),
+}
+
+fn weighted_projections(
+    ctx: &Context,
+    shells: &Shells,
+    lattice: &Matrix3<f64>,
+    kpoints: &[[f64; 3]],
+    projectors: &[Projector],
+    axis: Option<usize>,
+    weight: Weight,
+) -> Result<Buffer<Complex64>> {
     let (functions, count) = (shells.functions(), projectors.len());
     if kpoints.is_empty() {
         return Err(Error::Invalid("projections need a k-point".into()));
@@ -333,25 +467,37 @@ pub fn projection_slopes(
         if reached.rows.is_empty() {
             continue;
         }
-        let sphere = Sphere::projector(ctx, first.center, first.r_cut)?;
+        let sphere = Sphere::projector(ctx, lattice, first.center, first.r_cut)?;
         let near = reached.rows.len();
         let mut block =
             ctx.allocate::<Complex64>(product(&[kpoints.len(), near, members.len()])?)?;
         let chunk_max = CHUNK_POINTS;
-        let mut columns =
-            ctx.allocate::<Complex64>(product(&[members.len(), chunk_max])?)?;
+        let mut columns = ctx.allocate::<Complex64>(product(&[members.len(), chunk_max])?)?;
         for range in sphere.chunks(chunk_max) {
             let points = sphere.points(range.clone());
             let weights = sphere.weights(range.clone());
             let chunk_len = weights.len();
             let columns_slice = &mut columns.as_mut_slice()[..members.len() * chunk_len];
-            for (row, &p) in columns_slice
-                .chunks_mut(chunk_len)
-                .zip(members)
-            {
+            for (row, &p) in columns_slice.chunks_mut(chunk_len).zip(members) {
                 evaluate(ctx, &projectors[p], points, row)?;
                 for (value, w) in row.iter_mut().zip(weights) {
                     *value *= *w;
+                }
+                let center = projectors[p].center;
+                match weight {
+                    Weight::Plain => {}
+                    Weight::Moment(a) => {
+                        for (value, x) in row.iter_mut().zip(points[a]) {
+                            *value *= x - center[a];
+                        }
+                    }
+                    Weight::Phase(field) => {
+                        for (i, value) in row.iter_mut().enumerate() {
+                            let phase: f64 =
+                                (0..3).map(|a| field[a] * (points[a][i] - center[a])).sum();
+                            *value *= Complex64::from_polar(1., -phase);
+                        }
+                    }
                 }
             }
             add_projection_slopes(

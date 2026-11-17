@@ -228,8 +228,7 @@ impl PySpatialGrid {
             return false;
         }
         let [dx, dy, dz] = self.inner.spacings();
-        (dx - dy).abs() <= 1e-12 * dx.abs().max(1.0)
-            && (dy - dz).abs() <= 1e-12 * dy.abs().max(1.0)
+        (dx - dy).abs() <= 1e-12 * dx.abs().max(1.0) && (dy - dz).abs() <= 1e-12 * dy.abs().max(1.0)
     }
     fn metric_inverse<'py>(&self, py: Python<'py>) -> PyResult<Array<'py, f64>> {
         array(py, &[3, 3], self.inner.index.metric().to_vec())
@@ -314,11 +313,9 @@ impl PySpatialGrid {
                 Some(c) if !c.is_none() => c
                     .extract()
                     .map_err(|_| PyValueError::new_err("cell must be a (3, 3) tensor"))?,
-                _ => {
-                    return Err(PyValueError::new_err(
-                        "a grid without a center needs a cell: its center is the middle of the cell",
-                    ))
-                }
+                _ => return Err(PyValueError::new_err(
+                    "a grid without a center needs a cell: its center is the middle of the cell",
+                )),
             };
             layout(&arr)?;
             if arr.shape() != [3, 3] {
@@ -547,7 +544,11 @@ fn points(positions: &PyReadonlyArray2<'_, f64>) -> PyResult<Vec<[f64; 3]>> {
     if positions.ndim() != 2 || positions.shape()[1] != 3 {
         return Err(PyValueError::new_err("positions must have shape (n, 3)"));
     }
-    Ok(positions.as_slice()?.chunks_exact(3).map(|r| [r[0], r[1], r[2]]).collect())
+    Ok(positions
+        .as_slice()?
+        .chunks_exact(3)
+        .map(|r| [r[0], r[1], r[2]])
+        .collect())
 }
 
 /// The fractional coordinates of `positions` in the cell (rows) in the same length unit; the
@@ -609,7 +610,10 @@ fn neighbor_vectors<'py>(
     let found = py
         .detach(|| mandacaru_core::geometry::neighbor_vectors(&cell, pbc, &positions, cutoff))
         .map_err(error)?;
-    found.into_iter().map(|v| array(py, &[v.len(), 3], v.concat())).collect()
+    found
+        .into_iter()
+        .map(|v| array(py, &[v.len(), 3], v.concat()))
+        .collect()
 }
 
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -619,4 +623,3 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(grid_step_max_norm, m)?)?;
     Ok(())
 }
-

@@ -196,7 +196,7 @@ pub fn variant(
         if near == 0 {
             continue;
         }
-        let sphere = Sphere::projector(ctx, first.center, first.r_cut).unwrap();
+        let sphere = Sphere::projector(ctx, lattice, first.center, first.r_cut).unwrap();
         let sampling = Sampling {
             lattice,
             region,
@@ -287,7 +287,7 @@ pub fn image_resolved_with(
         if reached.rows.is_empty() {
             continue;
         }
-        let sphere = Sphere::projector(ctx, first.center, first.r_cut).unwrap();
+        let sphere = Sphere::projector(ctx, lattice, first.center, first.r_cut).unwrap();
         for range in sphere.chunks(chunk_size(1, 4 * reached.rows.len())) {
             let points = sphere.points(range.clone());
             let cols = columns(ctx, projectors, &members, points, sphere.weights(range));

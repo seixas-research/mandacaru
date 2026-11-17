@@ -1,6 +1,6 @@
 //! AS-6 negative controls of the ORACLE: the same differencing with one pin of
 //! `ANALYTIC_STRESS_PLAN.md` section 2 released does not describe the analytic stress. Each
-//! frozen file (`lih_unpin_<pin>.json`, `freeze_periodic_strain.py --unpin <pin>`, the steps
+//! frozen file (`lih_unpin_<pin>.json`, `periodic_freeze_snapshot.rs` with the pin named in `pins.unpinned`, the steps
 //! 0.001/0.002/0.004) strains the same cell with the pin released: the Gaussian ion width
 //! re-derived from the strained grid spacing, the node counts re-derived from the strained cell
 //! (the third axis of the LiH cell, 12.47 nodes, becomes 13 at +0.4 percent), the dense

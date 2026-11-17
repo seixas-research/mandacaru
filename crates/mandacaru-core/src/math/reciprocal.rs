@@ -17,17 +17,22 @@ fn boxed(x: f64, n: f64) -> f64 {
 fn key(w: &Matrix3<f64>) -> [i64; 9] {
     std::array::from_fn(|k| w[(k / 3, k % 3)].round() as i64)
 }
+/// Whether the integer matrix `w` (a map of lattice coordinates) carries the lattice onto itself
+/// as an orthogonal operation, within the slack a mildly strained cell needs.
+fn isometry(w: &Matrix3<f64>, cell: &Matrix3<f64>, inverse: &Matrix3<f64>) -> bool {
+    if (w.determinant().abs() - 1.).abs() > 1e-9 {
+        return false;
+    }
+    let r = cell * w * inverse;
+    (r.transpose() * r - Matrix3::identity()).norm() <= 2e-2
+}
 fn allowed(
     w: &Matrix3<f64>,
     cell: &Matrix3<f64>,
     inverse: &Matrix3<f64>,
     shape: [usize; 3],
 ) -> bool {
-    if (w.determinant().abs() - 1.).abs() > 1e-9 {
-        return false;
-    }
-    let r = cell * w * inverse;
-    if (r.transpose() * r - Matrix3::identity()).norm() > 2e-2 {
+    if !isometry(w, cell, inverse) {
         return false;
     }
     let v = w.try_inverse().unwrap().transpose();
@@ -41,6 +46,43 @@ fn allowed(
         }
     }
     true
+}
+/// The integer matrices with entries in `{-1, 0, 1}` that `accepts`, closed under products.
+fn closure(accepts: &dyn Fn(&Matrix3<f64>) -> bool) -> Result<Vec<Matrix3<f64>>> {
+    let mut group = Vec::new();
+    let mut known = HashSet::new();
+    for mut code in 0..3usize.pow(9) {
+        let mut entries = [0.; 9];
+        for value in &mut entries {
+            *value = (code % 3) as f64 - 1.;
+            code /= 3;
+        }
+        let w = Matrix3::from_row_slice(&entries);
+        if accepts(&w) {
+            known.insert(key(&w));
+            group.push(w);
+        }
+    }
+    loop {
+        let n = group.len();
+        for i in 0..n {
+            for j in 0..n {
+                let w = group[i] * group[j];
+                if accepts(&w) && known.insert(key(&w)) {
+                    if group.len() == 256 {
+                        return Err(invalid(
+                            "reciprocal symmetry closure exceeds 256 operations",
+                        ));
+                    }
+                    group.push(w);
+                }
+            }
+        }
+        if group.len() == n {
+            break;
+        }
+    }
+    Ok(group)
 }
 struct Lattice {
     reciprocal: Matrix3<f64>,
@@ -58,39 +100,7 @@ fn lattice(ctx: &Context, grid: &SpatialGrid) -> Result<Lattice> {
     // Cubic grids have at most 48 operations; a generous bound also covers
     // mildly strained/skew cells while preventing an unbounded closure.
     let _storage = ctx.reserve(256 * 512)?;
-    let mut group = Vec::new();
-    let mut known = HashSet::new();
-    for mut code in 0..3usize.pow(9) {
-        let mut entries = [0.; 9];
-        for value in &mut entries {
-            *value = (code % 3) as f64 - 1.;
-            code /= 3;
-        }
-        let w = Matrix3::from_row_slice(&entries);
-        if allowed(&w, &cell, &inverse, shape) {
-            known.insert(key(&w));
-            group.push(w);
-        }
-    }
-    loop {
-        let n = group.len();
-        for i in 0..n {
-            for j in 0..n {
-                let w = group[i] * group[j];
-                if allowed(&w, &cell, &inverse, shape) && known.insert(key(&w)) {
-                    if group.len() == 256 {
-                        return Err(invalid(
-                            "reciprocal symmetry closure exceeds 256 operations",
-                        ));
-                    }
-                    group.push(w);
-                }
-            }
-        }
-        if group.len() == n {
-            break;
-        }
-    }
+    let group = closure(&|w| allowed(w, &cell, &inverse, shape))?;
     let operations: Vec<_> = group
         .iter()
         .map(|w| w.try_inverse().unwrap().transpose())
@@ -101,6 +111,39 @@ fn lattice(ctx: &Context, grid: &SpatialGrid) -> Result<Lattice> {
         operations,
         _storage,
     })
+}
+
+/// The point group of the Bravais lattice with the columns of `cell` as its vectors, as
+/// orthogonal Cartesian matrices acting on column vectors (the identity included): the lattice
+/// maps onto itself under each, within the slack of a mildly strained cell, which
+/// the matrices then lose (polar factor). A rule that integrates over directions and is
+/// invariant under these operations is invariant under the point group of any crystal on the
+/// lattice, whatever its atoms and its k mesh. The identity is the first entry, exactly.
+pub fn lattice_rotations(ctx: &Context, cell: &Matrix3<f64>) -> Result<Vec<Matrix3<f64>>> {
+    let inverse = cell
+        .try_inverse()
+        .ok_or_else(|| invalid("singular lattice"))?;
+    let _storage = ctx.reserve(256 * 512)?;
+    let mut group = closure(&|w| isometry(w, cell, &inverse))?;
+    let identity = key(&Matrix3::identity());
+    let first = group
+        .iter()
+        .position(|w| key(w) == identity)
+        .ok_or_else(|| invalid("the lattice group has no identity"))?;
+    group.swap(0, first);
+    group
+        .iter()
+        .map(|w| {
+            if key(w) == identity {
+                return Ok(Matrix3::identity());
+            }
+            let svd = (cell * w * inverse).svd(true, true);
+            match (svd.u, svd.v_t) {
+                (Some(u), Some(v_t)) => Ok(u * v_t),
+                _ => Err(invalid("a lattice operation has no polar factor")),
+            }
+        })
+        .collect()
 }
 /// Calls `visit(at, vectors)` for every flat grid index (C order) with the wave vectors whose
 /// mean norm [`norms`] reports: the FFT-box vector alone when the grid's operations are signed
@@ -195,6 +238,98 @@ pub fn norm_strain(
     Ok(out)
 }
 
+/// Calls `each` with the vector (in units of the reciprocal basis) that each operation of the
+/// grid's lattice picks for the frequency `q` (the FFT index plus the Bloch shift, in the same
+/// units): `q` moved by the operation, wrapped into the FFT box, moved back. The operations
+/// permute these vectors among the indices (`alias_vectors(V q)` is the same multiset moved by
+/// `V`), so anything built as a mean over them is covariant under the grid's lattice group, which
+/// a single wrap of `q` is not on a skewed grid or on a box edge.
+fn alias_vectors(
+    lattice: &Lattice,
+    shape: [usize; 3],
+    q: &Vector3<f64>,
+    each: &mut dyn FnMut(Vector3<f64>),
+) {
+    for (w, v) in lattice.group.iter().zip(&lattice.operations) {
+        let image = v * q;
+        let wrapped = Vector3::from_fn(|a, _| boxed(image[a], shape[a] as f64));
+        each(w.transpose() * wrapped);
+    }
+}
+
+/// The distinct alias vectors of every grid index at one Bloch shift, with their weights (the
+/// fraction of the lattice operations that pick each), `n + 1` offsets into the entries.
+#[derive(Debug)]
+pub struct ShiftedAliases {
+    starts: Vec<usize>,
+    vectors: Vec<[f64; 3]>,
+    weights: Vec<f64>,
+    _storage: Reservation,
+}
+impl ShiftedAliases {
+    /// The vectors (units of the reciprocal basis) of the flat grid index `at` and their weights,
+    /// which add up to one. An index no operation wraps has one vector, the plain `m + kappa`.
+    pub fn of(&self, at: usize) -> (&[[f64; 3]], &[f64]) {
+        let range = self.starts[at]..self.starts[at + 1];
+        (&self.vectors[range.clone()], &self.weights[range])
+    }
+}
+
+/// The alias vectors of every index of the grid at the Cartesian Bloch shift `k` (inverse Bohr),
+/// the set [`bloch`] averages the squares of.
+pub fn shifted_aliases(ctx: &Context, grid: &SpatialGrid, k: [f64; 3]) -> Result<ShiftedAliases> {
+    finite(&k, "Bloch wave vector")?;
+    let shape = grid.index.shape();
+    let n = grid.index.points();
+    let lattice = lattice(ctx, grid)?;
+    let kappa = lattice
+        .reciprocal
+        .try_inverse()
+        .ok_or_else(|| invalid("singular reciprocal cell"))?
+        * Vector3::from(k);
+    let count = lattice.operations.len() as f64;
+    let storage = ctx.reserve(crate::product(&[n, 40])?)?;
+    let mut starts = Vec::with_capacity(n + 1);
+    let mut vectors: Vec<[f64; 3]> = Vec::with_capacity(n);
+    let mut weights: Vec<f64> = Vec::with_capacity(n);
+    for at in 0..n {
+        let index = [
+            at / (shape[1] * shape[2]),
+            at / shape[2] % shape[1],
+            at % shape[2],
+        ];
+        let q = Vector3::from_fn(|a, _| frequency(index[a], shape[a]) + kappa[a]);
+        starts.push(vectors.len());
+        let first = vectors.len();
+        // The identity's alias leads: `q` wrapped into the box, the vector of the plain FFT.
+        vectors.push(std::array::from_fn(|a| boxed(q[a], shape[a] as f64)));
+        weights.push(0.);
+        alias_vectors(&lattice, shape, &q, &mut |alias| {
+            let same = (first..vectors.len())
+                .find(|&j| (0..3).all(|a| (vectors[j][a] - alias[a]).abs() < 1e-7));
+            match same {
+                Some(j) => weights[j] += 1.,
+                None => {
+                    vectors.push(alias.into());
+                    weights.push(1.);
+                }
+            }
+        });
+        // The counts of the operations that pick each alias, as fractions: an index that every
+        // operation takes to the same vector weighs exactly one.
+        for weight in &mut weights[first..] {
+            *weight /= count;
+        }
+    }
+    starts.push(vectors.len());
+    Ok(ShiftedAliases {
+        starts,
+        vectors,
+        weights,
+        _storage: storage,
+    })
+}
+
 /// Alias-averaged Bloch derivative symbols and kinetic-energy multipliers.
 /// Cartesian k is in inverse Bohr. The mean square is retained separately
 /// from the square of the mean vector, including on Nyquist faces.
@@ -223,13 +358,11 @@ pub fn bloch(ctx: &Context, grid: &SpatialGrid, k: [f64; 3]) -> Result<BlochSymb
         let q = Vector3::from_fn(|a, _| frequency(index[a], shape[a]) + kappa[a]);
         let mut mean = Vector3::zeros();
         let mut mean_square = 0.;
-        for (w, v) in lattice.group.iter().zip(&lattice.operations) {
-            let image = v * q;
-            let wrapped = Vector3::from_fn(|a, _| boxed(image[a], shape[a] as f64));
-            let wave = lattice.reciprocal * (w.transpose() * wrapped);
+        alias_vectors(&lattice, shape, &q, &mut |alias| {
+            let wave = lattice.reciprocal * alias;
             mean += wave;
             mean_square += wave.norm_squared();
-        }
+        });
         mean /= lattice.operations.len() as f64;
         squares.as_mut_slice()[at] = mean_square / lattice.operations.len() as f64;
         for a in 0..3 {
@@ -276,17 +409,15 @@ pub fn bloch_outer(ctx: &Context, grid: &SpatialGrid, k: [f64; 3]) -> Result<Buf
         ];
         let q = Vector3::from_fn(|a, _| frequency(index[a], shape[a]) + kappa[a]);
         let mut sum = [0.; 6];
-        for (w, v) in lattice.group.iter().zip(&lattice.operations) {
-            let image = v * q;
-            let wrapped = Vector3::from_fn(|a, _| boxed(image[a], shape[a] as f64));
-            let wave = lattice.reciprocal * (w.transpose() * wrapped);
+        alias_vectors(&lattice, shape, &q, &mut |alias| {
+            let wave = lattice.reciprocal * alias;
             for (slot, (a, b)) in
                 sum.iter_mut()
                     .zip([(0, 0), (1, 1), (2, 2), (1, 2), (0, 2), (0, 1)])
             {
                 *slot += wave[a] * wave[b];
             }
-        }
+        });
         for (row, value) in sum.iter().enumerate() {
             out.as_mut_slice()[row * n + at] = value / count;
         }

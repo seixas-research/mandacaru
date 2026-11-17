@@ -1,8 +1,82 @@
-//! Fermionic, spin-orbit, qubit-excitation and coupled-exchange ADAPT pools.
-use super::algebra::{excitation_pool, Generator, Term};
+//! Fermionic, spin-orbit, qubit-excitation and coupled-exchange ADAPT pools, plus optional
+//! Bloch crystal-momentum symmetry filtering.
+use super::algebra::{excitation_pool_filtered, Generator, Term};
 use super::{Encoding, Operator, C64};
 use crate::{product, Context, Error, Reservation, Result};
 use std::collections::BTreeSet;
+
+/// Crystal-momentum specification on a periodic Born–von Karman k-mesh for Bloch pools.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CrystalMomentum {
+    pub mesh: [usize; 3],
+    pub orbital_k: Vec<[i64; 3]>,
+}
+
+impl CrystalMomentum {
+    /// Validate positive k-mesh extents and per-spatial-orbital integer crystal momenta.
+    pub fn new(mesh: [usize; 3], orbital_k: Vec<[i64; 3]>) -> Result<Self> {
+        if mesh.contains(&0) || orbital_k.is_empty() {
+            return Err(Error::Invalid(
+                "crystal momentum needs positive k-mesh dimensions and at least one spatial orbital"
+                    .into(),
+            ));
+        }
+        Ok(Self { mesh, orbital_k })
+    }
+
+    /// Return `true` iff exciting `annihilate -> create` conserves total crystal momentum modulo `mesh`.
+    pub fn conserves_modes(&self, annihilate: &[usize], create: &[usize]) -> bool {
+        let m = self.orbital_k.len();
+        let mut delta = [0i64; 3];
+        for &q in create {
+            let k = self.orbital_k[q % m];
+            for (d, &v) in delta.iter_mut().zip(&k) {
+                *d += v;
+            }
+        }
+        for &p in annihilate {
+            let k = self.orbital_k[p % m];
+            for (d, &v) in delta.iter_mut().zip(&k) {
+                *d -= v;
+            }
+        }
+        delta
+            .iter()
+            .zip(&self.mesh)
+            .all(|(&d, &m)| d.rem_euclid(m as i64) == 0)
+    }
+}
+
+/// Check crystal-momentum conservation for labeled excitation/CEO generators (`Some(bool)`),
+/// returning `None` for unlabeled Pauli-string generators (`qubit`).
+pub(crate) fn label_conserves_momentum(label: &str, momentum: &CrystalMomentum) -> Option<bool> {
+    let mut saw_excitation = false;
+    let mut rest = label;
+    while let Some(open) = rest.find('(') {
+        let after_open = &rest[open + 1..];
+        let close = after_open.find(')')?;
+        let inner = &after_open[..close];
+        if let Some((lhs, rhs)) = inner.split_once("->") {
+            let ann: Vec<usize> = lhs
+                .split(',')
+                .filter_map(|s| s.trim().parse::<usize>().ok())
+                .collect();
+            let cre: Vec<usize> = rhs
+                .split(',')
+                .filter_map(|s| s.trim().parse::<usize>().ok())
+                .collect();
+            if ann.is_empty() || cre.is_empty() {
+                return None;
+            }
+            saw_excitation = true;
+            if !momentum.conserves_modes(&ann, &cre) {
+                return Some(false);
+            }
+        }
+        rest = &after_open[close + 1..];
+    }
+    saw_excitation.then_some(true)
+}
 
 pub struct Pool {
     pub operators: Vec<Generator>,
@@ -96,7 +170,7 @@ pub fn kind(name: &str) -> Result<&'static str> {
 }
 
 /// The refusal of a pool that is register-based by construction, which only an untapered register
-/// can hold: a parity-reduced one (two qubits tapered) and a Z2-tapered one (`CachedProblem::taper`)
+/// can hold: a parity-reduced one (two qubits tapered) and a Z2-tapered one (`QuantumProblem::taper`)
 /// both raise it.
 pub fn untapered_register(name: &str) -> Error {
     Error::Invalid(
@@ -113,6 +187,29 @@ pub fn needs_untapered_register(name: &str) -> bool {
 }
 
 pub fn build(ctx: &Context, encoding: &Encoding, name: &str, singles: bool) -> Result<Pool> {
+    build_with_momentum(ctx, encoding, name, singles, None)
+}
+
+/// Build an operator pool optionally restricted to excitations conserving crystal momentum
+/// (`Bloch-*` domain extension, preserving spin-orbit/fermionic/qeb/ceo/qubit parity).
+pub fn build_with_momentum(
+    ctx: &Context,
+    encoding: &Encoding,
+    name: &str,
+    singles: bool,
+    momentum: Option<&CrystalMomentum>,
+) -> Result<Pool> {
+    let m = encoding.modes / 2;
+    if let Some(mom) = momentum {
+        if encoding.modes % 2 != 0 || mom.orbital_k.len() != m {
+            return Err(Error::Invalid(
+                "crystal momentum orbital count must match the spatial orbitals".into(),
+            ));
+        }
+    }
+    let conserves = |ann: &[usize], cre: &[usize]| -> bool {
+        momentum.is_none_or(|mom| mom.conserves_modes(ann, cre))
+    };
     let mut operators = Vec::new();
     let mut screenable = Vec::new();
     let mut growth_members = Vec::new();
@@ -123,10 +220,11 @@ pub fn build(ctx: &Context, encoding: &Encoding, name: &str, singles: bool) -> R
         growth_members.push(members);
         index
     };
-    let m = encoding.modes / 2;
     match name {
         "fermionic" => {
-            for generator in excitation_pool(ctx, encoding, singles)? {
+            for generator in
+                excitation_pool_filtered(ctx, encoding, singles, |a, c| conserves(a, c))?
+            {
                 append(generator, true, vec![]);
             }
         }
@@ -143,6 +241,9 @@ pub fn build(ctx: &Context, encoding: &Encoding, name: &str, singles: bool) -> R
             if singles {
                 for &i in &occupied {
                     for &a in &virtuals {
+                        if !conserves(&[i], &[a]) {
+                            continue;
+                        }
                         let [real, imaginary] =
                             spin_orbit_pair(ctx, encoding, &[(a, true), (i, false)])?;
                         append(
@@ -168,6 +269,9 @@ pub fn build(ctx: &Context, encoding: &Encoding, name: &str, singles: bool) -> R
                 for &j in &occupied[ii + 1..] {
                     for (aa, &a) in virtuals.iter().enumerate() {
                         for &b in &virtuals[aa + 1..] {
+                            if !conserves(&[i, j], &[a, b]) {
+                                continue;
+                            }
                             let [real, imaginary] = spin_orbit_pair(
                                 ctx,
                                 encoding,
@@ -199,7 +303,9 @@ pub fn build(ctx: &Context, encoding: &Encoding, name: &str, singles: bool) -> R
                 return Err(untapered_register("qubit"));
             }
             let mut masks = BTreeSet::new();
-            for generator in excitation_pool(ctx, encoding, singles)? {
+            for generator in
+                excitation_pool_filtered(ctx, encoding, singles, |a, c| conserves(a, c))?
+            {
                 for term in &generator.operator.terms {
                     if term.x != 0 {
                         masks.insert((term.x, term.z));
@@ -230,7 +336,7 @@ pub fn build(ctx: &Context, encoding: &Encoding, name: &str, singles: bool) -> R
             if singles {
                 for &i in &occupied {
                     for &a in &virtuals {
-                        if i / m == a / m {
+                        if i / m == a / m && conserves(&[i], &[a]) {
                             append(
                                 Generator {
                                     label: format!("QS({i}->{a})"),
@@ -251,7 +357,7 @@ pub fn build(ctx: &Context, encoding: &Encoding, name: &str, singles: bool) -> R
                 for &j in &occupied[ii + 1..] {
                     for (aa, &a) in virtuals.iter().enumerate() {
                         for &b in &virtuals[aa + 1..] {
-                            if i / m + j / m == a / m + b / m {
+                            if i / m + j / m == a / m + b / m && conserves(&[i, j], &[a, b]) {
                                 append(
                                     Generator {
                                         label: format!("QD({i},{j}->{a},{b})"),
@@ -274,7 +380,7 @@ pub fn build(ctx: &Context, encoding: &Encoding, name: &str, singles: bool) -> R
             if singles {
                 for i in 0..2 * m {
                     for a in i + 1..2 * m {
-                        if i / m == a / m {
+                        if i / m == a / m && conserves(&[i], &[a]) {
                             append(
                                 Generator {
                                     label: format!("CEO[o{i},o{a}]{{S({i}->{a})}}"),
@@ -302,7 +408,7 @@ pub fn build(ctx: &Context, encoding: &Encoding, name: &str, singles: bool) -> R
                             {
                                 let [i, j] = left.map(|n| modes[n]);
                                 let [a, b] = right.map(|n| modes[n]);
-                                if i / m + j / m == a / m + b / m {
+                                if i / m + j / m == a / m + b / m && conserves(&[i, j], &[a, b]) {
                                     members.push(Generator {
                                         label: format!("D({i},{j}->{a},{b})"),
                                         operator: qubit_excitation(
@@ -312,6 +418,9 @@ pub fn build(ctx: &Context, encoding: &Encoding, name: &str, singles: bool) -> R
                                         )?,
                                     });
                                 }
+                            }
+                            if members.is_empty() {
+                                continue;
                             }
                             if members.len() == 1 {
                                 let mut only = members.pop().unwrap();

@@ -1,7 +1,7 @@
 """DFT+U through ``Mandacaru(hubbard_u=...)`` against the frozen numbers of the deleted route.
 
 The references are ``reference/hubbard/frozen.json`` (HU-0, the old Python driving the same
-extension) and the crystal fixtures of ``export_hubbard_crystal.py``. Tolerances are those of the
+extension) and the crystal fixtures of ``tests/periodic_freeze_hubbard.rs``. Tolerances are those of the
 Rust gates (``crates/mandacaru-core/tests/periodic_hubbard.rs``, HU-3): the energy is variational
 (1e-8 eV), the DFT+U energy, the gap and the occupations are first order in the density error
 (1e-5). Each SCF here is one to two seconds of setup plus a few seconds of iterations, under
@@ -204,3 +204,37 @@ def test_nio_afm2_at_u_3_matches_the_frozen_numbers():
     up0, down0 = shells[0]["trace"]
     assert shells[1]["trace"] == pytest.approx([down0, up0], abs=1e-6)
     assert up0 - down0 > 1.0
+
+
+# --------------------------------------------------------------------------- #
+# The isolated Ni atom at U = 3 eV from the default (spherical) start.
+# --------------------------------------------------------------------------- #
+
+#: Rust pins of ``periodic_hubbard.rs``, measured on the installed ``lda-sr/Ni`` (2026-11-16): the
+#: free-atom energy of the lowest orbital pattern (holes on m = -1, +1) and the filled-shell
+#: eigenvalue of ``n``.
+NI_ATOM_ENERGY_EV = -4622.145722516
+NI_ATOM_FILLED_SHELL = 0.9532466942998
+
+
+@pytest.mark.slow
+def test_a_default_seeded_ni_atom_with_u_converges_to_the_lowest_integer_orbital_pattern():
+    """The spherical start stalls on a saddle of the hole orientations (residual 2e-3 after 300
+    iterations); the SCF then repeats from the integer diagonal starts and keeps the lowest
+    converged one. About 30 s: the stalled run, then ten starts."""
+    atoms = Atoms("Ni", positions=[[0, 0, 0]], cell=[7.0] * 3, pbc=True)
+    atoms.center()
+    atoms.set_initial_magnetic_moments([2.0])
+    result = run(
+        atoms, method="dft", xc="lda", grid_spacing=0.25, trace=False, basis=SZ, symmetry=False,
+        spin=True, kpts={"size": (1, 1, 1), "gamma": True},
+        smearing={"method": "fermi-dirac", "width": 0.02}, hubbard_u=NI_D,
+    )
+    assert result.success
+    assert abs(atoms.get_potential_energy() - NI_ATOM_ENERGY_EV) < ENERGY_TOLERANCE_EV
+    (shell,) = result.hubbard
+    majority = np.linalg.eigvalsh(shell["n"][0])
+    minority = np.sort(np.linalg.eigvalsh(shell["n"][1]))
+    assert np.allclose(majority, NI_ATOM_FILLED_SHELL, rtol=0, atol=N_TOLERANCE)
+    assert np.allclose(minority[:2], 0.0, rtol=0, atol=1e-6)
+    assert np.allclose(minority[2:], NI_ATOM_FILLED_SHELL, rtol=0, atol=N_TOLERANCE)

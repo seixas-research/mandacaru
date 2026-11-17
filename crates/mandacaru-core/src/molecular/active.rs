@@ -133,7 +133,9 @@ impl MeanField {
             ));
         }
         let open_shell = self.method == "uhf";
-        if method != "energy" && (!["rhf", "uhf"].contains(&self.method.as_str()) || self.functional.is_some()) {
+        if method != "energy"
+            && (!["rhf", "uhf"].contains(&self.method.as_str()) || self.functional.is_some())
+        {
             return Err(invalid(
                 "native MP2 orbital selection requires a Hartree-Fock reference (rhf or uhf)",
             ));
@@ -237,7 +239,11 @@ impl MeanField {
                 correlation::from_block(
                     ctx,
                     real.as_slice(),
-                    &correlation::denominator_levels(&self.energies[0], occupied, integrals.exchange_madelung()?),
+                    &correlation::denominator_levels(
+                        &self.energies[0],
+                        occupied,
+                        integrals.exchange_madelung()?,
+                    ),
                     occupied,
                     &canonical,
                 )?
@@ -356,7 +362,8 @@ impl MeanField {
                     .collect();
                 // The register keeps the virtual count it asked for (no cap for a threshold
                 // alone): the required partners first, then the rest in rank order.
-                let current: Vec<usize> = active.iter().copied().filter(|&i| i >= occupied).collect();
+                let current: Vec<usize> =
+                    active.iter().copied().filter(|&i| i >= occupied).collect();
                 let cap = (!spec["orbitals"].is_null()).then_some(current.len());
                 if cap.is_some_and(|c| required.len() > c) {
                     return Err(invalid(format!(
@@ -506,7 +513,10 @@ pub fn correlating_partners(
     let ctx = &integrals.context;
     let m = integrals.m();
     let eri = integrals.eri()?;
-    let (high, low) = (particles[0].max(particles[1]), particles[0].min(particles[1]));
+    let (high, low) = (
+        particles[0].max(particles[1]),
+        particles[0].min(particles[1]),
+    );
     let mut density = DMatrix::<C64>::zeros(m, m);
     for p in 0..high {
         let weight = if p < low { 2. } else { 1. };
@@ -514,9 +524,12 @@ pub fn correlating_partners(
         density += c * c.adjoint() * C64::new(weight, 0.);
     }
     let (j, k) = scf::jk(&eri, m, &density);
-    let h = DMatrix::from_fn(m, m, |i, j| C64::new(integrals.one.as_slice()[i * m + j], 0.));
+    let h = DMatrix::from_fn(m, m, |i, j| {
+        C64::new(integrals.one.as_slice()[i * m + j], 0.)
+    });
     let fock = h + j - k * C64::new(0.5, 0.);
-    let diagonal = |p: usize| (orbitals.column(p).adjoint() * &fock * orbitals.column(p))[(0, 0)].re;
+    let diagonal =
+        |p: usize| (orbitals.column(p).adjoint() * &fock * orbitals.column(p))[(0, 0)].re;
     let co = DMatrix::from_fn(m, occupied.len(), |r, c| orbitals[(r, occupied[c])]);
     let cv = DMatrix::from_fn(m, virtuals.len(), |r, c| orbitals[(r, virtuals[c])]);
     let (no, nv) = (occupied.len(), virtuals.len());

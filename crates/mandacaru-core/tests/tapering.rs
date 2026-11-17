@@ -14,7 +14,8 @@ use mandacaru_core::{
 use serde_json::Value;
 
 fn frozen() -> Value {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../test/migration/reference/tapering.json");
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../test/migration/reference/tapering.json");
     serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
 }
 
@@ -22,12 +23,25 @@ fn terms(v: &Value) -> Vec<(String, C64)> {
     v.as_array()
         .unwrap()
         .iter()
-        .map(|t| (t[0].as_str().unwrap().to_string(), C64::new(t[1].as_f64().unwrap(), t[2].as_f64().unwrap())))
+        .map(|t| {
+            (
+                t[0].as_str().unwrap().to_string(),
+                C64::new(t[1].as_f64().unwrap(), t[2].as_f64().unwrap()),
+            )
+        })
         .collect()
 }
 
 fn label(n: usize, mask: u64) -> String {
-    (0..n).map(|j| if mask & (1 << (n - 1 - j)) != 0 { 'Z' } else { 'I' }).collect()
+    (0..n)
+        .map(|j| {
+            if mask & (1 << (n - 1 - j)) != 0 {
+                'Z'
+            } else {
+                'I'
+            }
+        })
+        .collect()
 }
 
 fn lowest(ctx: &Context, operator: &Operator) -> f64 {
@@ -36,14 +50,22 @@ fn lowest(ctx: &Context, operator: &Operator) -> f64 {
     let dense = operator.dense(ctx, &basis).unwrap();
     let size = 1 << n;
     let matrix = nalgebra::DMatrix::from_fn(size, size, |i, j| dense.as_slice()[i * size + j]);
-    matrix.symmetric_eigen().eigenvalues.iter().fold(f64::INFINITY, |m, &e| m.min(e))
+    matrix
+        .symmetric_eigen()
+        .eigenvalues
+        .iter()
+        .fold(f64::INFINITY, |m, &e| m.min(e))
 }
 
 #[test]
 fn the_tapered_hamiltonians_are_the_frozen_python_ones() {
     let ctx = Context::new(Some(1), 512 << 20).unwrap();
     for case in frozen()["cases"].as_array().unwrap() {
-        let name = format!("{} {}", case["molecule"].as_str().unwrap(), case["mapping"].as_str().unwrap());
+        let name = format!(
+            "{} {}",
+            case["molecule"].as_str().unwrap(),
+            case["mapping"].as_str().unwrap()
+        );
         let n = case["n_qubits"].as_u64().unwrap() as usize;
         let h = Operator::new(&ctx, n, &terms(&case["terms"])).unwrap();
         let reference = case["reference_bits"]
@@ -51,22 +73,63 @@ fn the_tapered_hamiltonians_are_the_frozen_python_ones() {
             .unwrap()
             .iter()
             .enumerate()
-            .fold(0u64, |out, (j, b)| if b.as_u64().unwrap() == 1 { out | (1 << (n - 1 - j)) } else { out });
+            .fold(0u64, |out, (j, b)| {
+                if b.as_u64().unwrap() == 1 {
+                    out | (1 << (n - 1 - j))
+                } else {
+                    out
+                }
+            });
         if case["generators"].as_array().unwrap().is_empty() {
-            assert!(Taper::find(&h, reference).is_none(), "{name}: the Python module found no symmetry");
+            assert!(
+                Taper::find(&h, reference).is_none(),
+                "{name}: the Python module found no symmetry"
+            );
             println!("{name}: no Z2 symmetry beyond the identity");
             continue;
         }
         let taper = Taper::find(&h, reference).unwrap();
-        let strings = |v: &Value| -> Vec<String> { v.as_array().unwrap().iter().map(|s| s.as_str().unwrap().to_string()).collect() };
-        assert_eq!(taper.found.iter().map(|&m| label(n, m)).collect::<Vec<_>>(), strings(&case["generators"]), "{name}: generators");
-        assert_eq!(taper.generators.iter().map(|&m| label(n, m)).collect::<Vec<_>>(), strings(&case["reduced"]), "{name}: reduced");
-        let anchors: Vec<usize> = case["anchors"].as_array().unwrap().iter().map(|a| a.as_u64().unwrap() as usize).collect();
+        let strings = |v: &Value| -> Vec<String> {
+            v.as_array()
+                .unwrap()
+                .iter()
+                .map(|s| s.as_str().unwrap().to_string())
+                .collect()
+        };
+        assert_eq!(
+            taper.found.iter().map(|&m| label(n, m)).collect::<Vec<_>>(),
+            strings(&case["generators"]),
+            "{name}: generators"
+        );
+        assert_eq!(
+            taper
+                .generators
+                .iter()
+                .map(|&m| label(n, m))
+                .collect::<Vec<_>>(),
+            strings(&case["reduced"]),
+            "{name}: reduced"
+        );
+        let anchors: Vec<usize> = case["anchors"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| a.as_u64().unwrap() as usize)
+            .collect();
         assert_eq!(taper.anchors, anchors, "{name}: anchors");
-        let signs: Vec<i8> = case["signs"].as_array().unwrap().iter().map(|s| s.as_i64().unwrap() as i8).collect();
+        let signs: Vec<i8> = case["signs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s.as_i64().unwrap() as i8)
+            .collect();
         assert_eq!(taper.signs, signs, "{name}: signs");
         let tapered = taper.operator(&ctx, &h).unwrap();
-        assert_eq!(tapered.n, case["tapered_qubits"].as_u64().unwrap() as usize, "{name}: width");
+        assert_eq!(
+            tapered.n,
+            case["tapered_qubits"].as_u64().unwrap() as usize,
+            "{name}: width"
+        );
         let mut got = tapered.labels();
         got.sort_by(|a, b| a.0.cmp(&b.0));
         let want = terms(&case["tapered_terms"]);
@@ -96,7 +159,11 @@ fn a_leaking_operator_is_refused_and_an_observable_is_projected() {
     let taper = Taper::find(&h, 0).unwrap();
     assert_eq!(taper.width(), 1);
     let leaking = Operator::new(&ctx, 2, &[("XI".into(), one), ("ZZ".into(), one)]).unwrap();
-    assert!(taper.operator(&ctx, &leaking).unwrap_err().to_string().contains("does not commute"));
+    assert!(taper
+        .operator(&ctx, &leaking)
+        .unwrap_err()
+        .to_string()
+        .contains("does not commute"));
     let projected = taper.observable(&ctx, &leaking).unwrap();
     assert_eq!(projected.labels().len(), 1);
     // No symmetry: nothing to taper.

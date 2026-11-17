@@ -33,7 +33,10 @@ fn noncollinear_density(m: usize) -> Matrix {
 
 fn hermitian_direction(m: usize) -> Matrix {
     let raw = Matrix::from_fn(2 * m, 2 * m, |i, j| {
-        C64::new(((i * 7 + j * 3) % 11) as f64 / 11. - 0.5, ((i * 5 + j * 13) % 7) as f64 / 7. - 0.5)
+        C64::new(
+            ((i * 7 + j * 3) % 11) as f64 / 11. - 0.5,
+            ((i * 5 + j * 13) % 7) as f64 / 7. - 0.5,
+        )
     });
     (&raw + raw.adjoint()) * C64::new(0.5, 0.)
 }
@@ -52,22 +55,39 @@ fn fock_gate(names: &[&str]) {
         let direction = hermitian_direction(m);
         for &name in names {
             let at = spinor_response(&base, &d, name, None).unwrap();
-            let energy = |e: f64| spinor_response(&base, &(&d + &direction * C64::new(e, 0.)), name, None).unwrap().energy;
+            let energy = |e: f64| {
+                spinor_response(&base, &(&d + &direction * C64::new(e, 0.)), name, None)
+                    .unwrap()
+                    .energy
+            };
             // 1e-5: PBE depends on grad |m|, whose kink where m crosses zero makes the third
             // derivative large (`pbe_step_scan`: the miss falls as h^2, 3.3e-7 at 1e-4, 3.3e-9 at 1e-5).
             let h = 1e-5;
             let fd = (energy(h) - energy(-h)) / (2. * h);
             let analytic = (&at.fock * &direction).trace().re;
-            eprintln!("{name}: dE/de {fd:+.10e}, Re tr(F dD) {analytic:+.10e}, diff {:.2e}", fd - analytic);
+            eprintln!(
+                "{name}: dE/de {fd:+.10e}, Re tr(F dD) {analytic:+.10e}, diff {:.2e}",
+                fd - analytic
+            );
             let combined = (fd - analytic).abs() < 1e-7 * (1. + analytic.abs());
             // Each Pauli channel alone: a perturbation of only D_a.
             for a in 0..4 {
                 let single = pauli(m, a, &DMatrix::from_fn(m, m, |i, j| direction[(i, j)]));
-                let energy = |e: f64| spinor_response(&base, &(&d + &single * C64::new(e, 0.)), name, None).unwrap().energy;
+                let energy = |e: f64| {
+                    spinor_response(&base, &(&d + &single * C64::new(e, 0.)), name, None)
+                        .unwrap()
+                        .energy
+                };
                 let fd = (energy(h) - energy(-h)) / (2. * h);
                 let analytic = (&at.fock * &single).trace().re;
-                eprintln!("  {name} channel {a}: fd {fd:+.10e}, analytic {analytic:+.10e}, diff {:.2e}", fd - analytic);
-                assert!((fd - analytic).abs() < 1e-7 * (1. + analytic.abs()), "{name}, channel {a}: {fd} vs {analytic}");
+                eprintln!(
+                    "  {name} channel {a}: fd {fd:+.10e}, analytic {analytic:+.10e}, diff {:.2e}",
+                    fd - analytic
+                );
+                assert!(
+                    (fd - analytic).abs() < 1e-7 * (1. + analytic.abs()),
+                    "{name}, channel {a}: {fd} vs {analytic}"
+                );
             }
             assert!(combined, "{name}: the combined direction");
         }
@@ -115,8 +135,21 @@ fn collinear_energy_gate(names: &[&str]) {
     {
         let base = integrals(&ctx, &H2, "dual");
         let m = base.m();
-        let up = Matrix::from_fn(m, m, |i, j| C64::new(if i == j && i < 2 { 0.9 - 0.3 * i as f64 } else if i + j == 1 { 0.1 } else { 0. }, 0.));
-        let down = Matrix::from_fn(m, m, |i, j| C64::new(if i == 0 && j == 0 { 0.7 } else { 0. }, 0.));
+        let up = Matrix::from_fn(m, m, |i, j| {
+            C64::new(
+                if i == j && i < 2 {
+                    0.9 - 0.3 * i as f64
+                } else if i + j == 1 {
+                    0.1
+                } else {
+                    0.
+                },
+                0.,
+            )
+        });
+        let down = Matrix::from_fn(m, m, |i, j| {
+            C64::new(if i == 0 && j == 0 { 0.7 } else { 0. }, 0.)
+        });
         let mut d = Matrix::zeros(2 * m, 2 * m);
         d.view_mut((0, 0), (m, m)).copy_from(&up);
         d.view_mut((m, m), (m, m)).copy_from(&down);
@@ -124,9 +157,17 @@ fn collinear_energy_gate(names: &[&str]) {
         // collinear one at every point, so a GGA or meta-GGA sees exactly the unrestricted fields.
         for &name in names {
             let spinor = spinor_response(&base, &d, name, None).unwrap().energy;
-            let unrestricted = base.kohn_sham_energy(name, &[up.clone(), down.clone()]).unwrap();
-            eprintln!("{name}: spinor {spinor:+.12e}, UKS {unrestricted:+.12e}, diff {:.2e}", spinor - unrestricted);
-            assert!((spinor - unrestricted).abs() < 1e-9, "{name}: {spinor} vs {unrestricted}");
+            let unrestricted = base
+                .kohn_sham_energy(name, &[up.clone(), down.clone()])
+                .unwrap();
+            eprintln!(
+                "{name}: spinor {spinor:+.12e}, UKS {unrestricted:+.12e}, diff {:.2e}",
+                spinor - unrestricted
+            );
+            assert!(
+                (spinor - unrestricted).abs() < 1e-9,
+                "{name}: {spinor} vs {unrestricted}"
+            );
         }
     }
     assert_eq!(ctx.memory_used(), 0);
@@ -144,7 +185,11 @@ fn pbe_step_scan() {
         let at = spinor_response(&base, &d, "pbe", None).unwrap();
         let analytic = (&at.fock * &direction).trace().re;
         for h in [1e-4, 3e-5, 1e-5] {
-            let energy = |e: f64| spinor_response(&base, &(&d + &direction * C64::new(e, 0.)), "pbe", None).unwrap().energy;
+            let energy = |e: f64| {
+                spinor_response(&base, &(&d + &direction * C64::new(e, 0.)), "pbe", None)
+                    .unwrap()
+                    .energy
+            };
             let fd = (energy(h) - energy(-h)) / (2. * h);
             eprintln!("pbe h {h:.0e}: diff {:+.3e}", fd - analytic);
         }
@@ -164,22 +209,43 @@ fn scf_gate(names: &[&str]) {
     let ctx = Context::new(Some(2), 768 << 20).unwrap();
     {
         let base = integrals(&ctx, &H2, "dual");
-        let options = ScfOptions { tolerance: 1e-10, max_iterations: 300, ..Default::default() };
+        let options = ScfOptions {
+            tolerance: 1e-10,
+            max_iterations: 300,
+            ..Default::default()
+        };
         for &name in names {
             let spinor = base.spinor_kohn_sham(name, 2, &options).unwrap();
             let rks = base.kohn_sham(name, [1, 1], false, &options).unwrap();
             assert!(spinor.converged && rks.converged, "{name}");
-            eprintln!("{name} H2: spinor {:+.12e}, RKS {:+.12e}, diff {:.2e}, {} iterations",
-                spinor.electronic_energy, rks.electronic_energy,
-                spinor.electronic_energy - rks.electronic_energy, spinor.iterations.len());
-            assert!((spinor.electronic_energy - rks.electronic_energy).abs() < 1e-8, "{name} H2");
+            eprintln!(
+                "{name} H2: spinor {:+.12e}, RKS {:+.12e}, diff {:.2e}, {} iterations",
+                spinor.electronic_energy,
+                rks.electronic_energy,
+                spinor.electronic_energy - rks.electronic_energy,
+                spinor.iterations.len()
+            );
+            assert!(
+                (spinor.electronic_energy - rks.electronic_energy).abs() < 1e-8,
+                "{name} H2"
+            );
             let open = base.spinor_kohn_sham(name, 1, &options).unwrap();
             let uks = base.kohn_sham(name, [1, 0], true, &options).unwrap();
             assert!(open.converged && uks.converged, "{name} H2+");
-            eprintln!("{name} H2+: spinor {:+.12e}, UKS {:+.12e}, diff {:.2e}",
-                open.electronic_energy, uks.electronic_energy, open.electronic_energy - uks.electronic_energy);
-            assert!((open.electronic_energy - uks.electronic_energy).abs() < 1e-8, "{name} H2+");
-            assert_eq!((spinor.method.as_str(), spinor.functional.as_deref()), ("ghf", Some(name)));
+            eprintln!(
+                "{name} H2+: spinor {:+.12e}, UKS {:+.12e}, diff {:.2e}",
+                open.electronic_energy,
+                uks.electronic_energy,
+                open.electronic_energy - uks.electronic_energy
+            );
+            assert!(
+                (open.electronic_energy - uks.electronic_energy).abs() < 1e-8,
+                "{name} H2+"
+            );
+            assert_eq!(
+                (spinor.method.as_str(), spinor.functional.as_deref()),
+                ("ghf", Some(name))
+            );
         }
     }
     assert_eq!(ctx.memory_used(), 0);
@@ -193,12 +259,31 @@ fn the_force_is_unchanged_when_density_and_w_roles_are_separate_entries() {
     let ctx = Context::new(Some(2), 768 << 20).unwrap();
     {
         let base = integrals(&ctx, &H2, "dual");
-        let options = ScfOptions { tolerance: 1e-11, max_iterations: 300, ..Default::default() };
+        let options = ScfOptions {
+            tolerance: 1e-11,
+            max_iterations: 300,
+            ..Default::default()
+        };
         for (name, unrestricted, particles) in [("lda", false, [1, 1]), ("pbe", true, [1, 0])] {
-            let state = base.kohn_sham(name, particles, unrestricted, &options).unwrap();
-            let (whole, split) = (base.gradient(&state).unwrap(), base.gradient_with_split_roles(&state).unwrap());
-            let gap = whole.total.as_slice().iter().zip(split.total.as_slice()).map(|(a, b)| (a - b).abs()).fold(0f64, f64::max);
-            let size = whole.total.as_slice().iter().fold(0f64, |m, v| m.max(v.abs()));
+            let state = base
+                .kohn_sham(name, particles, unrestricted, &options)
+                .unwrap();
+            let (whole, split) = (
+                base.gradient(&state).unwrap(),
+                base.gradient_with_split_roles(&state).unwrap(),
+            );
+            let gap = whole
+                .total
+                .as_slice()
+                .iter()
+                .zip(split.total.as_slice())
+                .map(|(a, b)| (a - b).abs())
+                .fold(0f64, f64::max);
+            let size = whole
+                .total
+                .as_slice()
+                .iter()
+                .fold(0f64, |m, v| m.max(v.abs()));
             eprintln!("{name}: max |F - F(split roles)| = {gap:.2e} (force {size:.3e})");
             assert!(size > 1e-4 && gap < 1e-13, "{name}: {gap:e}");
         }
@@ -215,22 +300,42 @@ fn a_collinear_spinor_state_has_the_unrestricted_force() {
     let ctx = Context::new(Some(2), 768 << 20).unwrap();
     {
         let base = integrals(&ctx, &[[0., 0.1, -0.8], [0.05, 0., 0.8]], "dual");
-        let options = ScfOptions { tolerance: 1e-11, max_iterations: 300, ..Default::default() };
+        let options = ScfOptions {
+            tolerance: 1e-11,
+            max_iterations: 300,
+            ..Default::default()
+        };
         for name in ["lda", "pbe", "r2scan"] {
             let spinor = base.spinor_kohn_sham(name, 1, &options).unwrap();
             let uks = base.kohn_sham(name, [1, 0], true, &options).unwrap();
-            let (gs, gu) = (base.spinor_gradient(&spinor).unwrap(), base.gradient(&uks).unwrap());
-            let gap = gs.total.as_slice().iter().zip(gu.total.as_slice()).map(|(a, b)| (a - b).abs()).fold(0f64, f64::max);
+            let (gs, gu) = (
+                base.spinor_gradient(&spinor).unwrap(),
+                base.gradient(&uks).unwrap(),
+            );
+            let gap = gs
+                .total
+                .as_slice()
+                .iter()
+                .zip(gu.total.as_slice())
+                .map(|(a, b)| (a - b).abs())
+                .fold(0f64, f64::max);
             let size = gu.total.as_slice().iter().fold(0f64, |m, v| m.max(v.abs()));
-            let magnetization = gs.terms.iter().find(|(n, _)| *n == "xc/magnetization_basis").map(|(_, b)| b.as_slice().iter().fold(0f64, |m, v| m.max(v.abs()))).unwrap();
+            let magnetization = gs
+                .terms
+                .iter()
+                .find(|(n, _)| *n == "xc/magnetization_basis")
+                .map(|(_, b)| b.as_slice().iter().fold(0f64, |m, v| m.max(v.abs())))
+                .unwrap();
             eprintln!("{name} H2+: max |F(spinor) - F(UKS)| = {gap:.2e} (force {size:.3e}, magnetization term {magnetization:.3e})");
             assert!(size > 1e-3 && gap < 1e-8, "{name}: {gap:e}");
-            assert!(magnetization > 1e-4, "{name}: the magnetization term is not exercised");
+            assert!(
+                magnetization > 1e-4,
+                "{name}: the magnetization term is not exercised"
+            );
         }
     }
     assert_eq!(ctx.memory_used(), 0);
 }
-
 
 /// F2c part 2: the spinor force of a screened hybrid. Without spin-orbit coupling the spinor
 /// functional is invariant under a global spin rotation, so a converged UKS HSE06 state turned to
@@ -248,10 +353,17 @@ fn a_turned_hybrid_spinor_state_has_the_unrestricted_force() {
     {
         let base = integrals(&ctx, &[[0., 0.1, -0.8], [0.05, 0., 0.8]], "dual");
         let m = base.m();
-        let options = ScfOptions { tolerance: 1e-11, max_iterations: 300, ..Default::default() };
+        let options = ScfOptions {
+            tolerance: 1e-11,
+            max_iterations: 300,
+            ..Default::default()
+        };
         let (theta, phi) = (1.1f64, 0.7f64);
         let (c, s) = ((theta / 2.).cos(), (theta / 2.).sin());
-        let u = [[C64::new(c, 0.), -C64::from_polar(s, -phi)], [C64::from_polar(s, phi), C64::new(c, 0.)]];
+        let u = [
+            [C64::new(c, 0.), -C64::from_polar(s, -phi)],
+            [C64::from_polar(s, phi), C64::new(c, 0.)],
+        ];
         let mut turn = Matrix::zeros(2 * m, 2 * m);
         for a in 0..2 {
             for b in 0..2 {
@@ -261,21 +373,47 @@ fn a_turned_hybrid_spinor_state_has_the_unrestricted_force() {
             }
         }
         for electrons in [1usize, 2, 3] {
-            let uks = base.kohn_sham("hse06", [electrons, 0], true, &options).unwrap();
+            let uks = base
+                .kohn_sham("hse06", [electrons, 0], true, &options)
+                .unwrap();
             assert!(uks.converged, "UKS HSE06, {electrons} electrons");
             let mut d = Matrix::zeros(2 * m, 2 * m);
             d.view_mut((0, 0), (m, m)).copy_from(&uks.densities[0]);
             d.view_mut((m, m), (m, m)).copy_from(&uks.densities[1]);
             let turned = &turn * d * turn.adjoint();
-            let energy = spinor_response(&base, &turned, "hse06", None).unwrap().energy;
-            assert!((energy - uks.electronic_energy).abs() < 1e-9, "{electrons} e: {energy} vs {}", uks.electronic_energy);
+            let energy = spinor_response(&base, &turned, "hse06", None)
+                .unwrap()
+                .energy;
+            assert!(
+                (energy - uks.electronic_energy).abs() < 1e-9,
+                "{electrons} e: {energy} vs {}",
+                uks.electronic_energy
+            );
             let spinor = base.spinor_gradient_of(&turned, "hse06", energy).unwrap();
             let collinear = base.gradient(&uks).unwrap();
-            let gap = spinor.total.as_slice().iter().zip(collinear.total.as_slice()).map(|(a, b)| (a - b).abs()).fold(0f64, f64::max);
-            let size = collinear.total.as_slice().iter().fold(0f64, |m, v| m.max(v.abs()));
+            let gap = spinor
+                .total
+                .as_slice()
+                .iter()
+                .zip(collinear.total.as_slice())
+                .map(|(a, b)| (a - b).abs())
+                .fold(0f64, f64::max);
+            let size = collinear
+                .total
+                .as_slice()
+                .iter()
+                .fold(0f64, |m, v| m.max(v.abs()));
             for (name, values) in spinor.terms.iter().filter(|(n, _)| n.starts_with("hybrid")) {
-                let scalar = collinear.terms.iter().find(|(n, _)| n == name).map(|(_, b)| b.as_slice().to_vec());
-                eprintln!("  {electrons} e {name}: spinor {:?} UKS {:?}", &values.as_slice()[..3], scalar.as_ref().map(|v| &v[..3]));
+                let scalar = collinear
+                    .terms
+                    .iter()
+                    .find(|(n, _)| n == name)
+                    .map(|(_, b)| b.as_slice().to_vec());
+                eprintln!(
+                    "  {electrons} e {name}: spinor {:?} UKS {:?}",
+                    &values.as_slice()[..3],
+                    scalar.as_ref().map(|v| &v[..3])
+                );
             }
             eprintln!("HSE06 {electrons} e, turned: max |F(spinor) - F(UKS)| = {gap:.2e} (force {size:.3e})");
             assert!(size > 1e-3 && gap < 1e-8, "{electrons} electrons: {gap:e}");
@@ -318,11 +456,16 @@ fn a_noncollinear_start_turns_the_collinear_state_without_changing_its_energy() 
     let ctx = Context::new(Some(2), 768 << 20).unwrap();
     {
         let base = integrals(&ctx, &H2, "dual");
-        let options = ScfOptions { tolerance: 1e-10, max_iterations: 300, ..Default::default() };
+        let options = ScfOptions {
+            tolerance: 1e-10,
+            max_iterations: 300,
+            ..Default::default()
+        };
         // H2+: one electron, half a Bohr magneton on each atom.
         let uks = base.kohn_sham("lda", [1, 0], true, &options).unwrap();
         let along = |v: [f64; 3]| {
-            base.spinor_kohn_sham_noncollinear("lda", 1, &[v, v], None, &options).unwrap()
+            base.spinor_kohn_sham_noncollinear("lda", 1, &[v, v], None, &options)
+                .unwrap()
         };
         let z = along([0., 0., 0.5]);
         let x = along([0.5, 0., 0.]);
@@ -336,7 +479,10 @@ fn a_noncollinear_start_turns_the_collinear_state_without_changing_its_energy() 
                 state.iterations.len()
             );
             assert!(state.converged, "{label}");
-            assert!((state.electronic_energy - uks.electronic_energy).abs() < 1e-8, "{label}");
+            assert!(
+                (state.electronic_energy - uks.electronic_energy).abs() < 1e-8,
+                "{label}"
+            );
             assert_eq!(state.method, "ghf");
         }
         let [mx, my, mz] = spin_moment(&z.densities[0]);

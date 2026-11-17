@@ -67,8 +67,7 @@ fn hubbard_crystal_forces_and_stress_refusals_and_acceptance() {
         matches!(&err, Error::Unsupported(m) if m.contains("DFT+U")),
         "unexpected error: {err:?}"
     );
-    let err_stress =
-        stress_refuse(&data.crystal).expect_err("spinor DFT+U stress must be refused");
+    let err_stress = stress_refuse(&data.crystal).expect_err("spinor DFT+U stress must be refused");
     assert!(
         matches!(&err_stress, Error::Unsupported(m) if m.contains("DFT+U")),
         "unexpected error: {err_stress:?}"
@@ -121,7 +120,11 @@ fn hubbard_provider_and_stress_wiring() {
         &state,
         None,
     );
-    assert!(strain_result.is_ok(), "crystal_strain failed: {:?}", strain_result.err());
+    assert!(
+        strain_result.is_ok(),
+        "crystal_strain failed: {:?}",
+        strain_result.err()
+    );
 
     let c_strain = strain_result.unwrap();
     // Verify frozen.hubbard is populated!
@@ -144,7 +147,11 @@ fn hubbard_provider_and_stress_wiring() {
         &state,
         None,
     );
-    assert!(stress_res.is_ok(), "crystal_stress failed: {:?}", stress_res.err());
+    assert!(
+        stress_res.is_ok(),
+        "crystal_stress failed: {:?}",
+        stress_res.err()
+    );
     let stress = stress_res.unwrap();
     assert!(stress.volume > 0.0);
     assert!(stress.pressure().is_finite());

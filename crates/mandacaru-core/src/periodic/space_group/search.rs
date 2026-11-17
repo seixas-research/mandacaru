@@ -88,11 +88,7 @@ impl SparseGrid {
                             let dx = xb[cand][0] - y[0];
                             let dy = xb[cand][1] - y[1];
                             let dz = xb[cand][2] - y[2];
-                            let d = [
-                                dx - dx.round(),
-                                dy - dy.round(),
-                                dz - dz.round(),
-                            ];
+                            let d = [dx - dx.round(), dy - dy.round(), dz - dz.round()];
                             let vx = d[0] * b[(0, 0)] + d[1] * b[(1, 0)] + d[2] * b[(2, 0)];
                             let vy = d[0] * b[(0, 1)] + d[1] * b[(1, 1)] + d[2] * b[(2, 1)];
                             let vz = d[0] * b[(0, 2)] + d[1] * b[(1, 2)] + d[2] * b[(2, 2)];
@@ -199,9 +195,15 @@ pub fn find_cosets(
 
         // Image of anchor atom under rotation: x_anchor * W^T
         let img_anchor = [
-            x_anchor[0] * w[(0, 0)] as f64 + x_anchor[1] * w[(0, 1)] as f64 + x_anchor[2] * w[(0, 2)] as f64,
-            x_anchor[0] * w[(1, 0)] as f64 + x_anchor[1] * w[(1, 1)] as f64 + x_anchor[2] * w[(1, 2)] as f64,
-            x_anchor[0] * w[(2, 0)] as f64 + x_anchor[1] * w[(2, 1)] as f64 + x_anchor[2] * w[(2, 2)] as f64,
+            x_anchor[0] * w[(0, 0)] as f64
+                + x_anchor[1] * w[(0, 1)] as f64
+                + x_anchor[2] * w[(0, 2)] as f64,
+            x_anchor[0] * w[(1, 0)] as f64
+                + x_anchor[1] * w[(1, 1)] as f64
+                + x_anchor[2] * w[(1, 2)] as f64,
+            x_anchor[0] * w[(2, 0)] as f64
+                + x_anchor[1] * w[(2, 1)] as f64
+                + x_anchor[2] * w[(2, 2)] as f64,
         ];
 
         let mut found = None;
@@ -242,9 +244,18 @@ fn verify_operation(
     for a in 0..n {
         let xa = xb[a];
         let ya = [
-            xa[0] * w[(0, 0)] as f64 + xa[1] * w[(0, 1)] as f64 + xa[2] * w[(0, 2)] as f64 + t_raw[0],
-            xa[0] * w[(1, 0)] as f64 + xa[1] * w[(1, 1)] as f64 + xa[2] * w[(1, 2)] as f64 + t_raw[1],
-            xa[0] * w[(2, 0)] as f64 + xa[1] * w[(2, 1)] as f64 + xa[2] * w[(2, 2)] as f64 + t_raw[2],
+            xa[0] * w[(0, 0)] as f64
+                + xa[1] * w[(0, 1)] as f64
+                + xa[2] * w[(0, 2)] as f64
+                + t_raw[0],
+            xa[0] * w[(1, 0)] as f64
+                + xa[1] * w[(1, 1)] as f64
+                + xa[2] * w[(1, 2)] as f64
+                + t_raw[1],
+            xa[0] * w[(2, 0)] as f64
+                + xa[1] * w[(2, 1)] as f64
+                + xa[2] * w[(2, 2)] as f64
+                + t_raw[2],
         ];
 
         let target_idx = grid.find_match(&ya, labels[a], xb, labels, b, tol)?;

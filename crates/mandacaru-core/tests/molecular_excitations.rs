@@ -2024,3 +2024,582 @@ fn hubbard_roots_satisfy_the_dense_and_sum_rule_identities() {
         );
     }
 }
+
+/// V14: the roots are invariant under a rigid motion of the molecule, to the grid's egg-box
+/// level, measured first and then bounded. Library water (`lda-sr`, LDA, the 12 Bohr cell of
+/// [`library_water`], spacing 0.5 Bohr): the lowest five Tamm-Dancoff singlets and their
+/// transition moments at the base geometry against the molecule translated (by one grid step
+/// along x, and by half a step along x and y), turned by 90 degrees about z through the cell's
+/// center (the moments turn with it: `|mu_x|` and `|mu_y|` exchange), and turned by 30 degrees
+/// about z through its centroid (the roots only). The molecular grid is centered on the atoms'
+/// centroid, so a translation moves it with the molecule and the 90-degree turn maps it onto
+/// itself: those three are exact up to rounding, through every angular part (the d shells, the
+/// projectors, the one-center terms). The 30-degree turn is the egg-box level, at spacing 0.25
+/// Bohr (measured 2026-11-16, the lowest root's change: 2.45e-2, 2.97e-3 and 1.20e-4 Ha at 0.5,
+/// 0.35 and 0.25 Bohr; the ground state's 5.2e-3, 1.9e-3 and 9.3e-5 Ha).
+#[test]
+#[ignore = "slow: 11 s, five water SCFs and their roots, two at spacing 0.25 Bohr; run: cargo test --profile release-test -p mandacaru-core --test molecular_excitations -- --ignored the_roots_are_invariant"]
+fn the_roots_are_invariant_under_a_rigid_motion_to_the_grid_level() {
+    let ctx = Context::new(Some(2), 1 << 30).unwrap();
+    let base = [[6.11, 6.07, 6.12], [7.55, 6.04, 5.07], [4.57, 5.95, 5.03]];
+    let water = |positions: &[[f64; 3]; 3], spacing: f64| {
+        let mut arrays = mandacaru_core::paw::molecular::Arrays::new();
+        let oxygen = dataset::species(&ctx, &mut arrays, &dataset::read(&ctx, "lda-sr", "O"));
+        let hydrogen = dataset::species(&ctx, &mut arrays, &dataset::read(&ctx, "lda-sr", "H"));
+        let integrals = molecule(
+            &ctx,
+            &[8, 1, 1],
+            positions,
+            12.,
+            spacing,
+            (vec![oxygen, hydrogen], vec![0, 1, 1], arrays),
+            "raw",
+            &analytic_shells(&[0, 1, 2]),
+        );
+        let state = integrals
+            .kohn_sham(
+                "lda",
+                [4, 4],
+                false,
+                &ScfOptions {
+                    tolerance: 1e-11,
+                    ..options()
+                },
+            )
+            .unwrap();
+        assert!(state.converged);
+        excitations(
+            &integrals,
+            &state,
+            &request(5, Approximation::TammDancoff, Spin::Singlet),
+        )
+        .unwrap()
+    };
+    let moved = |shift: [f64; 3]| base.map(|r| [r[0] + shift[0], r[1] + shift[1], r[2] + shift[2]]);
+    let turned = base.map(|r| [12. - r[1], r[0], r[2]]);
+    let centroid: [f64; 3] = std::array::from_fn(|k| base.iter().map(|r| r[k]).sum::<f64>() / 3.);
+    let (c, s) = (30f64.to_radians().cos(), 30f64.to_radians().sin());
+    let oblique = base.map(|r| {
+        let (x, y) = (r[0] - centroid[0], r[1] - centroid[1]);
+        [
+            centroid[0] + c * x - s * y,
+            centroid[1] + s * x + c * y,
+            r[2],
+        ]
+    });
+    let reference = water(&base, 0.5);
+    let fine = water(&base, 0.25);
+    let mut worst = vec![];
+    for (label, positions, swap) in [
+        ("one grid step along x", moved([0.5, 0., 0.]), false),
+        ("half a step along x and y", moved([0.25, 0.25, 0.]), false),
+        ("90 degrees about z", turned, true),
+        ("30 degrees about z", oblique, false),
+    ] {
+        let oblique_case = label.starts_with("30");
+        let other = water(&positions, if oblique_case { 0.25 } else { 0.5 });
+        let reference = if oblique_case { &fine } else { &reference };
+        let roots = reference
+            .energies
+            .iter()
+            .zip(&other.energies)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0f64, f64::max);
+        let moments = reference
+            .transition_dipoles
+            .iter()
+            .zip(&other.transition_dipoles)
+            .map(|(a, b)| {
+                if label.starts_with("30") {
+                    let norm = |v: &[f64; 3]| v.iter().map(|x| x * x).sum::<f64>().sqrt();
+                    return (norm(a) - norm(b)).abs();
+                }
+                let b = if swap { [b[1], b[0], b[2]] } else { *b };
+                (0..3)
+                    .map(|k| (a[k].abs() - b[k].abs()).abs())
+                    .fold(0f64, f64::max)
+            })
+            .fold(0f64, f64::max);
+        println!(
+            "V14 water, {label}: roots {:.10?} Ha, largest change {roots:.2e} Ha, of |mu| {moments:.2e} Bohr",
+            other.energies
+        );
+        worst.push((label, roots, moments));
+    }
+    println!(
+        "V14 water: base roots {:.10?} Ha (at 0.25 Bohr {:.10?})",
+        reference.energies, fine.energies
+    );
+    for (k, (label, roots, moments)) in worst.iter().enumerate() {
+        if k < 3 {
+            assert!(
+                *roots < 1e-11 && *moments < 1e-10,
+                "{label}: {roots:e} Ha, {moments:e} Bohr"
+            );
+        } else {
+            assert!(
+                *roots < 5e-4 && *moments < 1e-2,
+                "{label}: {roots:e} Ha, {moments:e} Bohr"
+            );
+        }
+    }
+}
+
+/// The transition density as a field (`Excitations::transition_field`, T1): sampled on the
+/// integration grid, its moment plus the PAW one-center dipole is the root's transition dipole,
+/// its integral plus the one-center charge vanishes (the orbitals are orthogonal in the PAW
+/// metric), and `2/3 omega |mu|^2` of that dipole is the root's oscillator strength. Library water
+/// (`lda-sr`, a spin-adapted singlet: `sqrt(2) T`), NH2 unrestricted (`T_alpha + T_beta`) and H2 in
+/// HAO (all-electron: the field alone, no one-center part).
+#[test]
+fn the_transition_density_field_carries_the_transition_dipole_and_the_strength() {
+    let ctx = Context::new(Some(2), 1 << 30).unwrap();
+    let check =
+        |label: &str, integrals: &MolecularIntegrals, state: &MeanField, request: &Request| {
+            let found = excitations(integrals, state, request).unwrap();
+            let mut worst = [0f64; 3];
+            for root in 0..found.energies.len() {
+                let field = found
+                    .transition_field(integrals, root, None, &integrals.grid)
+                    .unwrap();
+                let mu = found.transition_dipoles[root];
+                let dipole: [f64; 3] =
+                    std::array::from_fn(|i| field.moment[i] + field.augmentation_dipole[i]);
+                let size = mu.iter().map(|x| x * x).sum::<f64>().sqrt();
+                let miss = (0..3).map(|i| (dipole[i] - mu[i]).abs()).fold(0., f64::max);
+                let charge = (field.integral + field.augmentation_charge).abs();
+                let strength =
+                    2. / 3. * found.energies[root] * dipole.iter().map(|x| x * x).sum::<f64>();
+                let f = found.oscillator_strengths[root];
+                println!(
+                "{label} root {root}: omega {:.6} Ha, |mu| {size:.6e}, dipole miss {miss:.3e}, \
+                 field charge {:.3e} + one-center {:.3e} = {charge:.3e}, one-center dipole \
+                 {:.3e}, f {f:.6e} against {strength:.6e}, norm {:.4e}",
+                found.energies[root],
+                field.integral,
+                field.augmentation_charge,
+                field.augmentation_dipole.iter().map(|x| x.abs()).fold(0., f64::max),
+                field.norm
+            );
+                worst[0] = worst[0].max(miss);
+                worst[1] = worst[1].max(charge);
+                worst[2] = worst[2].max((strength - f).abs() / f.max(1e-6));
+            }
+            println!(
+                "{label}: worst dipole miss {:.3e} e Bohr, charge {:.3e}, strength {:.3e}",
+                worst[0], worst[1], worst[2]
+            );
+            assert!(
+                worst[0] < 1e-10 && worst[1] < 1e-10 && worst[2] < 1e-9,
+                "{label}: {worst:?}"
+            );
+            found
+        };
+    let water = library_water(&ctx, "lda-sr");
+    let state = water.kohn_sham("lda", [4, 4], false, &options()).unwrap();
+    assert!(state.converged);
+    let singlet = check(
+        "water singlet",
+        &water,
+        &state,
+        &request(4, Approximation::Casida, Spin::Singlet),
+    );
+    assert!(singlet.oscillator_strengths.iter().any(|f| *f > 1e-3));
+    let triplet = excitations(
+        &water,
+        &state,
+        &request(2, Approximation::TammDancoff, Spin::Triplet),
+    )
+    .unwrap();
+    assert!(triplet
+        .transition_field(&water, 0, None, &water.grid)
+        .is_err());
+    let spatial = triplet
+        .transition_field(&water, 0, Some(0), &water.grid)
+        .unwrap();
+    assert!((spatial.integral + spatial.augmentation_charge).abs() < 1e-10);
+    let amidogen = library_amidogen(&ctx, "lda-sr");
+    let open = unrestricted_reference(&amidogen, "lda", [4, 3]);
+    check(
+        "NH2 unrestricted",
+        &amidogen,
+        &open,
+        &unrestricted_request(3, Approximation::TammDancoff),
+    );
+    let hydrogen = hydrogen(&ctx);
+    let state = reference(&hydrogen, "lda");
+    let found = check(
+        "H2 HAO",
+        &hydrogen,
+        &state,
+        &request(1, Approximation::TammDancoff, Spin::Singlet),
+    );
+    let field = found
+        .transition_field(&hydrogen, 0, None, &hydrogen.grid)
+        .unwrap();
+    assert!(field.augmentation_charge == 0. && field.augmentation_dipole == [0.; 3]);
+}
+
+/// The one-center exchange-correlation sphere along `(up, down)` by brute force on the radial
+/// knots times a Gauss-Legendre angular rule, with the moved spin densities and their gradients
+/// from the waves' slopes and the harmonics' Cartesian gradients (no multipole reduction):
+/// `(pointwise, difference)`, the second variation `dv^T H dv + sum e_st d2 sigma_st` of the
+/// point kernel at every node, and the second difference of the energy `E[n^1] - E[n~^1]` in the
+/// step (Richardson of `h` and `h / 2`).
+fn brute_force_second_change(
+    sphere: &mandacaru_core::paw::molecular::XcSphere,
+    functional: &str,
+    up: &DMatrix<f64>,
+    down: &DMatrix<f64>,
+) -> (f64, f64) {
+    use mandacaru_core::math::{angular, radial};
+    let rule = mandacaru_core::paw::pair_tables::angular_rule(16, 32).unwrap();
+    let p = sphere.harmonics.len();
+    // At each node: the reference spin densities and gradients, and the changes per unit step.
+    let node = |side: usize,
+                k: usize,
+                u: &[f64; 3]|
+     -> ([f64; 2], [[f64; 3]; 2], [f64; 2], [[f64; 3]; 2]) {
+        let (waves, slopes) = (&sphere.waves[side], &sphere.wave_slopes[side]);
+        let r = sphere.r[k];
+        let x = u.map(|c| c * r);
+        let y: Vec<f64> = sphere
+            .harmonics
+            .iter()
+            .map(|&(l, m)| angular::cartesian(l, m, *u))
+            .collect();
+        let dy: Vec<[f64; 3]> = sphere
+            .harmonics
+            .iter()
+            .map(|&(l, m)| angular::cartesian_gradient(l, m, x))
+            .collect();
+        let rho = sphere.density[side][k];
+        let n0 = [0.5 * rho; 2];
+        let g0 = [u.map(|c| 0.5 * sphere.slope[side][k] * c); 2];
+        let mut dn = [0.; 2];
+        let mut dg = [[0.; 3]; 2];
+        for (s, d) in [up, down].into_iter().enumerate() {
+            for a in 0..p {
+                for b in 0..p {
+                    let c = d[(a, b)];
+                    if c == 0. {
+                        continue;
+                    }
+                    let pair = waves[a][k] * waves[b][k];
+                    let radial = slopes[a][k] * waves[b][k] + waves[a][k] * slopes[b][k];
+                    dn[s] += c * pair * y[a] * y[b];
+                    for i in 0..3 {
+                        dg[s][i] += c
+                            * (radial * y[a] * y[b] * u[i]
+                                + pair * (y[a] * dy[b][i] + y[b] * dy[a][i]));
+                    }
+                }
+            }
+        }
+        (n0, g0, dn, dg)
+    };
+    let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    let mut pointwise = 0.;
+    for (side, sign) in [(0, 1.), (1, -1.)] {
+        let shell: Vec<f64> = (0..sphere.r.len())
+            .map(|k| {
+                if sphere.density[side][k] < 1e-10 {
+                    return 0.;
+                }
+                let r = sphere.r[k];
+                r * r
+                    * rule
+                        .iter()
+                        .map(|(u, w)| {
+                            let (n0, g0, dn, dg) = node(side, k, u);
+                            let (_, first, second) = mandacaru_core::models::xc::point_hessian(
+                                functional,
+                                [
+                                    n0[0],
+                                    n0[1],
+                                    dot(g0[0], g0[0]),
+                                    dot(g0[0], g0[1]),
+                                    dot(g0[1], g0[1]),
+                                ],
+                                sphere.relativistic,
+                            )
+                            .unwrap();
+                            let dv = [
+                                dn[0],
+                                dn[1],
+                                2. * dot(g0[0], dg[0]),
+                                dot(g0[0], dg[1]) + dot(dg[0], g0[1]),
+                                2. * dot(g0[1], dg[1]),
+                            ];
+                            let quadratic: f64 = (0..5)
+                                .map(|i| (0..5).map(|j| dv[i] * second[i][j] * dv[j]).sum::<f64>())
+                                .sum();
+                            let curvature = 2.
+                                * (first[2] * dot(dg[0], dg[0])
+                                    + first[3] * dot(dg[0], dg[1])
+                                    + first[4] * dot(dg[1], dg[1]));
+                            w * (quadratic + curvature)
+                        })
+                        .sum::<f64>()
+            })
+            .collect();
+        pointwise += sign * radial::integrate(&sphere.r, &shell).unwrap();
+    }
+    let energy = |step: f64| -> f64 {
+        let mut total = 0.;
+        for (side, sign) in [(0, 1.), (1, -1.)] {
+            let (waves, slopes) = (&sphere.waves[side], &sphere.wave_slopes[side]);
+            let shell: Vec<f64> = (0..sphere.r.len())
+                .map(|k| {
+                    let (r, rho) = (sphere.r[k], sphere.density[side][k]);
+                    if rho < 1e-10 {
+                        return 0.;
+                    }
+                    let shell: f64 = rule
+                        .iter()
+                        .map(|(u, w)| {
+                            let x = u.map(|c| c * r);
+                            let y: Vec<f64> = sphere
+                                .harmonics
+                                .iter()
+                                .map(|&(l, m)| angular::cartesian(l, m, *u))
+                                .collect();
+                            let dy: Vec<[f64; 3]> = sphere
+                                .harmonics
+                                .iter()
+                                .map(|&(l, m)| angular::cartesian_gradient(l, m, x))
+                                .collect();
+                            let mut n = [0.5 * rho; 2];
+                            let mut g = [u.map(|c| 0.5 * sphere.slope[side][k] * c); 2];
+                            for (s, d) in [up, down].into_iter().enumerate() {
+                                for a in 0..p {
+                                    for b in 0..p {
+                                        let c = step * d[(a, b)];
+                                        if c == 0. {
+                                            continue;
+                                        }
+                                        let pair = waves[a][k] * waves[b][k];
+                                        let radial =
+                                            slopes[a][k] * waves[b][k] + waves[a][k] * slopes[b][k];
+                                        n[s] += c * pair * y[a] * y[b];
+                                        for i in 0..3 {
+                                            g[s][i] += c
+                                                * (radial * y[a] * y[b] * u[i]
+                                                    + pair * (y[a] * dy[b][i] + y[b] * dy[a][i]));
+                                        }
+                                    }
+                                }
+                            }
+                            let dot =
+                                |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+                            let (e, _) = mandacaru_core::models::xc::point_partials(
+                                functional,
+                                [
+                                    n[0],
+                                    n[1],
+                                    dot(g[0], g[0]),
+                                    dot(g[0], g[1]),
+                                    dot(g[1], g[1]),
+                                    0.,
+                                    0.,
+                                ],
+                                sphere.relativistic,
+                            )
+                            .unwrap();
+                            w * e
+                        })
+                        .sum();
+                    r * r * shell
+                })
+                .collect();
+            total += sign * radial::integrate(&sphere.r, &shell).unwrap();
+        }
+        total
+    };
+    let center = energy(0.);
+    let second = |h: f64| (energy(h) - 2. * center + energy(-h)) / (h * h);
+    let h = 8e-3;
+    (pointwise, (4. * second(h / 2.) - second(h)) / 3.)
+}
+
+/// The one-center exchange-correlation part of the diagnostic (`Excitations::one_center_xc`,
+/// T1, plan section 3): on library water the multipole-reduced second change of each sphere
+/// (`XcSpheres::second_change`) equals the brute-force angular quadrature of the energy's second
+/// difference, for a singlet's, a triplet's and an unequal pair of spin changes, with LDA and
+/// PBE; and for LDA the first change at the reference is the dataset's linearized one-center
+/// potential (`Channel::xc`): the reference densities carry the core and the relativistic
+/// factor. The shifts are printed beside the one-center Hartree part.
+#[test]
+#[ignore = "slow: 28 s (measured 2026-11-16, the brute-force angular quadrature); run: cargo test --profile release-test -p mandacaru-core --test molecular_excitations -- --ignored the_one_center_exchange_correlation_shift"]
+fn the_one_center_exchange_correlation_shift_is_the_second_change_of_the_sphere_energy() {
+    use mandacaru_core::math::radial::integrate;
+    let ctx = Context::new(Some(2), 1 << 30).unwrap();
+    for (set, functional) in [("lda-sr", "lda"), ("pbe-sr", "pbe")] {
+        let water = library_water(&ctx, set);
+        let state = water
+            .kohn_sham(functional, [4, 4], false, &options())
+            .unwrap();
+        assert!(state.converged);
+        let setup = water.paw_setup.as_ref().unwrap();
+        let spheres = setup.xc_spheres(functional).unwrap();
+        let projections = water
+            .corrections
+            .as_ref()
+            .unwrap()
+            .projections
+            .as_ref()
+            .unwrap();
+        if functional == "lda" {
+            for atom in 0..2 {
+                let sphere = spheres.sphere(atom).unwrap();
+                let p = sphere.harmonics.len();
+                let mut worst = 0f64;
+                for a in 0..p {
+                    for b in 0..p {
+                        if sphere.harmonics[a] != sphere.harmonics[b] {
+                            continue;
+                        }
+                        let mut value = 0.;
+                        for (side, sign) in [(0, 1.), (1, -1.)] {
+                            let integrand: Vec<f64> = (0..sphere.r.len())
+                                .map(|k| {
+                                    let rho = sphere.density[side][k];
+                                    if rho < 1e-10 {
+                                        return 0.;
+                                    }
+                                    let (_, g) = mandacaru_core::models::xc::point_partials(
+                                        "lda",
+                                        [0.5 * rho, 0.5 * rho, 0., 0., 0., 0., 0.],
+                                        sphere.relativistic,
+                                    )
+                                    .unwrap();
+                                    g[0] * sphere.waves[side][a][k]
+                                        * sphere.waves[side][b][k]
+                                        * sphere.r[k]
+                                        * sphere.r[k]
+                                })
+                                .collect();
+                            value += sign * integrate(&sphere.r, &integrand).unwrap();
+                        }
+                        worst = worst.max((value - sphere.linearized[(a, b)]).abs());
+                    }
+                }
+                println!(
+                    "{set} atom {atom}: first change at the reference against Channel::xc, worst {worst:.3e} \
+                     (largest {:.3e})",
+                    sphere.linearized.amax()
+                );
+                assert!(worst < 1e-6 * sphere.linearized.amax(), "{worst:e}");
+            }
+        }
+        let singlet = excitations(
+            &water,
+            &state,
+            &request(3, Approximation::TammDancoff, Spin::Singlet),
+        )
+        .unwrap();
+        let t = singlet.transition_density(0, 0).unwrap();
+        let half = std::f64::consts::FRAC_1_SQRT_2;
+        let other = singlet.transition_density(1, 0).unwrap();
+        for atom in 0..2 {
+            let sphere = spheres.sphere(atom).unwrap();
+            let c = &projections[atom];
+            let d = c.transpose() * &t * c * half;
+            let e = c.transpose() * &other * c;
+            for (label, up, down) in [
+                ("singlet", d.clone(), d.clone()),
+                ("triplet", d.clone(), -&d),
+                ("unequal", d.clone(), e.clone()),
+            ] {
+                let reduced = spheres.second_change(atom, &up, &down).unwrap();
+                let (brute, difference) = brute_force_second_change(sphere, functional, &up, &down);
+                println!(
+                    "{set} atom {atom} {label}: reduced {reduced:.10e}, pointwise {brute:.10e} \
+                     (relative {:.3e}), energy difference {difference:.10e} (relative {:.3e})",
+                    (reduced - brute) / brute.abs(),
+                    (reduced - difference) / brute.abs()
+                );
+                assert!(
+                    (reduced - brute).abs() < 1e-10 * brute.abs(),
+                    "{set} {atom} {label}"
+                );
+                assert!(
+                    (reduced - difference).abs() < 1e-4 * brute.abs(),
+                    "{set} {atom} {label}"
+                );
+            }
+        }
+        let triplet = excitations(
+            &water,
+            &state,
+            &request(3, Approximation::TammDancoff, Spin::Triplet),
+        )
+        .unwrap();
+        for (spin, found) in [("singlet", &singlet), ("triplet", &triplet)] {
+            println!(
+                "{set} {spin}: omega {:?} Ha, one-center Hartree {:?}, exchange-correlation {:?} Ha",
+                found.energies,
+                found.one_center_hartree,
+                found.one_center_xc
+            );
+            assert!(found
+                .one_center_xc
+                .as_ref()
+                .unwrap()
+                .iter()
+                .all(|s| s.is_finite() && *s != 0.));
+        }
+    }
+    // Off PAW-LCAO Kohn-Sham there is none.
+    let hydrogen = hydrogen(&ctx);
+    let state = reference(&hydrogen, "lda");
+    assert!(excitations(
+        &hydrogen,
+        &state,
+        &request(1, Approximation::TammDancoff, Spin::Singlet)
+    )
+    .unwrap()
+    .one_center_xc
+    .is_none());
+}
+
+/// V13, the one-electron limit (T4): with one electron CIS is full configuration interaction and
+/// TDHF adds nothing (`J - K` of the electron with itself cancels), so on H2+ run unrestricted
+/// Hartree-Fock both give every root as an eigenvalue of the bare one-electron operator the SCF
+/// diagonalizes (`MolecularIntegrals::one`, orthonormal frame) less its lowest. Synthetic PAW H2+
+/// and H2+ in HAO.
+#[test]
+fn one_electron_cis_and_tdhf_roots_are_the_one_electron_spectrum() {
+    let ctx = Context::new(Some(1), 256 << 20).unwrap();
+    for (label, integrals) in [
+        ("PAW", paw_hydrogen(&ctx, &[0, 1])),
+        ("HAO", hydrogen(&ctx)),
+    ] {
+        let m = integrals.m();
+        let one = DMatrix::from_row_slice(m, m, integrals.one.as_slice());
+        let (levels, _) = real_eigen((&one + one.transpose()) * 0.5).unwrap();
+        let state = unrestricted_reference(&integrals, "uhf", [1, 0]);
+        for approximation in [Approximation::TammDancoff, Approximation::Casida] {
+            let found = excitations(
+                &integrals,
+                &state,
+                &unrestricted_request(m - 1, approximation),
+            )
+            .unwrap();
+            let worst = found
+                .energies
+                .iter()
+                .zip(&levels[1..])
+                .map(|(w, e)| (w - (e - levels[0])).abs())
+                .fold(0f64, f64::max);
+            println!(
+                "V13 {label} H2+ {}: {} roots, lowest {:.10} Ha against {:.10}, worst miss {worst:.2e}",
+                approximation.name(),
+                found.energies.len(),
+                found.energies[0],
+                levels[1] - levels[0]
+            );
+            assert!(worst < 1e-8, "{label} {approximation:?}: {worst:e}");
+        }
+    }
+}

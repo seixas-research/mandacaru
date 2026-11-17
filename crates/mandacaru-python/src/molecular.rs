@@ -2,7 +2,7 @@
 use super::excitations::{
     excited_gradient, refuse_excited_state, snapshot_excited, Excited, PyExcitedStateTarget,
 };
-use super::quantum::{PyOperator, PyProblem};
+use super::quantum::{PyOperator, PyQuantumProblem};
 use super::{array, copy, error, Array, PySpatialGrid};
 use mandacaru_core::{
     molecular::{transform::Model, MeanField, MolecularIntegrals, ScfOptions},
@@ -274,7 +274,9 @@ impl PyIntegrals {
         let target = excited_state.as_ref().map(|t| t.get());
         let (inner, excited) = py
             .detach(|| -> mandacaru_core::Result<_> {
-                let inner = self.inner.spinor_kohn_sham(functional, electrons, &options)?;
+                let inner = self
+                    .inner
+                    .spinor_kohn_sham(functional, electrons, &options)?;
                 self.excited(inner, target)
             })
             .map_err(error)?;
@@ -340,6 +342,103 @@ pub struct PyMeanField {
     /// snapshot's and `gradient()`'s; the excitations of `get_excitations` stay the reference's.
     pub(crate) excited: Option<Arc<Excited>>,
 }
+fn quantum_gradient_dict<'py>(
+    py: Python<'py>,
+    response: mandacaru_core::molecular::response::Gradient,
+) -> PyResult<Bound<'py, PyDict>> {
+    use mandacaru_core::molecular::response::Stationarity;
+    let out = PyDict::new(py);
+    // One row per atom of the result: a PAW-LCAO supercell's force is per primitive atom.
+    let shape = [response.gradient.as_slice().len() / 3, 3];
+    out.set_item(
+        "gradient",
+        array(py, &shape, response.gradient.as_slice().to_vec())?,
+    )?;
+    out.set_item("energy_ha", response.energy)?;
+    out.set_item("directions", response.directions)?;
+    out.set_item("scheme", response.scheme)?;
+    out.set_item("orbital_response", "CPHF-and-natural-orbital-Lagrangian")?;
+    out.set_item("reference_stationarity", response.reference_stationarity)?;
+    out.set_item("cphf_residual", response.cphf_residual)?;
+    out.set_item("coulomb_forms", response.forms)?;
+    match response.stationarity {
+        Stationarity::Assumed => {
+            out.set_item("stationarity", "assumed")?;
+        }
+        Stationarity::Stationary { gradient_norm } => {
+            out.set_item("stationarity", "stationary")?;
+            out.set_item("parameter_gradient_norm", gradient_norm)?;
+        }
+        Stationarity::Lagrangian {
+            gradient_norm,
+            z_norm,
+            solve,
+        } => {
+            out.set_item("stationarity", "lagrangian")?;
+            out.set_item("parameter_gradient_norm", gradient_norm)?;
+            out.set_item("z_vector_norm", z_norm)?;
+            out.set_item("hessian_parameters", solve.parameters)?;
+            out.set_item("z_vector_gradient_evaluations", solve.gradient_evaluations)?;
+            out.set_item("hessian_exact", solve.exact)?;
+            out.set_item("hessian_hamiltonian_actions", solve.hamiltonian_actions)?;
+            out.set_item("hessian_noise", solve.noise)?;
+            out.set_item("hessian_cutoff", solve.cutoff)?;
+            out.set_item("hessian_lowest_curvature", solve.lowest)?;
+            out.set_item("hessian_highest_curvature", solve.highest)?;
+            out.set_item("hessian_smallest_kept_curvature", solve.smallest_kept)?;
+            out.set_item("z_vector_dropped", solve.dropped)?;
+            out.set_item("z_vector_dropped_gradient_norm", solve.dropped_gradient)?;
+            out.set_item("z_vector_neglected_scale", solve.neglected_scale)?;
+        }
+    }
+    Ok(out)
+}
+
+#[allow(clippy::type_complexity)]
+fn prepare_variational_inputs<'py>(
+    integrals: &mandacaru_core::molecular::MolecularIntegrals,
+    problem: &PyQuantumProblem,
+    model: &PyModel,
+    state: &PyReadonlyArray1<'py, C64>,
+    indices: &Option<Vec<usize>>,
+    parameters: &Option<PyReadonlyArray1<'py, f64>>,
+    gradient_floor: Option<f64>,
+) -> PyResult<(
+    Vec<C64>,
+    mandacaru_core::Reservation,
+    Option<(Vec<usize>, Vec<f64>, mandacaru_core::Reservation)>,
+    mandacaru_core::quantum::lagrangian::Options,
+)> {
+    model
+        .inner()
+        .require_dense("an analytic variational force")
+        .map_err(error)?;
+    if problem.inner.precision != mandacaru_core::math::storage::Precision::Float64 {
+        return Err(PyValueError::new_err(
+            "quantum forces need a complex128 state: the parameter Hessian of the Lagrangian \
+             correction is solved in float64; use precision='float64'",
+        ));
+    }
+    let (values, mem) = copy(&integrals.context, state)?;
+    let ansatz_inputs = match (indices, parameters) {
+        (Some(indices), Some(parameters)) => {
+            let (copied, memory) = copy(&integrals.context, parameters)?;
+            Some((indices.clone(), copied, memory))
+        }
+        (None, None) => None,
+        _ => {
+            return Err(PyValueError::new_err(
+                "the Lagrangian force correction needs both the operator indices and the parameters of the optimized ansatz",
+            ))
+        }
+    };
+    let mut lagrangian = mandacaru_core::quantum::lagrangian::Options::default();
+    if let Some(floor) = gradient_floor {
+        lagrangian.floor = floor;
+    }
+    Ok((values, mem, ansatz_inputs, lagrangian))
+}
+
 #[pymethods]
 impl PyMeanField {
     #[pyo3(signature=(model,problem,indices,parameters,hessian=None))]
@@ -347,7 +446,7 @@ impl PyMeanField {
         &self,
         py: Python<'_>,
         model: &PyModel,
-        problem: &PyProblem,
+        problem: &PyQuantumProblem,
         indices: Vec<usize>,
         parameters: Vec<f64>,
         hessian: Option<PyReadonlyArray2<'_, f64>>,
@@ -380,7 +479,7 @@ impl PyMeanField {
         py: Python<'py>,
         previous: &PyHandover,
         model: &PyModel,
-        problem: &PyProblem,
+        problem: &PyQuantumProblem,
         threshold: f64,
     ) -> PyResult<Bound<'py, PyDict>> {
         use mandacaru_core::quantum::transfer::{self, Frame};
@@ -414,12 +513,13 @@ impl PyMeanField {
         out.set_item("reason", seed.reason)?;
         Ok(out)
     }
+
     #[pyo3(signature=(problem,model,state,*,internal=false,indices=None,parameters=None,product_form=false,gradient_floor=None))]
     #[allow(clippy::too_many_arguments)]
     fn quantum_gradient<'py>(
         &self,
         py: Python<'py>,
-        problem: &PyProblem,
+        problem: &PyQuantumProblem,
         model: &PyModel,
         state: PyReadonlyArray1<'py, C64>,
         internal: bool,
@@ -428,42 +528,22 @@ impl PyMeanField {
         product_form: bool,
         gradient_floor: Option<f64>,
     ) -> PyResult<Bound<'py, PyDict>> {
-        use mandacaru_core::molecular::response::Stationarity;
-        model
-            .inner()
-            .require_dense("an analytic variational force")
-            .map_err(error)?;
-        if problem.inner.precision != mandacaru_core::math::storage::Precision::Float64 {
-            return Err(PyValueError::new_err(
-                "quantum forces need a complex128 state: the parameter Hessian of the Lagrangian \
-                 correction is solved in float64; use precision='float64'",
-            ));
-        }
-        let (values, _memory) = copy(&self.integrals.context, &state)?;
-        let (theta, _theta_memory) = match &parameters {
-            Some(parameters) => {
-                let (copied, memory) = copy(&self.integrals.context, parameters)?;
-                (Some(copied), Some(memory))
-            }
-            None => (None, None),
-        };
-        let ansatz = match (&indices, &theta) {
-            (Some(indices), Some(theta)) => Some(mandacaru_core::quantum::lagrangian::Ansatz {
-                indices,
-                parameters: theta,
+        let (values, _memory, ansatz_inputs, lagrangian) = prepare_variational_inputs(
+            &self.integrals,
+            problem,
+            model,
+            &state,
+            &indices,
+            &parameters,
+            gradient_floor,
+        )?;
+        let ansatz = ansatz_inputs.as_ref().map(|(idx, theta, _)| {
+            mandacaru_core::quantum::lagrangian::Ansatz {
+                indices: idx,
+                parameters: theta.as_slice(),
                 product_form,
-            }),
-            (None, None) => None,
-            _ => {
-                return Err(PyValueError::new_err(
-                    "the Lagrangian force correction needs both the operator indices and the parameters of the optimized ansatz",
-                ))
             }
-        };
-        let mut lagrangian = mandacaru_core::quantum::lagrangian::Options::default();
-        if let Some(floor) = gradient_floor {
-            lagrangian.floor = floor;
-        }
+        });
         let response = py
             .detach(|| {
                 mandacaru_core::molecular::response::gradient(
@@ -471,7 +551,7 @@ impl PyMeanField {
                     &self.inner,
                     model.inner(),
                     &problem.inner,
-                    &values,
+                    values.as_slice(),
                     &mandacaru_core::molecular::response::Options {
                         ansatz,
                         lagrangian,
@@ -480,48 +560,58 @@ impl PyMeanField {
                 )
             })
             .map_err(error)?;
-        let out = PyDict::new(py);
-        // One row per atom of the result: a PAW-LCAO supercell's force is per primitive atom.
-        let shape = [response.gradient.as_slice().len() / 3, 3];
-        out.set_item("gradient", array(py, &shape, response.gradient.as_slice().to_vec())?)?;
-        out.set_item("energy_ha", response.energy)?;
-        out.set_item("directions", response.directions)?;
-        out.set_item("scheme", response.scheme)?;
-        out.set_item("orbital_response", "CPHF-and-natural-orbital-Lagrangian")?;
-        out.set_item("reference_stationarity", response.reference_stationarity)?;
-        out.set_item("cphf_residual", response.cphf_residual)?;
-        out.set_item("coulomb_forms", response.forms)?;
-        match response.stationarity {
-            Stationarity::Assumed => {
-                out.set_item("stationarity", "assumed")?;
+        quantum_gradient_dict(py, response)
+    }
+
+    #[pyo3(signature=(problem,model,weights,eigenstate,*,internal=false,indices=None,parameters=None,product_form=false,gradient_floor=None))]
+    #[allow(clippy::too_many_arguments)]
+    fn quantum_subspace_gradient<'py>(
+        &self,
+        py: Python<'py>,
+        problem: &PyQuantumProblem,
+        model: &PyModel,
+        weights: Vec<f64>,
+        eigenstate: PyReadonlyArray1<'py, C64>,
+        internal: bool,
+        indices: Option<Vec<usize>>,
+        parameters: Option<PyReadonlyArray1<'py, f64>>,
+        product_form: bool,
+        gradient_floor: Option<f64>,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let (values, _memory, ansatz_inputs, lagrangian) = prepare_variational_inputs(
+            &self.integrals,
+            problem,
+            model,
+            &eigenstate,
+            &indices,
+            &parameters,
+            gradient_floor,
+        )?;
+        let ansatz = ansatz_inputs.as_ref().map(|(idx, theta, _)| {
+            mandacaru_core::quantum::lagrangian::Ansatz {
+                indices: idx,
+                parameters: theta.as_slice(),
+                product_form,
             }
-            Stationarity::Stationary { gradient_norm } => {
-                out.set_item("stationarity", "stationary")?;
-                out.set_item("parameter_gradient_norm", gradient_norm)?;
-            }
-            Stationarity::Lagrangian {
-                gradient_norm,
-                z_norm,
-                solve,
-            } => {
-                out.set_item("stationarity", "lagrangian")?;
-                out.set_item("parameter_gradient_norm", gradient_norm)?;
-                out.set_item("z_vector_norm", z_norm)?;
-                out.set_item("hessian_parameters", solve.parameters)?;
-                out.set_item("z_vector_gradient_evaluations", solve.gradient_evaluations)?;
-                out.set_item("hessian_exact", solve.exact)?;
-                out.set_item("hessian_hamiltonian_actions", solve.hamiltonian_actions)?;
-                out.set_item("hessian_noise", solve.noise)?;
-                out.set_item("hessian_cutoff", solve.cutoff)?;
-                out.set_item("hessian_lowest_curvature", solve.lowest)?;
-                out.set_item("hessian_highest_curvature", solve.highest)?;
-                out.set_item("hessian_smallest_kept_curvature", solve.smallest_kept)?;
-                out.set_item("z_vector_dropped", solve.dropped)?;
-                out.set_item("z_vector_dropped_gradient_norm", solve.dropped_gradient)?;
-                out.set_item("z_vector_neglected_scale", solve.neglected_scale)?;
-            }
-        }
-        Ok(out)
+        });
+        let response = py
+            .detach(|| {
+                mandacaru_core::molecular::response::subspace_gradient(
+                    &self.integrals,
+                    &self.inner,
+                    model.inner(),
+                    &problem.inner,
+                    values.as_slice(),
+                    &mandacaru_core::molecular::response::SubspaceOptions {
+                        weights: &weights,
+                        ansatz,
+                        lagrangian,
+                        internal,
+                    },
+                )
+            })
+            .map_err(error)?;
+        quantum_gradient_dict(py, response)
     }
     /// The analytic force of density matrices measured on a device (flattened `m^2` and `m^4`,
     /// with their standard errors) and of the shifted circuits `(parameter, coefficient, one,
@@ -550,14 +640,29 @@ impl PyMeanField {
         )>,
         internal: bool,
     ) -> PyResult<Bound<'py, PyDict>> {
-        use mandacaru_core::molecular::response::{device_gradient, DeviceCorrection, MeasuredDensities};
+        use mandacaru_core::molecular::response::{
+            device_gradient, DeviceCorrection, MeasuredDensities,
+        };
         let ctx = &self.integrals.context;
         let take = |a: &PyReadonlyArray1<'py, f64>| copy(ctx, a);
-        let take_optional = |a: &Option<PyReadonlyArray1<'py, f64>>| a.as_ref().map(|a| copy(ctx, a)).transpose();
-        let base = (take(&one)?, take(&two)?, take_optional(&one_error)?, take_optional(&two_error)?);
+        let take_optional =
+            |a: &Option<PyReadonlyArray1<'py, f64>>| a.as_ref().map(|a| copy(ctx, a)).transpose();
+        let base = (
+            take(&one)?,
+            take(&two)?,
+            take_optional(&one_error)?,
+            take_optional(&two_error)?,
+        );
         let mut copies = Vec::with_capacity(shifted.len());
         for (parameter, coefficient, one, two, one_error, two_error) in &shifted {
-            copies.push((*parameter, *coefficient, take(one)?, take(two)?, take_optional(one_error)?, take_optional(two_error)?));
+            copies.push((
+                *parameter,
+                *coefficient,
+                take(one)?,
+                take(two)?,
+                take_optional(one_error)?,
+                take_optional(two_error)?,
+            ));
         }
         if z.is_none() && (!shifted.is_empty() || z_covariance.is_some()) {
             return Err(pyo3::exceptions::PyValueError::new_err(
@@ -578,7 +683,12 @@ impl PyMeanField {
             }
         };
         type Owned = (Vec<f64>, mandacaru_core::Reservation);
-        fn view<'a>(one: &'a Owned, two: &'a Owned, one_error: &'a Option<Owned>, two_error: &'a Option<Owned>) -> MeasuredDensities<'a> {
+        fn view<'a>(
+            one: &'a Owned,
+            two: &'a Owned,
+            one_error: &'a Option<Owned>,
+            two_error: &'a Option<Owned>,
+        ) -> MeasuredDensities<'a> {
             MeasuredDensities {
                 one: &one.0,
                 two: &two.0,
@@ -590,16 +700,37 @@ impl PyMeanField {
         let correction = z.as_ref().map(|z| DeviceCorrection {
             z: &z.0,
             z_covariance: z_covariance.as_ref().map(|c| c.0.as_slice()),
-            shifted: copies.iter().map(|(k, c, o, t, oe, te)| (*k, *c, view(o, t, oe, te))).collect(),
+            shifted: copies
+                .iter()
+                .map(|(k, c, o, t, oe, te)| (*k, *c, view(o, t, oe, te)))
+                .collect(),
         });
         let result = py
-            .detach(|| device_gradient(&self.integrals, &self.inner, model.inner(), &base_view, correction.as_ref(), internal))
+            .detach(|| {
+                device_gradient(
+                    &self.integrals,
+                    &self.inner,
+                    model.inner(),
+                    &base_view,
+                    correction.as_ref(),
+                    internal,
+                )
+            })
             .map_err(error)?;
         let out = PyDict::new(py);
         let shape = [self.integrals.geometry.numbers().len(), 3];
-        out.set_item("gradient", array(py, &shape, result.gradient.as_slice().to_vec())?)?;
-        out.set_item("gradient_error", array(py, &shape, result.error.as_slice().to_vec())?)?;
-        out.set_item("z_vector_error", array(py, &shape, result.z_vector_error.as_slice().to_vec())?)?;
+        out.set_item(
+            "gradient",
+            array(py, &shape, result.gradient.as_slice().to_vec())?,
+        )?;
+        out.set_item(
+            "gradient_error",
+            array(py, &shape, result.error.as_slice().to_vec())?,
+        )?;
+        out.set_item(
+            "z_vector_error",
+            array(py, &shape, result.z_vector_error.as_slice().to_vec())?,
+        )?;
         out.set_item("error_elements", result.elements)?;
         out.set_item("directions", result.directions)?;
         out.set_item("reference_stationarity", result.reference_stationarity)?;
@@ -798,6 +929,18 @@ impl PyMeanField {
         }
         Ok(out)
     }
+    /// The reference's electric dipole moment about the origin of the coordinates, e Angstrom
+    /// (e Bohr with `atomic_units`): `molecular::multipoles::dipole_moment` of its densities.
+    #[pyo3(signature=(*, atomic_units=false))]
+    fn dipole_moment<'py>(&self, py: Python<'py>, atomic_units: bool) -> PyResult<Array<'py, f64>> {
+        use mandacaru_core::{molecular::multipoles, units};
+        let moment = py
+            .detach(|| multipoles::dipole_moment(&self.integrals, &self.inner.densities, [0.; 3]))
+            .map_err(error)?;
+        let user =
+            units::to_user(&moment, units::Quantity::Length, atomic_units, 1).map_err(error)?;
+        array(py, &[3], user)
+    }
     #[getter]
     fn converged(&self) -> bool {
         self.inner.converged
@@ -814,9 +957,7 @@ impl PyMeanField {
     #[pyo3(signature=(mapping="jordan_wigner"))]
     fn state<'py>(&self, py: Python<'py>, mapping: &str) -> PyResult<Array<'py, C64>> {
         let out = py
-            .detach(|| {
-                self.inner.reference_state(&self.integrals, mapping)
-            })
+            .detach(|| self.inner.reference_state(&self.integrals, mapping))
             .map_err(error)?;
         array(py, &[out.as_slice().len()], out.as_slice().to_vec())
     }
@@ -828,9 +969,7 @@ impl PyMeanField {
         }
         let m = self.integrals.m();
         let out = py
-            .detach(|| {
-                self.inner.model_rdm(&self.integrals)
-            })
+            .detach(|| self.inner.model_rdm(&self.integrals))
             .map_err(error)?;
         array(py, &[2 * m, 2 * m], out.as_slice().to_vec())
     }
@@ -842,12 +981,11 @@ impl PyMeanField {
         representation: &str,
         truncation: Option<f64>,
     ) -> PyResult<PyModel> {
-        let representation =
-            mandacaru_core::molecular::double_factorized::Representation::parse(
-                representation,
-                truncation,
-            )
-            .map_err(error)?;
+        let representation = mandacaru_core::molecular::double_factorized::Representation::parse(
+            representation,
+            truncation,
+        )
+        .map_err(error)?;
         let inner = py
             .detach(|| {
                 self.inner
@@ -956,7 +1094,10 @@ impl PyMeanField {
                 item.set_item("atom", r.atom)?;
                 item.set_item("symbol", &r.symbol)?;
                 item.set_item("l", r.l)?;
-                item.set_item("shell", mandacaru_core::models::hubbard::shell_letter(r.l).map(String::from))?;
+                item.set_item(
+                    "shell",
+                    mandacaru_core::models::hubbard::shell_letter(r.l).map(String::from),
+                )?;
                 item.set_item("u_ha", r.u_ha)?;
                 item.set_item("j_ha", r.j_ha)?;
                 item.set_item("u_eff_ha", r.u_eff_ha)?;
@@ -992,10 +1133,12 @@ impl PyMeanField {
 #[pyo3(signature=(name, truncation=None))]
 pub fn two_body_representation(name: &str, truncation: Option<f64>) -> PyResult<&'static str> {
     use mandacaru_core::molecular::double_factorized::Representation;
-    Ok(match Representation::parse(name, truncation).map_err(error)? {
-        Representation::Dense => "dense",
-        Representation::DoubleFactorized { .. } => "double-factorized",
-    })
+    Ok(
+        match Representation::parse(name, truncation).map_err(error)? {
+            Representation::Dense => "dense",
+            Representation::DoubleFactorized { .. } => "double-factorized",
+        },
+    )
 }
 #[pyclass(name = "MolecularModel", module = "mandacaru._native", frozen)]
 pub struct PyModel {
@@ -1193,7 +1336,7 @@ impl PyModel {
         taper: bool,
         register_free: bool,
         measurement: &str,
-    ) -> PyResult<PyProblem> {
+    ) -> PyResult<PyQuantumProblem> {
         let factorized = match measurement {
             "qwc" => false,
             "double-factorized" => true,
@@ -1243,7 +1386,7 @@ impl PyModel {
         if sparse {
             super::quantum::attach_sparse(py, &mut inner)?;
         }
-        Ok(PyProblem { inner })
+        Ok(PyQuantumProblem { inner })
     }
     #[pyo3(signature=(mapping="jordan_wigner"))]
     fn reference_state<'py>(&self, py: Python<'py>, mapping: &str) -> PyResult<Array<'py, C64>> {

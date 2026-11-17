@@ -113,7 +113,11 @@ impl Quantity {
     /// The factor a value in atomic units is multiplied by: one in atomic units (minus one for a
     /// gradient turned into a force).
     pub fn factor(self, atomic: bool) -> f64 {
-        let sign = if self == Self::GradientToForce { -1. } else { 1. };
+        let sign = if self == Self::GradientToForce {
+            -1.
+        } else {
+            1.
+        };
         if atomic {
             return sign;
         }
@@ -160,7 +164,11 @@ pub fn to_user(values: &[f64], quantity: Quantity, atomic: bool, cells: u64) -> 
         .map(|&v| {
             let value = if flip { -v } else { v };
             let user = value * magnitude;
-            if cells == 1 { user } else { user * per_cell }
+            if cells == 1 {
+                user
+            } else {
+                user * per_cell
+            }
         })
         .collect())
 }
@@ -177,7 +185,9 @@ pub fn to_user_values(
     let mut out = to_user(values, quantity, atomic, cells)?;
     if let Some(extra) = plus {
         if extra.len() != out.len() {
-            return Err(Error::Invalid("the added values must match the converted ones".into()));
+            return Err(Error::Invalid(
+                "the added values must match the converted ones".into(),
+            ));
         }
         for (value, add) in out.iter_mut().zip(extra) {
             *value += add;
@@ -199,7 +209,9 @@ pub fn energy_factor(unit: &str) -> Result<f64> {
     match unit.to_ascii_lowercase().as_str() {
         "ev" => Ok(HARTREE_TO_EV),
         "ha" | "hartree" | "au" => Ok(1.),
-        _ => Err(Error::Invalid(format!("unknown energy unit {unit:?}; use 'eV' or 'Ha'"))),
+        _ => Err(Error::Invalid(format!(
+            "unknown energy unit {unit:?}; use 'eV' or 'Ha'"
+        ))),
     }
 }
 
@@ -209,7 +221,9 @@ pub fn length_factor_to_bohr(unit: &str) -> Result<f64> {
     match unit.to_ascii_lowercase().as_str() {
         "angstrom" | "a" => Ok(ANGSTROM_TO_BOHR),
         "bohr" | "au" | "a0" => Ok(1.),
-        _ => Err(Error::Invalid(format!("unknown length unit {unit:?}; use 'angstrom' or 'bohr'"))),
+        _ => Err(Error::Invalid(format!(
+            "unknown length unit {unit:?}; use 'angstrom' or 'bohr'"
+        ))),
     }
 }
 
@@ -230,7 +244,13 @@ impl EnergyConversion {
         match self {
             Self::FromHartree(f) => value * f,
             Self::ToHartree(f) => value / f,
-            Self::Ratio(f) => if f == 1. { value } else { value * f },
+            Self::Ratio(f) => {
+                if f == 1. {
+                    value
+                } else {
+                    value * f
+                }
+            }
         }
     }
 }

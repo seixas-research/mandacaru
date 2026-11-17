@@ -1,10 +1,10 @@
-//! Cached quantum problems. All energies are Hartree; qubit zero is the MSB.
+//! Quantum problems, solvers, symmetries, and ansatz search. All energies are Hartree; qubit zero is the MSB.
 pub mod algebra;
 pub mod amplitude;
 pub mod deflation;
 pub mod dynamics;
-pub mod evolution;
 pub mod energy_error;
+pub mod evolution;
 pub mod execution;
 pub mod expressibility;
 pub mod factorization;
@@ -24,11 +24,12 @@ pub mod solver;
 pub mod sparse;
 pub mod spectral;
 pub mod subspace;
-pub mod tapered_problem;
+pub mod symmetries;
 pub mod tapering;
 pub mod term_lists;
 pub mod transfer;
 pub use algebra::{Basis, Encoding, Operator};
 pub use amplitude::{Amplitude, Floors, State};
 pub use num_complex::Complex64 as C64;
-pub use solver::{CachedProblem, SolveOptions, SolveResult, Space};
+pub use pools::CrystalMomentum;
+pub use solver::{QuantumProblem, SolveOptions, SolveResult, Space};

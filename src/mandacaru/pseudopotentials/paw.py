@@ -30,8 +30,9 @@ and the registration of the two families.
 
 UPAW-LCAO (``basis="UPAW-LCAO"``) is the same construction at ``norm_deficit = 0``
 (Ivanov *et al.*, arXiv:2408.03159): the transformation is unitary and the overlap operator
-is the identity.  It has no shipped library; without ``MANDACARU_UPAW_PATH`` it is generated
-on demand, in the engine, and cached for the process.
+is the identity.  Its library holds no format-3 data, so its datasets are generated on
+demand, in the engine, and cached for the process; a format-3 library built with
+``mandacaru-build --pp UPAW`` and named by ``MANDACARU_UPAW_PATH`` is read instead.
 """
 
 from __future__ import annotations
@@ -317,8 +318,8 @@ def upaw_library_path(paw_dataset=None, xc: str = DEFAULT_XC,
 def get_upaw(symbol: str, paw_dataset=None, xc: str = DEFAULT_XC) -> PAWDataset:
     """Load ``symbol`` from the UPAW-LCAO library, **or generate it** (cached).
 
-    Unlike PAW-LCAO, UPAW-LCAO has no shipped library: there is no
-    sibling data repository for it, and requiring a 92-element build before the
+    Unlike PAW-LCAO, the UPAW-LCAO library holds no format-3 data, so its
+    datasets are generated on demand: requiring a 92-element build before the
     option can be tried at all would make it unusable.  Generation is a few
     seconds per element (H 0.4 s, O 2.2 s, measured) and the result is cached
     for the process, so a small molecule pays that once.  Build a library with

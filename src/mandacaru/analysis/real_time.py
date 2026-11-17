@@ -28,8 +28,9 @@ class RealTime:
     along : ndarray
         ``(nt,)`` the induced dipole along the kick direction: the signal of the spectra.
     momentum : ndarray
-        ``(nt, 3)`` the electrons' kinetic momentum ``sum tr[D (p + A)]``,
-        1/Angstrom (1/Bohr; ``hbar = 1``).
+        ``(nt, 3)`` the electrons' momentum ``dE/dA`` at fixed ``D``: the kinetic
+        momentum ``sum tr[D (p + A)]`` plus, for a meta-GGA with a partial core, the
+        exchange-correlation current of its ``tau~``; 1/Angstrom (1/Bohr; ``hbar = 1``).
     energy : ndarray
         ``(nt,)`` total electronic energy from the propagated state's builder, eV (Ha).
     norm_error : ndarray
@@ -95,8 +96,9 @@ class RealTime:
         Crystal: the largest anti-Hermitian part of the momentum matrix before it was
         Hermitized, relative to its largest element.
     kernel : str or None
-        Crystal: ``"adiabatic"`` (the functional's own Hamiltonian) or ``"independent"`` (frozen
-        at the ground state).
+        Crystal: ``"adiabatic"`` (the functional's own Hamiltonian), ``"hartree"`` (the
+        exchange-correlation potential frozen at the ground state: TD-Hartree, the RPA with local
+        fields) or ``"independent"`` (the whole Hamiltonian frozen at the ground state).
     mesh : tuple of int or None
         Crystal: the whole Gamma-anchored propagation mesh; ``kpoints`` its point count.
     """
@@ -199,9 +201,12 @@ class DielectricFunction:
         The imaginary part of the frequency, the scissor and the smallest transition energy of
         the mesh (the onset of the continuum), eV (Ha).
     cutoff : float or None
-        ``kernel="hartree"``: the largest ``|G|`` of the local fields, 1/Angstrom (1/Bohr).
+        Every kernel but ``"independent"``: the largest ``|G|`` of the local fields, 1/Angstrom
+        (1/Bohr); ``None`` for ``"independent"``.
     kernel : str
-        ``"hartree"`` (RPA with local fields) or ``"independent"``.
+        ``"hartree"`` (RPA with local fields), ``"bse"`` (the Bethe-Salpeter equation:
+        exchange and the statically screened direct term), ``"long-range"`` (the model kernel
+        ``-alpha / q^2``) or ``"independent"``.
     direction : list of float or None
         The direction of ``epsilon``; ``None`` the isotropic average.
     mesh, kpoints : tuple of int, int

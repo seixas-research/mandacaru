@@ -154,6 +154,20 @@ impl<'a> Augmentation<'a> {
     }
 }
 
+/// The grid values of state `a` of `bands` states of `components` components stored
+/// `[component][state][point]` (a frame's layout), one slice per component.
+pub fn components_of(
+    values: &[C64],
+    bands: usize,
+    points: usize,
+    components: usize,
+    a: usize,
+) -> Vec<&[C64]> {
+    (0..components)
+        .map(|c| &values[(c * bands + a) * points..(c * bands + a + 1) * points])
+        .collect()
+}
+
 /// What one worker needs to transform a product: its own FFT plan and work array.
 pub struct Scratch {
     fft: Fft3,
@@ -235,12 +249,33 @@ impl Engine {
         b: &[C64],
         out: &mut [C64],
     ) -> Result<()> {
-        if a.len() != self.points || b.len() != self.points || out.len() != self.index.len() {
+        self.smooth_components(scratch, &[a], &[b], out)
+    }
+    /// [`Self::smooth`] of two states of one or two components (a spinor's spin-up and
+    /// spin-down grid values): the charge transition density, `psi_a^dagger psi_b` summed over
+    /// the components before the one transform.
+    pub fn smooth_components(
+        &self,
+        scratch: &mut Scratch,
+        a: &[&[C64]],
+        b: &[&[C64]],
+        out: &mut [C64],
+    ) -> Result<()> {
+        if a.is_empty()
+            || a.len() != b.len()
+            || a.iter().chain(b).any(|x| x.len() != self.points)
+            || out.len() != self.index.len()
+        {
             return Err(invalid("a transition density has the wrong size"));
         }
         let work = scratch.work.as_mut_slice();
-        for (((w, x), y), phase) in work.iter_mut().zip(a).zip(b).zip(&self.q_phase) {
+        for (((w, x), y), phase) in work.iter_mut().zip(a[0]).zip(b[0]).zip(&self.q_phase) {
             *w = x.conj() * y * phase;
+        }
+        for (x, y) in a[1..].iter().zip(&b[1..]) {
+            for (((w, x), y), phase) in work.iter_mut().zip(*x).zip(*y).zip(&self.q_phase) {
+                *w += x.conj() * y * phase;
+            }
         }
         scratch.fft.transform(work, false)?;
         for ((o, &i), s) in out.iter_mut().zip(&self.index).zip(&self.to_g) {

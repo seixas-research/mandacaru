@@ -506,7 +506,13 @@ pub(in crate::molecular) fn fixed_density_gradient(
     let two = if densities.two.is_empty() {
         None
     } else {
-        Some(two_body_gradient(ctx, setup, mesh, &densities.frame, &densities.two)?)
+        Some(two_body_gradient(
+            ctx,
+            setup,
+            mesh,
+            &densities.frame,
+            &densities.two,
+        )?)
     };
     let atoms = setup.centers.len();
     let cells = product(&mesh)?;
@@ -559,13 +565,16 @@ pub(in crate::molecular) fn per_cell(
     integrals: &MolecularIntegrals,
     gradient: &[f64],
 ) -> Result<crate::Buffer<f64>> {
-    let source = integrals.paw_supercell.as_ref().ok_or_else(|| {
-        invalid("the per-cell gradient needs the PAW-LCAO supercell source")
-    })?;
+    let source = integrals
+        .paw_supercell
+        .as_ref()
+        .ok_or_else(|| invalid("the per-cell gradient needs the PAW-LCAO supercell source"))?;
     let atoms = source.setup.centers.len();
     let cells = product(&source.mesh)?;
     if gradient.len() != 3 * atoms * cells {
-        return Err(invalid("a supercell gradient has three rows per supercell atom"));
+        return Err(invalid(
+            "a supercell gradient has three rows per supercell atom",
+        ));
     }
     let mut out = integrals.context.allocate::<f64>(3 * atoms)?;
     for cell in 0..cells {
@@ -619,10 +628,13 @@ pub(in crate::molecular) fn mean_field_gradient(
         "uhf" if state.functional.is_none() => false,
         _ => {
             return Err(crate::Error::Unsupported(format!(
-                "the analytic force of a PAW-LCAO supercell takes an RHF or UHF determinant, not {}{}",
-                state.method,
-                state.functional.as_ref().map_or(String::new(), |f| format!(" ({f})"))
-            )))
+            "the analytic force of a PAW-LCAO supercell takes an RHF or UHF determinant, not {}{}",
+            state.method,
+            state
+                .functional
+                .as_ref()
+                .map_or(String::new(), |f| format!(" ({f})"))
+        )))
         }
     };
     let m = integrals.m();
@@ -723,9 +735,11 @@ fn mesh_crystal(
         .with_kpoints(ctx, &kpoints, &vec![1. / count as f64; count])?
         .build(ctx)?;
     let placed = crystal.points.len() == count
-        && crystal.points.iter().zip(&kpoints).all(|(point, k)| {
-            (0..3).all(|a| (point.fractional[a] - k[a]).abs() < 1e-12)
-        });
+        && crystal
+            .points
+            .iter()
+            .zip(&kpoints)
+            .all(|(point, k)| (0..3).all(|a| (point.fractional[a] - k[a]).abs() < 1e-12));
     if !placed {
         return Err(invalid(
             "the crystal of the supercell's mesh does not keep the mesh points in order",
@@ -906,7 +920,13 @@ fn build(
 fn orbital_translations(supercell: &Supercell, basis: &Basis) -> Result<Translations> {
     let cells = supercell.orbital_cells(basis)?;
     let (mesh, n_cells, width) = (supercell.mesh, supercell.n_cells(), cells.n_primitive);
-    let of = |flat: usize| [flat / (mesh[1] * mesh[2]), (flat / mesh[2]) % mesh[1], flat % mesh[2]];
+    let of = |flat: usize| {
+        [
+            flat / (mesh[1] * mesh[2]),
+            (flat / mesh[2]) % mesh[1],
+            flat % mesh[2],
+        ]
+    };
     let mut index = vec![usize::MAX; n_cells * width];
     for (p, (&c, &o)) in cells.cell.iter().zip(&cells.orbital).enumerate() {
         index[c * width + o] = p;

@@ -22,10 +22,12 @@
 //! Atomic units: Hartree.
 use super::{
     invalid, properties, response::view, Approximation, Channel, Coupling, Excitations, Operator,
-    Request, Spin,
-    Transition,
+    Request, Spin, Transition,
 };
-use crate::math::{fft::Poisson, linalg::eigen};
+use crate::math::{
+    fft::Poisson,
+    linalg::{eigen, real_eigen},
+};
 use crate::models::{noncollinear, xc_kernel::NoncollinearKernel};
 use crate::molecular::{
     multipoles::{gradient_integrals, position_integrals},
@@ -222,13 +224,21 @@ impl<'a> Spinor<'a> {
             definition.semilocal,
             relativistic,
         )?;
-        let rotations = if spin_orbit.is_some() { vec![] } else { spin_rotations(m, o, &orbitals) };
+        let rotations = if spin_orbit.is_some() {
+            vec![]
+        } else {
+            spin_rotations(m, o, &orbitals)
+        };
         // `i` maps the zero modes of `A + B` onto those of `A - B`. They are the same space where
         // the turns about two perpendicular axes are each other's `i` (one spin flips), not where
         // both spins flip or the magnetization is noncollinear.
         let turned = |x: &[f64]| -> Vec<f64> {
             let half = x.len() / 2;
-            x[half..].iter().map(|y| -y).chain(x[..half].iter().copied()).collect()
+            x[half..]
+                .iter()
+                .map(|y| -y)
+                .chain(x[..half].iter().copied())
+                .collect()
         };
         let closed = rotations.iter().all(|n| {
             let mut rest = turned(n);
@@ -361,12 +371,10 @@ impl<'a> Spinor<'a> {
     /// `Delta k + G(k)` (`plus`) or `Delta k - i G(i k)` on the columns of `block`.
     /// `A + B`, `A - B` or `A` (`plus`, `minus`, both) on the columns of `block`, on the
     /// complement of the spin-rotation zero modes `N`, which it lifts to [`ROTATION_SHIFT`]. `N`
-    /// is the null space of `A + B`, and `i N` that of `A - B`; a Casida root `(p, q)` has
-    /// `q` orthogonal to `N`, so `A - B` deflated by `N` too returns its `q` and `omega` with `p`
-    /// less its share along `N`, which [`spinor_excitations`] restores as `(A - B) q / omega`.
-    /// `A` (Tamm-Dancoff) is deflated only where `i N = N` (`closed`), its null space then.
+    /// is the null space of `A + B` (the Z-vector's operator), and `i N` that of `A - B`; `A - B`
+    /// and `A` are deflated only where `i N = N` (`closed`), their null space then.
     fn paired(&self, block: &DMatrix<f64>, plus: bool, minus: bool) -> Result<DMatrix<f64>> {
-        if self.rotations.is_empty() || (plus && minus && !self.closed) {
+        if self.rotations.is_empty() || (minus && !self.closed) {
             return self.bare(block, plus, minus);
         }
         let mut inside = block.clone();
@@ -378,7 +386,9 @@ impl<'a> Spinor<'a> {
             project(&self.rotations, c.as_mut_slice());
             for n in &self.rotations {
                 let share: f64 = n.iter().zip(x.iter()).map(|(a, b)| a * b).sum();
-                c.iter_mut().zip(n).for_each(|(y, a)| *y += ROTATION_SHIFT * share * a);
+                c.iter_mut()
+                    .zip(n)
+                    .for_each(|(y, a)| *y += ROTATION_SHIFT * share * a);
             }
         }
         Ok(out)
@@ -452,6 +462,118 @@ fn elements(samples: &[f64], n: usize, m: usize, w: &[f64], dv: f64) -> Result<D
     Ok(out * dv)
 }
 
+/// The largest real embedding [`dense_casida`] assembles (the matrices are `8 n^2` bytes each).
+pub const DENSE_CASIDA: usize = 3000;
+
+/// Casida on a magnetized spinor reference without spin-orbit coupling whose spin-rotation zero
+/// modes `N` (of `A + B`) differ from `i N` (of `A - B`): both spins flip, or the magnetization is
+/// noncollinear. Each `omega > 0` has `X - Y` in the complement of `N` (`(A + B)(X + Y) =
+/// omega (X - Y)` and `A + B = Q K Q^T` with `Q` a basis of that complement), so with
+/// `X - Y = Q t` the problem is `K L t = omega^2 t`, `L = Q^T (A - B) Q`, solved densely in its
+/// symmetric form `K^(1/2) L K^(1/2)`; `X + Y = (A - B)(X - Y) / omega`, scaled so that
+/// `(X + Y) . (X - Y) = 1`. The roots of `i N`, left at zero there (the partners of the turns), are
+/// dropped. The matrices are those of the undeflated operator, whose residual is reported. The
+/// excited-state gradient reads these roots as it reads Davidson's (its Z-vector deflates `N`
+/// from `A + B` alone).
+fn dense_casida(op: &Spinor<'_>, request: &Request) -> Result<(super::Solved, usize)> {
+    use super::Operator;
+    let n = op.dimension();
+    if n > DENSE_CASIDA {
+        return Err(crate::Error::Unsupported(format!(
+            "Casida on this magnetized spinor reference (both spins flip) is solved densely, up to \
+             {DENSE_CASIDA} real amplitudes; this basis has {n}: use approximation='tda'"
+        )));
+    }
+    let _memory = op.integrals.context.reserve(product(&[n, n, 8, 8])?)?;
+    let identity = DMatrix::<f64>::identity(n, n);
+    let symmetric = |m: DMatrix<f64>| (&m + m.transpose()) * 0.5;
+    let sum = symmetric(op.bare(&identity, true, false)?);
+    let difference = symmetric(op.bare(&identity, false, true)?);
+    let mut complement = identity.clone();
+    for mode in &op.rotations {
+        let v = nalgebra::DVector::from_column_slice(mode);
+        complement -= &v * v.transpose();
+    }
+    let (weights, vectors) = real_eigen(complement)?;
+    let kept: Vec<usize> = (0..n).filter(|&i| weights[i] > 0.5).collect();
+    let q = DMatrix::from_fn(n, kept.len(), |r, c| vectors[(r, kept[c])]);
+    let (curvatures, frame) = real_eigen(q.transpose() * &sum * &q)?;
+    if let Some(low) = curvatures.iter().copied().find(|c| *c <= 0.) {
+        return Err(invalid(format!(
+            "the spinor Casida problem has no real root: A + B is not positive off the spin \
+             turns (eigenvalue {low:.3e}); the reference is unstable in this symmetry; {}",
+            super::remedy(Spin::Spinor)
+        )));
+    }
+    let root = &frame
+        * DMatrix::from_diagonal(&nalgebra::DVector::from_iterator(
+            kept.len(),
+            curvatures.iter().map(|c| c.sqrt()),
+        ))
+        * frame.transpose();
+    let (squares, modes) = real_eigen(&root * (q.transpose() * &difference * &q) * &root)?;
+    let largest = squares.iter().copied().fold(0f64, f64::max);
+    if let Some(low) = squares
+        .iter()
+        .copied()
+        .find(|w| *w < -ZERO_SQUARE * largest)
+    {
+        return Err(invalid(format!(
+            "the spinor Casida problem has no real root (omega^2 = {low:.3e} Ha^2); the reference \
+             is unstable in this symmetry; {}",
+            super::remedy(Spin::Spinor)
+        )));
+    }
+    let physical: Vec<usize> = (0..squares.len())
+        .filter(|&i| squares[i] > ZERO_SQUARE * largest)
+        .collect();
+    // The roots left at zero are the partners of the turns: at most one per turn.
+    if squares.len() - physical.len() > op.rotations.len() {
+        return Err(crate::Error::Kernel(format!(
+            "the dense spinor Casida solve left {} roots at zero against {} spin turns",
+            squares.len() - physical.len(),
+            op.rotations.len()
+        )));
+    }
+    let mut values = vec![];
+    let (mut plus, mut minus) = (vec![], vec![]);
+    let mut residuals = vec![];
+    for &i in &physical {
+        let omega = squares[i].sqrt();
+        let mut t = &q * (&root * modes.column(i));
+        let mut u = &difference * &t / omega;
+        let scale = u.dot(&t).sqrt();
+        t /= scale;
+        u /= scale;
+        let residual = (&difference * (&sum * &u) - &u * squares[i]).norm() / squares[i];
+        values.push(omega);
+        plus.push(u);
+        minus.push(t);
+        residuals.push(residual);
+    }
+    let roots = request.num_states.min(values.len());
+    let mut count = roots;
+    while count < values.len() && values[count] - values[count - 1] < super::DEGENERATE_ROOTS {
+        count += 1;
+    }
+    let take = (count + 1).min(values.len());
+    Ok((
+        super::Solved {
+            values: values[..take].to_vec(),
+            plus: DMatrix::from_columns(&plus[..take]),
+            minus: DMatrix::from_columns(&minus[..take]),
+            residuals: residuals[..take].to_vec(),
+            iterations: 0,
+            applications: 2 * n,
+        },
+        count,
+    ))
+}
+
+/// The roots [`dense_casida`] keeps: `omega^2` above this fraction of the largest (the turns'
+/// partners sit at round-off).
+const ZERO_SQUARE: f64 = 1e-10;
+
 /// The lowest `request.num_states` excitations of the spinor reference `reference` (Tamm-Dancoff or
 /// Casida; adiabatic LDA or PBE), completed to whole groups of equal roots.
 pub(super) fn spinor_excitations(
@@ -470,8 +592,18 @@ pub(super) fn spinor_excitations(
         ));
     }
     let operator = Spinor::new(integrals, reference)?;
+    // Where both spins flip (or the magnetization is noncollinear), `A + B` and `A - B` have
+    // different zero modes; Davidson on the complement of `N` in both did not converge at a
+    // displaced geometry (H3, `dev_plan/DECISIONS.md`, 2026-11-16), so Casida is solved densely
+    // on the complement of `N` alone ([`dense_casida`]).
+    let dense = request.approximation == Approximation::Casida && !operator.closed;
     // The lifted spin-rotation zero modes are no states: each pair is one complex amplitude.
-    let transitions = operator.o * operator.v - if operator.closed { operator.rotations.len() / 2 } else { 0 };
+    let transitions = operator.o * operator.v
+        - if operator.closed || dense {
+            operator.rotations.len() / 2
+        } else {
+            0
+        };
     if request.num_states > transitions {
         return Err(invalid(format!(
             "num_states={} exceeds the {transitions} occupied-to-empty spinor transitions of this \
@@ -482,7 +614,11 @@ pub(super) fn spinor_excitations(
     // Each state is a pair of real roots, `k` and `i k`.
     let mut doubled = request.clone();
     doubled.num_states = 2 * request.num_states;
-    let (solved, count) = super::roots(&operator, &doubled)?;
+    let (solved, count) = if dense {
+        dense_casida(&operator, &doubled)?
+    } else {
+        super::roots(&operator, &doubled)?
+    };
     let (m, o, v) = (operator.m, operator.o, operator.v);
     let (co, cv) = (
         operator.orbitals.columns(0, o),
@@ -532,6 +668,7 @@ pub(super) fn spinor_excitations(
         transitions: vec![],
         nto_weights: vec![],
         one_center_hartree: None,
+        one_center_xc: None,
         channels: vec![Channel {
             occupied: o,
             virtual_orbitals: v,
@@ -554,16 +691,10 @@ pub(super) fn spinor_excitations(
         let omega = solved.values[j];
         let column =
             |matrix: &DMatrix<f64>| -> Vec<f64> { matrix.column(j).iter().copied().collect() };
-        let minus = column(&solved.minus);
-        // Where `i N` is not `N` (both spins flip), `p = (A - B) q / omega` takes back its share
-        // along the zero modes that the deflated solve drops.
-        let plus = if request.approximation == Approximation::Casida && !operator.closed {
-            let restored = operator.bare(&DMatrix::from_column_slice(minus.len(), 1, &minus), false, true)?;
-            restored.iter().map(|x| x / omega).collect()
-        } else {
-            column(&solved.plus)
-        };
-        let (p, q) = (operator.amplitudes(&plus), operator.amplitudes(&minus));
+        let (p, q) = (
+            operator.amplitudes(&column(&solved.plus)),
+            operator.amplitudes(&column(&solved.minus)),
+        );
         // A group of equal roots, chained as `roots` completes them: a root of another value is
         // already `h`-orthogonal to the group, so a wide group only costs projections.
         if j == 0 || omega - solved.values[j - 1] >= super::DEGENERATE_ROOTS {

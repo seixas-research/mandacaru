@@ -224,8 +224,8 @@ pub fn evaluate_with_coupling(
                     de_dir_dj += v_j_val * term_dir;
 
                     // Exchange: sum_s n^s_da * n^s_cb
-                    let term_exch = (n0[d * p + a] * n0[c * p + b]).re
-                        + (n1[d * p + a] * n1[c * p + b]).re;
+                    let term_exch =
+                        (n0[d * p + a] * n0[c * p + b]).re + (n1[d * p + a] * n1[c * p + b]).re;
                     e_exch += v_val * term_exch;
                     de_exch_dj += v_j_val * term_exch;
                 }

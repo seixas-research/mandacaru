@@ -41,7 +41,8 @@ fn test_complex_samples_archive_writer_float64_and_float32() {
 
     // Test Float64
     {
-        let mut writer = ComplexSamples::archive_writer(&ctx, Precision::Float64, rows, points).unwrap();
+        let mut writer =
+            ComplexSamples::archive_writer(&ctx, Precision::Float64, rows, points).unwrap();
         for r in 0..rows {
             let row: Vec<Complex64> = (0..points)
                 .map(|p| Complex64::new((r * 100 + p) as f64, (r * 10 + p) as f64))
@@ -61,11 +62,17 @@ fn test_complex_samples_archive_writer_float64_and_float32() {
 
     // Test Float32 with bit-exact row-once rounding
     {
-        let mut writer = ComplexSamples::archive_writer(&ctx, Precision::Float32, rows, points).unwrap();
+        let mut writer =
+            ComplexSamples::archive_writer(&ctx, Precision::Float32, rows, points).unwrap();
         let mut all_expected = Vec::with_capacity(rows * points);
         for r in 0..rows {
             let row: Vec<Complex64> = (0..points)
-                .map(|p| Complex64::new((r * 100 + p) as f64 * 0.123456789, (r * 10 + p) as f64 * 0.987654321))
+                .map(|p| {
+                    Complex64::new(
+                        (r * 100 + p) as f64 * 0.123456789,
+                        (r * 10 + p) as f64 * 0.987654321,
+                    )
+                })
                 .collect();
             for &v in &row {
                 all_expected.push(Complex64::new(v.re as f32 as f64, v.im as f32 as f64));
@@ -76,7 +83,11 @@ fn test_complex_samples_archive_writer_float64_and_float32() {
         assert_eq!(samples.precision(), Precision::Float32);
         let read = samples.read(&ctx).unwrap();
         for i in 0..rows * points {
-            assert_eq!(read[i], all_expected[i], "bit-exact single-precision rounding match at index {}", i);
+            assert_eq!(
+                read[i], all_expected[i],
+                "bit-exact single-precision rounding match at index {}",
+                i
+            );
         }
     }
 }
@@ -90,7 +101,8 @@ fn test_complex_samples_row_sinks() {
     let total_rows = n_k * functions;
 
     // Test ComplexSamplesRows with resident samples
-    let mut resident = ComplexSamples::zeros(&ctx, Precision::Float64, total_rows * points).unwrap();
+    let mut resident =
+        ComplexSamples::zeros(&ctx, Precision::Float64, total_rows * points).unwrap();
     {
         let mut sink = ComplexSamplesRows::new(&mut resident, functions, points);
         for k in 0..n_k {
@@ -109,7 +121,8 @@ fn test_complex_samples_row_sinks() {
     }
 
     // Test ArchiveRows with positional archive writer
-    let writer = ComplexSamples::archive_writer(&ctx, Precision::Float32, total_rows, points).unwrap();
+    let writer =
+        ComplexSamples::archive_writer(&ctx, Precision::Float32, total_rows, points).unwrap();
     {
         let mut sink = ArchiveRows::new(&writer, functions, points);
         // Put in reverse k and m order to verify random-access / positional writes
@@ -125,7 +138,10 @@ fn test_complex_samples_row_sinks() {
     for k in 0..n_k {
         for m in 0..functions {
             let idx = (k * functions + m) * points;
-            let expected = Complex64::new(((k + 1) as f64 * 0.5) as f32 as f64, ((m + 1) as f64 * 0.25) as f32 as f64);
+            let expected = Complex64::new(
+                ((k + 1) as f64 * 0.5) as f32 as f64,
+                ((m + 1) as f64 * 0.25) as f32 as f64,
+            );
             assert_eq!(read_archived[idx], expected);
         }
     }

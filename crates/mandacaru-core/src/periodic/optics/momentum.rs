@@ -13,6 +13,11 @@
 //!   the molecule uses (`paw::momentum`), rotated from real to the crystal's complex harmonics
 //!   and moved to the SCF's own projector basis (`setup::blocks::to_raw_basis` for raw
 //!   projectors). No projector gauge phase appears: the projectors are fixed functions.
+//! - **spin-orbit part** (a spinor crystal with the term): the separable `h^SO` is not local, so
+//!   the velocity gains `i [h^SO, r]` (`setup::spin_orbit::velocity`), from the projections on
+//!   the spin-orbit projectors and on their first moments about the atom. It is the derivative
+//!   of `exp(-i A.r) h^SO exp(i A.r)` along `A`; it couples the spins, so it is added in the
+//!   basis, `P_ab += c_a^dagger v^SO c_b`, over the `(spin, function)` coefficients.
 //!
 //! `P` is Hermitian by construction up to the quadrature; it is Hermitized and the anti-Hermitian
 //! residual reported. In the band basis the diamagnetic sum of one spin channel is
@@ -25,7 +30,7 @@ use super::super::{
     bloch_mesh::{MeshIndex, Sampler},
     input::KPoint,
     invalid,
-    setup::{blocks::to_raw_basis, pulay::periodic_parts, pulay::Mesh, PeriodicSetup},
+    setup::{blocks::to_raw_basis, pulay::periodic_parts, pulay::Mesh, spin_orbit, PeriodicSetup},
     wannier::sampling::Frame,
 };
 use crate::{
@@ -57,11 +62,6 @@ pub const MOMENTUM_FLOOR: f64 = 1e-8;
 /// `Delta p` (three `P x P` matrices, Hermitian) in the order and the projector basis of the
 /// crystal's projectors.
 pub fn one_center_momentum(ctx: &Context, setup: &PeriodicSetup) -> Result<[Matrix; 3]> {
-    if setup.spinor {
-        return Err(crate::Error::Unsupported(
-            "the momentum matrix of a spinor crystal is not implemented".into(),
-        ));
-    }
     let p = setup.projectors.len();
     let mut out = [
         Matrix::zeros(p, p),
@@ -179,7 +179,8 @@ pub struct BandMomenta {
     pub residual: f64,
 }
 
-/// [`BandMomenta`] of `frame` (every band it holds, one component) at the Cartesian `k`.
+/// [`BandMomenta`] of `frame` (every band it holds) at the Cartesian `k`; a spinor frame's
+/// carries the spin-orbit part when the crystal has the term (module documentation).
 pub fn band_momenta(
     ctx: &Context,
     setup: &PeriodicSetup,
@@ -188,12 +189,7 @@ pub fn band_momenta(
     k: [f64; 3],
     one_center: &[Matrix; 3],
 ) -> Result<BandMomenta> {
-    if frame.components != 1 {
-        return Err(crate::Error::Unsupported(
-            "the momentum matrix of a spinor crystal is not implemented".into(),
-        ));
-    }
-    momenta(
+    let whole = momenta(
         ctx,
         setup,
         mesh,
@@ -201,7 +197,44 @@ pub fn band_momenta(
         &frame.projections,
         k,
         one_center,
-    )
+    )?;
+    match frame.components {
+        1 => Ok(whole),
+        // A spinor's rows are `(component, band)`, and `p` is diagonal in the spin: `P_ab` is the
+        // sum of the two components' blocks.
+        2 => {
+            let bands = frame.projections.nrows() / 2;
+            let mut matrices = whole
+                .matrices
+                .map(|m| m.view((0, 0), (bands, bands)) + m.view((bands, bands), (bands, bands)));
+            if !setup.spin_orbit_couplings.is_empty() {
+                let velocity = spin_orbit::velocity(
+                    ctx,
+                    &setup.shells,
+                    &setup.lattice,
+                    k,
+                    &setup.spin_orbit_projectors,
+                    &setup.spin_orbit_couplings,
+                )?;
+                let c = &frame.coefficients;
+                let size = c.nrows();
+                for (to, v) in matrices.iter_mut().zip(&velocity) {
+                    if v.as_slice().len() != size * size {
+                        return Err(invalid(
+                            "the spin-orbit velocity does not match the frame's coefficients",
+                        ));
+                    }
+                    let v = Matrix::from_row_slice(size, size, v.as_slice());
+                    *to += c.adjoint() * v * c;
+                }
+            }
+            Ok(BandMomenta {
+                matrices,
+                residual: whole.residual,
+            })
+        }
+        _ => Err(invalid("a frame has one or two components")),
+    }
 }
 
 /// [`BandMomenta`] of the Bloch basis functions of `point` (`m x m`, the frame the SCF's `H(k)`

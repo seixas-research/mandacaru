@@ -1,5 +1,5 @@
 use mandacaru_core::{
-    quantum::{optimizer, Basis, CachedProblem, Encoding, Operator, SolveOptions, C64},
+    quantum::{optimizer, Basis, Encoding, Operator, QuantumProblem, SolveOptions, C64},
     Context, Error,
 };
 
@@ -24,7 +24,7 @@ fn energy_gradients_are_invariant_under_large_identity_shifts_in_every_storage()
                 ],
             )
             .unwrap();
-            let mut problem = CachedProblem::new(
+            let mut problem = QuantumProblem::new(
                 &ctx,
                 Encoding::new("jordan_wigner", 4, [1, 0]).unwrap(),
                 h,
@@ -34,8 +34,14 @@ fn energy_gradients_are_invariant_under_large_identity_shifts_in_every_storage()
             )
             .unwrap();
             if storage == 2 {
-                problem.sparse =
-                    Some(SparseMatrix::new(&ctx, problem.register("test").unwrap(), &problem.hamiltonian).unwrap());
+                problem.sparse = Some(
+                    SparseMatrix::new(
+                        &ctx,
+                        problem.register("test").unwrap(),
+                        &problem.hamiltonian,
+                    )
+                    .unwrap(),
+                );
             }
             let value = problem.evaluate(&[0], &[0.21], true).unwrap();
             if let Some((energy, gradient)) = expected {
@@ -196,7 +202,7 @@ fn cached_h2_vqe_and_adapt_are_python_independent() {
         .join("../../test/migration/reference/h2_hamiltonian.json");
     for sector in [false, true] {
         for dense in [false, true] {
-            let problem = CachedProblem::load(&ctx, &fixture, sector, dense, true).unwrap();
+            let problem = QuantumProblem::load(&ctx, &fixture, sector, dense, true).unwrap();
             let live = ctx.memory_used();
             for adapt in [false, true] {
                 for limited_memory in [false, true] {
@@ -260,7 +266,7 @@ fn spsa_on_the_cached_h2_problem_reproduces_the_frozen_state_vector_run() {
     let ctx = context();
     let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../test/migration/reference/h2_hamiltonian.json");
-    let problem = CachedProblem::load(&ctx, &fixture, true, false, true).unwrap();
+    let problem = QuantumProblem::load(&ctx, &fixture, true, false, true).unwrap();
     for (adapt, evaluations, energy) in [
         (false, 46, -0.9507155950597947),
         (true, 138, -0.950774621387072),

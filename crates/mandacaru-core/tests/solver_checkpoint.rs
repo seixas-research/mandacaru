@@ -175,7 +175,9 @@ fn a_subspace_adapt_run_resumed_from_its_checkpoint_grows_as_if_never_stopped() 
         assert_eq!(file["subspace"]["weights"], serde_json::json!(weights));
         assert_eq!(file["status"].get("hessian").is_some(), carries);
         let doc = Document::read(&ctx, &path, CHECKPOINT).unwrap();
-        let resumed = doc.resume_subspace(&problem, &options(6), &weights).unwrap();
+        let resumed = doc
+            .resume_subspace(&problem, &options(6), &weights)
+            .unwrap();
         eprintln!(
             "{method:?}: straight {:?} {:?}; resumed {:?} {:?}",
             straight.indices, straight.energies, resumed.indices, resumed.energies
@@ -192,7 +194,9 @@ fn a_subspace_adapt_run_resumed_from_its_checkpoint_grows_as_if_never_stopped() 
             }
         }
         // Other weights, or the fixed-ansatz method, are refused.
-        assert!(doc.resume_subspace(&problem, &options(6), &[3., 1.]).is_err());
+        assert!(doc
+            .resume_subspace(&problem, &options(6), &[3., 1.])
+            .is_err());
         let mut fixed = options(6);
         fixed.adapt = false;
         assert!(doc.resume_subspace(&problem, &fixed, &weights).is_err());
@@ -204,7 +208,9 @@ fn a_subspace_adapt_run_resumed_from_its_checkpoint_grows_as_if_never_stopped() 
             let old_path = dir.join("old.json");
             std::fs::write(&old_path, old.to_string()).unwrap();
             let old = Document::read(&ctx, &old_path, CHECKPOINT).unwrap();
-            let cold = old.resume_subspace(&problem, &options(6), &weights).unwrap();
+            let cold = old
+                .resume_subspace(&problem, &options(6), &weights)
+                .unwrap();
             assert_eq!(cold.notes.len(), 1);
             assert_eq!(cold.indices, straight.indices);
         }

@@ -2,7 +2,9 @@
 
 ``reference/molecular_forces.json`` holds, per molecule, the atoms, the options and the analytic forces,
 re-frozen on 2026-11-16 against the regenerated PAW library (the first freeze, 2026-11-03, was the retired
-finite-difference route, which the analytic gradient reproduced to 2.0e-7 eV/Angstrom). The force's own oracle,
+finite-difference route, which the analytic gradient reproduced to 2.0e-7 eV/Angstrom), and once more the same day
+for the panel-edge quadrature of the local-potential spheres (``quadrature_refreeze``: the old rule's error moved
+LiH pbe by 5.0e-4 eV/Angstrom; the old and new values are kept under ``refrozen``). The force's own oracle,
 reconverged finite differences at a fixed grid, is the Rust slow tier ``paw_forces_dataset``. Each case rebuilds
 its atoms from the file and checks the live analytic force against the frozen number. Needs ``MANDACARU_PAW_PATH``.
 """

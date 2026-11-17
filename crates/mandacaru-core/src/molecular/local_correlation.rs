@@ -185,7 +185,11 @@ pub fn calculate(
     });
     let lmo_ao = &c * &lmo;
     // The levels of the MP-type denominators: the occupied ones take `v_M` (a supercell).
-    let levels = super::correlation::denominator_levels(&reference.energies[0], o, integrals.exchange_madelung()?);
+    let levels = super::correlation::denominator_levels(
+        &reference.energies[0],
+        o,
+        integrals.exchange_madelung()?,
+    );
     let fock = DMatrix::from_diagonal(&nalgebra::DVector::from_vec(levels));
     let occupied_fock = lmo.transpose() * &fock * &lmo;
     let mut paos = c.transpose();

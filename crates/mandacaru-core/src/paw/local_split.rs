@@ -6,9 +6,17 @@
 //! sampled values: the split is exact because the short-range part is the
 //! *difference* of that table and the Gaussian ion's potential, never an asymptote.
 use super::{invalid, pair_tables::angular_rule as unit_sphere_rule};
-use crate::{math::radial::gauss_legendre, Result};
+use crate::{
+    math::{radial::gauss_legendre, reciprocal::lattice_rotations},
+    Context, Result,
+};
+use nalgebra::{Matrix3, Vector3};
 use std::f64::consts::PI;
 
+/// How near (in direction and in operation, a norm on unit vectors and orthogonal matrices) an
+/// image must come to be the same in [`invariant_angular_rule`]: above the square of any strain
+/// the lattice group's slack admits (1e-4), below the 1e-2 spacing of the rules' directions.
+pub const ORBIT_MATCH: f64 = 1e-3;
 /// Offset (Bohr) added to the last radius that deviates from the ionic tail.
 const TAIL_MARGIN: f64 = 0.01;
 
@@ -121,18 +129,42 @@ pub fn grid_spacing(step: &[f64; 9]) -> f64 {
         .fold(0., f64::max)
 }
 
+/// Bohr below which two panel edges are one: a corner this close to an edge costs the rule about
+/// its jump times the distance cubed, far below any energy the engine resolves.
+pub const MERGE_EDGES: f64 = 1e-3;
+
 /// Gauss-Legendre nodes and `w r^2` weights on `[0, radius]`, split into two panels
 /// at `panel` when that lies strictly inside, so the kink where the pseudized
 /// polynomial meets the ionic tail falls on a panel boundary.
 pub fn radial_rule(radius: f64, panel: f64, points: usize) -> Result<(Vec<f64>, Vec<f64>)> {
+    radial_rule_panels(radius, &[panel], points)
+}
+
+/// Gauss-Legendre nodes and `w r^2` weights on `[0, radius]`, split into one panel per gap of
+/// `edges` (the points where the integrand has a corner), so that every corner falls on a panel
+/// boundary. An edge outside `(0, radius)`, or within [`MERGE_EDGES`] of another edge or of an
+/// end, is dropped.
+pub fn radial_rule_panels(
+    radius: f64,
+    edges: &[f64],
+    points: usize,
+) -> Result<(Vec<f64>, Vec<f64>)> {
     let rule = gauss_legendre(points)?;
-    let edges = if 0. < panel && panel < radius {
-        vec![0., panel, radius]
-    } else {
-        vec![0., radius]
-    };
+    let mut inside: Vec<f64> = edges
+        .iter()
+        .copied()
+        .filter(|edge| 0. < *edge && *edge < radius)
+        .collect();
+    inside.sort_by(f64::total_cmp);
+    let mut bounds = vec![0.];
+    for edge in inside {
+        if edge - bounds[bounds.len() - 1] > MERGE_EDGES && radius - edge > MERGE_EDGES {
+            bounds.push(edge);
+        }
+    }
+    bounds.push(radius);
     let (mut r, mut w) = (Vec::new(), Vec::new());
-    for pair in edges.windows(2) {
+    for pair in bounds.windows(2) {
         let half = 0.5 * (pair[1] - pair[0]);
         for (x, weight) in &rule {
             r.push(half * (x + 1.) + pair[0]);
@@ -156,4 +188,96 @@ pub fn angular_rule(polar: usize, azimuthal: usize) -> Result<([Vec<f64>; 3], Ve
         weights.push(weight);
     }
     Ok((directions, weights))
+}
+
+/// [`angular_rule`] made invariant under `operations`, a group of orthogonal matrices whose first
+/// entry is the identity: the union of the rule rotated by one operation of each left coset of the
+/// operations the rule already has (its stabilizer), every direction weighted `1 / cosets`. The
+/// product rule keeps the axis of its poles and its azimuths, so for a cubic group it is
+/// replicated 3 times, for a hexagonal group about its pole axis not at all (the rule is then
+/// returned as it is). An integral of a smooth function over directions then does not depend on
+/// the orientation of the crystal in the group's orbit, which a product rule's error does.
+///
+/// The operations of a strained lattice (polar factors, [`lattice_rotations`]) miss those of
+/// its unstrained group by about the square of the strain. Directions and operations therefore
+/// match within [`ORBIT_MATCH`], far below the spacing of the rule's directions, so the
+/// stabilizer, the cosets and the number of directions do not change under a small strain and
+/// the rule moves continuously with it.
+pub fn invariant_angular_rule(
+    polar: usize,
+    azimuthal: usize,
+    operations: &[Matrix3<f64>],
+) -> Result<([Vec<f64>; 3], Vec<f64>)> {
+    if operations.first() != Some(&Matrix3::identity()) {
+        return Err(invalid(
+            "an invariant rule needs the identity as its first operation",
+        ));
+    }
+    let (base, weights) = angular_rule(polar, azimuthal)?;
+    let points: Vec<Vector3<f64>> = (0..weights.len())
+        .map(|j| Vector3::new(base[0][j], base[1][j], base[2][j]))
+        .collect();
+    let mut sorted: Vec<usize> = (0..points.len()).collect();
+    sorted.sort_by(|&a, &b| points[a][0].total_cmp(&points[b][0]));
+    let find = |x: &Vector3<f64>| -> Option<usize> {
+        let from = sorted.partition_point(|&j| points[j][0] < x[0] - ORBIT_MATCH);
+        sorted[from..]
+            .iter()
+            .take_while(|&&j| points[j][0] <= x[0] + ORBIT_MATCH)
+            .copied()
+            .find(|&j| (points[j] - x).norm() < ORBIT_MATCH)
+    };
+    let keeps = |g: &Matrix3<f64>| {
+        points.iter().enumerate().all(|(j, p)| {
+            find(&(g * p))
+                .is_some_and(|image| (weights[image] - weights[j]).abs() <= 1e-12 * weights[j])
+        })
+    };
+    let stabilizer: Vec<&Matrix3<f64>> = operations.iter().filter(|g| keeps(g)).collect();
+    let mut covered = vec![false; operations.len()];
+    let mut representatives = Vec::new();
+    for (i, g) in operations.iter().enumerate() {
+        if covered[i] {
+            continue;
+        }
+        representatives.push(g);
+        for s in &stabilizer {
+            let product = g * *s;
+            if let Some(j) = operations
+                .iter()
+                .position(|h| (h - product).norm() < ORBIT_MATCH)
+            {
+                covered[j] = true;
+            }
+        }
+        covered[i] = true;
+    }
+    if representatives.len() == 1 {
+        return Ok((base, weights));
+    }
+    let scale = 1. / representatives.len() as f64;
+    let mut directions = [Vec::new(), Vec::new(), Vec::new()];
+    let mut out = Vec::new();
+    for g in &representatives {
+        for (p, w) in points.iter().zip(&weights) {
+            let q = *g * p;
+            for (axis, value) in directions.iter_mut().zip(q.iter()) {
+                axis.push(*value);
+            }
+            out.push(w * scale);
+        }
+    }
+    Ok((directions, out))
+}
+
+/// [`invariant_angular_rule`] under the point group of the Bravais lattice with the columns of
+/// `cell` as its vectors: the rule of every angular integral around the atoms of a crystal, which
+/// then cannot tell a rotated crystal of the same lattice from the original.
+pub fn lattice_angular_rule(
+    ctx: &Context,
+    cell: &Matrix3<f64>,
+    polar: usize,
+    azimuthal: usize,
+) -> Result<([Vec<f64>; 3], Vec<f64>)> {
+    invariant_angular_rule(polar, azimuthal, &lattice_rotations(ctx, cell)?)
 }

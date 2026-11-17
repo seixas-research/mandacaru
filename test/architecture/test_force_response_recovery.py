@@ -226,3 +226,81 @@ def test_search_methods_report_their_stationarity_and_subspace_forces_are_refuse
         with pytest.raises(ValueError, match="subspace method"):
             calc.result.forces()
 
+
+def test_subspace_quantum_gradient_and_fit_edit_proposal():
+    import json
+
+    atoms = Atoms("H2", positions=[[2.5, 2.5, 2.1], [2.5, 2.5, 2.9]], cell=[5.] * 3)
+    weights = [0.7, 0.3]
+    with Mandacaru(
+        method="subspace-vasqa",
+        atoms=atoms,
+        basis="PAW-LCAO",
+        grid_spacing=.4,
+        num_states=2,
+        weights=weights,
+        max_steps=12,
+        max_length=2,
+        parallelization={"threads": 1},
+    ) as calc:
+        calc.run()
+        res = calc.result
+        for root in (0, 1):
+            grad = res._reference.quantum_subspace_gradient(
+                res._problem,
+                res._model,
+                weights,
+                np.ascontiguousarray(res._raw["states"][root]),
+                indices=[int(i) for i in res._raw["indices"]],
+                parameters=np.ascontiguousarray(res._raw["parameters"], dtype=float),
+                product_form=True,
+            )
+            assert grad["scheme"] == "analytic"
+            assert grad["gradient"].shape == (2, 3)
+            assert np.all(np.isfinite(grad["gradient"]))
+            assert grad["energy_ha"] == pytest.approx(float(res._raw["energies_ha"][root]), abs=1e-10)
+            assert np.allclose(grad["gradient"].sum(axis=0), 0.0, atol=1e-5)
+
+        problem = {
+            "format": "mandacaru-search-problem",
+            "version": 1,
+            "num_qubits": 4,
+            "spatial_orbitals": 2,
+            "num_particles": [1, 0],
+            "mapping": "jordan_wigner",
+            "hamiltonian": [["ZIII", 0.3, 0.], ["XXII", 0.2, 0.]],
+            "pool": [[["YIII", 0., 1.]], [["IYII", 0., 1.]], [["IIYI", 0., 1.]]],
+            "composition": [[1, 2]],
+        }
+        records = [
+            {"format": "mandacaru-search-edit", "version": 1, "move": "insert", "position": 0, "operator": 0,
+             "problem_id": "p0", "source": [], "source_parameters": [], "source_energy": 0.0,
+             "source_gradients": [0.4, 0.1, 0.05], "source_curvatures": [-0.8, -0.2, -0.1],
+             "delta_energy": -0.04, "energy": -0.04},
+            {"format": "mandacaru-search-edit", "version": 1, "move": "insert", "position": 0, "operator": 1,
+             "problem_id": "p0", "source": [], "source_parameters": [], "source_energy": 0.0,
+             "source_gradients": [0.4, 0.1, 0.05], "source_curvatures": [-0.8, -0.2, -0.1],
+             "delta_energy": -0.01, "energy": -0.01},
+            {"format": "mandacaru-search-edit", "version": 1, "move": "delete", "position": 0, "operator": None,
+             "problem_id": "p0", "source": [0, 1], "source_parameters": [0.1, 0.2], "source_energy": -0.05,
+             "source_gradients": [0.05, 0.1, 0.2], "delta_energy": 0.005, "energy": -0.045},
+            {"format": "mandacaru-search-edit", "version": 1, "move": "delete", "position": 1, "operator": None,
+             "problem_id": "p0", "source": [0, 1], "source_parameters": [0.1, 0.2], "source_energy": -0.05,
+             "source_gradients": [0.05, 0.1, 0.2], "delta_energy": 0.03, "energy": -0.02},
+            {"format": "mandacaru-search-edit", "version": 1, "move": "replace", "position": 0, "operator": 2,
+             "problem_id": "p0", "source": [0], "source_parameters": [0.1], "source_energy": -0.02,
+             "source_gradients": [0.05, 0.1, 0.4], "delta_energy": -0.03, "energy": -0.05},
+            {"format": "mandacaru-search-edit", "version": 1, "move": "replace", "position": 0, "operator": 1,
+             "problem_id": "p0", "source": [0], "source_parameters": [0.1], "source_energy": -0.02,
+             "source_gradients": [0.05, 0.1, 0.4], "delta_energy": -0.01, "energy": -0.03},
+        ]
+        fitted = json.loads(
+            calc.context.fit_edit_proposal(json.dumps({"problems": {"p0": problem}, "records": records}))
+        )
+        assert fitted["format"] == "mandacaru-edit-proposal-model"
+        assert fitted["features"] == 12
+        assert fitted["counts"] == {"insert": 2, "delete": 2, "replace": 2}
+        assert len(fitted["insert"]["weights"]) == 12
+        assert len(fitted["delete"]["weights"]) == 12
+        assert len(fitted["replace"]["weights"]) == 12
+

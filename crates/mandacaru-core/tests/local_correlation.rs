@@ -44,9 +44,15 @@ fn full_domains_and_zero_pno_cutoff_recover_canonical_mp2_energy_and_density() {
         let local = local_correlation::calculate(&integrals, &reference, &[], &options).unwrap();
         assert!(!reference.has_model());
         let model = reference.model(&integrals).unwrap();
-        let canonical =
-            correlation::natural_orbitals(&ctx, 4, model.one.as_slice(), model.two.as_slice(), 2, model.exchange_madelung)
-                .unwrap();
+        let canonical = correlation::natural_orbitals(
+            &ctx,
+            4,
+            model.one.as_slice(),
+            model.two.as_slice(),
+            2,
+            model.exchange_madelung,
+        )
+        .unwrap();
         assert!(
             (local.mp2.correlation_energy - canonical.correlation_energy).abs() < 1e-7,
             "local {} canonical {}",

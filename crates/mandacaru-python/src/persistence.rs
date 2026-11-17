@@ -52,7 +52,7 @@ impl PySnapshot {
         precision: &str,
         taper: bool,
         register_free: bool,
-    ) -> PyResult<super::quantum::PyProblem> {
+    ) -> PyResult<super::quantum::PyQuantumProblem> {
         let precision = super::quantum::parse_precision(precision)?;
         if register_free && (sparse || dense) {
             return Err(pyo3::exceptions::PyValueError::new_err(
@@ -80,7 +80,7 @@ impl PySnapshot {
         if sparse {
             super::quantum::attach_sparse(py, &mut inner)?;
         }
-        Ok(super::quantum::PyProblem { inner })
+        Ok(super::quantum::PyQuantumProblem { inner })
     }
 }
 #[pyclass(name = "RunLedger", module = "mandacaru._native", frozen)]

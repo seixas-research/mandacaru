@@ -7,8 +7,6 @@
 //! The recipe is oxygen with its local potential lowered by 3 Ha (an s ghost at -0.868 Ha); the
 //! search removes it with the first remedy. The ranking control uses silicon with a short local
 //! radius, whose first eight attempts all bind a ghost between -0.4 and -19.5 Ha.
-mod paw_assemble_support;
-mod paw_generate_support;
 mod paw_search_support;
 
 use mandacaru_core::models::{atom::Atom, relativity::Treatment, xc_scheme::AtomSolver};

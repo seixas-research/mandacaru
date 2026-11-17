@@ -280,7 +280,9 @@ impl Stress {
             std::array::from_fn(|b| 0.5 * (gradient[a][b] + gradient[b][a]) / volume)
         });
         let antisymmetric = all_entries.then(|| {
-            std::array::from_fn(|a| std::array::from_fn(|b| 0.5 * (gradient[a][b] - gradient[b][a])))
+            std::array::from_fn(|a| {
+                std::array::from_fn(|b| 0.5 * (gradient[a][b] - gradient[b][a]))
+            })
         });
         Self {
             breakdown,

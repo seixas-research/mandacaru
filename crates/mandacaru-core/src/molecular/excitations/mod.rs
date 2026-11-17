@@ -23,7 +23,9 @@ mod response;
 pub mod spinor;
 mod unrestricted;
 
-pub use gradient::{excited_state, followed_excited_state, pick, ExcitedState, Followed, Picked, Track};
+pub use gradient::{
+    excited_state, followed_excited_state, pick, ExcitedState, Followed, Picked, Track,
+};
 pub use response::Response;
 pub use unrestricted::Unrestricted;
 
@@ -193,9 +195,14 @@ pub struct Excitations {
     /// The natural transition orbital weights of each root (`sigma_k^2 / sum sigma^2`).
     pub nto_weights: Vec<Vec<f64>>,
     /// The first-order shift of each root from the one-center Hartree kernel that the
-    /// linearized PAW one-center energy omits (PAW-LCAO Kohn-Sham only), Hartree. The one-center
-    /// exchange-correlation part is not estimated.
+    /// linearized PAW one-center energy omits (PAW-LCAO Kohn-Sham only), Hartree.
     pub one_center_hartree: Option<Vec<f64>>,
+    /// The first-order shift of each root from the one-center exchange-correlation kernel that
+    /// the same linearization omits (PAW-LCAO Kohn-Sham with LDA or PBE only), Hartree: the
+    /// second change of `E_xc[n^1] - E_xc[n~^1 + n~_c]` about the spherical reference atom along
+    /// the root's spin changes (`paw::molecular::XcSpheres::second_change`). Singlets move the
+    /// charge, triplets the magnetization, an unrestricted root both spins.
+    pub one_center_xc: Option<Vec<f64>>,
     /// The reference's spin channels: one for a closed shell, alpha and beta otherwise.
     pub channels: Vec<Channel>,
     /// Unrestricted references: `<S^2>` of each root as the singles combination of the
@@ -241,6 +248,35 @@ impl Excitations {
         let a = &c.atomic_orbitals;
         let t = a.columns(0, o) * plus * a.columns(o, c.virtual_orbitals).transpose();
         Ok((&t + t.transpose()) * 0.5)
+    }
+    /// The transition density of `root` sampled on the isolated `grid`
+    /// (`observables::sample_pairs`). With `channel` `None` it is the charge transition density,
+    /// whose dipole (the field's moment plus the PAW one-center part) is `transition_dipoles[root]`:
+    /// `sqrt(2) T` of a spin-adapted singlet, `T_alpha + T_beta` of an unrestricted reference (a
+    /// closed shell's triplet has none and raises). With `Some(c)` it is the spatial factor `T_c`
+    /// of [`Self::transition_density`].
+    pub fn transition_field(
+        &self,
+        integrals: &MolecularIntegrals,
+        root: usize,
+        channel: Option<usize>,
+        grid: &crate::math::SpatialGrid,
+    ) -> Result<super::observables::PairField> {
+        let t = match (channel, self.spin) {
+            (Some(c), _) => self.transition_density(root, c)?,
+            (None, Spin::Singlet) => self.transition_density(root, 0)? * std::f64::consts::SQRT_2,
+            (None, Spin::Unrestricted) => {
+                self.transition_density(root, 0)? + self.transition_density(root, 1)?
+            }
+            (None, Spin::Triplet) => {
+                return Err(invalid(
+                    "a closed shell's triplet has no charge transition density (its two spins \
+                     change oppositely); channel=0 gives the spatial factor of each spin's change",
+                ))
+            }
+            (None, Spin::Spinor) => self.transition_density(root, 0)?,
+        };
+        super::observables::sample_pairs(integrals, grid, &t)
     }
     /// The natural transition orbitals of `root` in `channel`: weights (within the channel) and
     /// the occupied and empty orbital pairs (columns in the nonorthogonal atomic basis), in

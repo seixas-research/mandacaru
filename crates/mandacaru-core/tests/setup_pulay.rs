@@ -38,26 +38,59 @@ fn single_transform_kinetic_matches_general_form_and_uses_less_workspace() {
             let m = fx.functions();
             let general_ctx = context();
             let general_mesh = fx.mesh(&general_ctx);
-            let expected = kinetic_form(&general_ctx, &fx.grid, &general_mesh, k,
-                (&psi, m), (&psi, m)).unwrap();
+            let expected = kinetic_form(
+                &general_ctx,
+                &fx.grid,
+                &general_mesh,
+                k,
+                (&psi, m),
+                (&psi, m),
+            )
+            .unwrap();
             let single_ctx = context();
             let single_mesh = fx.mesh(&single_ctx);
             let actual = kinetic_self(&single_ctx, &fx.grid, &single_mesh, k, &psi, m).unwrap();
-            println!("{name} k={k:?}: relative error {:.3e}, context peak {} -> {} bytes",
-                gap(&actual, &expected), general_ctx.memory_peak(), single_ctx.memory_peak());
+            println!(
+                "{name} k={k:?}: relative error {:.3e}, context peak {} -> {} bytes",
+                gap(&actual, &expected),
+                general_ctx.memory_peak(),
+                single_ctx.memory_peak()
+            );
             assert!(gap(&actual, &expected) < 1e-12, "{name}: kinetic mismatch");
-            assert!(single_ctx.memory_peak() < general_ctx.memory_peak(),
+            assert!(
+                single_ctx.memory_peak() < general_ctx.memory_peak(),
                 "{name}: single-transform peak {} vs general {}",
-                single_ctx.memory_peak(), general_ctx.memory_peak());
+                single_ctx.memory_peak(),
+                general_ctx.memory_peak()
+            );
             let direct_ctx = context();
             let direct = kinetic_grid(&direct_ctx, &fx.grid, k, &psi, m).unwrap();
-            assert!(gap(&direct, &expected) < 1e-12, "{name}: grid kinetic mismatch");
-            let narrow: Vec<_> = psi.iter().map(|z| num_complex::Complex32::new(z.re as f32, z.im as f32)).collect();
-            let promoted: Vec<_> = narrow.iter().map(|z| Complex64::new(z.re as f64, z.im as f64)).collect();
-            let reference = kinetic_form(&general_ctx, &fx.grid, &general_mesh, k,
-                (&promoted, m), (&promoted, m)).unwrap();
+            assert!(
+                gap(&direct, &expected) < 1e-12,
+                "{name}: grid kinetic mismatch"
+            );
+            let narrow: Vec<_> = psi
+                .iter()
+                .map(|z| num_complex::Complex32::new(z.re as f32, z.im as f32))
+                .collect();
+            let promoted: Vec<_> = narrow
+                .iter()
+                .map(|z| Complex64::new(z.re as f64, z.im as f64))
+                .collect();
+            let reference = kinetic_form(
+                &general_ctx,
+                &fx.grid,
+                &general_mesh,
+                k,
+                (&promoted, m),
+                (&promoted, m),
+            )
+            .unwrap();
             let narrow_result = kinetic_grid_f32(&direct_ctx, &fx.grid, k, &narrow, m).unwrap();
-            assert!(gap(&narrow_result, &reference) < 1e-12, "{name}: float32 kinetic mismatch");
+            assert!(
+                gap(&narrow_result, &reference) < 1e-12,
+                "{name}: float32 kinetic mismatch"
+            );
         }
     }
 }

@@ -4,7 +4,7 @@ use super::{
     evolution,
     pool_measurement::{self, PauliSet},
     solver::{register_free_refusal, Execution},
-    Basis, CachedProblem, Operator, C64,
+    Basis, Operator, QuantumProblem, C64,
 };
 use crate::{Buffer, Error, Result};
 
@@ -104,7 +104,9 @@ impl<'a> CircuitExecution<'a> {
     }
     /// Why the sampled energies carry no standard error, when they do not.
     pub fn energy_error_reason(&self) -> Option<&str> {
-        self.error_plan.as_ref().and_then(|(plan, _)| plan.unavailable.as_deref())
+        self.error_plan
+            .as_ref()
+            .and_then(|(plan, _)| plan.unavailable.as_deref())
     }
     /// Form the pool commutators of a gradient measurement in batches of about `bytes` accounted
     /// bytes, instead of the context's default ([`pool_measurement::batch_bytes`]).
@@ -116,7 +118,7 @@ impl<'a> CircuitExecution<'a> {
 /// The Pauli rotations (labels, angles) of the circuit that prepares the ansatz state of
 /// `problem` at `indices` and `parameters`, in circuit order, as the executor receives them.
 pub fn circuit_rotations(
-    problem: &CachedProblem,
+    problem: &QuantumProblem,
     indices: &[usize],
     parameters: &[f64],
 ) -> Result<(Vec<String>, Vec<f64>)> {
@@ -124,7 +126,7 @@ pub fn circuit_rotations(
     Ok((circuit.labels, circuit.angles))
 }
 impl CircuitExecution<'_> {
-    fn circuit(problem: &CachedProblem, indices: &[usize], parameters: &[f64]) -> Result<Circuit> {
+    fn circuit(problem: &QuantumProblem, indices: &[usize], parameters: &[f64]) -> Result<Circuit> {
         if problem.hva.as_ref().is_some_and(|h| !h.trotter) {
             return Err(invalid(
                 "exact Hamiltonian-group evolution cannot be serialized as Pauli rotations",
@@ -167,7 +169,7 @@ impl CircuitExecution<'_> {
     }
     /// Send `requests` to the executor in one call and check its answer. After a stop the
     /// executor is never called again.
-    fn call(&mut self, problem: &CachedProblem, requests: Vec<Request>) -> Result<Readings> {
+    fn call(&mut self, problem: &QuantumProblem, requests: Vec<Request>) -> Result<Readings> {
         if let Some(message) = &self.stopped {
             return Err(Error::Interrupted(message.clone()));
         }
@@ -221,7 +223,7 @@ impl Readings {
     /// string among the request's observables.
     fn read(
         &self,
-        problem: &CachedProblem,
+        problem: &QuantumProblem,
         request: usize,
         operator: &Operator,
         position: &dyn Fn(&Term) -> Option<usize>,
@@ -260,7 +262,7 @@ impl CircuitExecution<'_> {
     /// observable per basis, each measured after that basis's Givens network. The objective and
     /// every parameter-shift evaluation go through here, so energy and gradient always use the
     /// same measurement.
-    fn energy(&mut self, problem: &CachedProblem, circuit: &Circuit) -> Result<f64> {
+    fn energy(&mut self, problem: &QuantumProblem, circuit: &Circuit) -> Result<f64> {
         if let (true, Some(shots)) = (problem.is_register_free(), self.shots) {
             return self.energy_with_error(problem, circuit, shots);
         }
@@ -301,7 +303,7 @@ impl CircuitExecution<'_> {
     /// covariance needs, and its standard error recorded (see [`super::energy_error`]).
     fn energy_with_error(
         &mut self,
-        problem: &CachedProblem,
+        problem: &QuantumProblem,
         circuit: &Circuit,
         shots: u64,
     ) -> Result<f64> {
@@ -338,7 +340,7 @@ impl CircuitExecution<'_> {
 }
 impl CircuitExecution<'_> {
     /// Build the sampled energy's measurement plan once per execution.
-    fn prepare_error_plan(&mut self, problem: &CachedProblem) -> Result<()> {
+    fn prepare_error_plan(&mut self, problem: &QuantumProblem) -> Result<()> {
         if self.error_plan.is_none() {
             let plan = error_plan(problem)?;
             let positions = plan.observables();
@@ -349,7 +351,7 @@ impl CircuitExecution<'_> {
 }
 /// The measurement of a sampled energy with its error: the Hamiltonian's commuting bases, or the
 /// factorized plan's.
-fn error_plan(problem: &CachedProblem) -> Result<super::energy_error::Plan> {
+fn error_plan(problem: &QuantumProblem) -> Result<super::energy_error::Plan> {
     match &problem.factorized {
         None => super::energy_error::Plan::commuting(&problem.context, &problem.hamiltonian),
         Some(plan) => super::energy_error::Plan::factorized(plan),
@@ -358,7 +360,7 @@ fn error_plan(problem: &CachedProblem) -> Result<super::energy_error::Plan> {
 impl Execution for CircuitExecution<'_> {
     fn evaluate(
         &mut self,
-        problem: &CachedProblem,
+        problem: &QuantumProblem,
         indices: &[usize],
         parameters: &[f64],
         gradients: bool,
@@ -390,7 +392,7 @@ impl Execution for CircuitExecution<'_> {
     /// answers, so the pool's commutators are never all alive at once.
     fn pool_gradients(
         &mut self,
-        problem: &CachedProblem,
+        problem: &QuantumProblem,
         indices: &[usize],
         parameters: &[f64],
     ) -> Result<Vec<f64>> {
@@ -439,7 +441,7 @@ pub struct DeviceHessian {
 /// energy evaluations `1 + 2 R^2` and the circuits (evaluations times the energy's bases: on a
 /// `sampled` device the bases of the energy measured with its error, [`super::energy_error`]).
 pub fn device_hessian_plan(
-    problem: &CachedProblem,
+    problem: &QuantumProblem,
     indices: &[usize],
     parameters: &[f64],
     sampled: bool,
@@ -454,7 +456,10 @@ pub fn device_hessian_plan(
     let bases = if sampled {
         error_plan(problem)?.bases.len()
     } else {
-        problem.factorized.as_ref().map_or(1, |plan| plan.bases.len())
+        problem
+            .factorized
+            .as_ref()
+            .map_or(1, |plan| plan.bases.len())
     };
     Ok((
         r,
@@ -469,7 +474,7 @@ pub fn device_hessian_plan(
 /// the RDMs of these circuits turn `z . g(R)` into a density; the weight of a circuit is
 /// `z_k c_a`, and `k` lets the force carry the error of `z` (`response::device_gradient`).
 pub fn shifted_circuits(
-    problem: &CachedProblem,
+    problem: &QuantumProblem,
     indices: &[usize],
     parameters: &[f64],
     z: &[f64],
@@ -503,7 +508,7 @@ impl CircuitExecution<'_> {
     /// Hessian is `sum_{a in k, b in l} s_a s_b d2E/dphi_a dphi_b`. `1 + 2 R^2` energies.
     pub fn gradient_and_hessian(
         &mut self,
-        problem: &CachedProblem,
+        problem: &QuantumProblem,
         indices: &[usize],
         parameters: &[f64],
     ) -> Result<DeviceHessian> {
@@ -511,7 +516,8 @@ impl CircuitExecution<'_> {
         let circuit = Self::circuit(problem, indices, parameters)?;
         let r = circuit.angles.len();
         let sampled = self.shots.is_some();
-        let (_, evaluations, circuits) = device_hessian_plan(problem, indices, parameters, sampled)?;
+        let (_, evaluations, circuits) =
+            device_hessian_plan(problem, indices, parameters, sampled)?;
         // The shifted angle sets, in the order the energies are read back.
         let mut variants: Vec<Vec<f64>> = Vec::with_capacity(evaluations);
         variants.push(circuit.angles.clone());

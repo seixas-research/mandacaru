@@ -2,7 +2,8 @@
 //!
 //! `T_a(G) = hat_a(Q) e^{+iG.r0} / dv` with `hat_a(Q) = 4 pi (-i)^L Y_LM(Q^) F_L(|Q|) e^{-iQ.R}`
 //! and `Q` the box vector of the grid index shifted by `k_diff` and wrapped into the FFT box (one
-//! plain `Q`, no alias average: [`Augmentation::pair_shapes`]). Under the strain
+//! plain `Q`, no alias average, except for the mean of the two faces of the box:
+//! [`Augmentation::pair_shapes`]). Under the strain
 //! `x -> (1 + eps) x`, at fixed fractional `k_diff` and fixed integer indices:
 //!
 //! ```text
@@ -16,12 +17,13 @@
 //! tabulates). The first term is the `1 / dv` of the compensation charge and is
 //! [`ShapeStrain`]'s caller's (it needs only `T_a`); this module returns the second. At `Q = 0`
 //! the factor `Q_a` removes it.
+//!
+//! An index with several aliases (`reciprocal::shifted_aliases`) is the mean of them, each strained with
+//! its own `Q`: the form factor part is the mean of `-Q_a d_b f` over them, not the mean of the
+//! gradients times one `Q`.
 use super::{invalid, Augmentation, Crystal};
 use crate::{
-    math::{fft::frequency, reciprocal},
-    periodic::setup::shapes::Transient,
-    quantum::C64,
-    Buffer, Context, Result,
+    math::reciprocal, periodic::setup::shapes::Transient, quantum::C64, Buffer, Context, Result,
 };
 use nalgebra::Vector3;
 
@@ -30,21 +32,21 @@ use nalgebra::Vector3;
 pub struct ShapeStrain {
     rows: usize,
     n: usize,
-    /// `e^{iG.r0}/dv * e^{-iQ.R} d_b f_a(Q)` at `[(row * 3 + b) * n + v]`.
+    /// `e^{iG.r0}/dv * e^{-iQ.R} d_b f_a(Q)` at `[(row * 3 + b) * n + v]`, each image counted
+    /// `1 / count` of its index.
     gradients: Buffer<C64>,
     /// The wrapped `Q` at `[axis * n + v]`.
     wrapped: Buffer<f64>,
+    /// The images beyond the first of the indices on a face of the box: the index and the `Q`
+    /// of each, and its gradients at `[(row * 3 + b) * faces.len() + j]`.
+    faces: Vec<(usize, [f64; 3])>,
+    face_gradients: Buffer<C64>,
 }
 
 impl ShapeStrain {
     /// The number of compensation channels.
     pub fn rows(&self) -> usize {
         self.rows
-    }
-
-    /// The wrapped `Q_axis` of index `v`.
-    pub fn wave(&self, axis: usize, v: usize) -> f64 {
-        self.wrapped.as_slice()[axis * self.n + v]
     }
 
     /// `-Q_a (d_b f_row)(Q) e^{-iQ.R} e^{iG.r0} / dv` for every channel and index
@@ -64,6 +66,11 @@ impl ShapeStrain {
             {
                 *to = slope[v] * -q[v];
             }
+            let extra = &self.face_gradients.as_slice()
+                [(row * 3 + b) * self.faces.len()..(row * 3 + b + 1) * self.faces.len()];
+            for ((at, wave), gradient) in self.faces.iter().zip(extra) {
+                out.as_mut_slice()[row * n + at] += gradient * -wave[a];
+            }
         }
         Ok(out)
     }
@@ -76,7 +83,6 @@ impl Augmentation<'_> {
     pub fn pair_shape_strain(&self, c: &Crystal, k_diff: [f64; 3]) -> Result<ShapeStrain> {
         let rows = self.sites.channels.len();
         let n = c.grid.index.points();
-        let shape = c.grid.index.shape();
         let dv = c.grid.index.dv();
         let mut gradients = c.context.allocate::<C64>(rows * 3 * n)?;
         let mut wrapped = c.context.allocate::<f64>(3 * n)?;
@@ -86,43 +92,40 @@ impl Augmentation<'_> {
                 n,
                 gradients,
                 wrapped,
+                faces: Vec::new(),
+                face_gradients: c.context.allocate::<C64>(0)?,
             });
         }
         let b = reciprocal::reciprocal_cell(&c.grid)?;
-        let kappa = b
-            .try_inverse()
-            .ok_or_else(|| invalid("singular reciprocal cell"))?
-            * Vector3::from(k_diff);
+        let aliases = reciprocal::shifted_aliases(&c.context, &c.grid, k_diff)?;
+        let kd = Vector3::from(k_diff);
+        let phase_of = |q: &Vector3<f64>, weight: f64| {
+            let g = q - kd;
+            let angle = g[0] * c.grid.origin[0] + g[1] * c.grid.origin[1] + g[2] * c.grid.origin[2];
+            C64::from_polar(weight / dv, angle)
+        };
         let block = (Transient::of(&c.context).dense_bytes / (rows * 3 * 16 + 64 + 56)).max(1);
         let _scratch = c
             .context
             .reserve(crate::product(&[block.min(n), rows * 3 * 16 + 64 + 56])?)?;
         let mut vectors: Vec<[f64; 3]> = Vec::with_capacity(block.min(n));
         let mut phases: Vec<C64> = Vec::with_capacity(block.min(n));
+        let mut face_indices: Vec<usize> = Vec::new();
         for start in (0..n).step_by(block) {
             vectors.clear();
             phases.clear();
             for at in start..(start + block).min(n) {
-                let index = [
-                    at / (shape[1] * shape[2]),
-                    at / shape[2] % shape[1],
-                    at % shape[2],
-                ];
-                // The wrapping of `shape_rows`, line for line: one plain Q per index.
-                let box_vector = Vector3::from_fn(|a, _| {
-                    let size = shape[a] as f64;
-                    let x = frequency(index[a], shape[a]) + kappa[a];
-                    x - size * ((x + 0.5 * size + 1e-9) / size).floor()
-                });
-                let q = b * box_vector;
-                let g = q - Vector3::from(k_diff);
-                let angle =
-                    g[0] * c.grid.origin[0] + g[1] * c.grid.origin[1] + g[2] * c.grid.origin[2];
+                // The aliases of `shape_rows`, the same table: the first image of each index.
+                let (images, weights) = aliases.of(at);
+                if images.len() > 1 {
+                    face_indices.push(at);
+                }
+                let q = b * Vector3::from(images[0]);
                 for axis in 0..3 {
                     wrapped.as_mut_slice()[axis * n + at] = q[axis];
                 }
                 vectors.push(q.into());
-                phases.push(C64::from_polar(1. / dv, angle));
+                phases.push(phase_of(&q, weights[0]));
             }
             self.shapes.transform_gradients(
                 &self.sites,
@@ -138,11 +141,40 @@ impl Augmentation<'_> {
                 }
             }
         }
+        // The other images of the indices on a face of the box.
+        let mut faces: Vec<(usize, [f64; 3])> = Vec::new();
+        let mut face_phases: Vec<C64> = Vec::new();
+        for &at in &face_indices {
+            let (images, weights) = aliases.of(at);
+            for (image, weight) in images.iter().zip(weights).skip(1) {
+                let q = b * Vector3::from(*image);
+                faces.push((at, q.into()));
+                face_phases.push(phase_of(&q, *weight));
+            }
+        }
+        let width = faces.len();
+        let mut face_gradients = c.context.allocate::<C64>(rows * 3 * width)?;
+        let waves: Vec<[f64; 3]> = faces.iter().map(|f| f.1).collect();
+        self.shapes.transform_gradients(
+            &self.sites,
+            &waves,
+            face_gradients.as_mut_slice(),
+            width,
+        )?;
+        for row in 0..rows {
+            for axis in 0..3 {
+                for (j, phase) in face_phases.iter().enumerate() {
+                    face_gradients.as_mut_slice()[(row * 3 + axis) * width + j] *= phase;
+                }
+            }
+        }
         Ok(ShapeStrain {
             rows,
             n,
             gradients,
             wrapped,
+            faces,
+            face_gradients,
         })
     }
 }

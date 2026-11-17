@@ -1,15 +1,15 @@
 //! Projector augmented-wave datasets, potentials and projector construction.
 pub mod atom_scf;
 pub mod augmentation;
-pub mod basis_recipe;
 pub mod basis_blocks;
+pub mod basis_recipe;
 pub mod checks;
 pub mod confinement;
 pub mod core_correction;
 pub mod core_exchange;
 pub mod diagnose;
-pub mod engine_spin_orbit;
 pub mod digest;
+pub mod engine_spin_orbit;
 pub mod fields;
 pub mod generate;
 pub mod local_split;

@@ -162,7 +162,12 @@ pub fn assign(groups: &[Cluster], l: usize, diracs: &[f64]) -> Vec<Option<(f64, 
                     .filter(|(splitting, _)| {
                         (WRONG_PAIR.0..WRONG_PAIR.1).contains(&(splitting / dirac))
                     })
-                    .min_by(|x, y| (x.0 / dirac).ln().abs().total_cmp(&(y.0 / dirac).ln().abs()));
+                    .min_by(|x, y| {
+                        (x.0 / dirac)
+                            .ln()
+                            .abs()
+                            .total_cmp(&(y.0 / dirac).ln().abs())
+                    });
                 if best.is_some() {
                     taken = i + 1;
                     return best;
@@ -210,7 +215,11 @@ pub fn splittings(ctx: &Context, ds: &PawDataset) -> Result<Vec<Splitting>> {
 /// [`splittings`] at the one Fermi-Dirac width `only_width` (eV) when it is given: the rounds of
 /// one calibration measure at the width of the first, so the occupations of an open shell do not
 /// change from one round to the next.
-pub fn splittings_from(ctx: &Context, ds: &PawDataset, only_width: Option<f64>) -> Result<Vec<Splitting>> {
+pub fn splittings_from(
+    ctx: &Context,
+    ds: &PawDataset,
+    only_width: Option<f64>,
+) -> Result<Vec<Splitting>> {
     if shells(ds)?.is_empty() {
         return Ok(Vec::new());
     }

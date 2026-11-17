@@ -4,7 +4,7 @@
 mod solver_support;
 
 use mandacaru_core::{
-    quantum::{solver::prune_candidate, CachedProblem, SolveOptions},
+    quantum::{solver::prune_candidate, QuantumProblem, SolveOptions},
     Context,
 };
 
@@ -19,7 +19,7 @@ fn adapt(tetris: bool, prune: bool, max_growth: usize) -> SolveOptions {
     }
 }
 
-fn support(problem: &CachedProblem, index: usize) -> u64 {
+fn support(problem: &QuantumProblem, index: usize) -> u64 {
     problem.pool[index]
         .operator
         .terms

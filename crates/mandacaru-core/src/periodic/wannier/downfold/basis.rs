@@ -146,7 +146,9 @@ fn moving_functions(
     let owners = setup.function_atoms();
     let projector_atoms = setup.projector_atoms();
     if owners.len() != m || axis > 2 {
-        return Err(invalid("the moving functions need the crystal's basis and an axis"));
+        return Err(invalid(
+            "the moving functions need the crystal's basis and an axis",
+        ));
     }
     let mesh = Mesh::new(ctx, &crystal.grid)?;
     let (mut gap, mut largest) = (0f64, 0f64);
@@ -186,8 +188,16 @@ fn moving_functions(
             setup.projectors(),
         )?[axis];
         slopes.push(DMatrix::from_fn(m, crystal.p, |mu, j| {
-            let rows = if owners[mu] == atom { g[(mu, j)] } else { C64::default() };
-            let columns = if projector_atoms[j] == atom { g[(mu, j)] } else { C64::default() };
+            let rows = if owners[mu] == atom {
+                g[(mu, j)]
+            } else {
+                C64::default()
+            };
+            let columns = if projector_atoms[j] == atom {
+                g[(mu, j)]
+            } else {
+                C64::default()
+            };
             rows - columns
         }));
     }
@@ -449,7 +459,8 @@ pub fn two_body_gradient(
                 for p in 0..r {
                     for q in 0..r {
                         let at = 2 * (p * r + q);
-                        sum += *lambda * x[(p, q)] * (values[at * f + k] + values[(at + 1) * f + k]);
+                        sum +=
+                            *lambda * x[(p, q)] * (values[at * f + k] + values[(at + 1) * f + k]);
                     }
                 }
             }
@@ -744,13 +755,20 @@ impl PairColumns for StoredColumns {
 
     fn diagonal(&self) -> Result<Vec<f64>> {
         let n = self.packing.n;
-        let rows: Vec<usize> = self.packing.indices.iter().map(|&(p, r)| p * n + r).collect();
+        let rows: Vec<usize> = self
+            .packing
+            .indices
+            .iter()
+            .map(|&(p, r)| p * n + r)
+            .collect();
         Ok(self.packing.diagonal(&self.rows(&rows, true)?))
     }
 
     fn column(&self, pivot: usize) -> Result<Vec<f64>> {
         let (p, r) = self.packing.pivot(pivot)?;
-        Ok(self.packing.column(&self.rows(&[p * self.packing.n + r], false)?))
+        Ok(self
+            .packing
+            .column(&self.rows(&[p * self.packing.n + r], false)?))
     }
 }
 

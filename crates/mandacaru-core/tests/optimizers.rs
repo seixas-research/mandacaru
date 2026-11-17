@@ -366,15 +366,27 @@ fn convergence_needs_patience_calm_steps_a_finite_cost_and_works_without_paramet
             ..Default::default()
         };
         let result = optimizer::minimize(&ctx, &[0.3], &options, flat).unwrap();
-        assert!(result.success && result.steps == patience, "patience {patience}: {} steps", result.steps);
+        assert!(
+            result.success && result.steps == patience,
+            "patience {patience}: {} steps",
+            result.steps
+        );
     }
     // A non-finite cost is refused, never minimized.
-    let options = Options { method: Method::Cobyla, max_iterations: 5, ..Default::default() };
+    let options = Options {
+        method: Method::Cobyla,
+        max_iterations: 5,
+        ..Default::default()
+    };
     let nan = |_: &[f64]| Ok((f64::NAN, vec![0.]));
     assert!(optimizer::minimize(&ctx, &[0.1], &options, nan).is_err());
     // A problem without parameters is one evaluation and a success.
     let result = optimizer::minimize(&ctx, &[], &options, |_: &[f64]| Ok((1., vec![]))).unwrap();
-    assert!(result.success && result.history.len() == 1, "{}", result.message);
+    assert!(
+        result.success && result.history.len() == 1,
+        "{}",
+        result.message
+    );
     assert_eq!(ctx.memory_used(), 0);
 }
 
@@ -399,38 +411,74 @@ fn slsqp_returns_its_hessian_and_restarts_from_it() {
         ..Default::default()
     };
     let cold = optimizer::minimize(&ctx, &[0.3, -0.2, 0.1], &options, coupled_quadratic).unwrap();
-    let hessian = cold.hessian.clone().expect("SLSQP returns its Hessian approximation");
+    let hessian = cold
+        .hessian
+        .clone()
+        .expect("SLSQP returns its Hessian approximation");
     assert_eq!(hessian.len(), 9);
     for i in 0..3 {
         for j in 0..i {
-            assert_eq!(hessian[i * 3 + j], hessian[j * 3 + i], "the approximation is symmetric");
+            assert_eq!(
+                hessian[i * 3 + j],
+                hessian[j * 3 + i],
+                "the approximation is symmetric"
+            );
         }
     }
     // Started at a displaced point with the learned curvature, the quadratic is solved in the
     // fewest steps; from the identity it takes more.
     let start = [1.1, 0.7, -0.9];
-    let warm = optimizer::minimize_from(&ctx, &start, &options, Some(&hessian), coupled_quadratic).unwrap();
+    let warm = optimizer::minimize_from(&ctx, &start, &options, Some(&hessian), coupled_quadratic)
+        .unwrap();
     let identity = optimizer::minimize(&ctx, &start, &options, coupled_quadratic).unwrap();
     assert!(warm.success && identity.success);
-    assert!(warm.history.len() < identity.history.len(), "{} vs {}", warm.history.len(), identity.history.len());
+    assert!(
+        warm.history.len() < identity.history.len(),
+        "{} vs {}",
+        warm.history.len(),
+        identity.history.len()
+    );
     assert!((warm.energy - identity.energy).abs() < 1e-10);
     // The identity is the default: an explicit one is the same run, bit for bit.
     let explicit: Vec<f64> = (0..9).map(|k| if k % 4 == 0 { 1. } else { 0. }).collect();
-    let same = optimizer::minimize_from(&ctx, &start, &options, Some(&explicit), coupled_quadratic).unwrap();
+    let same = optimizer::minimize_from(&ctx, &start, &options, Some(&explicit), coupled_quadratic)
+        .unwrap();
     assert_eq!(same.history, identity.history);
     assert_eq!(same.parameters, identity.parameters);
     // No other method but BFGS keeps one, and one given to it is refused, not ignored.
-    for method in [Method::Lbfgs, Method::Cg, Method::Cobyla, Method::NelderMead, Method::Spsa] {
-        let other = Options { method, ..options.clone() };
+    for method in [
+        Method::Lbfgs,
+        Method::Cg,
+        Method::Cobyla,
+        Method::NelderMead,
+        Method::Spsa,
+    ] {
+        let other = Options {
+            method,
+            ..options.clone()
+        };
         let out = optimizer::minimize(&ctx, &start, &other, coupled_quadratic).unwrap();
         assert!(out.hessian.is_none(), "{method:?}");
-        assert!(optimizer::minimize_from(&ctx, &start, &other, Some(&hessian), coupled_quadratic).is_err(), "{method:?}");
+        assert!(
+            optimizer::minimize_from(&ctx, &start, &other, Some(&hessian), coupled_quadratic)
+                .is_err(),
+            "{method:?}"
+        );
     }
     // A Hessian of the wrong size or with a nonfinite entry is refused.
-    assert!(optimizer::minimize_from(&ctx, &start, &options, Some(&hessian[..4]), coupled_quadratic).is_err());
+    assert!(optimizer::minimize_from(
+        &ctx,
+        &start,
+        &options,
+        Some(&hessian[..4]),
+        coupled_quadratic
+    )
+    .is_err());
     let mut bad = hessian.clone();
     bad[1] = f64::NAN;
-    assert!(optimizer::minimize_from(&ctx, &start, &options, Some(&bad), coupled_quadratic).is_err());
+    assert!(
+        optimizer::minimize_from(&ctx, &start, &options, Some(&bad), coupled_quadratic).is_err()
+    );
     assert_eq!(ctx.memory_used(), 0);
 }
 
@@ -444,7 +492,10 @@ fn bfgs_returns_its_inverse_hessian_and_restarts_from_it() {
         ..Default::default()
     };
     let cold = optimizer::minimize(&ctx, &[0.3, -0.2, 0.1], &options, coupled_quadratic).unwrap();
-    let inverse = cold.hessian.clone().expect("BFGS returns its inverse Hessian approximation");
+    let inverse = cold
+        .hessian
+        .clone()
+        .expect("BFGS returns its inverse Hessian approximation");
     assert_eq!(inverse.len(), 9);
     // The estimate is symmetric with a positive diagonal (an inverse Hessian approximation).
     for i in 0..3 {
@@ -454,15 +505,29 @@ fn bfgs_returns_its_inverse_hessian_and_restarts_from_it() {
         }
     }
     let start = [1.1, 0.7, -0.9];
-    let warm = optimizer::minimize_from(&ctx, &start, &options, Some(&inverse), coupled_quadratic).unwrap();
+    let warm = optimizer::minimize_from(&ctx, &start, &options, Some(&inverse), coupled_quadratic)
+        .unwrap();
     let identity = optimizer::minimize(&ctx, &start, &options, coupled_quadratic).unwrap();
     assert!(warm.success && identity.success);
-    assert!(warm.history.len() < identity.history.len(), "{} vs {}", warm.history.len(), identity.history.len());
+    assert!(
+        warm.history.len() < identity.history.len(),
+        "{} vs {}",
+        warm.history.len(),
+        identity.history.len()
+    );
     let explicit: Vec<f64> = (0..9).map(|k| if k % 4 == 0 { 1. } else { 0. }).collect();
-    let same = optimizer::minimize_from(&ctx, &start, &options, Some(&explicit), coupled_quadratic).unwrap();
+    let same = optimizer::minimize_from(&ctx, &start, &options, Some(&explicit), coupled_quadratic)
+        .unwrap();
     assert_eq!(same.history, identity.history);
     assert_eq!(same.parameters, identity.parameters);
-    assert!(optimizer::minimize_from(&ctx, &start, &options, Some(&inverse[..4]), coupled_quadratic).is_err());
+    assert!(optimizer::minimize_from(
+        &ctx,
+        &start,
+        &options,
+        Some(&inverse[..4]),
+        coupled_quadratic
+    )
+    .is_err());
     assert_eq!(ctx.memory_used(), 0);
 }
 
@@ -501,12 +566,25 @@ fn a_deferred_gradient_leaves_every_method_run_unchanged_and_is_read_only_where_
             tolerance: Some(1e-9),
             ..Default::default()
         };
-        let cases: [(bool, fn(&[f64]) -> mandacaru_core::Result<(f64, Vec<f64>)>, &[f64]); 2] =
-            [(true, rosenbrock, &[-1.2, 1.]), (false, coupled_quadratic, &[0.3, -0.2, 0.1])];
+        let cases: [(
+            bool,
+            fn(&[f64]) -> mandacaru_core::Result<(f64, Vec<f64>)>,
+            &[f64],
+        ); 2] = [
+            (true, rosenbrock, &[-1.2, 1.]),
+            (false, coupled_quadratic, &[0.3, -0.2, 0.1]),
+        ];
         for (is_rosenbrock, objective, start) in cases {
             let eager = optimizer::minimize(&ctx, start, &options, objective).unwrap();
             let reads = std::cell::Cell::new(0);
-            let lazy = optimizer::minimize_deferred_from(&ctx, start, &options, None, deferred(&objective, &reads)).unwrap();
+            let lazy = optimizer::minimize_deferred_from(
+                &ctx,
+                start,
+                &options,
+                None,
+                deferred(&objective, &reads),
+            )
+            .unwrap();
             let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
             assert_eq!(bits(&lazy.parameters), bits(&eager.parameters), "{name}");
             assert_eq!(lazy.energy.to_bits(), eager.energy.to_bits(), "{name}");
@@ -514,11 +592,17 @@ fn a_deferred_gradient_leaves_every_method_run_unchanged_and_is_read_only_where_
             assert_eq!(lazy.steps, eager.steps, "{name}");
             assert_eq!(lazy.success, eager.success, "{name}");
             assert_eq!(lazy.message, eager.message, "{name}");
-            assert_eq!(lazy.hessian.as_deref().map(bits), eager.hessian.as_deref().map(bits), "{name}");
+            assert_eq!(
+                lazy.hessian.as_deref().map(bits),
+                eager.hessian.as_deref().map(bits),
+                "{name}"
+            );
             let evaluations = lazy.history.len();
             match method {
                 // The three derivative-free methods never read a gradient.
-                Method::Cobyla | Method::NelderMead | Method::Spsa => assert_eq!(reads.get(), 0, "{name}"),
+                Method::Cobyla | Method::NelderMead | Method::Spsa => {
+                    assert_eq!(reads.get(), 0, "{name}")
+                }
                 // Every iteration accepts one trial on its energy alone: one gradient per
                 // iteration and one at the start, whatever the line search rejected.
                 Method::Slsqp => assert_eq!(reads.get(), lazy.steps + 1, "{name}"),
@@ -529,7 +613,11 @@ fn a_deferred_gradient_leaves_every_method_run_unchanged_and_is_read_only_where_
                 }
             }
             if is_rosenbrock && method == Method::Slsqp {
-                assert!(reads.get() < evaluations, "Rosenbrock rejects line-search trials: {} reads of {evaluations}", reads.get());
+                assert!(
+                    reads.get() < evaluations,
+                    "Rosenbrock rejects line-search trials: {} reads of {evaluations}",
+                    reads.get()
+                );
             }
         }
     }
@@ -543,8 +631,16 @@ fn a_gradient_that_a_run_never_reads_is_never_checked_and_one_it_reads_is() {
         let energy = (x[0] - 0.7).powi(2);
         Ok(optimizer::Probe::deferred(energy, || Ok(vec![f64::NAN])))
     };
-    let derivative_free = Options { method: Method::NelderMead, ..Default::default() };
-    assert!(optimizer::minimize_deferred_from(&ctx, &[0.1], &derivative_free, None, broken).is_ok());
-    let quasi_newton = Options { method: Method::Slsqp, ..Default::default() };
+    let derivative_free = Options {
+        method: Method::NelderMead,
+        ..Default::default()
+    };
+    assert!(
+        optimizer::minimize_deferred_from(&ctx, &[0.1], &derivative_free, None, broken).is_ok()
+    );
+    let quasi_newton = Options {
+        method: Method::Slsqp,
+        ..Default::default()
+    };
     assert!(optimizer::minimize_deferred_from(&ctx, &[0.1], &quasi_newton, None, broken).is_err());
 }

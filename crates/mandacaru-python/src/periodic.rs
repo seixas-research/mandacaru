@@ -270,12 +270,13 @@ impl PyCrystal {
         eigensolver: &str,
         switch_tolerance: f64,
     ) -> PyResult<PyPeriodicResult> {
-        let exxdiv = mandacaru_core::periodic::screened_exchange::ExxDivTreatment::parse(exxdiv_treatment)
-            .map_err(error)?;
-        let scf_algo = mandacaru_core::periodic::solver::ScfAlgorithm::parse(algorithm)
-            .map_err(error)?;
-        let eigen_algo = mandacaru_core::periodic::solver::Eigensolver::parse(eigensolver)
-            .map_err(error)?;
+        let exxdiv =
+            mandacaru_core::periodic::screened_exchange::ExxDivTreatment::parse(exxdiv_treatment)
+                .map_err(error)?;
+        let scf_algo =
+            mandacaru_core::periodic::solver::ScfAlgorithm::parse(algorithm).map_err(error)?;
+        let eigen_algo =
+            mandacaru_core::periodic::solver::Eigensolver::parse(eigensolver).map_err(error)?;
         let options = Options {
             max_iterations,
             tolerance,
@@ -335,6 +336,16 @@ impl Drop for PyPeriodicResult {
 }
 #[pymethods]
 impl PyPeriodicResult {
+    /// A crystal has no dipole moment (`MeanField.dipole_moment` is a molecule's): raises
+    /// `NotImplementedError` naming `get_polarization`.
+    #[pyo3(signature=(*, atomic_units=false))]
+    fn dipole_moment(&self, atomic_units: bool) -> PyResult<()> {
+        let _ = atomic_units;
+        Err(pyo3::exceptions::PyNotImplementedError::new_err(
+            "a crystal has no dipole moment: its polarization is get_polarization (the Berry phase \
+             of the occupied bands)",
+        ))
+    }
     /// Evaluates the linear-response Hubbard U parameters for this converged crystal.
     /// Returns dictionary with `u_matrix`, `u_charge`, `chi0`, `chi`, `alphas`, and optionally `j_response`.
     #[pyo3(signature=(*,alphas=None))]
@@ -346,11 +357,7 @@ impl PyPeriodicResult {
         let alphas = alphas.unwrap_or_else(|| vec![0.001837466, 0.003674932]); // ~0.05, 0.1 eV in Ha
         let res = py
             .detach(|| {
-                mandacaru_core::periodic::hubbard_response(
-                    &self.crystal,
-                    &self.inner,
-                    &alphas,
-                )
+                mandacaru_core::periodic::hubbard_response(&self.crystal, &self.inner, &alphas)
             })
             .map_err(error)?;
 
@@ -436,10 +443,7 @@ impl PyPeriodicResult {
             .detach(|| self.response()?.stress(&self.crystal, &self.inner))
             .map_err(error)?;
         let out = PyDict::new(py);
-        for (name, tensor) in [
-            ("sigma", stress.sigma),
-            ("gradient", stress.gradient),
-        ] {
+        for (name, tensor) in [("sigma", stress.sigma), ("gradient", stress.gradient)] {
             out.set_item(
                 name,
                 array(py, &[3, 3], tensor.into_iter().flatten().collect())?,
@@ -508,7 +512,11 @@ impl PyPeriodicResult {
     }
     /// The Chern numbers of the three plane families of the mesh `size` and the Hall
     /// conductivity of an insulator (`periodic::berry::hall`), e^2/(hbar Bohr).
-    fn anomalous_hall<'py>(&self, py: Python<'py>, size: [usize; 3]) -> PyResult<Bound<'py, PyDict>> {
+    fn anomalous_hall<'py>(
+        &self,
+        py: Python<'py>,
+        size: [usize; 3],
+    ) -> PyResult<Bound<'py, PyDict>> {
         super::berry::anomalous_hall(self, py, size)
     }
     #[getter]

@@ -54,6 +54,13 @@ excitations of a molecule ([Excited states of molecules](guide/excited_states.md
    :members:
 ```
 
+On an insulating crystal the same call returns a `CrystalExcitations` view of its
+Bethe-Salpeter excitons:
+
+```{eval-rst}
+.. autoclass:: mandacaru.analysis.excitations.CrystalExcitations
+```
+
 `calc.get_real_time(...)` returns a `RealTime` view of a molecule propagated in real time
 after a delta kick, with the strength function and polarizability of the trace
 ([Real-time TD-DFT of molecules](guide/real_time.md)):
@@ -61,6 +68,13 @@ after a delta kick, with the strength function and polarizability of the trace
 ```{eval-rst}
 .. autoclass:: mandacaru.analysis.real_time.RealTime
    :members:
+```
+
+A crystal propagated by the same call, and `calc.get_dielectric_function(...)`, return
+views of the macroscopic current and of `epsilon(omega)`:
+
+```{eval-rst}
+.. autoclass:: mandacaru.analysis.real_time.DielectricFunction
 ```
 
 The result's `hamiltonian` property explicitly requests dense transformed
@@ -74,7 +88,9 @@ reference density, the correlation difference density or a natural orbital.
 occupied orbitals and exclude deleted virtual orbitals in an active-space run.
 Ordinary mean-field fields do not construct four-index integrals. PAW fields
 contain smooth valence values; `augmentation_charge` reports the on-site charge
-absent from the sampled density. Cube comments identify this separation.
+absent from the sampled density. Cube comments identify this separation. The same
+field object is what `Excitations.transition_density` returns for a linear-response
+excitation.
 
 ## Visualization
 

@@ -107,6 +107,9 @@ struct Evaluation {
     fields: Option<Fields>,
     hubbard_energy: Option<f64>,
     hubbard_report: Option<Vec<crate::molecular::hubbard::MolecularHubbardReport>>,
+    /// `dE_xc / dA` at fixed `D` per spin, `[spin][axis]`: a meta-GGA's `tau~` of complex
+    /// densities with a partial core (zero otherwise).
+    xc_current: [[f64; 3]; 2],
 }
 /// The grid fields behind one evaluation that a derivative of the energy needs:
 /// the valence spin densities, the Hartree potential of their sum and the
@@ -169,6 +172,7 @@ pub(super) fn response_with_shared(
         true,
         None,
         false,
+        None,
     )?;
     let fields = evaluation
         .fields
@@ -355,6 +359,140 @@ pub(super) fn grid_density_gradients(
     }
     Ok(field)
 }
+/// Half the smooth partial core per spin added to the spin densities `rho` and, for a meta-GGA,
+/// to the kinetic densities `tau` (`[spin][point]`): what the functional reads besides the
+/// valence. Shared by the builder and [`kinetic_fields`], so the diagnostic reads the builder's
+/// `n_s` in `tau~`.
+fn add_partial_core(
+    paw: &crate::molecular::integrals::PawKohnSham,
+    rho: &mut [f64],
+    mut tau: Option<&mut [f64]>,
+    n: usize,
+) {
+    for s in 0..2 {
+        for k in 0..n {
+            rho[s * n + k] += 0.5 * paw.core.as_slice()[k];
+            if let Some(tau) = tau.as_mut() {
+                tau[s * n + k] += 0.5 * paw.core_tau.as_slice()[k];
+            }
+        }
+    }
+}
+/// `tau_s - |j_s|^2 / (2 n_s)` in place of `tau` (`[spin][point]`, clamped at zero after) where
+/// `n_s` (`density`, the partial core included) is positive; `current` is `[spin][axis][point]`.
+fn subtract_current(density: &[f64], current: &[f64], tau: &mut [f64], n: usize) {
+    for s in 0..2 {
+        for k in 0..n {
+            let rho = density[s * n + k];
+            if rho > 0. {
+                let j2: f64 = (0..3)
+                    .map(|axis| current[(s * 3 + axis) * n + k].powi(2))
+                    .sum();
+                let value = &mut tau[s * n + k];
+                *value = (*value - 0.5 * j2 / rho).max(0.);
+            }
+        }
+    }
+}
+/// The kinetic `tau` and current of the valence orbitals in the uniform vector potential `field`
+/// (the velocity gauge, `H = (p + A)^2 / 2`), in place of the paramagnetic ones
+/// (`[spin][point]` and `[spin][axis][point]`): `tau_s + A . j_s + n_v,s A^2 / 2` and
+/// `j_s + n_v,s A`, `n_v,s` the valence density `valence`. The frozen core carries no current, as
+/// after a length kick; so with a partial core `tau~` keeps the core's share
+/// `(1 - n_v / n) (A . j + n_v A^2 / 2)`, which the paramagnetic fields would miss.
+fn add_vector_potential(
+    valence: &[f64],
+    field: [f64; 3],
+    tau: &mut [f64],
+    current: &mut [f64],
+    n: usize,
+) {
+    let square: f64 = field.iter().map(|a| a * a).sum();
+    for s in 0..2 {
+        for k in 0..n {
+            let rho = valence[s * n + k];
+            let mut dot = 0.;
+            for (axis, a) in field.iter().enumerate() {
+                let j = &mut current[(s * 3 + axis) * n + k];
+                dot += a * *j;
+                *j += rho * a;
+            }
+            tau[s * n + k] += dot + 0.5 * rho * square;
+        }
+    }
+}
+/// The grid fields behind a meta-GGA's gauge-invariant kinetic density at the orthonormal-frame
+/// densities `d` (one per-spin matrix of a restricted state, or both spins), formed as the
+/// real-time builder forms them (`evaluate_with` at complex densities, TDDFT_PLAN.md 13.6.1),
+/// each `[spin][point]`. The diagnostic of R16(b): after a length kick only the valence carries
+/// the current, so `tau~` shifts by the partial core's share.
+pub struct KineticFields {
+    /// The valence density `n_v,s`.
+    pub valence: Buffer<f64>,
+    /// `n_s`, with half the smooth partial core.
+    pub density: Buffer<f64>,
+    /// The plain `tau_s` with half the core's, clamped at zero as the SCF's.
+    pub plain: Buffer<f64>,
+    /// `tau~_s = tau_s - |j_s|^2 / (2 n_s)`, clamped after.
+    pub gauge_invariant: Buffer<f64>,
+    /// The paramagnetic current `j_s`, `[spin][axis][point]` (the core carries none).
+    pub current: Buffer<f64>,
+}
+/// [`KineticFields`] of `d`, in the uniform vector potential `field` (Bohr^-1, the velocity
+/// gauge; `None` for none): then `plain` and `current` are the kinetic ones
+/// ([`add_vector_potential`]), as the builder forms them.
+pub fn kinetic_fields(
+    integrals: &MolecularIntegrals,
+    d: &[Matrix],
+    field: Option<[f64; 3]>,
+) -> Result<KineticFields> {
+    let m = integrals.m();
+    if d.is_empty() || d.len() > 2 || d.iter().any(|x| x.shape() != (m, m)) {
+        return Err(invalid(
+            "kinetic_fields needs one or two m x m density matrices",
+        ));
+    }
+    // A restricted state's per-spin matrix holds for both spins.
+    let d: Vec<Matrix> = if d.len() == 1 {
+        vec![d[0].clone(), d[0].clone()]
+    } else {
+        d.to_vec()
+    };
+    let d = d.as_slice();
+    let ctx = &integrals.context;
+    let n = integrals.grid.index.points();
+    let gradients = orbital_gradients(integrals)?;
+    let valence = grid_densities(integrals, d)?;
+    let mut density = ctx.copy_slice(valence.as_slice())?;
+    let mut plain = grid_kinetic(integrals, d, &gradients)?;
+    if let Some(paw) = integrals.corrections.as_ref().and_then(|c| c.dft.as_ref()) {
+        add_partial_core(paw, density.as_mut_slice(), Some(plain.as_mut_slice()), n);
+    }
+    let mut current = grid_currents(integrals, d, &gradients)?;
+    if let Some(field) = field {
+        add_vector_potential(
+            valence.as_slice(),
+            field,
+            plain.as_mut_slice(),
+            current.as_mut_slice(),
+            n,
+        );
+    }
+    let mut gauge_invariant = ctx.copy_slice(plain.as_slice())?;
+    subtract_current(
+        density.as_slice(),
+        current.as_slice(),
+        gauge_invariant.as_mut_slice(),
+        n,
+    );
+    Ok(KineticFields {
+        valence,
+        density,
+        plain,
+        gauge_invariant,
+        current,
+    })
+}
 /// The paramagnetic current `j_s = sum_ab Im(D_ba) phi_a grad phi_b` of both spin channels
 /// (`[spin][axis][point]`), from the orbitals' own gradients: half the product-rule gradient of
 /// [`grid_density_gradients`] of the real matrices `Im(D)^T`, so the two share one contraction.
@@ -393,6 +531,7 @@ fn evaluate(
         false,
         None,
         false,
+        None,
     )
 }
 fn evaluate_scratch(
@@ -416,12 +555,17 @@ fn evaluate_scratch(
         false,
         scratch,
         false,
+        None,
     )
 }
 /// The Fock matrices and the energy of orthonormal-frame densities that may be complex, with the
 /// Poisson solver, the orbital gradients, the screening and the two grid scratch vectors owned
 /// by the caller and reused across evaluations (real-time propagation). The grid terms read
-/// `Re D`, which is exact in the real basis; the exact exchange reads the whole `D`.
+/// `Re D`, which is exact in the real basis; the exact exchange reads the whole `D`. A meta-GGA in
+/// the velocity gauge's uniform vector potential `field` (Bohr^-1) sees the kinetic `tau` and
+/// current ([`add_vector_potential`]); the field's own one-body terms are the caller's. Also
+/// returns `dE_xc / dA` at fixed `D` per spin (`[spin][axis]`), which a meta-GGA's `tau~` has with a
+/// partial core: `int v_tau,s (1 - n_v,s / n_s) j_s` with the kinetic `j_s` (zero otherwise).
 #[allow(clippy::too_many_arguments)]
 pub(super) fn fock_and_energy(
     integrals: &MolecularIntegrals,
@@ -432,7 +576,8 @@ pub(super) fn fock_and_energy(
     orbital_gradients: Option<&RealSamples>,
     screened: Option<&Screening>,
     scratch: (&mut [C64], &mut [C64]),
-) -> Result<(Vec<Matrix>, f64)> {
+    field: Option<[f64; 3]>,
+) -> Result<(Vec<Matrix>, f64, [[f64; 3]; 2])> {
     let evaluation = evaluate_with(
         integrals,
         h,
@@ -444,8 +589,9 @@ pub(super) fn fock_and_energy(
         false,
         Some(scratch),
         true,
+        field,
     )?;
-    Ok((evaluation.f, evaluation.energy))
+    Ok((evaluation.f, evaluation.energy, evaluation.xc_current))
 }
 #[allow(clippy::too_many_arguments)]
 fn evaluate_with(
@@ -462,6 +608,8 @@ fn evaluate_with(
     // paramagnetic current of the gauge-invariant kinetic density; the SCF and the response keep
     // the real path bit for bit.
     complex_density: bool,
+    // The velocity gauge's uniform vector potential, which a meta-GGA's kinetic fields carry.
+    field: Option<[f64; 3]>,
 ) -> Result<Evaluation> {
     let ctx = &integrals.context;
     let m = integrals.m();
@@ -490,15 +638,17 @@ fn evaluate_with(
     } else {
         None
     };
+    let field_valence = match (field, orbital_gradients) {
+        (Some(_), Some(_)) => Some(ctx.copy_slice(rho.as_slice())?),
+        _ => None,
+    };
     if let Some(paw) = paw {
-        for s in 0..2 {
-            for k in 0..n {
-                rho.as_mut_slice()[s * n + k] += 0.5 * paw.core.as_slice()[k];
-                if let Some(tau) = kinetic.as_mut() {
-                    tau.as_mut_slice()[s * n + k] += 0.5 * paw.core_tau.as_slice()[k];
-                }
-            }
-        }
+        add_partial_core(
+            paw,
+            rho.as_mut_slice(),
+            kinetic.as_mut().map(|t| t.as_mut_slice()),
+            n,
+        );
     }
     // A meta-GGA sees the orbitals' own density gradient, valence by the
     // product rule and the partial core (half per spin) by the grid.
@@ -525,23 +675,26 @@ fn evaluate_with(
     // The gauge-invariant kinetic density of complex orbitals (TDDFT_PLAN.md 13.6.1): the
     // paramagnetic current j_s = sum_ab Im(D_ba) phi_a grad phi_b (the partial core carries none)
     // and tau~_s = tau_s - |j_s|^2 / (2 n_s), n_s with the core; clamped after, as tau is.
-    let current = match (complex_density, gradient.as_ref(), orbital_gradients) {
+    let mut current = match (complex_density, gradient.as_ref(), orbital_gradients) {
         (true, Some(_), Some(orbital)) => Some(grid_currents(integrals, d, orbital)?),
         _ => None,
     };
+    if let (Some(a), Some(valence), Some(current), Some(tau)) = (
+        field,
+        field_valence.as_ref(),
+        current.as_mut(),
+        kinetic.as_mut(),
+    ) {
+        add_vector_potential(
+            valence.as_slice(),
+            a,
+            tau.as_mut_slice(),
+            current.as_mut_slice(),
+            n,
+        );
+    }
     if let (Some(current), Some(tau)) = (current.as_ref(), kinetic.as_mut()) {
-        for s in 0..2 {
-            for k in 0..n {
-                let density = rho.as_slice()[s * n + k];
-                if density > 0. {
-                    let j2: f64 = (0..3)
-                        .map(|axis| current.as_slice()[(s * 3 + axis) * n + k].powi(2))
-                        .sum();
-                    let value = &mut tau.as_mut_slice()[s * n + k];
-                    *value = (*value - 0.5 * j2 / density).max(0.);
-                }
-            }
-        }
+        subtract_current(rho.as_slice(), current.as_slice(), tau.as_mut_slice(), n);
     }
     let mut terms = xc::evaluate_fields_relativistic(
         ctx,
@@ -557,7 +710,10 @@ fn evaluate_with(
     // d tau~ / d n_s = |j_s|^2 / (2 n_s^2) adds v_tau |j|^2 / (2 n^2) to the local potential, and
     // d tau~ / d D_ba through j gives the imaginary-antisymmetric
     // F^j_ab = (i / 2) int (v_tau / n) j . (phi_a grad phi_b - phi_b grad phi_a), assembled below
-    // from `weights = (v_tau / 2 n) j`.
+    // from `weights = (v_tau / 2 n) j`. In a vector potential `A` the kinetic fields move the
+    // paramagnetic ones by `A . dj + (A^2 / 2) dn` and `A dn`, so both terms take
+    // `u = j - n_s A` (the kinetic current less the field's share of the total density) in
+    // place of `j`; without a partial core `u` is the paramagnetic current.
     let weights = match (current.as_ref(), terms.tau_potentials.as_ref()) {
         (Some(current), Some(v_tau)) => {
             let mut weights = ctx.allocate::<f64>(product(&[6, n])?)?;
@@ -570,17 +726,41 @@ fn evaluate_with(
                     let v = v_tau.as_slice()[s * n + k];
                     let mut j2 = 0.;
                     for axis in 0..3 {
-                        let j = current.as_slice()[(s * 3 + axis) * n + k];
+                        let a = field.map_or(0., |field| field[axis]);
+                        let j = current.as_slice()[(s * 3 + axis) * n + k] - density * a;
                         j2 += j * j;
                         weights.as_mut_slice()[(s * 3 + axis) * n + k] = 0.5 * v / density * j;
                     }
-                    terms.potentials.as_mut_slice()[s * n + k] += 0.5 * v * j2 / (density * density);
+                    terms.potentials.as_mut_slice()[s * n + k] +=
+                        0.5 * v * j2 / (density * density);
                 }
             }
             Some(weights)
         }
         _ => None,
     };
+    // The exchange-correlation current: with `A` in the kinetic fields, `tau~_s` moves by
+    // `(1 - n_v,s / n_s) j_s . dA` (`j_s` kinetic), so `dE_xc / dA = int v_tau,s (1 - n_v,s / n_s)
+    // j_s`; `n_s - n_v,s` is half the partial core, and without one the term is zero.
+    let mut xc_current = [[0f64; 3]; 2];
+    if let (Some(current), Some(v_tau), Some(paw)) =
+        (current.as_ref(), terms.tau_potentials.as_ref(), paw)
+    {
+        for (s, out) in xc_current.iter_mut().enumerate() {
+            for k in 0..n {
+                let density = rho.as_slice()[s * n + k];
+                let core = 0.5 * paw.core.as_slice()[k];
+                let factor = if density > 0. { core / density } else { 1. };
+                if factor == 0. {
+                    continue;
+                }
+                let v = v_tau.as_slice()[s * n + k];
+                for (axis, to) in out.iter_mut().enumerate() {
+                    *to += dv * v * factor * current.as_slice()[(s * 3 + axis) * n + k];
+                }
+            }
+        }
+    }
     let mut eh = 0.5
         * total_slice
             .iter()
@@ -617,7 +797,8 @@ fn evaluate_with(
     // The local matrix elements accumulate over point blocks widened to
     // float64; each (a, b) sum runs over the points in ascending order.
     let mut sums = vec![DMatrix::<f64>::zeros(m, m); d.len()];
-    let mut currents = vec![DMatrix::<f64>::zeros(m, m); if weights.is_some() { d.len() } else { 0 }];
+    let mut currents =
+        vec![DMatrix::<f64>::zeros(m, m); if weights.is_some() { d.len() } else { 0 }];
     {
         let mut orbitals = SampleBlocks::new(ctx, &integrals.orthonormal_samples, m, n)?;
         let mut slopes = orbital_gradients
@@ -819,6 +1000,7 @@ fn evaluate_with(
         fields,
         hubbard_energy,
         hubbard_report: hubbard_eval.map(|(_, _, r)| r),
+        xc_current,
     })
 }
 /// A screened hybrid's exact exchange: the short-range pair integrals, the
@@ -846,7 +1028,11 @@ impl MolecularIntegrals {
         // screened one-center terms carry none of their own and the Hartree-Fock operator
         // `paw::core_exchange` is bare, not screened, so a hybrid keeps the rule it has always had:
         // an empty core or a single closed 1s shell (not measured for a core of several shells).
-        if self.corrections.as_ref().is_some_and(|c| !c.hybrid_core_supported) {
+        if self
+            .corrections
+            .as_ref()
+            .is_some_and(|c| !c.hybrid_core_supported)
+        {
             return Err(invalid(format!(
                 "{name} takes {fraction} of exact exchange, and its screened core-valence exchange \
                  is available for an empty core or a single closed 1s shell only: a hybrid \
@@ -1108,7 +1294,14 @@ impl MolecularIntegrals {
                     .into(),
             ));
         }
-        self.collinear_kohn_sham(functional, particles, unrestricted, options, smearing, width)
+        self.collinear_kohn_sham(
+            functional,
+            particles,
+            unrestricted,
+            options,
+            smearing,
+            width,
+        )
     }
     /// Collinear Kohn-Sham without the spin-orbit refusal: the scalar-relativistic part of a
     /// spin-orbit dataset, for the collinear stage of a noncollinear start.

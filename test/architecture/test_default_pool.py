@@ -16,7 +16,7 @@ from mandacaru.specifications import METHODS
 from mandacaru.utils import parse_output
 
 GROWING = ("adapt-vqe", "subspace-adapt-vqe")
-FIXED = ("vqe", "subspace-vqe", "vasqa", "valsqa")
+FIXED = ("vqe", "subspace-vqe", "vasqa", "valsqa", "subspace-vasqa", "subspace-valsqa")
 
 
 def build(method, **options):

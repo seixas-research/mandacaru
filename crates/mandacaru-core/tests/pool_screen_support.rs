@@ -1,5 +1,5 @@
 //! The pool screen restricted to the support of the state (`Operator::apply_support_into`,
-//! `amplitude::inner_wide_rows`, `CachedProblem::pool_gradients`) gives the dense screen's bits.
+//! `amplitude::inner_wide_rows`, `QuantumProblem::pool_gradients`) gives the dense screen's bits.
 //!
 //! Every gradient is `2 Re <H psi | G psi>`. A state of a few nonzero amplitudes sends a generator's
 //! scatter to a few rows, so the action row is cleared and the dot taken over those rows alone. The
@@ -15,7 +15,7 @@ use mandacaru_core::{
     math::storage::Precision,
     quantum::{
         amplitude::{inner_wide, inner_wide_rows},
-        Amplitude, Basis, CachedProblem, Encoding, Operator, State, C64,
+        Amplitude, Basis, Encoding, Operator, QuantumProblem, State, C64,
     },
     Context,
 };
@@ -102,7 +102,9 @@ fn bits(value: C64) -> (u64, u64) {
 }
 
 fn support<A: Amplitude>(state: &[A]) -> Vec<usize> {
-    (0..state.len()).filter(|&k| state[k] != A::default()).collect()
+    (0..state.len())
+        .filter(|&k| state[k] != A::default())
+        .collect()
 }
 
 /// The restricted action and dot against the dense ones. `None` when the operator refused the
@@ -115,16 +117,25 @@ fn compare<A: Amplitude>(basis: &Basis, op: &Operator, psi: &[A], hpsi: &[A]) ->
     let mut action = vec![C64::default(); d];
     let mut touched = vec![7usize; 3];
     if !op.apply_support_into(basis, psi, &support, &mut action, &mut touched) {
-        assert!(action.iter().all(|a| bits(*a) == bits(C64::default())), "a refusal touched the row");
+        assert!(
+            action.iter().all(|a| bits(*a) == bits(C64::default())),
+            "a refusal touched the row"
+        );
         return None;
     }
-    assert!(touched.windows(2).all(|w| w[0] < w[1]), "touched rows must ascend without repeats");
+    assert!(
+        touched.windows(2).all(|w| w[0] < w[1]),
+        "touched rows must ascend without repeats"
+    );
     for (row, (a, b)) in action.iter().zip(&dense).enumerate() {
         assert_eq!(bits(*a), bits(*b), "row {row}");
     }
     for (row, value) in dense.iter().enumerate() {
         if *value != C64::default() {
-            assert!(touched.binary_search(&row).is_ok(), "row {row} is nonzero but not touched");
+            assert!(
+                touched.binary_search(&row).is_ok(),
+                "row {row} is nonzero but not touched"
+            );
         }
     }
     let by_rows = inner_wide_rows(hpsi, &action, &touched);
@@ -147,8 +158,15 @@ fn sweep(basis: &Basis, op: &Operator, masks: usize, supports: &[usize]) {
             let restricted = compare(basis, op, &psi64, &h64);
             let psi32 = state::<Complex32>(d, nonzero, zeros, seed);
             let h32 = hamiltonian_state::<Complex32>(d, seed + 1);
-            assert_eq!(compare(basis, op, &psi32, &h32).is_some(), restricted.is_some());
-            assert_eq!(restricted.is_some(), nonzero * masks * 8 < d, "support {nonzero} of {d}, {masks} masks");
+            assert_eq!(
+                compare(basis, op, &psi32, &h32).is_some(),
+                restricted.is_some()
+            );
+            assert_eq!(
+                restricted.is_some(),
+                nonzero * masks * 8 < d,
+                "support {nonzero} of {d}, {masks} masks"
+            );
         }
     }
 }
@@ -156,13 +174,26 @@ fn sweep(basis: &Basis, op: &Operator, masks: usize, supports: &[usize]) {
 #[test]
 fn a_sparse_support_on_a_sector_matches_the_dense_screen() {
     let ctx = Context::new(Some(1), 256 << 20).unwrap();
-    let basis = Basis::new(&ctx, &Encoding::new("jordan_wigner", 14, [3, 3]).unwrap(), true).unwrap();
+    let basis = Basis::new(
+        &ctx,
+        &Encoding::new("jordan_wigner", 14, [3, 3]).unwrap(),
+        true,
+    )
+    .unwrap();
     assert_eq!(basis.len(), 35 * 35);
     // One mask, then four. The work is far below where the dense action may gather, so the
     // restriction is allowed up to the rows it may write (`support x masks x 8 < d`).
-    for masks in [&[0b101_0000_0000_0110u64][..], &[0b11, 0b1100_0000, 0b11_0000_0000_0000, 0b1_0101_0000_0000]] {
+    for masks in [
+        &[0b101_0000_0000_0110u64][..],
+        &[0b11, 0b1100_0000, 0b11_0000_0000_0000, 0b1_0101_0000_0000],
+    ] {
         let op = operator(&ctx, 14, masks, 3, 5);
-        sweep(&basis, &op, masks.len(), &[1, 6, 30, 38, 39, 150, 153, 154, 600, basis.len()]);
+        sweep(
+            &basis,
+            &op,
+            masks.len(),
+            &[1, 6, 30, 38, 39, 150, 153, 154, 600, basis.len()],
+        );
     }
 }
 
@@ -174,17 +205,40 @@ fn the_restricted_route_follows_the_dense_gather_switch() {
     // One mask of 16 strings: 16384 rows x 16 terms reaches the work at which the dense action
     // gathers when an eighth of the rows is nonzero. `nonzero * 8` is d - 8, d and d + 8.
     let one = operator(&ctx, 14, &[0b1_0010_0010_1001], 16, 3);
-    for (nonzero, restricted) in [(1, true), (2047, true), (2048, false), (2049, false), (d, false)] {
+    for (nonzero, restricted) in [
+        (1, true),
+        (2047, true),
+        (2048, false),
+        (2049, false),
+        (d, false),
+    ] {
         let psi = state::<C64>(d, nonzero, 3, 9);
         let hpsi = hamiltonian_state::<C64>(d, 10);
-        assert_eq!(compare(&basis, &one, &psi, &hpsi).is_some(), restricted, "support {nonzero}");
+        assert_eq!(
+            compare(&basis, &one, &psi, &hpsi).is_some(),
+            restricted,
+            "support {nonzero}"
+        );
         let psi = state::<Complex32>(d, nonzero, 3, 9);
         let hpsi = hamiltonian_state::<Complex32>(d, 10);
-        assert_eq!(compare(&basis, &one, &psi, &hpsi).is_some(), restricted, "support {nonzero} in float32");
+        assert_eq!(
+            compare(&basis, &one, &psi, &hpsi).is_some(),
+            restricted,
+            "support {nonzero} in float32"
+        );
     }
     // Eight masks of two strings: the rows a support can write are `support x 8`, so the
     // restriction refuses before the dense action would gather (300 x 8 x 8 > d, 300 x 8 < d).
-    let masks = [0b11, 0b1100, 0b11_0000, 0b1100_0000, 0b11_0000_0000, 0b1100_0000_0000, 0b101, 0b1010];
+    let masks = [
+        0b11,
+        0b1100,
+        0b11_0000,
+        0b1100_0000,
+        0b11_0000_0000,
+        0b1100_0000_0000,
+        0b101,
+        0b1010,
+    ];
     let many = operator(&ctx, 14, &masks, 2, 4);
     for (nonzero, restricted) in [(1, true), (40, true), (100, true), (300, false)] {
         let psi = state::<C64>(d, nonzero, 2, 11);
@@ -193,7 +247,10 @@ fn the_restricted_route_follows_the_dense_gather_switch() {
         assert_eq!(written.is_some(), restricted, "support {nonzero}");
         if let Some(written) = written {
             // The skipped work is real: far fewer rows written than the basis holds.
-            assert!(written * 8 < d, "support {nonzero} wrote {written} of {d} rows");
+            assert!(
+                written * 8 < d,
+                "support {nonzero} wrote {written} of {d} rows"
+            );
         }
     }
 }
@@ -204,7 +261,9 @@ fn hamiltonian(ctx: &Context, encoding: &Encoding, modes: usize) -> Operator {
     let mut h = Operator::new(ctx, modes, &[(identity, C64::new(-3., 0.))]).unwrap();
     for j in 0..modes {
         let term = encoding.monomial(ctx, &[(j, true), (j, false)]).unwrap();
-        h = h.add(ctx, &term, C64::new(-1. + 0.13 * j as f64, 0.)).unwrap();
+        h = h
+            .add(ctx, &term, C64::new(-1. + 0.13 * j as f64, 0.))
+            .unwrap();
     }
     for j in 0..modes - 2 {
         for k in [j + 1, j + 2] {
@@ -223,16 +282,16 @@ fn hamiltonian(ctx: &Context, encoding: &Encoding, modes: usize) -> Operator {
     h
 }
 
-fn problem(threads: usize, pool: &str, precision: Precision) -> CachedProblem {
+fn problem(threads: usize, pool: &str, precision: Precision) -> QuantumProblem {
     let ctx = Context::new(Some(threads), 512 << 20).unwrap();
     let encoding = Encoding::new("jordan_wigner", 16, [3, 3]).unwrap();
     let h = hamiltonian(&ctx, &encoding, 16);
-    let mut problem = CachedProblem::new(&ctx, encoding, h, true, false, true).unwrap();
+    let mut problem = QuantumProblem::new(&ctx, encoding, h, true, false, true).unwrap();
     problem.use_pool(pool, true).unwrap();
     problem.with_precision(precision)
 }
 
-fn state_of<A: Amplitude>(problem: &CachedProblem, psi: &[A]) -> State {
+fn state_of<A: Amplitude>(problem: &QuantumProblem, psi: &[A]) -> State {
     let mut buffer = problem.context.allocate::<A>(psi.len()).unwrap();
     buffer.as_mut_slice().copy_from_slice(psi);
     A::wrap(buffer)
@@ -240,7 +299,7 @@ fn state_of<A: Amplitude>(problem: &CachedProblem, psi: &[A]) -> State {
 
 /// The dense screen, spelled out: `H psi` stored in the state precision, then every generator's
 /// action and a full-length dot.
-fn dense_screen<A: Amplitude>(problem: &CachedProblem, psi: &[A]) -> Vec<f64> {
+fn dense_screen<A: Amplitude>(problem: &QuantumProblem, psi: &[A]) -> Vec<f64> {
     let basis = problem.basis.as_ref().unwrap();
     let mut wide = vec![C64::default(); psi.len()];
     problem.hamiltonian.apply_into(basis, psi, &mut wide);
@@ -268,11 +327,18 @@ fn the_problems_screen_is_the_dense_screen_on_any_thread_count() {
         let d = one.basis.as_ref().unwrap().len();
         assert_eq!(d, 56 * 56);
         let m = one.pool.len();
-        assert!(m > 100, "{pool}: a pool of {m} is too small to split across threads");
+        assert!(
+            m > 100,
+            "{pool}: a pool of {m} is too small to split across threads"
+        );
         // The prepared state of a short ansatz, its support padded with signed zeros, a few
         // dozen amplitudes in the sparse range (`nonzero * 32 < d`), then one past it, an eighth,
         // and a full state.
-        let prepared = |problem: &CachedProblem| problem.prepare_state(&[0, 1, 2], &[0.31, -0.2, 0.12], true).unwrap();
+        let prepared = |problem: &QuantumProblem| {
+            problem
+                .prepare_state(&[0, 1, 2], &[0.31, -0.2, 0.12], true)
+                .unwrap()
+        };
         let mut cases: Vec<State> = vec![prepared(&one)];
         let mut dense_states = Vec::new();
         for nonzero in [1, 20, 97, 98, d / 8, d] {
@@ -280,9 +346,15 @@ fn the_problems_screen_is_the_dense_screen_on_any_thread_count() {
                 dense_states.push((nonzero, zeros));
             }
         }
-        let build = |problem: &CachedProblem, nonzero: usize, zeros: usize| match precision {
-            Precision::Float64 => state_of(problem, &state::<C64>(d, nonzero, zeros, 31 + nonzero as u64)),
-            Precision::Float32 => state_of(problem, &state::<Complex32>(d, nonzero, zeros, 31 + nonzero as u64)),
+        let build = |problem: &QuantumProblem, nonzero: usize, zeros: usize| match precision {
+            Precision::Float64 => state_of(
+                problem,
+                &state::<C64>(d, nonzero, zeros, 31 + nonzero as u64),
+            ),
+            Precision::Float32 => state_of(
+                problem,
+                &state::<Complex32>(d, nonzero, zeros, 31 + nonzero as u64),
+            ),
         };
         for (nonzero, zeros) in &dense_states {
             cases.push(build(&one, *nonzero, *zeros));
@@ -295,14 +367,26 @@ fn the_problems_screen_is_the_dense_screen_on_any_thread_count() {
             };
             let again = match case {
                 // The same amplitudes on the eight-thread problem.
-                State::Float64(buffer) => eight.pool_gradients(&state_of(&eight, buffer.as_slice()), false),
-                State::Float32(buffer) => eight.pool_gradients(&state_of(&eight, buffer.as_slice()), false),
+                State::Float64(buffer) => {
+                    eight.pool_gradients(&state_of(&eight, buffer.as_slice()), false)
+                }
+                State::Float32(buffer) => {
+                    eight.pool_gradients(&state_of(&eight, buffer.as_slice()), false)
+                }
             }
             .unwrap();
             assert_eq!(on_one.len(), m);
             for i in 0..m {
-                assert_eq!(on_one[i].to_bits(), expected[i].to_bits(), "{pool} {precision:?} case {k} generator {i}");
-                assert_eq!(again[i].to_bits(), expected[i].to_bits(), "{pool} {precision:?} case {k} generator {i} on 8 threads");
+                assert_eq!(
+                    on_one[i].to_bits(),
+                    expected[i].to_bits(),
+                    "{pool} {precision:?} case {k} generator {i}"
+                );
+                assert_eq!(
+                    again[i].to_bits(),
+                    expected[i].to_bits(),
+                    "{pool} {precision:?} case {k} generator {i} on 8 threads"
+                );
             }
         }
     }
@@ -333,14 +417,31 @@ fn a_generator_the_restriction_refuses_falls_back_inside_a_restricted_screen() {
     // uses it, and its own value is the dense one.
     let masks: [&[u64]; 3] = [
         &[0b11, 0b1100, 0b11_0000, 0b1100_0000, 0b11_0000_0000],
-        &[0b101, 0b1010, 0b1_0100_0000, 0b10_1000_0000, 0b1_0000_0001_0000, 0b11_0000_0000_0000],
-        &[0b1_0000_0000_0001, 0b10_0000_0000_0010, 0b100_0000_0000_0100, 0b1000_0000_0000_1000, 0b11_1100],
+        &[
+            0b101,
+            0b1010,
+            0b1_0100_0000,
+            0b10_1000_0000,
+            0b1_0000_0001_0000,
+            0b11_0000_0000_0000,
+        ],
+        &[
+            0b1_0000_0000_0001,
+            0b10_0000_0000_0010,
+            0b100_0000_0000_0100,
+            0b1000_0000_0000_1000,
+            0b11_1100,
+        ],
     ];
     let slots = [7, 8, 300];
-    let (mut one, mut eight) = (problem(1, "fermionic", Precision::Float64), problem(8, "fermionic", Precision::Float64));
+    let (mut one, mut eight) = (
+        problem(1, "fermionic", Precision::Float64),
+        problem(8, "fermionic", Precision::Float64),
+    );
     for problem in [&mut one, &mut eight] {
         for (&slot, masks) in slots.iter().zip(masks) {
-            problem.pool[slot].operator = operator(&problem.context, 16, masks, 2, 40 + slot as u64);
+            problem.pool[slot].operator =
+                operator(&problem.context, 16, masks, 2, 40 + slot as u64);
         }
     }
     let basis = one.basis.as_ref().unwrap();
@@ -350,25 +451,37 @@ fn a_generator_the_restriction_refuses_falls_back_inside_a_restricted_screen() {
     let mut action = vec![C64::default(); d];
     let mut written = Vec::new();
     for (i, g) in one.pool.iter().enumerate() {
-        let applied = g.operator.apply_support_into(basis, &psi, &support, &mut action, &mut written);
+        let applied =
+            g.operator
+                .apply_support_into(basis, &psi, &support, &mut action, &mut written);
         assert_eq!(applied, !slots.contains(&i), "generator {i}");
         for &row in &written {
             action[row] = C64::default();
         }
     }
-    let screened = |problem: &CachedProblem, centered: bool| {
-        problem.pool_gradients(&state_of(problem, &psi), centered).unwrap()
+    let screened = |problem: &QuantumProblem, centered: bool| {
+        problem
+            .pool_gradients(&state_of(problem, &psi), centered)
+            .unwrap()
     };
     let expected = dense_screen(&one, &psi);
     let (on_one, on_eight) = (screened(&one, false), screened(&eight, false));
     for i in 0..one.pool.len() {
         assert_eq!(on_one[i].to_bits(), expected[i].to_bits(), "generator {i}");
-        assert_eq!(on_eight[i].to_bits(), expected[i].to_bits(), "generator {i} on 8 threads");
+        assert_eq!(
+            on_eight[i].to_bits(),
+            expected[i].to_bits(),
+            "generator {i} on 8 threads"
+        );
     }
     // The centered screen (the one a search and ADAPT use) differs only in `H psi`, formed before
     // the route is chosen: it is thread invariant and has a refused generator too.
     let (on_one, on_eight) = (screened(&one, true), screened(&eight, true));
     for i in 0..one.pool.len() {
-        assert_eq!(on_one[i].to_bits(), on_eight[i].to_bits(), "centered generator {i}");
+        assert_eq!(
+            on_one[i].to_bits(),
+            on_eight[i].to_bits(),
+            "centered generator {i}"
+        );
     }
 }

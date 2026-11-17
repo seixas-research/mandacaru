@@ -35,7 +35,10 @@ pub fn hydrogen_chain_cell() -> Primitive {
     Primitive {
         lattice: Matrix3::new(5.6, 0.3, 0.2, 0., 7., 0.4, 0., 0., 7.),
         shape: [16, 20, 20],
-        atoms: vec![("H", [0.1, 0.2, 0.15]), ("H", [0.1 + 1.4 / 5.6, 0.22, 0.15])],
+        atoms: vec![
+            ("H", [0.1, 0.2, 0.15]),
+            ("H", [0.1 + 1.4 / 5.6, 0.22, 0.15]),
+        ],
     }
 }
 
@@ -55,7 +58,10 @@ pub fn nitrogen_chain_cell() -> Primitive {
     Primitive {
         lattice: Matrix3::new(5.6, 0.3, 0.2, 0., 7., 0.4, 0., 0., 7.),
         shape: [16, 20, 20],
-        atoms: vec![("N", [0.1, 0.2, 0.15]), ("N", [0.1 + 2.07 / 5.6, 0.23, 0.16])],
+        atoms: vec![
+            ("N", [0.1, 0.2, 0.15]),
+            ("N", [0.1 + 2.07 / 5.6, 0.23, 0.16]),
+        ],
     }
 }
 
@@ -85,7 +91,9 @@ pub fn cells_with_basis(
 ) -> PeriodicSetup {
     let primitive = cell.lattice;
     let shape = cell.shape;
-    let spacing = (0..3).map(|a| primitive.column(a).norm() / shape[a] as f64).fold(0f64, f64::max);
+    let spacing = (0..3)
+        .map(|a| primitive.column(a).norm() / shape[a] as f64)
+        .fold(0f64, f64::max);
     let mut lattice = primitive;
     lattice.set_column(0, &(primitive.column(0) * copies as f64));
     let inverse = lattice.try_inverse().unwrap();
@@ -111,7 +119,8 @@ pub fn cells_with_basis(
             });
         }
     }
-    let root = std::path::PathBuf::from(std::env::var_os("MANDACARU_PAW_PATH").unwrap()).join(library);
+    let root =
+        std::path::PathBuf::from(std::env::var_os("MANDACARU_PAW_PATH").unwrap()).join(library);
     let files = species
         .iter()
         .map(|symbol| {
@@ -151,7 +160,9 @@ pub fn cells_with_basis(
 /// The overlap, the one-body operator (from the Lowdin frame) and every two-body integral
 /// `(ab|cd)` (chemists' order, `[((a m + b) m + c) m + d]`) of `integrals` in its raw atomic
 /// orbitals.
-pub fn raw_atomic_orbitals(integrals: &MolecularIntegrals) -> (DMatrix<f64>, DMatrix<f64>, Vec<f64>) {
+pub fn raw_atomic_orbitals(
+    integrals: &MolecularIntegrals,
+) -> (DMatrix<f64>, DMatrix<f64>, Vec<f64>) {
     let m = integrals.m();
     let square = |b: &mandacaru_core::Buffer<f64>| DMatrix::from_row_slice(m, m, b.as_slice());
     let y = integrals.lowdin.clone().try_inverse().unwrap();
@@ -191,7 +202,8 @@ pub fn closed_shell_energy(h: &DMatrix<f64>, eri: &[f64], constant: f64, p: &DMa
     for ab in 0..m * m {
         for cd in 0..m * m {
             let (a, b, c, d) = (ab / m, ab % m, cd / m, cd % m);
-            value += eri[ab * m * m + cd] * (0.5 * p[(a, b)] * p[(c, d)] - 0.25 * p[(a, c)] * p[(b, d)]);
+            value +=
+                eri[ab * m * m + cd] * (0.5 * p[(a, b)] * p[(c, d)] - 0.25 * p[(a, c)] * p[(b, d)]);
         }
     }
     value
@@ -199,7 +211,13 @@ pub fn closed_shell_energy(h: &DMatrix<f64>, eri: &[f64], constant: f64, p: &DMa
 
 /// The PAW-LCAO supercell of `mesh` on `setup` with its primitive atom `atom` moved, with all its
 /// images, by `shift` (Bohr, Cartesian): its Hamiltonian, Cholesky tolerance 1e-12.
-pub fn displaced(ctx: &Context, setup: &PeriodicSetup, mesh: [usize; 3], atom: usize, shift: [f64; 3]) -> MolecularIntegrals {
+pub fn displaced(
+    ctx: &Context,
+    setup: &PeriodicSetup,
+    mesh: [usize; 3],
+    atom: usize,
+    shift: [f64; 3],
+) -> MolecularIntegrals {
     let mut fractional = setup.fractional().unwrap();
     let inverse = setup.lattice.try_inverse().unwrap();
     let step = inverse * nalgebra::Vector3::from(shift);
@@ -213,7 +231,12 @@ pub fn displaced(ctx: &Context, setup: &PeriodicSetup, mesh: [usize; 3], atom: u
 /// A molecule `atoms` (Bohr, centered) in a cubic box of `side` Bohr on a grid of `nodes` per
 /// axis: the PAW-LCAO supercell setup at Gamma (all three axes periodic), with the filter cutoff
 /// and the ion width pinned to the grid spacing as in `cells_of`.
-pub fn molecule_in_a_box(ctx: &Context, atoms: &[(&'static str, [f64; 3])], side: f64, nodes: usize) -> PeriodicSetup {
+pub fn molecule_in_a_box(
+    ctx: &Context,
+    atoms: &[(&'static str, [f64; 3])],
+    side: f64,
+    nodes: usize,
+) -> PeriodicSetup {
     let cell = Primitive {
         lattice: Matrix3::from_diagonal_element(side),
         shape: [nodes; 3],
@@ -261,8 +284,13 @@ pub fn molecular_integrals(ctx: &Context, setup: &PeriodicSetup) -> MolecularInt
         "species": species,
         "basis": basis,
     });
-    let numbers = setup.atoms_species.iter().map(|&s| setup.datasets[s].atomic_number as u8).collect();
-    let lattice: [[f64; 3]; 3] = std::array::from_fn(|a| std::array::from_fn(|x| setup.lattice[(x, a)]));
+    let numbers = setup
+        .atoms_species
+        .iter()
+        .map(|&s| setup.datasets[s].atomic_number as u8)
+        .collect();
+    let lattice: [[f64; 3]; 3] =
+        std::array::from_fn(|a| std::array::from_fn(|x| setup.lattice[(x, a)]));
     let geometry = mandacaru_core::Geometry::new(
         numbers,
         setup.centers.clone(),
@@ -272,7 +300,13 @@ pub fn molecular_integrals(ctx: &Context, setup: &PeriodicSetup) -> MolecularInt
     )
     .unwrap();
     let shape = setup.grid.index.shape();
-    let grid = mandacaru_core::math::SpatialGrid::new(shape, setup.grid.origin, setup.grid.step_values(), false).unwrap();
+    let grid = mandacaru_core::math::SpatialGrid::new(
+        shape,
+        setup.grid.origin,
+        setup.grid.step_values(),
+        false,
+    )
+    .unwrap();
     let integrals = mandacaru_core::paw::molecular::build(
         ctx,
         geometry,

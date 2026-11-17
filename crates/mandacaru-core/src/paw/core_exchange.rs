@@ -23,15 +23,17 @@
 //! operator (a subshell that is not closed, states that do not hold the core's electrons or do
 //! not reproduce the stored core density). The operator enters the one-center coupling in the raw
 //! projector basis as `V^-1 X V^-T`.
-use super::{
-    generate::core_states::{CHARGE_TOLERANCE, DENSITY_TOLERANCE},
-    invalid,
-    onecenter_radial::three_j_squared,
-    pair_tables::coulomb,
-};
+use super::{invalid, onecenter_radial::three_j_squared, pair_tables::coulomb};
 use crate::{math::radial::integrate, Result};
 use nalgebra::DMatrix;
 use std::f64::consts::PI;
+
+/// Largest pointwise difference between the density of a record's core states and its stored
+/// core density, relative to the stored density's peak.
+pub const DENSITY_TOLERANCE: f64 = 1e-7;
+/// Largest difference (electrons) between the charge of a record's core states and its stored
+/// core charge.
+pub const CHARGE_TOLERANCE: f64 = 1e-7;
 
 /// One frozen core subshell on the radial grid.
 pub struct CoreShell<'a> {
@@ -173,7 +175,10 @@ impl FrozenCore {
         }
         let total = integrate(
             r,
-            &r.iter().zip(density).map(|(r, n)| 4. * PI * r * r * n).collect::<Vec<_>>(),
+            &r.iter()
+                .zip(density)
+                .map(|(r, n)| 4. * PI * r * r * n)
+                .collect::<Vec<_>>(),
         )
         .map_err(|e| format!("{symbol}: {e}"))?;
         let mut integrated = 0.;
@@ -198,7 +203,11 @@ impl FrozenCore {
         let shells: Vec<CoreShell<'_>> = self
             .shells
             .iter()
-            .map(|(l, occupation, radial)| CoreShell { l: *l, occupation: *occupation, radial })
+            .map(|(l, occupation, radial)| CoreShell {
+                l: *l,
+                occupation: *occupation,
+                radial,
+            })
             .collect();
         core_valence_exchange(r, l, waves, &shells, self.extent)
     }

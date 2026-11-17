@@ -80,7 +80,7 @@ pub fn symmetry_root() -> PathBuf {
         .join("../../test/migration/reference/periodic_symmetry")
 }
 
-/// A crystal written twice by the setup (`freeze_periodic_gradients.py symmetry`): the whole mesh
+/// A crystal written twice by the setup (`periodic_freeze_symmetry.rs`): the whole mesh
 /// and the mesh reduced by its space group, both with their `setup` block.
 pub struct Pair {
     pub manifest: Value,

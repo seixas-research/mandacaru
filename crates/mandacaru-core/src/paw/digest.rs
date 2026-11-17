@@ -2,7 +2,7 @@
 //! content ([`dataset_content_sha256`], `PawDataset::content_sha256`), the digest a crystal
 //! snapshot pins a dataset by. The content digest covers what the record holds for the physics
 //! (its payload and tables without the format version and the core states), not the bytes of the
-//! file, so a version-2 dataset and its version-3 upgrade have the same one.
+//! file.
 use super::invalid;
 use crate::Result;
 use std::path::Path;

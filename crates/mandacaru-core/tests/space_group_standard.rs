@@ -68,9 +68,17 @@ fn test_standardize_monoclinic_p2_m_and_c2_m() {
     let mut frac_c = Vec::new();
     let mut labels_c = Vec::new();
     for p in &frac_p {
-        frac_c.push([p[0].rem_euclid(1.0), p[1].rem_euclid(1.0), p[2].rem_euclid(1.0)]);
+        frac_c.push([
+            p[0].rem_euclid(1.0),
+            p[1].rem_euclid(1.0),
+            p[2].rem_euclid(1.0),
+        ]);
         labels_c.push(1);
-        frac_c.push([(p[0] + 0.5).rem_euclid(1.0), (p[1] + 0.5).rem_euclid(1.0), p[2].rem_euclid(1.0)]);
+        frac_c.push([
+            (p[0] + 0.5).rem_euclid(1.0),
+            (p[1] + 0.5).rem_euclid(1.0),
+            p[2].rem_euclid(1.0),
+        ]);
         labels_c.push(1);
     }
     let cell_c = Cell {
@@ -146,9 +154,21 @@ fn test_standardize_orthorhombic_pmmm_cmmm_immm_fmmm() {
     // Fmmm (#69): add FCC centering translations
     let mut frac_f = frac_p.clone();
     for p in &frac_p {
-        frac_f.push([(p[0]).rem_euclid(1.0), (p[1] + 0.5).rem_euclid(1.0), (p[2] + 0.5).rem_euclid(1.0)]);
-        frac_f.push([(p[0] + 0.5).rem_euclid(1.0), (p[1]).rem_euclid(1.0), (p[2] + 0.5).rem_euclid(1.0)]);
-        frac_f.push([(p[0] + 0.5).rem_euclid(1.0), (p[1] + 0.5).rem_euclid(1.0), (p[2]).rem_euclid(1.0)]);
+        frac_f.push([
+            (p[0]).rem_euclid(1.0),
+            (p[1] + 0.5).rem_euclid(1.0),
+            (p[2] + 0.5).rem_euclid(1.0),
+        ]);
+        frac_f.push([
+            (p[0] + 0.5).rem_euclid(1.0),
+            (p[1]).rem_euclid(1.0),
+            (p[2] + 0.5).rem_euclid(1.0),
+        ]);
+        frac_f.push([
+            (p[0] + 0.5).rem_euclid(1.0),
+            (p[1] + 0.5).rem_euclid(1.0),
+            (p[2]).rem_euclid(1.0),
+        ]);
     }
     let labels_f = vec![1; frac_f.len()];
     let cell_f = Cell {
@@ -183,10 +203,7 @@ fn test_standardize_tetragonal_p4_mmm_and_i4_mmm() {
     assert_eq!(id_p.symbol, "P4/mmm");
 
     // I4/mmm (#139)
-    let frac_i = [
-        [0.0, 0.0, 0.0],
-        [0.5, 0.5, 0.5],
-    ];
+    let frac_i = [[0.0, 0.0, 0.0], [0.5, 0.5, 0.5]];
     let labels_i = [1, 1];
     let cell_i = Cell {
         lattice: lat,
@@ -206,9 +223,15 @@ fn test_standardize_trigonal_and_hexagonal() {
     let a = 4.0;
     let c = 6.0;
     let hex_lat = Matrix3::new(
-        a, 0.0, 0.0,
-        -a / 2.0, a * 3.0f64.sqrt() / 2.0, 0.0,
-        0.0, 0.0, c,
+        a,
+        0.0,
+        0.0,
+        -a / 2.0,
+        a * 3.0f64.sqrt() / 2.0,
+        0.0,
+        0.0,
+        0.0,
+        c,
     );
 
     // P6/mmm (#191)
@@ -312,11 +335,7 @@ fn test_standardize_supercells_and_skewed_cells() {
     for di in 0..2 {
         for dj in 0..2 {
             for dk in 0..2 {
-                frac_222.push([
-                    0.5 * di as f64,
-                    0.5 * dj as f64,
-                    0.5 * dk as f64,
-                ]);
+                frac_222.push([0.5 * di as f64, 0.5 * dj as f64, 0.5 * dk as f64]);
                 labels_222.push(29);
             }
         }

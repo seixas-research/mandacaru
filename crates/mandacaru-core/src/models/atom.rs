@@ -559,7 +559,12 @@ fn averaged_density(
                 averaged[i] += w * orbitals_j[index][i];
             }
         }
-        let norm = integrate((0..n).map(|i| averaged[i] * averaged[i] / (total * total)), n, h).sqrt();
+        let norm = integrate(
+            (0..n).map(|i| averaged[i] * averaged[i] / (total * total)),
+            n,
+            h,
+        )
+        .sqrt();
         for i in 0..n {
             let amplitude = averaged[i] / (total * norm.max(1e-300));
             density[i] += q * amplitude * amplitude / shell[i];

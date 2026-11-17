@@ -1,9 +1,10 @@
 //! The analytic gradient of one excited state of a spinor Kohn-Sham reference
 //! (`dev_plan/TDDFT_PLAN.md`, T8): `E = E_0 + omega` for a Kramers-unpolarized reference (a
-//! closed shell, with or without spin-orbit coupling) or a magnetized one without spin-orbit
-//! coupling (an odd electron count or initial moments), adiabatic LDA or PBE, Tamm-Dancoff or
-//! Casida. A magnetized reference with spin-orbit coupling refuses by name: a Kramers doublet's
-//! moment direction is nearly free, and the ones measured are saddles of it.
+//! closed shell, with or without spin-orbit coupling; adiabatic LDA or PBE) or a magnetized one
+//! without spin-orbit coupling (an odd electron count or initial moments; LDA), Tamm-Dancoff or
+//! Casida. A magnetized reference with spin-orbit coupling refuses by name (a Kramers doublet's
+//! moment direction is nearly free, and the ones measured are saddles of it), as does one with
+//! PBE (measured, its gradient does not follow its energy).
 //!
 //! In the real embedding of [`Spinor`] a state `(X, Y)` has `p = X + Y` and `q = X - Y`
 //! (`Re <p, q> = 1`), and
@@ -227,6 +228,14 @@ pub(in crate::molecular::excitations) fn state_gradient(
                  not implemented: a Kramers doublet's moment direction is barely fixed by the \
                  spin-orbit term, and the references measured are saddles of it (A + B not \
                  positive); without spin-orbit coupling they are available"
+                    .into(),
+            ));
+        }
+        if !op.kernel.unpolarized() && name != "lda" {
+            return Err(crate::Error::Unsupported(
+                "excited-state forces of a magnetized spinor reference with a gradient functional \
+                 are not implemented: measured on H2+ and H3 with PBE, the gradient does not follow \
+                 its energy (the noncollinear GGA's third derivative); use xc='lda'"
                     .into(),
             ));
         }

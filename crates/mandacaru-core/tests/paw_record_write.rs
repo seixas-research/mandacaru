@@ -102,10 +102,7 @@ fn pb_pbe_fr_rewrites_at_stride_1_bit_for_bit_with_both_codecs() {
 fn the_whole_library_rewrites_at_stride_1_one_file_at_a_time() {
     let ctx = context();
     let dir = TempDir::new("all");
-    let mut files = files_of(&library(), &SETS);
-    if let Some(root) = upaw_library() {
-        files.extend(files_of(&root, &["lda-sr"]));
-    }
+    let files = files_of(&library(), &SETS);
     let mut bytes = 0u64;
     for (_, path) in &files {
         bytes += rewrite_at_stride_1(&ctx, path, &dir, Codec::Uncompressed).0;

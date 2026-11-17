@@ -14,17 +14,22 @@ mod variational_forces_support;
 
 use mandacaru_core::{
     molecular::{
-        periodic::paw::{metric_gradient, one_body_gradient, two_body_energies, two_body_gradient, PawSupercell},
+        periodic::paw::{
+            metric_gradient, one_body_gradient, two_body_energies, two_body_gradient, PawSupercell,
+        },
         ScfOptions,
     },
-    periodic::{setup::PeriodicSetup, solver::bare_hamiltonian, wannier::downfold::basis::hartree_fock_onsite},
+    periodic::{
+        setup::PeriodicSetup, solver::bare_hamiltonian,
+        wannier::downfold::basis::hartree_fock_onsite,
+    },
     quantum::C64,
     Context,
 };
 use nalgebra::DMatrix;
 use paw_supercell_support::{
-    cells_of, closed_shell_energy, displaced, hydrogen_chain_cell, lithium_hydride_cell, nitrogen_chain_cell,
-    raw_atomic_orbitals,
+    cells_of, closed_shell_energy, displaced, hydrogen_chain_cell, lithium_hydride_cell,
+    nitrogen_chain_cell, raw_atomic_orbitals,
 };
 
 /// The setup with its primitive atom `atom` (and every image) moved by `shift` (Bohr).
@@ -69,9 +74,15 @@ fn one_body_sweep(
         let count = base.n_cells();
         let size = base.overlap.nrows();
         let rotation = (&base.harmonics - DMatrix::<C64>::identity(base.m, base.m)).norm();
-        println!("{name}: {} functions per cell, |U - 1| = {rotation:.3}", base.m);
+        println!(
+            "{name}: {} functions per cell, |U - 1| = {rotation:.3}",
+            base.m
+        );
         if name == "N2 chain" {
-            assert!(rotation > 0.5, "the p fixture has no complex harmonics to rotate");
+            assert!(
+                rotation > 0.5,
+                "the p fixture has no complex harmonics to rotate"
+            );
         }
         let p = symmetric(size, 0.37, 0.5);
         let w = symmetric(size, 0.61, -0.2);
@@ -83,26 +94,40 @@ fn one_body_sweep(
             .build(&ctx)
             .unwrap();
         let onsite = hartree_fock_onsite(&crystal).unwrap();
-        let (folded_p, folded_w) = (base.fold_density(&p).unwrap(), base.fold_density(&w).unwrap());
+        let (folded_p, folded_w) = (
+            base.fold_density(&p).unwrap(),
+            base.fold_density(&w).unwrap(),
+        );
         let (mut one, mut overlap) = (0f64, 0f64);
         for (k, point) in crystal.points.iter().enumerate() {
-            let h = bare_hamiltonian(&crystal, point).unwrap() + &point.projections * &onsite * point.projections.adjoint();
+            let h = bare_hamiltonian(&crystal, point).unwrap()
+                + &point.projections * &onsite * point.projections.adjoint();
             let trace = |a: &DMatrix<C64>, b: &DMatrix<C64>| (a * b).trace().re / count as f64;
             one += trace(&folded_p[k], &h);
             overlap += trace(&folded_w[k], &point.overlap);
         }
-        let (one_gap, overlap_gap) = ((one - p.dot(&base.one_body)).abs(), (overlap - w.dot(&base.overlap)).abs());
+        let (one_gap, overlap_gap) = (
+            (one - p.dot(&base.one_body)).abs(),
+            (overlap - w.dot(&base.overlap)).abs(),
+        );
         println!("{name} {mesh:?}: convention tr(P h) {:.12} gap {one_gap:.1e}, tr(W S) {:.12} gap {overlap_gap:.1e}", p.dot(&base.one_body), w.dot(&base.overlap));
-        assert!(one_gap < 1e-11 && overlap_gap < 1e-11, "{name}: {one_gap:e} {overlap_gap:e}");
+        assert!(
+            one_gap < 1e-11 && overlap_gap < 1e-11,
+            "{name}: {one_gap:e} {overlap_gap:e}"
+        );
         // The derivative, term group by term group.
         let one_body = one_body_gradient(&ctx, &setup, mesh, &p, &zero).unwrap();
         let weighted = one_body_gradient(&ctx, &setup, mesh, &zero, &w).unwrap();
         // The ions' terms do not depend on the densities: the pass at zero densities is them alone.
-        let ions = one_body_gradient(&ctx, &setup, mesh, &zero, &zero).unwrap().gradient();
+        let ions = one_body_gradient(&ctx, &setup, mesh, &zero, &zero)
+            .unwrap()
+            .gradient();
         let (dh, ds) = (one_body.gradient(), weighted.gradient());
         let mut worst = 0f64;
         let atoms = setup.centers.len();
-        let every: Vec<(usize, usize)> = (0..atoms).flat_map(|a| (0..3).map(move |x| (a, x))).collect();
+        let every: Vec<(usize, usize)> = (0..atoms)
+            .flat_map(|a| (0..3).map(move |x| (a, x)))
+            .collect();
         for &(atom, axis) in components.unwrap_or(&every) {
             {
                 let (mut e1, mut es, mut ei) = (Vec::new(), Vec::new(), Vec::new());
@@ -111,8 +136,14 @@ fn one_body_sweep(
                     for sign in [1., -1.] {
                         let mut shift = [0.; 3];
                         shift[axis] = sign * step;
-                        let cells = PawSupercell::new(&ctx, &moved(&ctx, &setup, atom, shift), mesh).unwrap();
-                        sides.push((p.dot(&cells.one_body) + cells.ions, w.dot(&cells.overlap), cells.ions));
+                        let cells =
+                            PawSupercell::new(&ctx, &moved(&ctx, &setup, atom, shift), mesh)
+                                .unwrap();
+                        sides.push((
+                            p.dot(&cells.one_body) + cells.ions,
+                            w.dot(&cells.overlap),
+                            cells.ions,
+                        ));
                     }
                     e1.push((sides[0].0 - sides[1].0) / (2. * step));
                     es.push((sides[0].1 - sides[1].1) / (2. * step));
@@ -123,7 +154,10 @@ fn one_body_sweep(
                     let mut level = v.to_vec();
                     let mut factor = 4.;
                     while level.len() > 1 {
-                        level = level.windows(2).map(|w| (factor * w[1] - w[0]) / (factor - 1.)).collect();
+                        level = level
+                            .windows(2)
+                            .map(|w| (factor * w[1] - w[0]) / (factor - 1.))
+                            .collect();
                         factor *= 4.;
                     }
                     level[0]
@@ -157,9 +191,17 @@ fn one_body_sweep(
 /// H2 chain (3,1,1) at 4, 2, 1 mBohr.
 #[test]
 fn the_one_body_derivative_of_a_paw_supercell_is_the_crystal_engines_at_the_mesh() {
-    one_body_sweep(vec![("H2 chain", hydrogen_chain_cell(), [3, 1, 1])], Some(&[(0, 0)]), &[4e-3, 2e-3, 1e-3], 1e-9);
     one_body_sweep(
-        vec![("LiH", lithium_hydride_cell(), [2, 1, 1]), ("N2 chain", nitrogen_chain_cell(), [3, 1, 1])],
+        vec![("H2 chain", hydrogen_chain_cell(), [3, 1, 1])],
+        Some(&[(0, 0)]),
+        &[4e-3, 2e-3, 1e-3],
+        1e-9,
+    );
+    one_body_sweep(
+        vec![
+            ("LiH", lithium_hydride_cell(), [2, 1, 1]),
+            ("N2 chain", nitrogen_chain_cell(), [3, 1, 1]),
+        ],
         Some(&[]),
         &[4e-3, 2e-3, 1e-3],
         1e-9,
@@ -208,7 +250,9 @@ fn the_fixed_density_oracle_of_a_paw_supercell_converges_and_closes_the_rhf_forc
             + (0..m * m)
                 .map(|cd| {
                     let (c, d) = (cd / m, cd % m);
-                    p[(c, d)] * (eri[(a * m + b) * m * m + cd] - 0.5 * eri[(a * m + c) * m * m + b * m + d])
+                    p[(c, d)]
+                        * (eri[(a * m + b) * m * m + cd]
+                            - 0.5 * eri[(a * m + c) * m * m + b * m + d])
                 })
                 .sum::<f64>()
     });
@@ -232,13 +276,19 @@ fn the_fixed_density_oracle_of_a_paw_supercell_converges_and_closes_the_rhf_forc
                     w.dot(&s),
                 ));
             }
-            let central = |f: fn(&(f64, f64, f64)) -> f64| (f(&sides[0]) - f(&sides[1])) / (2. * step);
+            let central =
+                |f: fn(&(f64, f64, f64)) -> f64| (f(&sides[0]) - f(&sides[1])) / (2. * step);
             fixed.push(central(|v| v.0));
             relaxed.push(central(|v| v.1));
             overlap.push(central(|v| v.2));
         }
-        let richardson = |v: &[f64]| -> Vec<f64> { v.windows(2).map(|w| (4. * w[1] - w[0]) / 3.).collect() };
-        let (fixed1, relaxed1, overlap1) = (richardson(&fixed), richardson(&relaxed), richardson(&overlap));
+        let richardson =
+            |v: &[f64]| -> Vec<f64> { v.windows(2).map(|w| (4. * w[1] - w[0]) / 3.).collect() };
+        let (fixed1, relaxed1, overlap1) = (
+            richardson(&fixed),
+            richardson(&relaxed),
+            richardson(&overlap),
+        );
         let fixed2 = richardson(&fixed1);
         let last = fixed1.len() - 1;
         let resolution = (fixed1[last] - fixed1[last - 1]).abs();
@@ -252,7 +302,10 @@ fn the_fixed_density_oracle_of_a_paw_supercell_converges_and_closes_the_rhf_forc
         assert!(resolution < 1e-8, "atom {atom} axis {axis}: {resolution:e}");
         assert!(closure < 1e-7, "atom {atom} axis {axis}: {closure:e}");
     }
-    println!("net fixed-density derivative along x (both atoms): {:.3e} Ha/Bohr", net[0]);
+    println!(
+        "net fixed-density derivative along x (both atoms): {:.3e} Ha/Bohr",
+        net[0]
+    );
 }
 
 /// Richardson levels of central differences at halving steps (the step error is even in h): the
@@ -261,7 +314,10 @@ fn richardson(values: &[f64]) -> f64 {
     let mut level = values.to_vec();
     let mut factor = 4.;
     while level.len() > 1 {
-        level = level.windows(2).map(|w| (factor * w[1] - w[0]) / (factor - 1.)).collect();
+        level = level
+            .windows(2)
+            .map(|w| (factor * w[1] - w[0]) / (factor - 1.))
+            .collect();
         factor *= 4.;
     }
     level[0]
@@ -278,31 +334,42 @@ fn richardson(values: &[f64]) -> f64 {
 fn the_derivative_functions_of_a_paw_supercell_carry_the_overlap_derivative() {
     let ctx = Context::new(Some(4), 3 << 30).unwrap();
     let steps = [4e-3, 2e-3, 1e-3];
-    for (name, cell, mesh) in [("H2 chain", hydrogen_chain_cell(), [3, 1, 1]), ("N2 chain", nitrogen_chain_cell(), [2, 1, 1])] {
+    for (name, cell, mesh) in [
+        ("H2 chain", hydrogen_chain_cell(), [3, 1, 1]),
+        ("N2 chain", nitrogen_chain_cell(), [2, 1, 1]),
+    ] {
         let setup = cells_of(&ctx, "lda-sr", false, &cell, 1, [0.; 3]);
         let base = PawSupercell::new(&ctx, &setup, mesh).unwrap();
         let size = base.overlap.nrows();
         let frame = DMatrix::<f64>::identity(size, size);
         let mut worst = (0f64, 0f64, 0f64);
         for atom in 0..setup.centers.len() {
-            let (metric, charge, samples) = metric_gradient(&ctx, &setup, mesh, &frame, atom).unwrap();
+            let (metric, charge, samples) =
+                metric_gradient(&ctx, &setup, mesh, &frame, atom).unwrap();
             worst.2 = worst.2.max(samples);
             for axis in 0..3 {
                 let mut differences = Vec::new();
                 for &step in &steps {
                     let mut shift = [0.; 3];
                     shift[axis] = step;
-                    let plus = PawSupercell::new(&ctx, &moved(&ctx, &setup, atom, shift), mesh).unwrap().overlap;
+                    let plus = PawSupercell::new(&ctx, &moved(&ctx, &setup, atom, shift), mesh)
+                        .unwrap()
+                        .overlap;
                     shift[axis] = -step;
-                    let minus = PawSupercell::new(&ctx, &moved(&ctx, &setup, atom, shift), mesh).unwrap().overlap;
+                    let minus = PawSupercell::new(&ctx, &moved(&ctx, &setup, atom, shift), mesh)
+                        .unwrap()
+                        .overlap;
                     differences.push((plus - minus) / (2. * step));
                 }
-                let oracle = DMatrix::from_fn(size, size, |a, b| richardson(&differences.iter().map(|d| d[(a, b)]).collect::<Vec<_>>()));
+                let oracle = DMatrix::from_fn(size, size, |a, b| {
+                    richardson(&differences.iter().map(|d| d[(a, b)]).collect::<Vec<_>>())
+                });
                 let (mut miss, mut charge_miss, mut imaginary) = (0f64, 0f64, 0f64);
                 for a in 0..size {
                     for b in 0..size {
                         miss = miss.max((metric[axis][(a, b)].re - oracle[(a, b)]).abs());
-                        charge_miss = charge_miss.max((charge[axis][(a, b)].re - oracle[(a, b)]).abs());
+                        charge_miss =
+                            charge_miss.max((charge[axis][(a, b)].re - oracle[(a, b)]).abs());
                         imaginary = imaginary.max(metric[axis][(a, b)].im.abs());
                     }
                 }
@@ -315,8 +382,15 @@ fn the_derivative_functions_of_a_paw_supercell_carry_the_overlap_derivative() {
                 worst.1 = worst.1.max(charge_miss);
             }
         }
-        println!("{name}: worst metric miss {:.2e}, charge miss {:.2e}, sampled Bloch sums gap {:.1e}", worst.0, worst.1, worst.2);
-        assert!(worst.2 < 1e-12, "{name}: the sampled Bloch sums are not the crystal's: {:e}", worst.2);
+        println!(
+            "{name}: worst metric miss {:.2e}, charge miss {:.2e}, sampled Bloch sums gap {:.1e}",
+            worst.0, worst.1, worst.2
+        );
+        assert!(
+            worst.2 < 1e-12,
+            "{name}: the sampled Bloch sums are not the crystal's: {:e}",
+            worst.2
+        );
         assert!(worst.0 < 1e-9, "{name}: {:e}", worst.0);
     }
 }
@@ -364,9 +438,23 @@ fn rhf_state(
     setup: &PeriodicSetup,
     mesh: [usize; 3],
     cholesky: Option<f64>,
-) -> (mandacaru_core::molecular::MolecularIntegrals, DMatrix<f64>, DMatrix<f64>, DMatrix<f64>, Vec<f64>) {
-    let copy = setup.with_positions(ctx, &setup.fractional().unwrap()).unwrap();
-    let base = mandacaru_core::molecular::MolecularIntegrals::paw_supercell(ctx, std::sync::Arc::new(copy), mesh, cholesky).unwrap();
+) -> (
+    mandacaru_core::molecular::MolecularIntegrals,
+    DMatrix<f64>,
+    DMatrix<f64>,
+    DMatrix<f64>,
+    Vec<f64>,
+) {
+    let copy = setup
+        .with_positions(ctx, &setup.fractional().unwrap())
+        .unwrap();
+    let base = mandacaru_core::molecular::MolecularIntegrals::paw_supercell(
+        ctx,
+        std::sync::Arc::new(copy),
+        mesh,
+        cholesky,
+    )
+    .unwrap();
     let n = base.neutral_electrons();
     let options = ScfOptions {
         tolerance: 1e-12,
@@ -405,11 +493,20 @@ fn two_body_sweep(
     let split = |energies: Vec<f64>| (energies[0], energies[1..].iter().sum::<f64>());
     let (ej, ek) = eri.map_or((f64::NAN, f64::NAN), |eri| coulomb_exchange(eri, p));
     let (fj, fk) = split(two_body_energies(ctx, setup, mesh, occupied, &all).unwrap());
-    let identity = if eri.is_some() { (ej - fj).abs().max((ek - fk).abs()) } else { 0. };
+    let identity = if eri.is_some() {
+        (ej - fj).abs().max((ek - fk).abs())
+    } else {
+        0.
+    };
     println!("{name} {mesh:?}: {r} occupied; E_J {ej:.12} forms {fj:.12} gap {:.1e}; E_K {ek:.12} forms {fk:.12} gap {:.1e}", (ej - fj).abs(), (ek - fk).abs());
     let gj = two_body_gradient(ctx, setup, mesh, occupied, &coulomb).unwrap();
     let gk = two_body_gradient(ctx, setup, mesh, occupied, &exchange).unwrap();
-    println!("{name}: sampled Bloch sums gap {:.1e}, imaginary parts J {:.1e} K {:.1e}", gj.samples.max(gk.samples), gj.imaginary, gk.imaginary);
+    println!(
+        "{name}: sampled Bloch sums gap {:.1e}, imaginary parts J {:.1e} K {:.1e}",
+        gj.samples.max(gk.samples),
+        gj.imaginary,
+        gk.imaginary
+    );
     let (tj, tk) = (gj.total(), gk.total());
     let mut worst = 0f64;
     for &(atom, axis) in components {
@@ -419,7 +516,10 @@ fn two_body_sweep(
             for sign in [1., -1.] {
                 let mut shift = [0.; 3];
                 shift[axis] = sign * step;
-                sides.push(split(two_body_energies(ctx, &moved(ctx, setup, atom, shift), mesh, occupied, &all).unwrap()));
+                sides.push(split(
+                    two_body_energies(ctx, &moved(ctx, setup, atom, shift), mesh, occupied, &all)
+                        .unwrap(),
+                ));
             }
             dj.push((sides[0].0 - sides[1].0) / (2. * step));
             dk.push((sides[0].1 - sides[1].1) / (2. * step));
@@ -455,7 +555,17 @@ fn the_two_body_derivative_of_a_paw_supercell_closes_g1() {
         ..ScfOptions::default()
     };
     let every: Vec<(usize, usize)> = (0..2).flat_map(|a| (0..3).map(move |x| (a, x))).collect();
-    let (worst, identity, tj, tk) = two_body_sweep(&ctx, "H2 chain", &setup, mesh, &occupied, &p, Some(&eri), &every, &[4e-3, 2e-3, 1e-3]);
+    let (worst, identity, tj, tk) = two_body_sweep(
+        &ctx,
+        "H2 chain",
+        &setup,
+        mesh,
+        &occupied,
+        &p,
+        Some(&eri),
+        &every,
+        &[4e-3, 2e-3, 1e-3],
+    );
     assert!(identity < 1e-9, "{identity:e}");
     // G1: the one-body layer at (P, W = 0) and the two-body layer against the fixed-density
     // oracle of the supercell Hamiltonian (its Cholesky-factored integrals, Richardson of 8, 4,
@@ -466,15 +576,23 @@ fn the_two_body_derivative_of_a_paw_supercell_closes_g1() {
             + (0..m * m)
                 .map(|cd| {
                     let (c, d) = (cd / m, cd % m);
-                    p[(c, d)] * (eri[(a * m + b) * m * m + cd] - 0.5 * eri[(a * m + c) * m * m + b * m + d])
+                    p[(c, d)]
+                        * (eri[(a * m + b) * m * m + cd]
+                            - 0.5 * eri[(a * m + c) * m * m + b * m + d])
                 })
                 .sum::<f64>()
     });
     let w = &p * fock * &p * 0.5;
     let zero = DMatrix::<f64>::zeros(m, m);
-    let one = one_body_gradient(&ctx, &setup, mesh, &p, &zero).unwrap().gradient();
-    let overlap = one_body_gradient(&ctx, &setup, mesh, &zero, &w).unwrap().gradient();
-    let ions = one_body_gradient(&ctx, &setup, mesh, &zero, &zero).unwrap().gradient();
+    let one = one_body_gradient(&ctx, &setup, mesh, &p, &zero)
+        .unwrap()
+        .gradient();
+    let overlap = one_body_gradient(&ctx, &setup, mesh, &zero, &w)
+        .unwrap()
+        .gradient();
+    let ions = one_body_gradient(&ctx, &setup, mesh, &zero, &zero)
+        .unwrap()
+        .gradient();
     let mut g1 = 0f64;
     let mut net = 0f64;
     for (atom, axis) in [(0, 0), (0, 1), (1, 0)] {
@@ -488,7 +606,10 @@ fn the_two_body_derivative_of_a_paw_supercell_closes_g1() {
                 let (_, h, eri) = raw_atomic_orbitals(&moved);
                 let state = moved.mean_field("rhf", [n / 2, n / 2], &options).unwrap();
                 assert!(state.converged);
-                sides.push((closed_shell_energy(&h, &eri, moved.nuclear, &p), state.electronic_energy + moved.nuclear));
+                sides.push((
+                    closed_shell_energy(&h, &eri, moved.nuclear, &p),
+                    state.electronic_energy + moved.nuclear,
+                ));
             }
             fixed.push((sides[0].0 - sides[1].0) / (2. * step));
             relaxed.push((sides[0].1 - sides[1].1) / (2. * step));
@@ -525,16 +646,33 @@ fn the_two_body_derivative_of_a_paw_supercell_holds_on_p_functions() {
     let mesh = [3, 1, 1];
     let setup = cells_of(&ctx, "lda-sr", false, &nitrogen_chain_cell(), 1, [0.; 3]);
     let size = 3 * PawSupercell::new(&ctx, &setup, mesh).unwrap().m;
-    let occupied: DMatrix<f64> = DMatrix::<f64>::identity(size, size).columns(0, 15).into_owned();
+    let occupied: DMatrix<f64> = DMatrix::<f64>::identity(size, size)
+        .columns(0, 15)
+        .into_owned();
     let p: DMatrix<f64> = &occupied * occupied.transpose() * 2.;
     let every: Vec<(usize, usize)> = (0..2).flat_map(|a| (0..3).map(move |x| (a, x))).collect();
-    let (worst, identity, _, _) = two_body_sweep(&ctx, "N2 chain", &setup, mesh, &occupied, &p, None, &every, &[8e-3, 4e-3, 2e-3, 1e-3]);
+    let (worst, identity, _, _) = two_body_sweep(
+        &ctx,
+        "N2 chain",
+        &setup,
+        mesh,
+        &occupied,
+        &p,
+        None,
+        &every,
+        &[8e-3, 4e-3, 2e-3, 1e-3],
+    );
     assert!(worst < 1e-8 && identity == 0., "{worst:e}");
 }
 
 /// `sum gamma h + 1/2 sum Gamma <pq|rs> + E_nn` of the raw-AO orbitals `a` on `integrals`
 /// (spin-summed RDMs over the columns of `a`).
-fn energy_at_fixed_orbitals(integrals: &mandacaru_core::molecular::MolecularIntegrals, a: &DMatrix<f64>, one: &[f64], two: &[f64]) -> f64 {
+fn energy_at_fixed_orbitals(
+    integrals: &mandacaru_core::molecular::MolecularIntegrals,
+    a: &DMatrix<f64>,
+    one: &[f64],
+    two: &[f64],
+) -> f64 {
     use mandacaru_core::molecular::transform;
     let ctx = &integrals.context;
     let m = integrals.m();
@@ -563,7 +701,8 @@ fn energy_at_fixed_orbitals(integrals: &mandacaru_core::molecular::MolecularInte
 /// with fixed Cholesky pivots (Richardson of 4, 2, 1 mBohr). The seam returns each image's share
 /// (`1/N` of its primitive atom's derivative), so the images summed are the collective derivative.
 #[test]
-fn the_fixed_density_gradient_of_an_adapt_state_on_a_paw_supercell_is_the_derivative_at_fixed_orbitals() {
+fn the_fixed_density_gradient_of_an_adapt_state_on_a_paw_supercell_is_the_derivative_at_fixed_orbitals(
+) {
     use mandacaru_core::{
         molecular::variational_gradient::{two_body_forms, FixedDensities},
         quantum::{properties, SolveOptions},
@@ -580,9 +719,25 @@ fn the_fixed_density_gradient_of_an_adapt_state_on_a_paw_supercell_is_the_deriva
     };
     let state = base.mean_field("rhf", [n / 2, n / 2], &options).unwrap();
     let model = state.model(&base).unwrap();
-    let problem = model.problem(&ctx, "jordan_wigner", true, false, true).unwrap();
-    let solved = problem.solve(&SolveOptions { adapt: true, ..Default::default() }, None).unwrap();
-    let rdm = properties::spatial_rdms(&ctx, &problem.encoding, problem.register("test").unwrap(), solved.state.complex128().unwrap()).unwrap();
+    let problem = model
+        .problem(&ctx, "jordan_wigner", true, false, true)
+        .unwrap();
+    let solved = problem
+        .solve(
+            &SolveOptions {
+                adapt: true,
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
+    let rdm = properties::spatial_rdms(
+        &ctx,
+        &problem.encoding,
+        problem.register("test").unwrap(),
+        solved.state.complex128().unwrap(),
+    )
+    .unwrap();
     let t = rdm.m;
     let one: Vec<f64> = rdm.one.as_slice().iter().map(|v| v.re).collect();
     let two: Vec<f64> = rdm.two.as_slice().iter().map(|v| v.re).collect();
@@ -601,14 +756,23 @@ fn the_fixed_density_gradient_of_an_adapt_state_on_a_paw_supercell_is_the_deriva
     assert!((at_base - solved.energy).abs() < 1e-9);
     let gradient = base.fixed_density_gradient(&densities).unwrap();
     for (term, values) in &gradient.terms {
-        println!("term {term}: {:?}", values.as_slice().iter().map(|v| format!("{v:+.6e}")).collect::<Vec<_>>());
+        println!(
+            "term {term}: {:?}",
+            values
+                .as_slice()
+                .iter()
+                .map(|v| format!("{v:+.6e}"))
+                .collect::<Vec<_>>()
+        );
     }
     let atoms = setup.centers.len();
     let cells = 2;
     let mut worst = 0f64;
     for atom in 0..atoms {
         for axis in 0..3 {
-            let analytic: f64 = (0..cells).map(|cell| gradient.total.as_slice()[(cell * atoms + atom) * 3 + axis]).sum();
+            let analytic: f64 = (0..cells)
+                .map(|cell| gradient.total.as_slice()[(cell * atoms + atom) * 3 + axis])
+                .sum();
             let mut differences = Vec::new();
             for &step in &[4e-3, 2e-3, 1e-3] {
                 let mut sides = Vec::new();
@@ -617,7 +781,14 @@ fn the_fixed_density_gradient_of_an_adapt_state_on_a_paw_supercell_is_the_deriva
                     for cell in 0..cells {
                         positions[cell * atoms + atom][axis] += sign * step;
                     }
-                    let geometry = Geometry::new(base.geometry.numbers().to_vec(), positions, *base.geometry.cell(), base.geometry.pbc(), LengthUnit::Bohr).unwrap();
+                    let geometry = Geometry::new(
+                        base.geometry.numbers().to_vec(),
+                        positions,
+                        *base.geometry.cell(),
+                        base.geometry.pbc(),
+                        LengthUnit::Bohr,
+                    )
+                    .unwrap();
                     let moved = base.at_geometry_with_fixed_pivots(geometry).unwrap();
                     sides.push(energy_at_fixed_orbitals(&moved, &a, &one, &two));
                 }
@@ -641,42 +812,113 @@ const HARTREE_PER_BOHR_TO_EV_PER_ANGSTROM: f64 = 27.211386245988 / 0.52917721090
 /// finite-difference oracle along the collective image directions (displaced SCF continued from the
 /// reference, the model's selection redone, frames aligned, fixed Cholesky pivots, Richardson of
 /// 1 and 0.5 mBohr). Returns the worst miss in eV/A and the analytic net force (Ha/Bohr).
-fn g3_case(name: &str, cell: paw_supercell_support::Primitive, mesh: [usize; 3], kind: &'static str, spin: i64, active: Option<&str>, shift: f64) -> (f64, f64) {
-    use mandacaru_core::{molecular::response, quantum::{lagrangian::Ansatz, SolveOptions}};
+fn g3_case(
+    name: &str,
+    cell: paw_supercell_support::Primitive,
+    mesh: [usize; 3],
+    kind: &'static str,
+    spin: i64,
+    active: Option<&str>,
+    shift: f64,
+) -> (f64, f64) {
+    use mandacaru_core::{
+        molecular::response,
+        quantum::{lagrangian::Ansatz, SolveOptions},
+    };
     use variational_forces_support::oracle;
     let ctx = Context::new(Some(4), 3 << 30).unwrap();
     let setup = cells_of(&ctx, "lda-sr", false, &cell, 1, [0.; 3]);
     let base = displaced(&ctx, &setup, mesh, 0, [0.; 3]);
     let n = base.neutral_electrons() as i64;
     let particles = [((n + spin) / 2) as usize, ((n - spin) / 2) as usize];
-    let state = base.mean_field(kind, particles, &ScfOptions { tolerance: 1e-12, ..ScfOptions::default() }).unwrap();
-    println!("{name} {mesh:?}: {n} electrons, {} orbitals, levels {:.5?}", base.m(), state.energies.iter().map(|e| e[..e.len().min(8)].to_vec()).collect::<Vec<_>>());
+    let state = base
+        .mean_field(
+            kind,
+            particles,
+            &ScfOptions {
+                tolerance: 1e-12,
+                ..ScfOptions::default()
+            },
+        )
+        .unwrap();
+    println!(
+        "{name} {mesh:?}: {n} electrons, {} orbitals, levels {:.5?}",
+        base.m(),
+        state
+            .energies
+            .iter()
+            .map(|e| e[..e.len().min(8)].to_vec())
+            .collect::<Vec<_>>()
+    );
     assert!(state.converged);
     let model = match active {
         Some(spec) => std::sync::Arc::new(state.active_model(&base, spec).unwrap()),
         None => state.model(&base).unwrap(),
     };
-    let problem = model.problem(&ctx, "jordan_wigner", true, false, true).unwrap();
-    let solved = problem.solve(&SolveOptions { adapt: true, ..Default::default() }, None).unwrap();
-    let theta: Vec<f64> = solved.parameters.iter().enumerate().map(|(k, t)| t + shift * ((k + 1) as f64).cos()).collect();
-    let prepared = problem.prepare_state(&solved.indices, &theta, true).unwrap();
+    let problem = model
+        .problem(&ctx, "jordan_wigner", true, false, true)
+        .unwrap();
+    let solved = problem
+        .solve(
+            &SolveOptions {
+                adapt: true,
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
+    let theta: Vec<f64> = solved
+        .parameters
+        .iter()
+        .enumerate()
+        .map(|(k, t)| t + shift * ((k + 1) as f64).cos())
+        .collect();
+    let prepared = problem
+        .prepare_state(&solved.indices, &theta, true)
+        .unwrap();
     let psi = prepared.complex128().unwrap();
-    let ansatz = Ansatz { indices: &solved.indices, parameters: &theta, product_form: true };
+    let ansatz = Ansatz {
+        indices: &solved.indices,
+        parameters: &theta,
+        product_form: true,
+    };
     let atoms = setup.centers.len();
     let cells: usize = mesh.iter().product();
     let size = 3 * atoms * cells;
     let directions = DMatrix::from_fn(size, 3 * atoms, |row, column| {
         let (atom, axis) = ((row / 3) % atoms, row % 3);
-        if atom * 3 + axis == column { 1. } else { 0. }
+        if atom * 3 + axis == column {
+            1.
+        } else {
+            0.
+        }
     });
-    let reference = oracle::gradient(&base, &state, &model, &problem, psi, &oracle::Options {
-        active_spec: active,
-        ansatz: Some(ansatz),
-        directions: Some(&directions),
-        ..Default::default()
-    })
+    let reference = oracle::gradient(
+        &base,
+        &state,
+        &model,
+        &problem,
+        psi,
+        &oracle::Options {
+            active_spec: active,
+            ansatz: Some(ansatz),
+            directions: Some(&directions),
+            ..Default::default()
+        },
+    )
     .unwrap();
-    let analytic = response::gradient(&base, &state, &model, &problem, psi, &response::Options { ansatz: Some(ansatz), ..Default::default() }).unwrap();
+    let analytic = response::gradient(
+        &base,
+        &state,
+        &model,
+        &problem,
+        psi,
+        &response::Options {
+            ansatz: Some(ansatz),
+            ..Default::default()
+        },
+    )
+    .unwrap();
     assert_eq!(analytic.scheme, "analytic");
     assert_eq!(analytic.gradient.as_slice().len(), 3 * atoms);
     let to_ev = HARTREE_PER_BOHR_TO_EV_PER_ANGSTROM;
@@ -712,16 +954,80 @@ fn g3_the_analytic_force_of_a_paw_supercell_matches_the_oracle() {
     // the lowest frozen, the two pairs whole and the top level active; its parameter Hessian is
     // indefinite off the optimum (-9.4e-3 at a shift of 0.02, -1.3e-3 at 0.005), so it is gated at
     // the optimum (no Z-vector; the case is about the pairs).
-    let cases: Vec<(&str, paw_supercell_support::Primitive, [usize; 3], &'static str, i64, Option<&str>, f64)> = vec![
-        ("H2 chain", hydrogen_chain_cell(), [2, 1, 1], "rhf", 0, None, 0.02),
-        ("LiH", lithium_hydride_cell(), [2, 1, 1], "rhf", 0, Some(r#"{"orbitals": 3, "frozen": [0]}"#), 0.02),
-        ("LiH", lithium_hydride_cell(), [3, 1, 1], "rhf", 0, Some(r#"{"orbitals": 5, "frozen": [0]}"#), 0.),
-        ("triplet H2 chain", hydrogen_chain_cell(), [2, 1, 1], "uhf", 2, None, 0.02),
-        ("triplet H2 chain", hydrogen_chain_cell(), [3, 1, 1], "uhf", 2, None, 0.02),
+    let cases: Vec<(
+        &str,
+        paw_supercell_support::Primitive,
+        [usize; 3],
+        &'static str,
+        i64,
+        Option<&str>,
+        f64,
+    )> = vec![
+        (
+            "H2 chain",
+            hydrogen_chain_cell(),
+            [2, 1, 1],
+            "rhf",
+            0,
+            None,
+            0.02,
+        ),
+        (
+            "LiH",
+            lithium_hydride_cell(),
+            [2, 1, 1],
+            "rhf",
+            0,
+            Some(r#"{"orbitals": 3, "frozen": [0]}"#),
+            0.02,
+        ),
+        (
+            "LiH",
+            lithium_hydride_cell(),
+            [3, 1, 1],
+            "rhf",
+            0,
+            Some(r#"{"orbitals": 5, "frozen": [0]}"#),
+            0.,
+        ),
+        (
+            "triplet H2 chain",
+            hydrogen_chain_cell(),
+            [2, 1, 1],
+            "uhf",
+            2,
+            None,
+            0.02,
+        ),
+        (
+            "triplet H2 chain",
+            hydrogen_chain_cell(),
+            [3, 1, 1],
+            "uhf",
+            2,
+            None,
+            0.02,
+        ),
         // The +-k pairs of the (3,1,1) mesh inside the full space, through the restricted and
         // the unrestricted relaxed densities (a closed-shell UHF keeps the pairs exact).
-        ("RHF H2 chain", hydrogen_chain_cell(), [3, 1, 1], "rhf", 0, None, 0.02),
-        ("UHF H2 chain", hydrogen_chain_cell(), [3, 1, 1], "uhf", 0, None, 0.02),
+        (
+            "RHF H2 chain",
+            hydrogen_chain_cell(),
+            [3, 1, 1],
+            "rhf",
+            0,
+            None,
+            0.02,
+        ),
+        (
+            "UHF H2 chain",
+            hydrogen_chain_cell(),
+            [3, 1, 1],
+            "uhf",
+            0,
+            None,
+            0.02,
+        ),
     ];
     let mut failures = Vec::new();
     let only = std::env::var("G3_CASES").ok();
@@ -730,14 +1036,18 @@ fn g3_the_analytic_force_of_a_paw_supercell_matches_the_oracle() {
             continue;
         }
         // Each case runs on its own: a refused or failing case is reported, the others still run.
-        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| g3_case(name, cell, mesh, kind, spin, active, shift))) {
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            g3_case(name, cell, mesh, kind, spin, active, shift)
+        })) {
             Ok((worst, net)) => {
                 if !(worst < 1e-6) {
                     failures.push(format!("{name} {mesh:?}: {worst:e} eV/A"));
                 }
                 println!("G4 {name} {mesh:?}: net {net:.2e} Ha/Bohr against 1e-10");
             }
-            Err(_) => failures.push(format!("{name} {mesh:?}: the case did not run (see its panic above)")),
+            Err(_) => failures.push(format!(
+                "{name} {mesh:?}: the case did not run (see its panic above)"
+            )),
         }
     }
     assert!(failures.is_empty(), "{failures:#?}");
@@ -753,12 +1063,17 @@ fn g3_the_analytic_force_of_a_paw_supercell_matches_the_oracle() {
 #[test]
 fn g4_g5_g7_the_supercell_force_sums_rules_and_refusals() {
     let ctx = Context::new(Some(4), 3 << 30).unwrap();
-    let options = ScfOptions { tolerance: 1e-12, ..ScfOptions::default() };
+    let options = ScfOptions {
+        tolerance: 1e-12,
+        ..ScfOptions::default()
+    };
     let mesh = [2, 1, 1];
     let setup = cells_of(&ctx, "lda-sr", false, &hydrogen_chain_cell(), 1, [0.; 3]);
     let force = |integrals: &mandacaru_core::molecular::MolecularIntegrals| {
         let n = integrals.neutral_electrons();
-        let rhf = integrals.mean_field("rhf", [n / 2, n / 2], &options).unwrap();
+        let rhf = integrals
+            .mean_field("rhf", [n / 2, n / 2], &options)
+            .unwrap();
         assert!(rhf.converged);
         integrals.gradient(&rhf).unwrap().total.as_slice().to_vec()
     };
@@ -768,7 +1083,11 @@ fn g4_g5_g7_the_supercell_force_sums_rules_and_refusals() {
     // frozen from G1's run on the library installed 2026-11-16 (`lda-sr/H.parquet` sha256
     // 730c4c02d4e03748, see DECISIONS).
     let mut value = 0f64;
-    for (component, oracle) in [(0, 0.216126835779), (1, 0.024487603768), (3, -0.216126682096)] {
+    for (component, oracle) in [
+        (0, 0.216126835779),
+        (1, 0.024487603768),
+        (3, -0.216126682096),
+    ] {
         let miss = (2. * base[component] - oracle).abs();
         println!("RHF value, component {component}: N g {:+.12} oracle {oracle:+.12} miss {miss:.2e} Ha/Bohr", 2. * base[component]);
         value = value.max(miss);
@@ -780,12 +1099,19 @@ fn g4_g5_g7_the_supercell_force_sums_rules_and_refusals() {
     let uhf_options = options.clone();
     let uhf = |integrals: &mandacaru_core::molecular::MolecularIntegrals| {
         let n = integrals.neutral_electrons();
-        let state = integrals.mean_field("uhf", [n / 2 + 1, n / 2 - 1], &uhf_options).unwrap();
+        let state = integrals
+            .mean_field("uhf", [n / 2 + 1, n / 2 - 1], &uhf_options)
+            .unwrap();
         assert!(state.converged);
         state
     };
     let triplet = displaced(&ctx, &setup, mesh, 0, [0.; 3]);
-    let g = triplet.gradient(&uhf(&triplet)).unwrap().total.as_slice().to_vec();
+    let g = triplet
+        .gradient(&uhf(&triplet))
+        .unwrap()
+        .total
+        .as_slice()
+        .to_vec();
     for (atom, axis) in [(0, 0), (1, 1)] {
         let mut differences = Vec::new();
         for &step in &[4e-3, 2e-3, 1e-3] {
@@ -816,7 +1142,9 @@ fn g4_g5_g7_the_supercell_force_sums_rules_and_refusals() {
             let plus = force(&displaced(&ctx, &setup, mesh, atom, shift));
             shift[axis] = -step;
             let minus = force(&displaced(&ctx, &setup, mesh, atom, shift));
-            let rule: Vec<f64> = (0..3).map(|x| (plus[x] + plus[3 + x] - minus[x] - minus[3 + x]) / (2. * step)).collect();
+            let rule: Vec<f64> = (0..3)
+                .map(|x| (plus[x] + plus[3 + x] - minus[x] - minus[3 + x]) / (2. * step))
+                .collect();
             let constant = (plus[3 * atom + axis] - minus[3 * atom + axis]) / (2. * step);
             println!("G5 b = atom {atom} axis {axis}: sum_a dF_a/dtau_b {rule:.3?} (the force constant d g_b/d tau_b {constant:+.6e}) Ha/Bohr^2");
             worst = worst.max(rule.iter().fold(0f64, |a, v| a.max(v.abs())));
@@ -829,22 +1157,40 @@ fn g4_g5_g7_the_supercell_force_sums_rules_and_refusals() {
         shape: [8, 20, 20],
         atoms: vec![("H", [0.1, 0.2, 0.15])],
     };
-    let metal = displaced(&ctx, &cells_of(&ctx, "lda-sr", false, &chain, 1, [0.; 3]), [4, 1, 1], 0, [0.; 3]);
+    let metal = displaced(
+        &ctx,
+        &cells_of(&ctx, "lda-sr", false, &chain, 1, [0.; 3]),
+        [4, 1, 1],
+        0,
+        [0.; 3],
+    );
     let mut rhf = metal.mean_field("rhf", [2, 2], &options).unwrap();
     let gap = rhf.energies[0][2] - rhf.energies[0][1];
     let answer = metal.gradient(&rhf);
     println!(
         "G7 H chain (4,1,1) RHF {:.10} (converged {}), levels {:.6?}, gap {gap:.3e} Ha: {}",
-        rhf.electronic_energy, rhf.converged, &rhf.energies[0][..4], answer.as_ref().map_or_else(|e| format!("refused: {e}"), |_| "a force".into())
+        rhf.electronic_energy,
+        rhf.converged,
+        &rhf.energies[0][..4],
+        answer
+            .as_ref()
+            .map_or_else(|e| format!("refused: {e}"), |_| "a force".into())
     );
     if rhf.converged && gap < 1e-8 {
         assert!(matches!(answer, Err(mandacaru_core::Error::Unsupported(_))));
     }
     rhf.converged = true;
     rhf.energies[0][2] = rhf.energies[0][1];
-    let error = metal.gradient(&rhf).err().expect("a degenerate Fermi level is refused");
+    let error = metal
+        .gradient(&rhf)
+        .err()
+        .expect("a degenerate Fermi level is refused");
     println!("G7 degenerate Fermi level: {error}");
-    assert!(matches!(error, mandacaru_core::Error::Unsupported(_)) && error.to_string().contains("Fermi level"), "{error}");
+    assert!(
+        matches!(error, mandacaru_core::Error::Unsupported(_))
+            && error.to_string().contains("Fermi level"),
+        "{error}"
+    );
 }
 
 /// MG-REST item 8: the packed pair matrix `(pr|qs)` of a PAW-LCAO supercell's Lowdin functions,
@@ -860,14 +1206,27 @@ fn g4_g5_g7_the_supercell_force_sums_rules_and_refusals() {
 #[ignore = "slow: H2 chain (3,1,1), N2 chain (2,1,1) and (3,1,1), every Coulomb column twice (2163 s measured 2026-11-15); run: MANDACARU_PAW_PATH=... cargo test --profile release-test -p mandacaru-core --test periodic_variational_forces -- --ignored pair_matrix --nocapture"]
 fn the_pair_matrix_of_a_paw_supercell_is_measured_against_its_cholesky() {
     let ctx = Context::new(Some(4), 3 << 30).unwrap();
-    let cases: Vec<(&str, paw_supercell_support::Primitive, [usize; 3])> = match std::env::var("PAIR_CASES").as_deref() {
-        Ok("N2-3") => vec![("N2 chain", nitrogen_chain_cell(), [3, 1, 1])],
-        _ => vec![("H2 chain", hydrogen_chain_cell(), [3, 1, 1]), ("N2 chain", nitrogen_chain_cell(), [2, 1, 1]), ("N2 chain", nitrogen_chain_cell(), [3, 1, 1])],
-    };
+    let cases: Vec<(&str, paw_supercell_support::Primitive, [usize; 3])> =
+        match std::env::var("PAIR_CASES").as_deref() {
+            Ok("N2-3") => vec![("N2 chain", nitrogen_chain_cell(), [3, 1, 1])],
+            _ => vec![
+                ("H2 chain", hydrogen_chain_cell(), [3, 1, 1]),
+                ("N2 chain", nitrogen_chain_cell(), [2, 1, 1]),
+                ("N2 chain", nitrogen_chain_cell(), [3, 1, 1]),
+            ],
+        };
     for (name, cell, mesh) in cases {
         let setup = cells_of(&ctx, "lda-sr", false, &cell, 1, [0.; 3]);
-        let copy = setup.with_positions(&ctx, &setup.fractional().unwrap()).unwrap();
-        let integrals = mandacaru_core::molecular::MolecularIntegrals::paw_supercell(&ctx, std::sync::Arc::new(copy), mesh, None).unwrap();
+        let copy = setup
+            .with_positions(&ctx, &setup.fractional().unwrap())
+            .unwrap();
+        let integrals = mandacaru_core::molecular::MolecularIntegrals::paw_supercell(
+            &ctx,
+            std::sync::Arc::new(copy),
+            mesh,
+            None,
+        )
+        .unwrap();
         let source = integrals.paw_supercell.as_ref().unwrap();
         let columns = source.columns.as_ref();
         let n = (columns.m() * (columns.m() + 1)) / 2;
@@ -880,14 +1239,26 @@ fn the_pair_matrix_of_a_paw_supercell_is_measured_against_its_cholesky() {
             }
         }
         let (imaginary, asymmetry) = columns.departures();
-        let start = (0..n).map(|k| (diagonal[k] - a[(k, k)]).abs()).fold(0f64, f64::max);
+        let start = (0..n)
+            .map(|k| (diagonal[k] - a[(k, k)]).abs())
+            .fold(0f64, f64::max);
         let transposed = (&a - a.transpose()).abs().max();
         let symmetric = (&a + a.transpose()) * 0.5;
         let m = columns.m();
-        let indices: Vec<(usize, usize)> = (0..m).flat_map(|p| (0..=p).map(move |r| (p, r))).collect();
+        let indices: Vec<(usize, usize)> =
+            (0..m).flat_map(|p| (0..=p).map(move |r| (p, r))).collect();
         let correction = &source.correction;
-        let total = DMatrix::from_fn(n, n, |x, y| symmetric[(x, y)] + correction.value(indices[x].0, indices[x].1, indices[y].0, indices[y].1));
-        let mut whole: Vec<f64> = total.clone().symmetric_eigen().eigenvalues.iter().copied().collect();
+        let total = DMatrix::from_fn(n, n, |x, y| {
+            symmetric[(x, y)]
+                + correction.value(indices[x].0, indices[x].1, indices[y].0, indices[y].1)
+        });
+        let mut whole: Vec<f64> = total
+            .clone()
+            .symmetric_eigen()
+            .eigenvalues
+            .iter()
+            .copied()
+            .collect();
         whole.sort_by(f64::total_cmp);
         println!(
             "{name} {mesh:?}: with the remainder ({} signed terms) eigenvalues lowest {:?}; below -1e-10: {}",
@@ -895,13 +1266,21 @@ fn the_pair_matrix_of_a_paw_supercell_is_measured_against_its_cholesky() {
         );
         let eri = integrals.eri().unwrap();
         let report = eri.report();
-        let gap = (0..n).flat_map(|x| (0..n).map(move |y| (x, y))).fold(0f64, |w, (x, y)| {
-            let ((p, r), (q, s)) = (indices[x], indices[y]);
-            w.max((eri.value(p, q, r, s) - total[(x, y)]).abs())
-        });
+        let gap = (0..n)
+            .flat_map(|x| (0..n).map(move |y| (x, y)))
+            .fold(0f64, |w, (x, y)| {
+                let ((p, r), (q, s)) = (indices[x], indices[y]);
+                w.max((eri.value(p, q, r, s) - total[(x, y)]).abs())
+            });
         println!("{name} {mesh:?}: the Hamiltonian's factors {} (rank {:?}): largest |(pr|qs) - total| {gap:.2e} Ha", report.representation, report.cholesky);
         assert!(gap < 1e-8, "{name}: {gap:e}");
-        let mut values: Vec<f64> = symmetric.clone().symmetric_eigen().eigenvalues.iter().copied().collect();
+        let mut values: Vec<f64> = symmetric
+            .clone()
+            .symmetric_eigen()
+            .eigenvalues
+            .iter()
+            .copied()
+            .collect();
         values.sort_by(f64::total_cmp);
         let below = |t: f64| values.iter().filter(|v| **v < -t).count();
         println!(
@@ -913,25 +1292,40 @@ fn the_pair_matrix_of_a_paw_supercell_is_measured_against_its_cholesky() {
             values.iter().take(6).map(|v| format!("{v:.3e}")).collect::<Vec<_>>(), values[n - 1], below(1e-10), below(1e-9), below(1e-8), below(1e-6)
         );
         // The production pivoted Cholesky on the dense columns, from either diagonal.
-        for (label, first) in [("diagonal()", diagonal.clone()), ("column diagonal", (0..n).map(|k| a[(k, k)]).collect::<Vec<_>>())] {
+        for (label, first) in [
+            ("diagonal()", diagonal.clone()),
+            (
+                "column diagonal",
+                (0..n).map(|k| a[(k, k)]).collect::<Vec<_>>(),
+            ),
+        ] {
             let mut residual = first;
             let mut used = vec![false; n];
             let mut factors: Vec<Vec<f64>> = Vec::new();
             loop {
-                let pivot = (0..n).max_by(|&x, &y| residual[x].total_cmp(&residual[y])).unwrap();
+                let pivot = (0..n)
+                    .max_by(|&x, &y| residual[x].total_cmp(&residual[y]))
+                    .unwrap();
                 let top = residual[pivot];
                 if top <= 1e-10 || factors.len() == n {
                     break;
                 }
                 let scale = 1. / top.sqrt();
-                let factor: Vec<f64> = (0..n).map(|j| (a[(j, pivot)] - factors.iter().map(|f| f[j] * f[pivot]).sum::<f64>()) * scale).collect();
+                let factor: Vec<f64> = (0..n)
+                    .map(|j| {
+                        (a[(j, pivot)] - factors.iter().map(|f| f[j] * f[pivot]).sum::<f64>())
+                            * scale
+                    })
+                    .collect();
                 for j in 0..n {
                     residual[j] -= factor[j] * factor[j];
                 }
                 used[pivot] = true;
                 factors.push(factor);
             }
-            let worst = (0..n).min_by(|&x, &y| residual[x].total_cmp(&residual[y])).unwrap();
+            let worst = (0..n)
+                .min_by(|&x, &y| residual[x].total_cmp(&residual[y]))
+                .unwrap();
             println!(
                 "{name} {mesh:?}: Cholesky at 1e-10 from the {label}: rank {}, lowest residual {:.3e} on pair {worst} ({} pivot), negative below -1e-9 on {} pairs",
                 factors.len(), residual[worst], if used[worst] { "a used" } else { "an unused" }, residual.iter().filter(|r| **r < -1e-9).count()

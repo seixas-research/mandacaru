@@ -6,7 +6,7 @@ use crate::arrays::{array, copy, error};
 use crate::context::PyContext;
 use crate::geometry::PyGeometry;
 use crate::molecular::{PyIntegrals, PyMeanField, PyModel};
-use crate::quantum::PyProblem;
+use crate::quantum::PyQuantumProblem;
 use mandacaru_core::math::storage::Precision;
 use mandacaru_core::molecular::bloch_path::bloch_path_spectral;
 use mandacaru_core::molecular::periodic::{bloch_spectral, mean_field_bands};
@@ -74,7 +74,10 @@ pub fn paw_supercell_integrals(
     let fields = request
         .as_object_mut()
         .ok_or_else(|| PyValueError::new_err("a setup request is a JSON object"))?;
-    fields.insert("mesh".into(), serde_json::json!({"size": [1, 1, 1], "gamma": true}));
+    fields.insert(
+        "mesh".into(),
+        serde_json::json!({"size": [1, 1, 1], "gamma": true}),
+    );
     fields.insert("spin".into(), serde_json::json!(false));
     fields.insert("symmetry".into(), serde_json::json!(false));
     fields.insert("charge".into(), serde_json::json!(0.0));
@@ -152,7 +155,7 @@ pub fn bloch_bands<'py>(
 /// The state of `problem` in occupation form, for the Lehmann representation.
 fn occupation_state(
     ctx: &mandacaru_core::Context,
-    problem: &PyProblem,
+    problem: &PyQuantumProblem,
     state: &PyReadonlyArray1<'_, Complex64>,
 ) -> PyResult<Vec<(u64, mandacaru_core::quantum::C64)>> {
     let cached = &problem.inner;
@@ -193,7 +196,7 @@ pub fn bloch_spectral_function<'py>(
     py: Python<'py>,
     mean_field: &PyMeanField,
     model: &PyModel,
-    problem: &PyProblem,
+    problem: &PyQuantumProblem,
     state: PyReadonlyArray1<'py, Complex64>,
     kpoints: Vec<[f64; 3]>,
     eta_ha: f64,
@@ -242,7 +245,7 @@ pub fn bloch_path_spectral_function<'py>(
     py: Python<'py>,
     mean_field: &PyMeanField,
     model: &PyModel,
-    problem: &PyProblem,
+    problem: &PyQuantumProblem,
     state: PyReadonlyArray1<'py, Complex64>,
     cell: PyReadonlyArray2<'py, f64>,
     pbc: [bool; 3],
@@ -260,7 +263,9 @@ pub fn bloch_path_spectral_function<'py>(
     let integrals = &mean_field.integrals;
     let ctx = &integrals.context;
     let supercell = integrals.supercell.as_ref().ok_or_else(|| {
-        PyValueError::new_err("a spectral function along a path needs a periodic supercell calculation")
+        PyValueError::new_err(
+            "a spectral function along a path needs a periodic supercell calculation",
+        )
     })?;
     let occupations = occupation_state(ctx, problem, &state)?;
     let lattice = crate::kpath::lattice(&cell)?;
@@ -285,7 +290,9 @@ pub fn bloch_path_spectral_function<'py>(
             })
             .collect::<PyResult<Vec<u32>>>()?;
         Some((
-            flat.chunks_exact(3).map(|c| [c[0], c[1], c[2]]).collect::<Vec<_>>(),
+            flat.chunks_exact(3)
+                .map(|c| [c[0], c[1], c[2]])
+                .collect::<Vec<_>>(),
             labels,
         ))
     } else {
@@ -296,15 +303,17 @@ pub fn bloch_path_spectral_function<'py>(
             let mesh = supercell.kpoints();
             let selected = mandacaru_core::periodic::kpath::select(&band, &metric, &mesh)?;
             let zone = match &reduction {
-                Some((fractional, labels)) => Some(mandacaru_core::periodic::kpath::irreducible_zone(
-                    ctx,
-                    &lattice,
-                    fractional,
-                    labels,
-                    supercell.mesh,
-                    true,
-                    symprec,
-                )?),
+                Some((fractional, labels)) => {
+                    Some(mandacaru_core::periodic::kpath::irreducible_zone(
+                        ctx,
+                        &lattice,
+                        fractional,
+                        labels,
+                        supercell.mesh,
+                        true,
+                        symprec,
+                    )?)
+                }
                 None => None,
             };
             let result = bloch_path_spectral(
@@ -450,7 +459,9 @@ pub fn tetrahedron_dos<'py>(
                 &levels,
                 spins,
                 bands,
-                projected.as_ref().map(|((weights, _), channels)| (&weights[..], *channels)),
+                projected
+                    .as_ref()
+                    .map(|((weights, _), channels)| (&weights[..], *channels)),
                 degeneracy,
                 &x,
             )

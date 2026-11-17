@@ -27,10 +27,21 @@ fn native_hubbard_setup_keeps_its_table_in_saved_crystal() {
     raw["hubbard_u"] = json!({"Fe": {"l": "d", "U": 4.0}});
     let setup = create_setup(&ctx, parse_input_json(&raw).unwrap(), vec![dataset]).unwrap();
     let expected = setup.hubbard.as_ref().unwrap().to_json();
-    assert_eq!(setup.with_cell(&ctx, &setup.lattice).unwrap().hubbard.unwrap().to_json(), expected);
+    assert_eq!(
+        setup
+            .with_cell(&ctx, &setup.lattice)
+            .unwrap()
+            .hubbard
+            .unwrap()
+            .to_json(),
+        expected
+    );
     let crystal = setup.build(&ctx).unwrap();
     assert_eq!(crystal.hubbard.as_ref().unwrap().to_json(), expected);
-    let file = std::env::temp_dir().join(format!("mandacaru-native-hubbard-{}.json", std::process::id()));
+    let file = std::env::temp_dir().join(format!(
+        "mandacaru-native-hubbard-{}.json",
+        std::process::id()
+    ));
     crystal.save(file.to_str().unwrap()).unwrap();
     let loaded = mandacaru_core::periodic::Crystal::load(&ctx, file.to_str().unwrap()).unwrap();
     std::fs::remove_file(file).unwrap();
@@ -84,9 +95,14 @@ fn native_hubbard_on_a_symmetry_reduced_mesh_carries_the_operations_that_complet
     raw["symmetry"] = json!(true);
     raw["hubbard_u"] = json!({"Fe": {"l": "d", "U": 4.}});
     let setup = create_setup(&ctx, parse_input_json(&raw).unwrap(), vec![dataset]).unwrap();
-    let crystal = setup.build(&ctx).expect("DFT+U on a reduced mesh is built (HU-4)");
+    let crystal = setup
+        .build(&ctx)
+        .expect("DFT+U on a reduced mesh is built (HU-4)");
     assert!(!crystal.permutations.is_empty(), "the cubic group is kept");
-    let group = crystal.description.as_ref().and_then(|d| d.point_group.as_ref());
+    let group = crystal
+        .description
+        .as_ref()
+        .and_then(|d| d.point_group.as_ref());
     assert_eq!(group.map(|g| g.len()), Some(crystal.permutations.len()));
 }
 
@@ -211,7 +227,10 @@ fn collinear_moments_select_two_spins_and_keep_the_moment_preserving_symmetry() 
     .unwrap();
     assert_eq!(setup.spins, 2);
     assert_eq!(setup.moments, [0.7]);
-    assert!(setup.symmetry.is_some(), "a collinear moment keeps the operations that preserve it");
+    assert!(
+        setup.symmetry.is_some(),
+        "a collinear moment keeps the operations that preserve it"
+    );
     let strained = setup.with_cell(&ctx, &(setup.lattice * 1.01)).unwrap();
     assert_eq!(strained.spins, 2);
     assert_eq!(strained.moments, [0.7]);
@@ -795,12 +814,20 @@ fn the_crystal_setup_and_build_run_on_the_context_threads() {
     // records none of them: the build's kernels must be counted, and bounded by its two threads.
     let ctx = Context::new(Some(2), 1 << 30).unwrap();
     let root = std::env::var_os("MANDACARU_PAW_PATH").expect("MANDACARU_PAW_PATH is unset");
-    let dataset = Arc::new(PawDataset::read(&ctx, &PathBuf::from(root).join("lda-sr/H.parquet")).unwrap());
+    let dataset =
+        Arc::new(PawDataset::read(&ctx, &PathBuf::from(root).join("lda-sr/H.parquet")).unwrap());
     let mut raw = request();
     raw["grid_shape"] = json!([24, 24, 24]);
     let setup = create_setup(&ctx, parse_input_json(&raw).unwrap(), vec![dataset]).unwrap();
     let before = ctx.workers_total();
     setup.build(&ctx).unwrap();
-    assert!(ctx.workers_total() > before, "no kernel of the build ran on the context's workers");
-    assert!(ctx.workers_peak() <= 2, "the setup used {} workers on a 2-thread context", ctx.workers_peak());
+    assert!(
+        ctx.workers_total() > before,
+        "no kernel of the build ran on the context's workers"
+    );
+    assert!(
+        ctx.workers_peak() <= 2,
+        "the setup used {} workers on a 2-thread context",
+        ctx.workers_peak()
+    );
 }

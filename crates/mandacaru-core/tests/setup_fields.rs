@@ -26,11 +26,25 @@ fn valence_cutoff_does_not_truncate_the_spline_boundary_data() {
     let r = [0., 1., 2., 3., 4., 5., 6., 7.];
     let values = [1., 2., 3., 4., 5., 1., 0., 0.];
     let grid = mandacaru_core::math::SpatialGrid::new(
-        [1, 1, 1], [0.; 3], [1., 0., 0., 0., 1., 0., 0., 0., 1.], false,
-    ).unwrap();
+        [1, 1, 1],
+        [0.; 3],
+        [1., 0., 0., 0., 1., 0., 0., 0., 1.],
+        false,
+    )
+    .unwrap();
     let actual = valence_field(&ctx, &grid, &r, &values, [-4.5, 0., 0.]).unwrap();
-    let full = Cubic::new(&ctx, ctx.copy_slice(&r).unwrap(), ctx.copy_slice(&values).unwrap()).unwrap();
-    let truncated = Cubic::new(&ctx, ctx.copy_slice(&r[..6]).unwrap(), ctx.copy_slice(&values[..6]).unwrap()).unwrap();
+    let full = Cubic::new(
+        &ctx,
+        ctx.copy_slice(&r).unwrap(),
+        ctx.copy_slice(&values).unwrap(),
+    )
+    .unwrap();
+    let truncated = Cubic::new(
+        &ctx,
+        ctx.copy_slice(&r[..6]).unwrap(),
+        ctx.copy_slice(&values[..6]).unwrap(),
+    )
+    .unwrap();
     let expected = full.value_slope(4.5).0;
     assert!((actual.as_slice()[0] - expected).abs() < 1e-14);
     assert!((truncated.value_slope(4.5).0 - expected).abs() > 1e-3);

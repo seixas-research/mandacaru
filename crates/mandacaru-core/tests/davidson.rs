@@ -174,8 +174,19 @@ fn the_lowest_root_is_found_in_a_block_the_smallest_diagonal_does_not_reach() {
     let (exact, _) = real_eigen(a.clone()).unwrap();
     assert!((exact[0] + 0.5).abs() < 1e-12, "{}", exact[0]);
     let operator = Dense(a);
-    let unit = lowest(&operator, &Options { tolerance: 1e-9, ..Options::new(1) }).unwrap();
-    assert!(unit.converged && unit.values[0] > 0.2, "the unit-vector start left its block: {}", unit.values[0]);
+    let unit = lowest(
+        &operator,
+        &Options {
+            tolerance: 1e-9,
+            ..Options::new(1)
+        },
+    )
+    .unwrap();
+    assert!(
+        unit.converged && unit.values[0] > 0.2,
+        "the unit-vector start left its block: {}",
+        unit.values[0]
+    );
     let dense = lowest_root(&operator, n, 1e-9).unwrap().unwrap();
     let seeded = lowest_root(&operator, 0, 1e-9).unwrap().unwrap();
     println!(
@@ -199,8 +210,15 @@ fn the_shifted_solve_matches_a_dense_solve() {
     let b = nalgebra::DVector::from_iterator(n, (0..n).map(|i| ((i * 7) % 11) as f64 - 5.));
     let solve = solve_shifted(&Dense(a.clone()), shift, &b, 1e-12, 500).unwrap();
     let x = &solve.x;
-    let exact = (&a + DMatrix::identity(n, n) * shift).lu().solve(&b).unwrap();
-    println!("lowest eigenvalue {:.4}, shift {shift:.4}: |x - exact| / |exact| {:.2e}", values[0], (x - &exact).norm() / exact.norm());
+    let exact = (&a + DMatrix::identity(n, n) * shift)
+        .lu()
+        .solve(&b)
+        .unwrap();
+    println!(
+        "lowest eigenvalue {:.4}, shift {shift:.4}: |x - exact| / |exact| {:.2e}",
+        values[0],
+        (x - &exact).norm() / exact.norm()
+    );
     assert!(values[0] < 0. && solve.converged && solve.positive);
     assert!((x - &exact).norm() < 1e-10 * exact.norm());
 }
@@ -218,6 +236,9 @@ fn a_shift_that_leaves_the_operator_indefinite_is_reported_not_converged() {
     assert!(values[0] + shift < 0.);
     let b = nalgebra::DVector::from_iterator(n, (0..n).map(|i| ((i * 7) % 11) as f64 - 5.));
     let solve = solve_shifted(&Dense(a), shift, &b, 1e-12, 500).unwrap();
-    println!("lowest {:.4}, second {:.4}, shift {shift:.4}: converged {}, positive {}", values[0], values[1], solve.converged, solve.positive);
+    println!(
+        "lowest {:.4}, second {:.4}, shift {shift:.4}: converged {}, positive {}",
+        values[0], values[1], solve.converged, solve.positive
+    );
     assert!(!solve.converged && !solve.positive);
 }

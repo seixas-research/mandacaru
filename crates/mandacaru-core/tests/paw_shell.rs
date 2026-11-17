@@ -203,8 +203,12 @@ fn dataset_weights_borrow_separate_waves_and_match_flattened_weights() {
         let flat = Shipped::read(symbol, l as usize);
         for basis in [Basis::Raw, Basis::Dual] {
             let borrowed = mandacaru_core::paw::shell::dataset_weights(
-                &ctx, channel, dataset.r.as_slice(), basis,
-            ).unwrap();
+                &ctx,
+                channel,
+                dataset.r.as_slice(),
+                basis,
+            )
+            .unwrap();
             let expected = flat.weights(basis);
             assert_eq!(borrowed.len(), expected.len());
             for (got, want) in borrowed.iter().zip(expected) {

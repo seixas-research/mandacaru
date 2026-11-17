@@ -129,9 +129,7 @@ fn the_csr_matrix_is_the_dense_one_with_sorted_columns() {
         assert!(worst < 1e-13);
     }
     let empty = Operator::new(&ctx, 3, &[]).unwrap();
-    let csr = empty
-        .csr(&ctx, &Basis::register(&ctx, 3).unwrap())
-        .unwrap();
+    let csr = empty.csr(&ctx, &Basis::register(&ctx, 3).unwrap()).unwrap();
     assert_eq!(csr.nnz, 0);
 }
 
@@ -171,7 +169,10 @@ fn a_mapped_fermion_is_the_sum_of_its_mapped_terms() {
     let terms = vec![
         (vec![(0, true), (1, false)], C64::new(0.2, 0.7)),
         (vec![(1, true), (0, false)], C64::new(0.2, -0.7)),
-        (vec![(0, true), (3, true), (4, false), (1, false)], C64::new(0.31, 0.)),
+        (
+            vec![(0, true), (3, true), (4, false), (1, false)],
+            C64::new(0.31, 0.),
+        ),
         (vec![], C64::new(0.75, 0.)),
     ];
     for mapping in ["jordan_wigner", "parity", "bravyi_kitaev", "parity_reduced"] {
@@ -249,8 +250,10 @@ fn spin_blocks(m: usize, two: &[C64], resolved: bool) -> Vec<C64> {
                 for q in 0..m {
                     for r in 0..m {
                         for s in 0..m {
-                            let (a, b, c, d) = (sigma * m + p, tau * m + q, sigma * m + r, tau * m + s);
-                            out[((a * n + b) * n + c) * n + d] = block[((p * m + q) * m + r) * m + s];
+                            let (a, b, c, d) =
+                                (sigma * m + p, tau * m + q, sigma * m + r, tau * m + s);
+                            out[((a * n + b) * n + c) * n + d] =
+                                block[((p * m + q) * m + r) * m + s];
                         }
                     }
                 }
@@ -295,8 +298,8 @@ fn spatial_terms_are_those_of_the_spin_blocked_tensor_in_the_same_order() {
             fermion_terms::from_spatial(&ctx, m, resolved, &one, Some(&extra), Some(&two), 1e-12)
                 .unwrap();
         assert_eq!(built, expected);
-        let no_two = fermion_terms::from_spatial(&ctx, m, resolved, &one, None, None, 1e-12)
-            .unwrap();
+        let no_two =
+            fermion_terms::from_spatial(&ctx, m, resolved, &one, None, None, 1e-12).unwrap();
         assert!(no_two.iter().all(|t| t.0.len() == 2));
         assert!(fermion_terms::from_spatial(&ctx, m, resolved, &one[1..], None, None, 0.).is_err());
     }

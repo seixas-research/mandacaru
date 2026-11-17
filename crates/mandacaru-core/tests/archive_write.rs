@@ -1,7 +1,4 @@
-use mandacaru_core::{
-    math::archive::Archive,
-    Context,
-};
+use mandacaru_core::{math::archive::Archive, Context};
 use num_complex::Complex64;
 
 #[test]

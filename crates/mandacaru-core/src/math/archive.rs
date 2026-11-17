@@ -234,7 +234,12 @@ pub fn sweep_stale_folders(base: &std::path::Path) -> Vec<PathBuf> {
 
 impl Drop for ScratchDir {
     fn drop(&mut self) {
-        if let Some(path) = self.path.get_mut().unwrap_or_else(|e| e.into_inner()).take() {
+        if let Some(path) = self
+            .path
+            .get_mut()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+        {
             // Archives remove their own files; a folder that is not empty is not ours to clear.
             let _ = std::fs::remove_dir(path);
         }
@@ -335,7 +340,10 @@ impl<T: Scalar> Archive<T> {
         let scratch = ctx.scratch().clone();
         let directory = scratch.path()?;
         let (mut file, path) = loop {
-            let path = directory.join(format!("array-{}.bin", NEXT.fetch_add(1, Ordering::Relaxed)));
+            let path = directory.join(format!(
+                "array-{}.bin",
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
             let mut options = OpenOptions::new();
             options.read(true).write(true).create_new(true);
             #[cfg(unix)]
@@ -391,7 +399,10 @@ impl<T: Scalar> Archive<T> {
         let scratch = ctx.scratch().clone();
         let directory = scratch.path()?;
         let (mut file, path) = loop {
-            let path = directory.join(format!("array-{}.bin", NEXT.fetch_add(1, Ordering::Relaxed)));
+            let path = directory.join(format!(
+                "array-{}.bin",
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
             let mut options = OpenOptions::new();
             options.read(true).write(true).create_new(true);
             #[cfg(unix)]
@@ -440,9 +451,10 @@ impl<T: Scalar> Archive<T> {
             Some(held) => read_at(&held.file, offset, bytes).map_err(io),
             #[cfg(not(unix))]
             Some(held) => {
-                let _cursor = held.cursor.lock().map_err(|_| {
-                    Error::Invalid("scratch array lock was poisoned".into())
-                })?;
+                let _cursor = held
+                    .cursor
+                    .lock()
+                    .map_err(|_| Error::Invalid("scratch array lock was poisoned".into()))?;
                 read_at(&held.file, offset, bytes).map_err(io)
             }
             None => {
@@ -457,9 +469,10 @@ impl<T: Scalar> Archive<T> {
             Some(held) => write_at(&held.file, offset, bytes).map_err(io),
             #[cfg(not(unix))]
             Some(held) => {
-                let _cursor = held.cursor.lock().map_err(|_| {
-                    Error::Invalid("scratch array lock was poisoned".into())
-                })?;
+                let _cursor = held
+                    .cursor
+                    .lock()
+                    .map_err(|_| Error::Invalid("scratch array lock was poisoned".into()))?;
                 write_at(&held.file, offset, bytes).map_err(io)
             }
             None => {
@@ -477,7 +490,9 @@ impl<T: Scalar> Archive<T> {
             .checked_add(values.len())
             .is_none_or(|end| end > self.length)
         {
-            return Err(Error::Invalid("scratch write range is out of bounds".into()));
+            return Err(Error::Invalid(
+                "scratch write range is out of bounds".into(),
+            ));
         }
         if values.is_empty() {
             return Ok(());

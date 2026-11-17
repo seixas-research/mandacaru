@@ -33,7 +33,12 @@
 //! Every transition is computed alone and every frequency on its own lane, each a serial
 //! computation, so the result depends neither on the thread count nor on the k-point lanes.
 //!
-//! Refused: metals and fractional occupations (the intraband term), spinor crystals, hybrids,
+//! A spinor crystal (T8) has `g = 1`, its pair densities are charge densities summed over the two
+//! components and its `P` is `p`'s, diagonal in the spin, plus the velocity `i [h^SO, r]` of the
+//! spin-orbit term when the crystal has it ([`super::momentum`]); without the term a
+//! Kramers-unpolarized spinor crystal gives the collinear tensor.
+//!
+//! Refused: metals and fractional occupations (the intraband term), hybrids,
 //! DFT+U and meta-GGAs (the velocity of a nonlocal exchange potential, of the +U operator and of
 //! the `v_tau` kinetic term is not in `P`), a mesh not closed under `-k`,
 //! `kernel="adiabatic"`. `kernel="bse"` is the Bethe-Salpeter equation of [`super::bse`], on
@@ -98,7 +103,8 @@ impl Kernel {
             "long-range" => Ok(Self::LongRange),
             other => Err(invalid(format!(
                 "unknown kernel {other:?}; expected 'independent', 'hartree' (the RPA with \
-                 local fields) or 'bse' (the Bethe-Salpeter equation)"
+                 local fields), 'bse' (the Bethe-Salpeter equation) or 'long-range' (the \
+                 long-range kernel)"
             ))),
         }
     }
@@ -259,11 +265,6 @@ pub struct Pairs {
 
 fn check_crystal(sampler: &Sampler<'_>) -> Result<()> {
     let crystal = sampler.crystal;
-    if crystal.spinor {
-        return Err(Error::Unsupported(
-            "the dielectric function of a spinor crystal is not implemented (T8)".into(),
-        ));
-    }
     if crate::models::functional(&crystal.functional)?
         .screened_exchange
         .is_some()
@@ -302,7 +303,9 @@ pub fn dielectric(
         return super::bse::dielectric(sampler, mesh, request);
     }
     if request.kernel != Kernel::LongRange && request.alpha.is_some() {
-        return Err(invalid("alpha is the long-range kernel's: pass kernel='long-range'"));
+        return Err(invalid(
+            "alpha is the long-range kernel's: pass kernel='long-range'",
+        ));
     }
     let pairs = pairs(sampler, mesh, request)?;
     let ctx = &sampler.crystal.context;
@@ -329,7 +332,11 @@ pub fn dielectric(
             Some(omega) => C64::new(*omega, request.damping),
             None => C64::new(0., 0.),
         };
-        macroscopic(&pairs.polarizability(z)?, &pairs.coulomb, alpha.unwrap_or(0.))
+        macroscopic(
+            &pairs.polarizability(z)?,
+            &pairs.coulomb,
+            alpha.unwrap_or(0.),
+        )
     })?;
     let (tensor, last) = tensor.split_at(request.frequencies.len());
     let static_tensor = last[0].map(|row| row.map(|v| v.re));
@@ -352,6 +359,153 @@ pub fn dielectric(
         residual: pairs.residual,
         alpha,
     })
+}
+
+/// The share of the independent-particle `eps(0) - 1` (its trace) that the transitions the
+/// default window ([`default_window`]) leaves out may carry.
+pub const STATIC_TOLERANCE: f64 = 1e-5;
+
+/// The default `(valence, conduction)` window (one for every channel, as `Request::window`;
+/// `TDDFT_PLAN.md`, section 4.5, and DECISIONS.md 2026-11-16, fifteenth session): the smallest
+/// window that holds every transition of `mesh` at or below `highest` (Hartree, the top of a
+/// requested energy range: `e_c - e_v + scissor <= highest`) and whose omitted transitions carry
+/// at most `tolerance` ([`STATIC_TOLERANCE`] by default) of the independent-particle
+/// `eps(0) - 1`, the trace of
+/// `sum_t |P_cv|^2 / D_t^3` over every channel and mesh point. A range ending below most
+/// transitions would otherwise drop their share of `eps_1` (on the H2 chain DZP, `eps_xx(0)`
+/// 1.000 against 1.0716 with every band). For the range, a valence band belongs to the window
+/// when its transition to the lowest conduction band reaches `highest` at some mesh point, a
+/// conduction band when the transition from the highest valence band does; for the static
+/// limit, conduction bands are added (every valence band held) until the omitted share is
+/// within the tolerance, then valence bands are dropped from the bottom while it stays there.
+/// The window keeps at least one band of each kind, the larger count of the two criteria and of
+/// the channels, within every channel's bands.
+pub fn default_window(
+    sampler: &Sampler<'_>,
+    mesh: &MeshIndex,
+    highest: f64,
+    scissor: f64,
+    tolerance: f64,
+) -> Result<(usize, usize)> {
+    if !(highest.is_finite() && scissor.is_finite()) {
+        return Err(invalid("the energy range and the scissor must be finite"));
+    }
+    if !(tolerance.is_finite() && tolerance >= 0.) {
+        return Err(invalid(
+            "the static tolerance must be finite and at least zero",
+        ));
+    }
+    let crystal = sampler.crystal;
+    let ctx = &crystal.context;
+    let manifold = sampler.manifold(Bands::Occupied, Metal::Undefined)?;
+    let bands = crystal.bands();
+    let mut window: Vec<(usize, usize)> = vec![(1, 1); sampler.channels()];
+    for &(lo, hi) in &manifold.ranges {
+        if lo != 0 || hi == 0 || hi == bands {
+            return Err(invalid(
+                "the dielectric function needs occupied and empty bands in every spin channel",
+            ));
+        }
+    }
+    let valence = manifold.ranges.iter().map(|r| r.1).min().unwrap_or(1);
+    let conduction = manifold
+        .ranges
+        .iter()
+        .map(|r| bands - r.1)
+        .min()
+        .unwrap_or(1);
+    // `share[(v, c)]`: the transitions' `|P|^2 / D^3`, by valence band counted down from the
+    // highest (`v = 0` is the top) and conduction band counted up from the lowest.
+    let mut share = DMatrix::<f64>::zeros(bands, bands);
+    let one_center = one_center_momentum(ctx, sampler.setup)?;
+    let grid_mesh = Mesh::new(ctx, &sampler.setup.grid)?;
+    let all: Vec<Vec<usize>> = (0..sampler.channels())
+        .map(|_| (0..bands).collect())
+        .collect();
+    let mut point = vec![0usize; sampler.channels()];
+    sampler.visit(mesh, &all, |s, frame| {
+        let hi = manifold.ranges[s].1;
+        let levels = frame.energies.as_slice();
+        let (top, bottom) = (levels[hi - 1], levels[hi]);
+        let (v_range, c_range) = &mut window[s];
+        while *v_range < hi && bottom - levels[hi - 1 - *v_range] + scissor <= highest {
+            *v_range += 1;
+        }
+        while *c_range < bands - hi && levels[hi + *c_range] - top + scissor <= highest {
+            *c_range += 1;
+        }
+        let fractional = mesh.point(point[s]);
+        point[s] += 1;
+        let k: [f64; 3] = (sampler.reciprocal * nalgebra::Vector3::from(fractional)).into();
+        let momenta = band_momenta(ctx, sampler.setup, &grid_mesh, &frame, k, &one_center)?;
+        for v in 0..hi {
+            for c in hi..bands {
+                let gap = levels[c] - levels[v] + scissor;
+                if gap <= 0. {
+                    return Err(invalid("an empty band lies below an occupied one"));
+                }
+                let weight: f64 = momenta.matrices.iter().map(|m| m[(c, v)].norm_sqr()).sum();
+                share[(hi - 1 - v, c - hi)] += weight / gap.powi(3);
+            }
+        }
+        Ok(())
+    })?;
+    let whole: f64 = share.iter().sum();
+    let held = |v: usize, c: usize| -> f64 { share.view((0, 0), (v, c)).iter().sum() };
+    let converged = |v: usize, c: usize| whole - held(v, c) <= tolerance * whole;
+    let deepest = manifold.ranges.iter().map(|r| r.1).max().unwrap_or(1);
+    let widest = manifold
+        .ranges
+        .iter()
+        .map(|r| bands - r.1)
+        .max()
+        .unwrap_or(1);
+    let mut c_static = 1;
+    while c_static < widest && !converged(deepest, c_static) {
+        c_static += 1;
+    }
+    let mut v_static = deepest;
+    while v_static > 1 && converged(v_static - 1, c_static) {
+        v_static -= 1;
+    }
+    let range = (
+        window.iter().map(|w| w.0).max().unwrap_or(1),
+        window.iter().map(|w| w.1).max().unwrap_or(1),
+    );
+    Ok((
+        range.0.max(v_static).min(valence),
+        range.1.max(c_static).min(conduction),
+    ))
+}
+
+/// The window `(v, c)`, `v <= valence` and `c <= conduction`, of the most transitions per mesh
+/// point for which `fits(v, c)` (the larger conduction count on a tie); `None` if not even
+/// `(1, 1)` fits.
+pub fn largest_window(
+    valence: usize,
+    conduction: usize,
+    fits: impl Fn(usize, usize) -> bool,
+) -> Option<(usize, usize)> {
+    let mut best: Option<(usize, usize)> = None;
+    for v in 1..=valence {
+        // The fitting conduction counts of one `v` are a prefix: bisect for its end.
+        let (mut lo, mut hi) = (0usize, conduction);
+        while lo < hi {
+            let mid = (lo + hi + 1) / 2;
+            if fits(v, mid) {
+                lo = mid;
+            } else {
+                hi = mid - 1;
+            }
+        }
+        if lo == 0 {
+            break;
+        }
+        if best.is_none_or(|(bv, bc)| v * lo > bv * bc || (v * lo == bv * bc && lo > bc)) {
+            best = Some((v, lo));
+        }
+    }
+    best
 }
 
 /// [`Pairs`] of the insulator `sampler` holds on `mesh` for `request` (its kernel decides whether
@@ -423,6 +577,37 @@ pub(super) fn columns(
     } else {
         vec![]
     };
+    // The columns are reserved first, before any grid-sized work: a window above the budget is
+    // refused at once, by name, with the largest that fits.
+    let rows = 3 + body.len();
+    let per_point: usize = window.iter().map(|(v, c)| v * c).sum();
+    let total = product(&[per_point, mesh.points()])?;
+    let stored = ctx.reserve(product(&[total, 2, rows, 16])?).map_err(|_| {
+        let valence = manifold.ranges.iter().map(|r| r.1).min().unwrap_or(1);
+        let conduction = manifold
+            .ranges
+            .iter()
+            .map(|r| bands - r.1)
+            .min()
+            .unwrap_or(1);
+        let largest = largest_window(valence, conduction, |v, c| {
+            product(&[v, c, window.len(), mesh.points(), 2, rows, 16])
+                .ok()
+                .and_then(|bytes| ctx.reserve(bytes).ok())
+                .is_some()
+        });
+        Error::Unsupported(format!(
+            "the dielectric function of {total} transitions (bands={:?} x {} k-points, {rows} \
+             head and local-field rows) does not fit the memory budget: {}; a smaller window \
+             drops its higher transitions from the static limit",
+            window[0],
+            mesh.points(),
+            match largest {
+                Some((v, c)) => format!("the largest window that fits is bands=({v}, {c})"),
+                None => "not even bands=(1, 1) fits".into(),
+            }
+        ))
+    })?;
     let paw = if rpa {
         let setup = Setup::new(crystal)?;
         let remainders = Remainders::new(ctx, &setup)?;
@@ -453,15 +638,11 @@ pub(super) fn columns(
                 .ok_or_else(|| invalid("the local-field vectors are not closed under G -> -G"))
         })
         .collect::<Result<_>>()?;
-    let rows = 3 + body.len();
     let one_center = one_center_momentum(ctx, sampler.setup)?;
     let grid_mesh = Mesh::new(ctx, &sampler.setup.grid)?;
     let points = crystal.grid.index.points();
     let volume = sampler.lattice.determinant().abs();
     let degeneracy = sampler.degeneracy();
-    let per_point: usize = window.iter().map(|(v, c)| v * c).sum();
-    let total = product(&[per_point, mesh.points()])?;
-    let stored = ctx.reserve(product(&[total, 2, rows, 16])?)?;
     let mut values: Vec<C64> = Vec::with_capacity(total * 2 * rows);
     let mut transition_energies: Vec<f64> = Vec::with_capacity(total);
     let mut residual = 0f64;
@@ -481,20 +662,40 @@ pub(super) fn columns(
         residual = residual.max(momenta.residual);
         let (valence, conduction) = window[s];
         let energies = frame.energies.as_slice();
+        // A spinor frame's samples and projection rows are `(component, band)`: its bands are
+        // read whole and each pair density sums the two components.
+        let components = frame.components;
+        let held_bands = energies.len();
+        let (first, span) = if components == 1 {
+            (offset, valence + conduction)
+        } else {
+            (0, components * held_bands)
+        };
+        let row = |c: usize, a: usize| {
+            if components == 1 {
+                a
+            } else {
+                c * held_bands + offset + a
+            }
+        };
         let samples = if rpa {
-            Some(frame.samples.read_range(
-                ctx,
-                offset * points,
-                product(&[valence + conduction, points])?,
-            )?)
+            Some(
+                frame
+                    .samples
+                    .read_range(ctx, first * points, product(&[span, points])?)?,
+            )
         } else {
             None
         };
-        let projections: Vec<Vec<C64>> = if rpa {
+        let projections: Vec<Vec<Vec<C64>>> = if rpa {
             (0..valence + conduction)
                 .map(|a| {
-                    (0..crystal.p)
-                        .map(|i| frame.projections[(offset + a, i)])
+                    (0..components)
+                        .map(|c| {
+                            (0..crystal.p)
+                                .map(|i| frame.projections[(c * held_bands + offset + a, i)])
+                                .collect()
+                        })
                         .collect()
                 })
                 .collect()
@@ -533,18 +734,22 @@ pub(super) fn columns(
                     (&engine, scratch.as_mut(), &samples, &augmentation)
                 {
                     let (pv, pc) = (&projections[v], &projections[c]);
-                    engine.smooth(
-                        scratch,
-                        &samples[v * points..(v + 1) * points],
-                        &samples[c * points..(c + 1) * points],
-                        &mut forward,
-                    )?;
+                    let grid = |a: usize| -> Vec<&[C64]> {
+                        (0..components)
+                            .map(|s| &samples[row(s, a) * points..(row(s, a) + 1) * points])
+                            .collect()
+                    };
+                    engine.smooth_components(scratch, &grid(v), &grid(c), &mut forward)?;
                     // The smooth part of `rho_cv(G)` is `conj(rho_vc(-G))` exactly (the transform
                     // of a conjugate); the augmentation is added for each order on its own.
                     let mut backward: Vec<C64> =
                         negative.iter().map(|&j| forward[j].conj()).collect();
-                    augmentation.add(pv, pc, &mut forward);
-                    augmentation.add(pc, pv, &mut backward);
+                    for (a, b) in pv.iter().zip(pc) {
+                        augmentation.add(a, b, &mut forward);
+                    }
+                    for (a, b) in pv.iter().zip(pc) {
+                        augmentation.add(b, a, &mut backward);
+                    }
                     values.extend_from_slice(&forward);
                     values.extend(head.iter().map(|h| -h.conj()));
                     values.extend_from_slice(&backward);
@@ -559,8 +764,7 @@ pub(super) fn columns(
     match held {
         None => sampler.visit(mesh, &selections, |s, frame| add(s, &frame, 0))?,
         Some(frames) => {
-            if frames.len() != sampler.channels()
-                || frames.iter().any(|f| f.len() != mesh.points())
+            if frames.len() != sampler.channels() || frames.iter().any(|f| f.len() != mesh.points())
             {
                 return Err(invalid("the held frames do not cover the mesh"));
             }
@@ -568,8 +772,7 @@ pub(super) fn columns(
                 for (s, channel) in frames.iter().enumerate() {
                     let frame = &channel[k];
                     let first = selections[s][0];
-                    if frame.energies.as_slice().len() < selections[s].last().map_or(0, |b| b + 1)
-                    {
+                    if frame.energies.as_slice().len() < selections[s].last().map_or(0, |b| b + 1) {
                         return Err(invalid("a held frame lacks the window's bands"));
                     }
                     add(s, frame, first)?;

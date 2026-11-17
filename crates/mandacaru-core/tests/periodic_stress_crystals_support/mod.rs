@@ -1,5 +1,5 @@
 //! Shared by the `periodic_stress_crystals*` tests: the frozen real-crystal strain cases of
-//! `freeze_periodic_strain.py` (`reference/periodic_strain/<case>.json` with the unstrained
+//! `periodic_freeze_snapshot.rs` (`reference/periodic_strain/<case>.json` with the unstrained
 //! snapshot `<case>.snapshot.json`; a second step family `<case>_b.json` shares the snapshot), the
 //! crystal built from them with the force tests' loader, the pins asserted, and the gate of one
 //! strain entry from its measured floor.
@@ -35,7 +35,7 @@ pub fn root() -> PathBuf {
 pub fn read(name: &str) -> Value {
     let path = root().join(name);
     let text = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("{path:?}: {e} (run freeze_periodic_strain.py case)"));
+        .unwrap_or_else(|e| panic!("{path:?}: {e} (re-freeze it with periodic_freeze_snapshot.rs, MANDACARU_FREEZE_KIND=strain)"));
     serde_json::from_str(&text).unwrap()
 }
 

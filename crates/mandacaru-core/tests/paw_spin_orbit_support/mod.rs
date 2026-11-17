@@ -1,47 +1,62 @@
-//! What the spin-orbit tests share: the Dirac sample of the A0 freeze (the Dirac freeze of the
-//! plan, section 3.4) and the generation of a frozen dataset through the legacy seam.
+//! What the spin-orbit tests share: the Dirac sample, the production recipe of each member and
+//! the generation of it.
 #![allow(dead_code)]
 
 pub mod items;
 
-use crate::paw_assemble_support::Frozen;
-use crate::paw_generate_support::recipe_of;
 use mandacaru_core::models::atom::Atom;
+use mandacaru_core::models::relativity::Treatment;
 use mandacaru_core::models::xc_scheme::AtomSolver;
 use mandacaru_core::paw::generate::recipe::Recipe;
 use mandacaru_core::paw::generate::reference::solve_reference_with;
+use mandacaru_core::paw::generate::search::{plan, radii_of, search_with_atom, Mode, Options};
 use mandacaru_core::paw::generate::{generate_with_atom, Generated};
 use mandacaru_core::Context;
 
-/// The light Dirac datasets of the freeze (Na and Si through 16,500 and 12,000 points, Fe).
+/// The light Dirac datasets (Na and Si through 16,500 and 12,000 points, Fe), named
+/// `<set>_<element>`.
 pub const LIGHT: [&str; 3] = ["lda-fr_Na", "lda-fr_Fe", "pbe-fr_Si"];
-/// The heavy ones: a lanthanide with a flagged scattering defect, a frozen-4f gold and lead.
-pub const HEAVY: [&str; 3] = ["lda-fr_Ce", "lda-fr_Au", "lda-fr_Pb"];
 
 pub fn context() -> Context {
     Context::new(Some(1), 1 << 30).unwrap()
 }
 
-/// One frozen Dirac dataset: its freeze, recipe, solved atom.
+/// One Dirac dataset: its recipe and solved atom.
 pub struct Case {
-    pub frozen: Frozen,
     pub recipe: Recipe,
     pub atom: Atom,
 }
 
+/// The production recipe of a Dirac dataset named `<functional>-fr_<element>`.
+pub fn recipe_of(name: &str) -> Recipe {
+    let (set, element) = name.split_once('_').expect("a name is <set>_<element>");
+    let functional = set
+        .strip_suffix("-fr")
+        .expect("a Dirac set is <functional>-fr");
+    Recipe::for_dataset(element, functional, Treatment::Dirac).unwrap()
+}
+
+/// The recipe the production search selects for a dataset: the first construction, or the
+/// attempt of the production table the search settles on when the first one binds a ghost
+/// (pbe-fr Si does).
 pub fn open(ctx: &Context, name: &str) -> Case {
-    let frozen = Frozen::open(name);
-    let recipe = recipe_of(&frozen);
-    let atom = solve_reference_with(ctx, &recipe, &AtomSolver).unwrap();
-    Case {
-        frozen,
-        recipe,
-        atom,
-    }
+    let first = recipe_of(name);
+    let atom = solve_reference_with(ctx, &first, &AtomSolver).unwrap();
+    let options = Options::new(&first, Mode::Repair);
+    let searched = search_with_atom(ctx, &first, &options, &atom, &AtomSolver).unwrap();
+    let recipe = match searched.index {
+        0 => first,
+        selected => {
+            let built = generate_with_atom(ctx, &first, &atom, &AtomSolver).unwrap();
+            let attempts = plan(&first, &radii_of(&built.dataset));
+            attempts[selected - 1].recipe.clone()
+        }
+    };
+    Case { recipe, atom }
 }
 
 impl Case {
-    /// The dataset through the atom-solver radial scheme of the freeze.
+    /// The dataset through the atom-solver radial scheme.
     pub fn generate(&self, ctx: &Context) -> Generated {
         generate_with_atom(ctx, &self.recipe, &self.atom, &AtomSolver).unwrap()
     }

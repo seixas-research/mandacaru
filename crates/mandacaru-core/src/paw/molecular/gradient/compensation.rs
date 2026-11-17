@@ -251,7 +251,8 @@ pub(super) fn moments(
                 |offset, r, weight| {
                     let point: [f64; 3] = std::array::from_fn(|i| positions[b][i] + offset[i]);
                     for (j, cj) in channels.iter().enumerate().filter(|(_, c)| c.atom == b) {
-                        let density = shape(r, radius, cj.l) * harmonic(cj.l, cj.m, offset) * weight;
+                        let density =
+                            shape(r, radius, cj.l) * harmonic(cj.l, cj.m, offset) * weight;
                         for (i, ci) in channels.iter().enumerate() {
                             let delta = std::array::from_fn(|k| point[k] - positions[ci.atom][k]);
                             u[(i, j)] += ci.field(delta) * density;
@@ -530,9 +531,7 @@ pub(super) fn field_force(
         let sums: Vec<[f64; 3]> = integrals.context.run(|| {
             std::thread::scope(|scope| {
                 let handles: Vec<_> = (0..nch)
-                    .map(|a| {
-                        mandacaru_kernels::runtime::spawn(scope, move || compute_channel(a))
-                    })
+                    .map(|a| mandacaru_kernels::runtime::spawn(scope, move || compute_channel(a)))
                     .collect();
                 handles.into_iter().map(|h| h.join().unwrap()).collect()
             })

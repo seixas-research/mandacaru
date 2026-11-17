@@ -438,7 +438,11 @@ def test_ase_silicon_adapter_getters_and_native_off_mesh_spectra():
     from mandacaru.integrations.ase import ASECalculator
     atoms.calc=ASECalculator(method='dft',basis={'name':'PAW-LCAO','size':'SZ','filter_cutoff':200},
                         grid_spacing=.4,kpts={'size':(2,2,2),'gamma':True},smearing=.01,trace=False)
-    assert atoms.get_potential_energy()==pytest.approx(-211.60193975895757,abs=1e-6)
+    # Re-pinned 2026-11-16 (was -211.60193975895757 on the library before its regeneration, file
+    # format 3): the production route on mandacaru-paw 8a6e977, extension sha256 00e4d7ff; and
+    # again the same day for the panel-edge quadrature of the local-potential spheres (was
+    # -211.4841329526994, which the old layout reproduces; extension sha256 984e94bc).
+    assert atoms.get_potential_energy()==pytest.approx(-211.48413397194855,abs=1e-6)
     assert atoms.calc.calculation.result.success
     assert atoms.calc.get_number_of_spins()==1
     assert atoms.calc.get_eigenvalues().shape==(8,)

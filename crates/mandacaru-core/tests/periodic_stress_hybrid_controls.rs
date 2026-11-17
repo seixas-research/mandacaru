@@ -141,7 +141,10 @@ fn controls(exxdiv: ExxDivTreatment, head: bool) {
         let no_head = NoHead::default();
         let headless = terms_with(&oracle, &no_head);
         // The control is only a control if it removed a head entry.
-        assert!(no_head.heads.load(std::sync::atomic::Ordering::Relaxed) > 0, "no head entry in any pair");
+        assert!(
+            no_head.heads.load(std::sync::atomic::Ordering::Relaxed) > 0,
+            "no head entry in any pair"
+        );
         let removed = miss(&headless.kernel, &terms.kernel);
         assert!(removed > 0., "the Gygi-Baldereschi head carries no strain");
         oracle.bites("the Gygi-Baldereschi head dropped", &headless.total());

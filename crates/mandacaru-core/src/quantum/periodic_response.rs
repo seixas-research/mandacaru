@@ -58,7 +58,9 @@ pub fn periodic_quantum_forces_fd(
         return Err(invalid("displacement step h must be positive and finite"));
     }
     if energies_plus.len() != energies_minus.len() {
-        return Err(invalid("energies_plus and energies_minus must have same atom count"));
+        return Err(invalid(
+            "energies_plus and energies_minus must have same atom count",
+        ));
     }
     let n_atoms = energies_plus.len();
     let mut forces = Vec::with_capacity(n_atoms);
@@ -68,7 +70,9 @@ pub fn periodic_quantum_forces_fd(
             let ep = energies_plus[a][axis];
             let em = energies_minus[a][axis];
             if !ep.is_finite() || !em.is_finite() {
-                return Err(invalid("non-finite energy encountered in finite difference force"));
+                return Err(invalid(
+                    "non-finite energy encountered in finite difference force",
+                ));
             }
             f_atom[axis] = -(ep - em) / (2.0 * h);
         }
@@ -106,7 +110,9 @@ pub fn periodic_quantum_stress_fd(
         let ep = strained_plus[v];
         let em = strained_minus[v];
         if !ep.is_finite() || !em.is_finite() {
-            return Err(invalid("non-finite energy encountered in finite difference stress"));
+            return Err(invalid(
+                "non-finite energy encountered in finite difference stress",
+            ));
         }
         let s = (ep - em) / (2.0 * eps * volume);
         voigt[v] = s;
@@ -137,11 +143,11 @@ pub fn periodic_quantum_forces_analytic(
     m: usize,
     rdm1: &[C64],
     rdm2: Option<&[C64]>,
-    dh_atomic: &[Vec<[f64; 3]>],      // [atom][p * m + q] -> [x, y, z]
+    dh_atomic: &[Vec<[f64; 3]>],         // [atom][p * m + q] -> [x, y, z]
     dg_atomic: Option<&[Vec<[f64; 3]>]>, // [atom][((p * m + q) * m + r) * m + s] -> [x, y, z]
     ds_atomic: Option<&[Vec<[f64; 3]>]>, // [atom][p * m + q] -> [x, y, z]
-    w_matrix: Option<&[C64]>,         // Energy-weighted density matrix [p * m + q]
-    ewald_forces: &[[f64; 3]],        // Analytic Ewald force per atom
+    w_matrix: Option<&[C64]>,            // Energy-weighted density matrix [p * m + q]
+    ewald_forces: &[[f64; 3]],           // Analytic Ewald force per atom
 ) -> Result<QuantumForces> {
     if rdm1.len() != m * m && rdm1.len() != 4 * m * m {
         return Err(invalid("1-RDM dimensions do not match orbital space"));
@@ -242,11 +248,11 @@ pub fn periodic_quantum_stress_analytic(
     rdm1: &[C64],
     rdm2: Option<&[C64]>,
     electronic_energy: f64,
-    dh_strain: &[[Vec<f64>; 3]; 3],        // [a][b] -> Vec of size m * m
-    dg_strain: Option<&[[Vec<f64>; 3]; 3]>,// [a][b] -> Vec of size m^4
-    ds_strain: Option<&[[Vec<f64>; 3]; 3]>,// [a][b] -> Vec of size m * m
-    w_matrix: Option<&[C64]>,              // Energy-weighted density [p * m + q]
-    ewald_stress: &[[f64; 3]; 3],          // Analytic Ewald stress in Hartree/Bohr^3
+    dh_strain: &[[Vec<f64>; 3]; 3], // [a][b] -> Vec of size m * m
+    dg_strain: Option<&[[Vec<f64>; 3]; 3]>, // [a][b] -> Vec of size m^4
+    ds_strain: Option<&[[Vec<f64>; 3]; 3]>, // [a][b] -> Vec of size m * m
+    w_matrix: Option<&[C64]>,       // Energy-weighted density [p * m + q]
+    ewald_stress: &[[f64; 3]; 3],   // Analytic Ewald stress in Hartree/Bohr^3
 ) -> Result<QuantumStress> {
     if volume <= 0. || !volume.is_finite() {
         return Err(invalid("cell volume must be positive and finite"));
@@ -311,7 +317,11 @@ pub fn periodic_quantum_stress_analytic(
             let elec_stress = val / volume;
 
             // Kinetic/volume trace term: + delta_ab * E_elec / volume
-            let trace_term = if a == b { electronic_energy / volume } else { 0.0 };
+            let trace_term = if a == b {
+                electronic_energy / volume
+            } else {
+                0.0
+            };
 
             // Total stress = Electronic + Trace + Ewald
             sigma[a][b] = elec_stress + trace_term + ewald_stress[a][b];

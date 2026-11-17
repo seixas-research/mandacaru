@@ -239,10 +239,16 @@ fn the_gradient_of_a_p_function_on_its_own_center_is_the_limit_from_every_side()
         for orbital in &base.basis.orbitals {
             let on = orbital.gradient(orbital.center);
             if orbital.l == 0 {
-                assert!(on.iter().all(|v| *v == 0.), "the cusp of an s function: {on:?}");
+                assert!(
+                    on.iter().all(|v| *v == 0.),
+                    "the cusp of an s function: {on:?}"
+                );
                 continue;
             }
-            assert!(on.iter().any(|v| v.abs() > 0.1), "a p function's slope: {on:?}");
+            assert!(
+                on.iter().any(|v| v.abs() > 0.1),
+                "a p function's slope: {on:?}"
+            );
             for axis in 0..3 {
                 for sign in [1., -1.] {
                     let mut point = orbital.center;
@@ -289,7 +295,9 @@ fn the_force_of_an_atom_on_a_grid_node_is_the_derivative_of_the_smooth_energy() 
             };
             let reference = 2. * central(5e-4) - central(1e-3);
             let analytic = gradient.total.as_slice()[3 * atom + axis];
-            println!("atom {atom} axis {axis}: analytic {analytic:.10e}, smooth energy {reference:.10e}");
+            println!(
+                "atom {atom} axis {axis}: analytic {analytic:.10e}, smooth energy {reference:.10e}"
+            );
             worst = worst.max((analytic - reference).abs() * to_ev);
         }
         println!("on grid nodes: max |F - F_smooth| = {worst:.3e} eV/A");

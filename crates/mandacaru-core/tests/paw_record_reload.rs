@@ -4,9 +4,19 @@ use mandacaru_core::paw::record::{reload_errors, RELOAD_LEVEL_TOLERANCE};
 
 #[test]
 fn only_a_bound_level_that_moved_beyond_the_tolerance_is_reported() {
-    let before = vec![(0, vec![-0.5, -0.1]), (1, vec![-0.3, 0.01]), (2, vec![-0.2])];
+    let before = vec![
+        (0, vec![-0.5, -0.1]),
+        (1, vec![-0.3, 0.01]),
+        (2, vec![-0.2]),
+    ];
     let after = vec![
-        (0, vec![-0.5 + 2. * RELOAD_LEVEL_TOLERANCE, -0.1 + 0.5 * RELOAD_LEVEL_TOLERANCE]),
+        (
+            0,
+            vec![
+                -0.5 + 2. * RELOAD_LEVEL_TOLERANCE,
+                -0.1 + 0.5 * RELOAD_LEVEL_TOLERANCE,
+            ],
+        ),
         (1, vec![-0.3 + 0.5 * RELOAD_LEVEL_TOLERANCE, 5.0]),
         (2, vec![f64::NAN]),
     ];

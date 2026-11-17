@@ -7,10 +7,11 @@ use crate::{
     math::{angular, radial::integrate, spline::Cubic},
     paw::{
         local_split::{
-            angular_rule, linspace, long_range_potential, radial_rule, short_range_radius,
+            lattice_angular_rule, linspace, long_range_potential, radial_rule, short_range_radius,
             tail_radius,
         },
         multipole::shape_function,
+        record::PawDataset,
     },
     Context, Result,
 };
@@ -94,6 +95,14 @@ pub struct LocalPotential {
     pub charge: f64,
     /// Radius of the dataset's own local cutoff (`r_cut_local`).
     pub cutoff: f64,
+    /// The radii where `v_local + Z / r` has second-derivative corners besides the cutoff: the
+    /// compensation radius, where the Hartree potential of the compensation shape meets the
+    /// Coulomb tail, the projector radius of every channel and the radius of the partial core,
+    /// where the pseudized densities join the all-electron ones.
+    pub corners: Vec<f64>,
+    /// The radius past which the table is `-Z / r` to [`TAIL_TOLERANCE`]: where the enforced
+    /// ionic tail joins the potential.
+    pub tail: f64,
 }
 impl LocalPotential {
     pub fn new(
@@ -102,18 +111,48 @@ impl LocalPotential {
         v_local: &[f64],
         charge: f64,
         cutoff: f64,
+        corners: Vec<f64>,
     ) -> Result<Self> {
-        Ok(Self {
-            spline: Arc::new(Cubic::new(ctx, ctx.copy_slice(r)?, ctx.copy_slice(v_local)?)?),
+        let mut potential = Self {
+            spline: Arc::new(Cubic::new(
+                ctx,
+                ctx.copy_slice(r)?,
+                ctx.copy_slice(v_local)?,
+            )?),
             charge,
             cutoff,
-        })
+            corners,
+            tail: 0.,
+        };
+        let scan = linspace(0.3, TAIL_SCAN_MAX, TAIL_SCAN_POINTS);
+        let sampled: Vec<f64> = scan.iter().map(|r| potential.value(*r)).collect();
+        potential.tail = tail_radius(&scan, &sampled, charge, TAIL_TOLERANCE)?;
+        Ok(potential)
+    }
+    /// A species' potential from its record: its local cutoff and, as corners, the compensation
+    /// radius, the projector radius of every channel and the radius where the partial core joins
+    /// the all-electron one (the exchange-correlation potential of the smooth density has a corner
+    /// there).
+    pub fn from_dataset(ctx: &Context, dataset: &PawDataset) -> Result<Self> {
+        Self::new(
+            ctx,
+            dataset.r.as_slice(),
+            dataset.v_local.as_slice(),
+            dataset.valence_charge,
+            dataset.r_cut_local,
+            std::iter::once(dataset.compensation_radius)
+                .chain(dataset.channels.values().map(|channel| channel.r_cut))
+                .chain(dataset.nlcc.r_nlcc.filter(|_| dataset.nlcc.applied))
+                .collect(),
+        )
     }
     pub fn clone_with(&self, ctx: &Context) -> Result<Self> {
         Ok(Self {
             spline: Arc::new(self.spline.clone_with(ctx)?),
             charge: self.charge,
             cutoff: self.cutoff,
+            corners: self.corners.clone(),
+            tail: self.tail,
         })
     }
     pub fn value(&self, radius: f64) -> f64 {
@@ -139,10 +178,21 @@ impl LocalPotential {
     /// Radius of the sphere that holds all of `v^sr`: 6.5 widths, never less
     /// than the local cutoff or the measured tail.
     pub fn reach(&self, sigma: f64) -> Result<f64> {
-        let scan = linspace(0.3, TAIL_SCAN_MAX, TAIL_SCAN_POINTS);
-        let sampled: Vec<f64> = scan.iter().map(|r| self.value(*r)).collect();
-        let tail = tail_radius(&scan, &sampled, self.charge, TAIL_TOLERANCE)?;
-        Ok(short_range_radius(sigma, RADIUS_SIGMAS, self.cutoff, tail))
+        Ok(short_range_radius(
+            sigma,
+            RADIUS_SIGMAS,
+            self.cutoff,
+            self.tail,
+        ))
+    }
+    /// The radii where the radial integrand of `v^sr` has a corner whatever the width: the local
+    /// cutoff, the corners of the table and the start of its tail. A radial rule puts a panel
+    /// edge on each, so no node slides across one as the width moves the sphere's outer panel
+    /// (the energy would carry a ripple in the width).
+    pub fn panel_edges(&self) -> Vec<f64> {
+        let mut edges = vec![self.cutoff, self.tail];
+        edges.extend_from_slice(&self.corners);
+        edges
     }
 }
 
@@ -164,7 +214,8 @@ pub fn short_range_ion_compensation(
         .map(|p| p.reach(sigma))
         .collect::<Result<Vec<_>>>()?;
     let mut out = vec![Complex64::default(); sites.channels.len()];
-    let (directions, angular_weights) = angular_rule(SPHERE_POLAR, SPHERE_AZIMUTHAL)?;
+    let (directions, angular_weights) =
+        lattice_angular_rule(ctx, &sites.lattice, SPHERE_POLAR, SPHERE_AZIMUTHAL)?;
     let directions: Vec<[f64; 3]> = (0..angular_weights.len())
         .map(|j| [directions[0][j], directions[1][j], directions[2][j]])
         .collect();

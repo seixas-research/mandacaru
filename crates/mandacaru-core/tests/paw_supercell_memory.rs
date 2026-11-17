@@ -35,12 +35,21 @@ const BUDGET: usize = 2 << 30;
 /// against the estimate of 4.5 (which the grid's tables miss by 1-2 % at `m = 104`, so the larger
 /// cases check the factorization's own bound only); prints them with the stored pair transforms'
 /// size, and returns `m`.
-fn peak(cell: &Primitive, basis: &str, mesh: [usize; 3], budget: usize, tolerance: Option<f64>, estimated: bool) -> usize {
+fn peak(
+    cell: &Primitive,
+    basis: &str,
+    mesh: [usize; 3],
+    budget: usize,
+    tolerance: Option<f64>,
+    estimated: bool,
+) -> usize {
     let cells: usize = mesh.iter().product();
     let points = cells * cell.shape.iter().product::<usize>();
     // The crystal setup alone: what the estimate does not count.
     let ctx = Context::new(Some(2), budget).unwrap();
-    let setup = Arc::new(cells_with_basis(&ctx, "lda-sr", false, cell, 1, [0.; 3], basis));
+    let setup = Arc::new(cells_with_basis(
+        &ctx, "lda-sr", false, cell, 1, [0.; 3], basis,
+    ));
     let supercell = PawSupercell::new(&ctx, &setup, mesh).unwrap();
     let channels = supercell.crystal.channels;
     let baseline = ctx.memory_peak();
@@ -50,8 +59,12 @@ fn peak(cell: &Primitive, basis: &str, mesh: [usize; 3], budget: usize, toleranc
     let (held, built) = (ctx.memory_used(), ctx.memory_peak());
     let eri = integrals.eri().unwrap();
     let rank = eri.report().cholesky.map_or(0, |c| c.0);
-    let Eri::Augmented { base, .. } = eri.as_ref() else { panic!("a PAW supercell is augmented") };
-    let Eri::Translated { stored, .. } = base.as_ref() else { panic!("stored per translation orbit") };
+    let Eri::Augmented { base, .. } = eri.as_ref() else {
+        panic!("a PAW supercell is augmented")
+    };
+    let Eri::Translated { stored, .. } = base.as_ref() else {
+        panic!("stored per translation orbit")
+    };
     let vectors = *stored;
     let peak = ctx.memory_peak();
     let m = integrals.m();
@@ -85,9 +98,15 @@ fn peak(cell: &Primitive, basis: &str, mesh: [usize; 3], budget: usize, toleranc
         factorization as f64 / 1e6
     );
     assert!(peak < budget);
-    assert!(peak <= built.max(held + factorization), "peak {peak} held {held} factorization {factorization}");
+    assert!(
+        peak <= built.max(held + factorization),
+        "peak {peak} held {held} factorization {factorization}"
+    );
     if estimated {
-        assert!(peak < baseline + estimate, "peak {peak} setup {baseline} estimate {estimate}");
+        assert!(
+            peak < baseline + estimate,
+            "peak {peak} setup {baseline} estimate {estimate}"
+        );
     }
     m
 }
@@ -95,26 +114,38 @@ fn peak(cell: &Primitive, basis: &str, mesh: [usize; 3], budget: usize, toleranc
 /// LiH (3, 1, 1) at SZ: `m = 6`.
 #[test]
 fn lithium_hydride_three_cells_stays_under_the_estimate() {
-    assert_eq!(peak(&lithium_hydride_cell(), "SZ", [3, 1, 1], BUDGET, None, true), 6);
+    assert_eq!(
+        peak(&lithium_hydride_cell(), "SZ", [3, 1, 1], BUDGET, None, true),
+        6
+    );
 }
 
 /// Si 2 x 1 x 1 at SZ: `m = 16`.
 #[test]
 fn silicon_two_cells_sz_stays_under_the_estimate() {
-    assert_eq!(peak(&silicon_cell(), "SZ", [2, 1, 1], BUDGET, None, true), 16);
+    assert_eq!(
+        peak(&silicon_cell(), "SZ", [2, 1, 1], BUDGET, None, true),
+        16
+    );
 }
 
 /// Si 2 x 1 x 1 at DZP: `m = 52`, where the stored pair transforms were `m^2 P 16` bytes.
 #[test]
 fn silicon_two_cells_dzp_stays_under_the_estimate() {
-    assert_eq!(peak(&silicon_cell(), "DZP", [2, 1, 1], BUDGET, None, true), 52);
+    assert_eq!(
+        peak(&silicon_cell(), "DZP", [2, 1, 1], BUDGET, None, true),
+        52
+    );
 }
 
 /// Si 2 x 2 x 1 at DZP: `m = 104`.
 #[test]
 #[ignore = "slow: about 1.5 min (the columns of the factorization); run: MANDACARU_PAW_PATH=... cargo test --profile release-test -p mandacaru-core --test paw_supercell_memory -- --ignored silicon_four --nocapture"]
 fn silicon_four_cells_dzp_stays_under_the_estimate() {
-    assert_eq!(peak(&silicon_cell(), "DZP", [2, 2, 1], BUDGET, None, false), 104);
+    assert_eq!(
+        peak(&silicon_cell(), "DZP", [2, 2, 1], BUDGET, None, false),
+        104
+    );
 }
 
 /// Si 2 x 2 x 2 at DZP: `m = 208`, the production size, at the default tolerance (the
@@ -125,5 +156,8 @@ fn silicon_four_cells_dzp_stays_under_the_estimate() {
 #[test]
 #[ignore = "slow: about 8 min (the columns of the factorization); run: MANDACARU_PAW_PATH=... cargo test --profile release-test -p mandacaru-core --test paw_supercell_memory -- --ignored silicon_eight --nocapture"]
 fn silicon_eight_cells_dzp_stays_under_the_budget() {
-    assert_eq!(peak(&silicon_cell(), "DZP", [2, 2, 2], BUDGET, None, false), 208);
+    assert_eq!(
+        peak(&silicon_cell(), "DZP", [2, 2, 2], BUDGET, None, false),
+        208
+    );
 }

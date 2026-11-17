@@ -1,6 +1,5 @@
-//! Helpers shared by the `paw_record*` test binaries: library discovery, the
-//! frozen A0 references and the dataset array walk in the order of the
-//! Python `dataset_arrays` of the A0 freeze script (deleted at A7).
+//! Helpers shared by the `paw_record*` test binaries: library discovery, the dataset array walk
+//! and a SHA-256.
 #![allow(dead_code)]
 
 pub mod sha;
@@ -23,18 +22,6 @@ pub fn library() -> PathBuf {
     }
 }
 
-/// The UPAW-LCAO library: `$MANDACARU_UPAW_PATH`, else the `mandacaru-upaw`
-/// checkout beside the PAW one. `None` when neither exists.
-pub fn upaw_library() -> Option<PathBuf> {
-    if let Ok(path) = std::env::var("MANDACARU_UPAW_PATH") {
-        if !path.trim().is_empty() {
-            return Some(PathBuf::from(path));
-        }
-    }
-    let beside = library().parent()?.join("mandacaru-upaw");
-    beside.is_dir().then_some(beside)
-}
-
 /// `(set, path)` of every dataset file of a library root, sorted.
 pub fn files_of(root: &Path, sets: &[&str]) -> Vec<(String, PathBuf)> {
     let mut found = Vec::new();
@@ -51,32 +38,8 @@ pub fn files_of(root: &Path, sets: &[&str]) -> Vec<(String, PathBuf)> {
     found
 }
 
-pub fn reference_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../test/migration/reference/paw_generate")
-}
-
-pub fn reference(name: &str) -> Value {
-    let path = reference_dir().join(name);
-    let text = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("frozen reference {}: {e}", path.display()));
-    serde_json::from_str(&text).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
-}
-
-pub fn sha256_of_f64(values: &[f64]) -> String {
-    let mut hash = sha::Sha256::new();
-    let mut bytes = Vec::with_capacity(1 << 16);
-    for chunk in values.chunks(1 << 13) {
-        bytes.clear();
-        for value in chunk {
-            bytes.extend_from_slice(&value.to_le_bytes());
-        }
-        hash.update(&bytes);
-    }
-    hash.finish()
-}
-
-/// Every float array of a record, named and ordered as `dataset_arrays` of
-/// the A0 freeze: row-major, one entry per array.
+/// Every float array of a record, named by table, channel and projector:
+/// row-major, one entry per array.
 pub fn arrays_of(ds: &PawDataset) -> Vec<(String, Vec<usize>, &[f64])> {
     let mut out: Vec<(String, Vec<usize>, &[f64])> = Vec::new();
     let n = ds.r.as_slice().len();
@@ -147,51 +110,6 @@ pub fn arrays_of(ds: &PawDataset) -> Vec<(String, Vec<usize>, &[f64])> {
     out
 }
 
-/// The frozen `(name, sha256, shape, max)` of one A0 library sample, or
-/// `None` for a file that is not in the sample.
-pub fn frozen_arrays(
-    set: &str,
-    element: &str,
-) -> Option<(Value, Vec<(String, String, Value, Value)>)> {
-    let path = reference_dir().join(format!("lib_{set}_{element}.json"));
-    if !path.exists() {
-        return None;
-    }
-    let doc = reference(&format!("lib_{set}_{element}.json"));
-    let names_doc = reference("lib_names.json");
-    let id = doc["arrays"]["names_id"].as_str().unwrap();
-    let names = names_doc[id].as_array().unwrap();
-    let a = &doc["arrays"];
-    let rows = names
-        .iter()
-        .enumerate()
-        .map(|(i, name)| {
-            (
-                name.as_str().unwrap().to_string(),
-                a["sha256"][i].as_str().unwrap().to_string(),
-                a["shape"][i].clone(),
-                a["max"][i].clone(),
-            )
-        })
-        .collect();
-    Some((doc, rows))
-}
-
-/// The frozen shape is `n` for a vector and a list for a matrix.
-pub fn shape_matches(frozen: &Value, shape: &[usize]) -> bool {
-    match frozen {
-        Value::Number(n) => shape.len() == 1 && n.as_u64() == Some(shape[0] as u64),
-        Value::Array(list) => {
-            list.len() == shape.len()
-                && list
-                    .iter()
-                    .zip(shape)
-                    .all(|(a, b)| a.as_u64() == Some(*b as u64))
-        }
-        _ => false,
-    }
-}
-
 /// A scratch folder removed on drop.
 pub struct TempDir(PathBuf);
 
@@ -242,15 +160,9 @@ pub fn payload_of(table: &mandacaru_core::parquet::Table) -> Value {
     serde_json::from_str(&table.metadata[mandacaru_core::paw::record::METADATA_KEY]).unwrap()
 }
 
-/// A JSON list of numbers (the string `"inf"` is infinity).
-pub fn floats(value: &Value) -> Vec<f64> {
-    value
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|v| match v {
-            Value::String(text) if text == "inf" => f64::INFINITY,
-            other => other.as_f64().unwrap(),
-        })
-        .collect()
+pub fn linspace(start: f64, stop: f64, n: usize) -> Vec<f64> {
+    let step = (stop - start) / (n - 1) as f64;
+    let mut out: Vec<f64> = (0..n).map(|i| i as f64 * step + start).collect();
+    out[n - 1] = stop;
+    out
 }

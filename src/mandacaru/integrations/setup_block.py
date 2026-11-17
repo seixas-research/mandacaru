@@ -106,15 +106,15 @@ def setup_request(driver, atoms, family, options, moments, spinor):
         'grid_shape': list(g.shape),
         'atoms': atoms_spec,
         # The Rust setup reduces the mesh itself: by the operations that keep it, then time
-        # reversal; the whole mesh for a magnetic or a non-time-reversal spinor crystal and for
-        # a hybrid.
+        # reversal; the whole mesh for a magnetic or a non-time-reversal spinor crystal. A hybrid
+        # is reduced too when the operations reduce it beyond time reversal.
         'mesh': {'size': list(map(int, size)), 'gamma': bool(gamma)},
         'functional': driver.xc,
         'precision': driver._precision,
         'basis_size': basis_size,
         'spinor': spinor,
         'spin': driver._unrestricted,
-        'symmetry': driver._periodic_symmetry and not spinor,
+        'symmetry': driver._periodic_symmetry,
         'charge': float(getattr(driver, "_charge", 0.0)),
         # raw (default) or dual projectors; the option is validated with the family's options
         'projector_basis': options.get("projector_basis", "raw"),

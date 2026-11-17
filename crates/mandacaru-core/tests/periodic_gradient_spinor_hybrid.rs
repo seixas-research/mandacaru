@@ -1,7 +1,7 @@
 //! F2a (SH-F1 + SH-F2): the force of a HYBRID (HSE06) crystal WITH SPIN-ORBIT COUPLING, time-reversal
 //! symmetric (non-magnetic), on a real converged SCF over the WHOLE complex-k mesh, against the
 //! reconverged free-energy finite difference of the same discretized energy (two step families of
-//! `freeze_periodic_gradients.py`, 14.4 item 1): the displaced Si cell with the `pbe-fr` datasets
+//! `periodic_freeze_snapshot.rs`, 14.4 item 1): the displaced Si cell with the `pbe-fr` datasets
 //! on the 3x1x1 Gamma-centered mesh (k = 0, +-1/3: two non-time-reversal-invariant points), every
 //! coordinate of both atoms. No Python. Needs `MANDACARU_PAW_PATH`.
 //!

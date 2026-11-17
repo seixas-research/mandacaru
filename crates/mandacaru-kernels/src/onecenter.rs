@@ -3,7 +3,6 @@
 // PAW one-center radial Coulomb/Hartree and angular quadrature kernels in Rust (C ABI).
 // Implements prefix/suffix radial Poisson solves and 4-index Slater integral tensors.
 
-
 /// Fast radial Coulomb integral for partial-wave pair densities:
 /// int_0^rc rho_1(r) * [ int_0^r rho_2(r') (r'/r)^(L+1) r'^2 dr' + int_r^rc rho_2(r') (r/r')^L r'^2 dr' ] * r^2 dr
 /// Exactly matches Python scipy cumulative_trapezoid + simpson.

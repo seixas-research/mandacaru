@@ -9,11 +9,9 @@
 //! channel, a transposed block or a dropped transverse block is a large miss.
 use mandacaru_core::models::noncollinear::component;
 use mandacaru_core::{
-    periodic::{
-        gradient::{
-            spinor::{doubled, doubled_layout, pauli_sum},
-            Layout, Matrix, Request,
-        },
+    periodic::gradient::{
+        spinor::{doubled, doubled_layout, pauli_sum},
+        Layout, Matrix, Request,
     },
     quantum::C64,
 };

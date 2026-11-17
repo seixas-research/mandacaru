@@ -6,10 +6,10 @@
 //! that pass, the highest correlation is chosen; a tie goes to the simpler kind (the ranker). With
 //! none passing, the model keeps the last kind requested and is not ready.
 use super::{
-    data::{Dataset, State},
-    graph::{Candidates, Graph, Matrix},
+    data::{Dataset, EditDataset, EditKind, EditState, State},
+    graph::{compress, BipartiteGraph, Candidates, Matrix},
     network::{self, Parameters},
-    ranker::{Ranker, Sample, DESCRIPTORS},
+    ranker::{PairwiseRanker, PairwiseSample, Ranker, Sample, DESCRIPTORS},
 };
 use crate::{
     math::{autodiff::Tape, random::Rng},
@@ -119,6 +119,36 @@ impl Options {
         Ok(())
     }
 }
+fn parse_fixed_array<const F: usize>(from: &Value, name: &str) -> Result<[f64; F]> {
+    let mut out = [0.; F];
+    let entries = from[name]
+        .as_array()
+        .filter(|a| a.len() == F)
+        .ok_or_else(|| invalid("proposal feature vector length mismatch"))?;
+    for (target, value) in out.iter_mut().zip(entries) {
+        *target = value
+            .as_f64()
+            .filter(|x| x.is_finite())
+            .ok_or_else(|| invalid("proposal feature values must be finite"))?;
+    }
+    Ok(out)
+}
+
+fn parse_ranker_json<const F: usize>(value: &Value) -> Result<PairwiseRanker<F>> {
+    let ranker = PairwiseRanker {
+        weights: parse_fixed_array(value, "weights")?,
+        mean: parse_fixed_array(value, "mean")?,
+        std: parse_fixed_array(value, "std")?,
+        pairs: value["pairs"]
+            .as_u64()
+            .ok_or_else(|| invalid("a ranker needs its pair count"))? as usize,
+    };
+    if ranker.std.iter().any(|s| *s <= 0.) {
+        return Err(invalid("a ranker's scales must be positive"));
+    }
+    Ok(ranker)
+}
+
 pub struct Model {
     /// The kind the proposal draws from.
     pub kind: Kind,
@@ -126,6 +156,9 @@ pub struct Model {
     pub parameters: Option<Parameters>,
     /// The pairwise ranker, when trained (`None` also when no state holds a pair).
     pub ranker: Option<Ranker>,
+    /// Optional multi-move pairwise edit ranker (`insert`, `delete`, `replace`) with sequence
+    /// overlap (`BG3`), curvature (`BG4`), and edit position (`BG1`) features.
+    pub edit: Option<EditModel>,
     pub mean: [f64; 9],
     pub std: [f64; 9],
     pub ready: bool,
@@ -134,21 +167,137 @@ pub struct Model {
     pub temperature: f64,
 }
 impl Model {
-    pub fn scores(&self, context: &Context, graph: &Graph, rows: &Candidates) -> Result<Vec<f64>> {
-        if self.kind == Kind::Ranker {
-            let ranker = self.ranker.as_ref().ok_or_else(|| invalid("a ranker model holds no ranker"))?;
-            return Ok(descriptor_rows(rows).iter().map(|row| ranker.score(row)).collect());
+    /// Wraps a standalone trained [`EditModel`] as a ready `VALSQA` proposal [`Model`].
+    pub fn from_edit(edit: EditModel, temperature: f64) -> Result<Self> {
+        if !temperature.is_finite() || temperature <= 0. {
+            return Err(invalid(
+                "proposal model temperature must be positive and finite",
+            ));
         }
-        let parameters = self.parameters.as_ref().ok_or_else(|| invalid("a graph model holds no network"))?;
-        let mut tape = Tape::new(context);
-        let variables = parameters.variables(&mut tape)?;
-        let scores = network::scores(&mut tape, &variables, graph, rows, &self.mean, &self.std)?;
-        let values = tape.value(scores).as_slice().to_vec();
+        Ok(Self {
+            kind: Kind::Ranker,
+            parameters: None,
+            ranker: None,
+            edit: Some(edit),
+            mean: [0.; 9],
+            std: [1.; 9],
+            ready: true,
+            report: json!({"ready": true, "kind": "edit", "reason": "multi-move edit model"}),
+            mixing: 0.3,
+            temperature,
+        })
+    }
+
+    /// Attaches a multi-move [`EditModel`] (`BG1`/`BG3`/`BG4`) to this proposal [`Model`].
+    pub fn with_edit(mut self, edit: EditModel) -> Self {
+        self.edit = Some(edit);
+        self
+    }
+
+    /// True if an attached [`EditModel`] places nonzero weight on diagonal pool curvatures (`row[10]`).
+    pub fn uses_curvatures(&self) -> bool {
+        let Some(edit) = &self.edit else {
+            return false;
+        };
+        [&edit.insert, &edit.delete, &edit.replace]
+            .into_iter()
+            .flatten()
+            .any(|head| head.weights[10] != 0.)
+    }
+
+    pub fn scores(
+        &self,
+        context: &Context,
+        graph: &BipartiteGraph,
+        rows: &Candidates,
+    ) -> Result<Vec<f64>> {
+        self.scores_with_curvatures(context, graph, rows, None)
+    }
+
+    /// Scores candidate insertion/replacement operators, optionally folding in exact pool
+    /// curvatures (`BG4`) and multi-move `EditModel` sequence-overlap / position signals.
+    pub fn scores_with_curvatures(
+        &self,
+        context: &Context,
+        graph: &BipartiteGraph,
+        rows: &Candidates,
+        curvatures: Option<&[f64]>,
+    ) -> Result<Vec<f64>> {
+        let n_rows = rows.operators.len();
+        let mut values = if self.kind == Kind::Ranker {
+            match &self.ranker {
+                Some(ranker) => descriptor_rows(rows)
+                    .iter()
+                    .map(|row| ranker.score(row))
+                    .collect(),
+                None if self.edit.as_ref().and_then(|e| e.insert.as_ref()).is_some() => {
+                    vec![0.; n_rows]
+                }
+                None => return Err(invalid("a ranker model holds no ranker")),
+            }
+        } else if let Some(parameters) = &self.parameters {
+            let mut tape = Tape::new(context);
+            let variables = parameters.variables(&mut tape)?;
+            let scores =
+                network::scores(&mut tape, &variables, graph, rows, &self.mean, &self.std)?;
+            tape.value(scores).as_slice().to_vec()
+        } else if self.edit.as_ref().and_then(|e| e.insert.as_ref()).is_some() {
+            vec![0.; n_rows]
+        } else {
+            return Err(invalid("a graph model holds no network"));
+        };
+        if let Some(insert_head) = self.edit.as_ref().and_then(|e| e.insert.as_ref()) {
+            let positions =
+                vec![rows.descriptors.get((0, 8)).copied().unwrap_or(0.) as usize; n_rows];
+            for (slot, edit_row) in values
+                .iter_mut()
+                .zip(edit_rows_for(rows, &positions, curvatures))
+            {
+                *slot += insert_head.score(&edit_row);
+            }
+        }
         if values.iter().any(|v| !v.is_finite()) {
             return Err(invalid("learned scores overflow"));
         }
         Ok(values)
     }
+
+    /// Scores each occupied position `0..sequence.len()` for removal (`EditKind::Delete`),
+    /// returning `Ok(None)` when no `delete` edit head is present on this model.
+    pub fn removal_scores(
+        &self,
+        context: &Context,
+        graph: &BipartiteGraph,
+        sequence: &[usize],
+        gradients: &[f64],
+        curvatures: Option<&[f64]>,
+        energy_above_reference: f64,
+    ) -> Result<Option<Vec<f64>>> {
+        let Some(delete_head) = self.edit.as_ref().and_then(|e| e.delete.as_ref()) else {
+            return Ok(None);
+        };
+        if sequence.is_empty() {
+            return Ok(None);
+        }
+        let rows = Candidates::new(
+            context,
+            graph,
+            sequence,
+            sequence,
+            gradients,
+            energy_above_reference,
+        )?;
+        let positions: Vec<usize> = (0..sequence.len()).collect();
+        let scores: Vec<f64> = edit_rows_for(&rows, &positions, curvatures)
+            .iter()
+            .map(|row| delete_head.score(row))
+            .collect();
+        if scores.iter().any(|v| !v.is_finite()) {
+            return Err(invalid("learned removal scores overflow"));
+        }
+        Ok(Some(scores))
+    }
+
     pub fn as_json(&self) -> Value {
         let mut out = json!({"format":"mandacaru-proposal-model","version":1,"kind":self.kind.name(),
             "mean":self.mean,"std":self.std,
@@ -159,6 +308,9 @@ impl Model {
         if let Some(r) = &self.ranker {
             out["ranker"] = json!({"weights":r.weights,"mean":r.mean,"std":r.std,"pairs":r.pairs});
         }
+        if let Some(edit) = &self.edit {
+            out["edit"] = edit.as_json();
+        }
         out
     }
     pub fn from_json(context: &Context, source: &str) -> Result<Self> {
@@ -168,43 +320,26 @@ impl Model {
             return Err(invalid("unsupported native proposal model schema"));
         }
         let kind = Kind::parse(v["kind"].as_str().unwrap_or(""))?;
-        let nine = |from: &Value, name: &str| -> Result<[f64; 9]> {
-            let mut out = [0.; 9];
-            let entries = from[name]
-                .as_array()
-                .filter(|a| a.len() == 9)
-                .ok_or_else(|| invalid("proposal normalization requires nine descriptors"))?;
-            for (target, value) in out.iter_mut().zip(entries) {
-                *target = value
-                    .as_f64()
-                    .filter(|x| x.is_finite())
-                    .ok_or_else(|| invalid("proposal normalization must be finite"))?;
-            }
-            Ok(out)
-        };
-        let mean = nine(&v, "mean")?;
-        let std = nine(&v, "std")?;
+        let mean: [f64; 9] = parse_fixed_array(&v, "mean")?;
+        let std: [f64; 9] = parse_fixed_array(&v, "std")?;
         let ranker = match v.get("ranker") {
-            Some(r) => {
-                let ranker = Ranker {
-                    weights: nine(r, "weights")?,
-                    mean: nine(r, "mean")?,
-                    std: nine(r, "std")?,
-                    pairs: r["pairs"].as_u64().ok_or_else(|| invalid("a ranker needs its pair count"))? as usize,
-                };
-                if ranker.std.iter().any(|s| *s <= 0.) {
-                    return Err(invalid("a ranker's scales must be positive"));
-                }
-                Some(ranker)
-            }
+            Some(r) => Some(parse_ranker_json(r)?),
             None => None,
         };
         let parameters = match v.get("weights") {
             Some(w) => Some(Parameters::from_json(context, w)?),
             None => None,
         };
-        if (kind == Kind::Graph && parameters.is_none()) || (kind == Kind::Ranker && ranker.is_none()) {
-            return Err(invalid("a proposal model must hold the predictor of its kind"));
+        let edit = match v.get("edit") {
+            Some(e) if !e.is_null() => Some(EditModel::from_json(e)?),
+            _ => None,
+        };
+        if (kind == Kind::Graph && parameters.is_none() && edit.is_none())
+            || (kind == Kind::Ranker && ranker.is_none() && edit.is_none())
+        {
+            return Err(invalid(
+                "a proposal model must hold the predictor of its kind",
+            ));
         }
         let mixing = v["mixing"].as_f64().unwrap_or(f64::NAN);
         let temperature = v["temperature"].as_f64().unwrap_or(f64::NAN);
@@ -223,6 +358,7 @@ impl Model {
             kind,
             parameters,
             ranker,
+            edit,
             mean,
             std,
             ready: v["ready"]
@@ -252,17 +388,30 @@ pub fn teacher_weight(mixing: f64, fraction: f64, step: usize, steps: usize) -> 
 }
 
 /// [`first_choice`] against the observed distribution blended with a teacher's: `(1 - w) q + w t`.
-pub fn taught_choice(scores: &[f64], targets: &[f64], scale: f64, teacher: &[f64], weight: f64) -> Result<(f64, Vec<f64>)> {
+pub fn taught_choice(
+    scores: &[f64],
+    targets: &[f64],
+    scale: f64,
+    teacher: &[f64],
+    weight: f64,
+) -> Result<(f64, Vec<f64>)> {
     if weight == 0. {
         return first_choice(scores, targets, scale);
     }
     if teacher.len() != scores.len() || !(0. ..=1.).contains(&weight) {
-        return Err(invalid("a teacher needs one probability per candidate and a weight in [0, 1]"));
+        return Err(invalid(
+            "a teacher needs one probability per candidate and a weight in [0, 1]",
+        ));
     }
     let (_, adjoint) = first_choice(scores, targets, scale)?;
     let p = softmax(scores);
     // q = p - adjoint; the blended target and its cross-entropy gradient.
-    let q: Vec<f64> = p.iter().zip(&adjoint).zip(teacher).map(|((p, a), t)| (1. - weight) * (p - a) + weight * t).collect();
+    let q: Vec<f64> = p
+        .iter()
+        .zip(&adjoint)
+        .zip(teacher)
+        .map(|((p, a), t)| (1. - weight) * (p - a) + weight * t)
+        .collect();
     let top = scores.iter().copied().fold(f64::NEG_INFINITY, f64::max);
     let log_sum = top + scores.iter().map(|v| (v - top).exp()).sum::<f64>().ln();
     Ok((
@@ -390,7 +539,8 @@ pub fn train(context: &Context, states: &[&State], options: &Options) -> Result<
                 let output =
                     network::head(&mut tape, &variables, zh, za, &state.rows, &mean, &std)?;
                 // The gradient softmax aids the first stage of the training only.
-                let weight = teacher_weight(options.mixing, options.mixing_fraction, step - 1, steps);
+                let weight =
+                    teacher_weight(options.mixing, options.mixing_fraction, step - 1, steps);
                 let teacher = crate::quantum::search::kernel::softmax(&state.gradients, 1.)?;
                 let (_, adjoint) = taught_choice(
                     tape.value(output).as_slice(),
@@ -436,6 +586,7 @@ pub fn train(context: &Context, states: &[&State], options: &Options) -> Result<
         kind: Kind::Graph,
         parameters: Some(parameters),
         ranker: None,
+        edit: None,
         mean,
         std,
         ready: false,
@@ -492,16 +643,22 @@ fn average(values: &[f64]) -> Option<f64> {
 /// The descriptor rows of a state's candidates.
 fn descriptor_rows(rows: &Candidates) -> Vec<[f64; DESCRIPTORS]> {
     let d = &rows.descriptors;
-    (0..d.nrows()).map(|r| std::array::from_fn(|c| d[(r, c)])).collect()
+    (0..d.nrows())
+        .map(|r| std::array::from_fn(|c| d[(r, c)]))
+        .collect()
 }
 
 /// The pairwise ranker of `states` (their descriptor rows and targets).
 pub fn ranker(states: &[&State], l2: f64) -> Result<Option<Ranker>> {
-    let rows: Vec<Vec<[f64; DESCRIPTORS]>> = states.iter().map(|s| descriptor_rows(&s.rows)).collect();
+    let rows: Vec<Vec<[f64; DESCRIPTORS]>> =
+        states.iter().map(|s| descriptor_rows(&s.rows)).collect();
     let samples: Vec<Sample> = states
         .iter()
         .zip(&rows)
-        .map(|(s, d)| Sample { descriptors: d, targets: &s.targets })
+        .map(|(s, d)| Sample {
+            descriptors: d,
+            targets: &s.targets,
+        })
         .collect();
     Ranker::fit(&samples, l2)
 }
@@ -516,6 +673,7 @@ fn trained(context: &Context, states: &[&State], options: &Options) -> Result<Mo
             kind: Kind::Ranker,
             parameters: None,
             ranker: None,
+            edit: None,
             mean,
             std,
             ready: false,
@@ -590,8 +748,11 @@ pub fn fit(context: &Context, dataset: &Dataset, options: &Options) -> Result<Mo
                 }
                 let mut metrics = Vec::new();
                 for (group, (learned, gradient)) in by_group {
-                    let learned: BTreeMap<Kind, Option<f64>> =
-                        options.kinds.iter().map(|&k| (k, learned.get(&k).and_then(|v| average(v)))).collect();
+                    let learned: BTreeMap<Kind, Option<f64>> = options
+                        .kinds
+                        .iter()
+                        .map(|&k| (k, learned.get(&k).and_then(|v| average(v))))
+                        .collect();
                     let gradient = average(&gradient);
                     let mut entry = json!({"group":group,"gradient":gradient});
                     for (kind, value) in &learned {
@@ -602,25 +763,35 @@ pub fn fit(context: &Context, dataset: &Dataset, options: &Options) -> Result<Mo
                         per_group.push((learned, baseline));
                     }
                 }
-                folds.push(json!({"held_out":held_out,"train_states":training.len(),"groups":metrics}));
+                folds.push(
+                    json!({"held_out":held_out,"train_states":training.len(),"groups":metrics}),
+                );
             }
             let mut within = json!({"gradient":{"spearman":average(&full_gradient)}});
             for kind in &options.kinds {
-                within[kind.name()] = json!({"spearman": pooled.get(kind).and_then(|v| average(v))});
+                within[kind.name()] =
+                    json!({"spearman": pooled.get(kind).and_then(|v| average(v))});
             }
             curve.push(json!({"fraction":fraction,"folds":folds,"within_state":within}));
         }
     }
     let gradient = average(&full_gradient);
     let valid_groups = per_group.len();
-    let metric = |value: Option<f64>| value.map_or_else(|| "undefined".into(), |v| format!("{v:.3}"));
+    let metric =
+        |value: Option<f64>| value.map_or_else(|| "undefined".into(), |v| format!("{v:.3}"));
     let mut passed: Vec<(f64, Kind, usize)> = Vec::new();
     let mut verdicts = Vec::new();
     for &kind in &options.kinds {
         let value = pooled.get(&kind).and_then(|v| average(v));
         let wins = per_group
             .iter()
-            .filter(|(learned, baseline)| learned.get(&kind).copied().flatten().is_some_and(|v| v > *baseline))
+            .filter(|(learned, baseline)| {
+                learned
+                    .get(&kind)
+                    .copied()
+                    .flatten()
+                    .is_some_and(|v| v > *baseline)
+            })
             .count();
         if valid_groups >= 3
             && wins * 2 > valid_groups
@@ -628,12 +799,22 @@ pub fn fit(context: &Context, dataset: &Dataset, options: &Options) -> Result<Mo
         {
             passed.push((value.expect("checked"), kind, wins));
         }
-        verdicts.push(format!("{} {} ({wins} of {valid_groups} groups)", kind.name(), metric(value)));
+        verdicts.push(format!(
+            "{} {} ({wins} of {valid_groups} groups)",
+            kind.name(),
+            metric(value)
+        ));
     }
     // The highest correlation; a tie goes to the simpler kind (the ranker).
-    let chosen = passed.iter().copied().max_by(|a, b| a.0.total_cmp(&b.0).then(b.1.cmp(&a.1)));
+    let chosen = passed
+        .iter()
+        .copied()
+        .max_by(|a, b| a.0.total_cmp(&b.0).then(b.1.cmp(&a.1)));
     let reason = if groups.len() < 3 {
-        format!("{} groups; at least three are needed to hold one out and train on two", groups.len())
+        format!(
+            "{} groups; at least three are needed to hold one out and train on two",
+            groups.len()
+        )
     } else if valid_groups < 3 {
         format!("only {valid_groups} held-out groups have nonconstant states with three or more insertions; record chains with screen_insertions")
     } else if let Some((value, kind, wins)) = chosen {
@@ -649,7 +830,11 @@ pub fn fit(context: &Context, dataset: &Dataset, options: &Options) -> Result<Mo
     }
     if model.kind == Kind::Ranker && model.ranker.is_none() {
         // No state holds a pair: the ranker cannot draw, and the model is not ready.
-        model.kind = *options.kinds.iter().find(|&&k| k == Kind::Graph).unwrap_or(&Kind::Ranker);
+        model.kind = *options
+            .kinds
+            .iter()
+            .find(|&&k| k == Kind::Graph)
+            .unwrap_or(&Kind::Ranker);
     }
     model.ready = ready && (model.kind != Kind::Ranker || model.ranker.is_some());
     let kinds: Vec<_> = options.kinds.iter().map(|k| k.name()).collect();
@@ -669,5 +854,191 @@ pub fn fit_json(
         let dataset = Dataset::from_json(context, data, group_by)?;
         let model = fit(context, &dataset, options)?;
         serde_json::to_string(&model.as_json()).map_err(|e| invalid(&e.to_string()))
+    })
+}
+
+/// Feature width for multi-move edit ranking: 9 base descriptors (`DESCRIPTORS`), sequence
+/// commutator overlap (`BG3`), compressed diagonal curvature (`BG4`), and normalized edit
+/// position (`BG1`).
+pub const EDIT_FEATURES: usize = DESCRIPTORS + 3;
+
+/// Builds `EDIT_FEATURES`-column feature rows from `Candidates`, edit `positions`, and
+/// optional second-order diagonal pool `curvatures`.
+pub fn edit_rows_for(
+    rows: &Candidates,
+    positions: &[usize],
+    curvatures: Option<&[f64]>,
+) -> Vec<[f64; EDIT_FEATURES]> {
+    let n_rows = rows.operators.len();
+    let mut out = Vec::with_capacity(n_rows);
+    for r in 0..n_rows {
+        let mut row = [0.; EDIT_FEATURES];
+        for c in 0..DESCRIPTORS {
+            row[c] = rows.descriptors[(r, c)];
+        }
+        row[9] = rows.sequence_overlap[r];
+        let op = rows.operators[r];
+        row[10] = curvatures
+            .and_then(|curv| curv.get(op).copied())
+            .map(compress)
+            .unwrap_or(0.);
+        let length = rows.descriptors[(r, 8)].max(1.);
+        let pos = positions.get(r).copied().unwrap_or(0) as f64;
+        row[11] = pos / length;
+        out.push(row);
+    }
+    out
+}
+
+/// Builds `EDIT_FEATURES`-column feature rows for one multi-move [`EditState`].
+pub fn edit_feature_rows(state: &EditState) -> Vec<[f64; EDIT_FEATURES]> {
+    edit_rows_for(&state.rows, &state.positions, state.curvatures.as_deref())
+}
+
+/// Multi-move pairwise proposal heads trained over [`EditDataset`] (`BG1` + `BG3` + `BG4`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct EditModel {
+    pub insert: Option<PairwiseRanker<EDIT_FEATURES>>,
+    pub delete: Option<PairwiseRanker<EDIT_FEATURES>>,
+    pub replace: Option<PairwiseRanker<EDIT_FEATURES>>,
+    pub l2: f64,
+}
+
+impl EditModel {
+    /// Returns the fitted ranker for `kind`, if one had distinguishing training pairs.
+    pub fn for_kind(&self, kind: EditKind) -> Option<&PairwiseRanker<EDIT_FEATURES>> {
+        match kind {
+            EditKind::Insert => self.insert.as_ref(),
+            EditKind::Delete => self.delete.as_ref(),
+            EditKind::Replace => self.replace.as_ref(),
+        }
+    }
+
+    /// Scores every candidate move in `state` (higher means larger predicted energy decrease).
+    pub fn score(&self, state: &EditState) -> Result<Vec<f64>> {
+        let ranker = self.for_kind(state.kind).ok_or_else(|| {
+            invalid(&format!(
+                "edit model has no trained head for `{}` moves",
+                state.kind.name()
+            ))
+        })?;
+        Ok(edit_feature_rows(state)
+            .iter()
+            .map(|row| ranker.score(row))
+            .collect())
+    }
+}
+
+fn fit_edit_head(
+    states: &[EditState],
+    kind: EditKind,
+    l2: f64,
+) -> Result<Option<PairwiseRanker<EDIT_FEATURES>>> {
+    let subset: Vec<(&EditState, Vec<[f64; EDIT_FEATURES]>)> = states
+        .iter()
+        .filter(|s| s.kind == kind)
+        .map(|s| (s, edit_feature_rows(s)))
+        .collect();
+    let samples: Vec<PairwiseSample<'_, EDIT_FEATURES>> = subset
+        .iter()
+        .map(|(s, rows)| PairwiseSample {
+            descriptors: rows,
+            targets: &s.targets,
+        })
+        .collect();
+    PairwiseRanker::fit(&samples, l2)
+}
+
+/// Fits independent per-move-kind `PairwiseRanker<EDIT_FEATURES>` heads over an [`EditDataset`].
+pub fn fit_edit_model(dataset: &EditDataset, l2: f64) -> Result<EditModel> {
+    Ok(EditModel {
+        insert: fit_edit_head(&dataset.states, EditKind::Insert, l2)?,
+        delete: fit_edit_head(&dataset.states, EditKind::Delete, l2)?,
+        replace: fit_edit_head(&dataset.states, EditKind::Replace, l2)?,
+        l2,
+    })
+}
+
+fn edit_head_json(ranker: Option<&PairwiseRanker<EDIT_FEATURES>>) -> Value {
+    ranker.map_or(Value::Null, |r| {
+        json!({
+            "weights": r.weights,
+            "mean": r.mean,
+            "std": r.std,
+            "pairs": r.pairs,
+        })
+    })
+}
+
+impl EditModel {
+    /// Parses a schema-v1 serialized [`EditModel`] from JSON.
+    pub fn from_json(v: &Value) -> Result<Self> {
+        if v["format"] != "mandacaru-edit-proposal-model"
+            || v["version"] != 1
+            || v["features"].as_u64() != Some(EDIT_FEATURES as u64)
+        {
+            return Err(invalid("unsupported edit proposal model schema"));
+        }
+        let l2 = v["l2"]
+            .as_f64()
+            .filter(|x| x.is_finite() && *x > 0.)
+            .ok_or_else(|| invalid("edit proposal model needs positive finite l2"))?;
+        let head = |key: &str| -> Result<Option<PairwiseRanker<EDIT_FEATURES>>> {
+            match v.get(key) {
+                Some(h) if !h.is_null() => Ok(Some(parse_ranker_json(h)?)),
+                _ => Ok(None),
+            }
+        };
+        Ok(Self {
+            insert: head("insert")?,
+            delete: head("delete")?,
+            replace: head("replace")?,
+            l2,
+        })
+    }
+
+    /// Serializes this multi-move edit ranker to schema-v1 JSON.
+    pub fn as_json(&self) -> Value {
+        json!({
+            "format": "mandacaru-edit-proposal-model",
+            "version": 1,
+            "features": EDIT_FEATURES,
+            "l2": self.l2,
+            "insert": edit_head_json(self.insert.as_ref()),
+            "delete": edit_head_json(self.delete.as_ref()),
+            "replace": edit_head_json(self.replace.as_ref()),
+        })
+    }
+}
+
+/// Parses a multi-move [`EditDataset`] from JSON and fits an [`EditModel`], returning JSON with
+/// trained per-move heads alongside dataset group and move counts.
+pub fn fit_edit_json(
+    context: &Context,
+    data: &str,
+    group_by: &str,
+    l2: f64,
+    moves: &[EditKind],
+) -> Result<String> {
+    context.run(|| {
+        let dataset = EditDataset::from_json(context, data, group_by, moves)?;
+        let model = fit_edit_model(&dataset, l2)?;
+        let payload = json!({
+            "format": "mandacaru-edit-proposal-model",
+            "version": 1,
+            "features": EDIT_FEATURES,
+            "l2": model.l2,
+            "groups": dataset.groups,
+            "counts": {
+                "insert": dataset.counts[0],
+                "delete": dataset.counts[1],
+                "replace": dataset.counts[2],
+            },
+            "states": dataset.states.len(),
+            "insert": edit_head_json(model.insert.as_ref()),
+            "delete": edit_head_json(model.delete.as_ref()),
+            "replace": edit_head_json(model.replace.as_ref()),
+        });
+        serde_json::to_string(&payload).map_err(|e| invalid(&e.to_string()))
     })
 }

@@ -53,10 +53,15 @@ pub fn complex_product(
         return Ok(DMatrix::zeros(rows, columns));
     }
     // The planes of `op(A)` (`rows x inner`) and of `B` (`inner x columns`), column-major.
+    // Packed in the order `a` is stored (column by column), whichever way it is read.
     let mut left = [vec![0.; rows * inner], vec![0.; rows * inner]];
-    for i in 0..rows {
-        for j in 0..inner {
-            let value = if adjoint { a[(j, i)].conj() } else { a[(i, j)] };
+    for column in 0..a.ncols() {
+        for row in 0..a.nrows() {
+            let (i, j, value) = if adjoint {
+                (column, row, a[(row, column)].conj())
+            } else {
+                (row, column, a[(row, column)])
+            };
             left[0][i + rows * j] = value.re;
             left[1][i + rows * j] = value.im;
         }

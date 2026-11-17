@@ -13,20 +13,20 @@ from .. import _native
 from ..analysis.excitations import CrystalExcitations, Excitations
 
 
-def _reference(calculation):
+def _reference(calculation, atoms=None):
     """The native mean-field state of a converged molecule, or a crystal's native periodic result,
-    running the calculation if needed."""
+    running the calculation (at ``atoms``, when given) if needed."""
     if calculation.capabilities.quantum:
         raise ValueError(
-            "get_excitations is the linear response of a mean-field state: it needs method='dft', "
+            "get_excitations and get_dipole_moment read a mean-field state: they need method='dft', "
             f"'rhf' or 'uhf' (closed or open shell), not the correlated quantum state of method={calculation.method!r} "
             "(energy_levels and the subspace methods give the excited states of a quantum run)"
         )
-    if calculation.result is None:
-        atoms = calculation._attached_atoms
+    if calculation.result is None or atoms is not None:
+        atoms = calculation._attached_atoms if atoms is None else atoms
         if atoms is None:
             raise RuntimeError("run a calculation before asking for excitations")
-        calculation.calculate(atoms, properties=("energy",))
+        calculation.get_property("energy", atoms)
     if calculation.result.periodic is not None:
         return calculation.result.periodic
     reference = calculation.result.reference
@@ -55,3 +55,8 @@ def excitations(calculation, num_states=5, *, approximation="tda", spin=None,
     write_excitations(calculation, view, tolerance=tolerance)
     return view
 
+
+def dipole_moment(calculation, atoms=None):
+    """``get_dipole_moment``: the native reference's moment (a crystal's result raises
+    ``NotImplementedError`` naming ``get_polarization``)."""
+    return _reference(calculation, atoms).dipole_moment(atomic_units=calculation._atomic_units)

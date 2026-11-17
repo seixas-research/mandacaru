@@ -186,7 +186,9 @@ pub fn tkatchenko_scheffler(
     let s_r = match s_r {
         Some(val) => {
             if !val.is_finite() || val <= 0.0 {
-                return Err(Error::Invalid("s_r range parameter must be positive".into()));
+                return Err(Error::Invalid(
+                    "s_r range parameter must be positive".into(),
+                ));
             }
             val
         }
@@ -338,8 +340,7 @@ pub fn tkatchenko_scheffler(
                             // Smooth cutoff factor
                             let y = (r - r_max) / l_decay;
                             let smooth = 0.5 * libm::erfc(y);
-                            let smooth_der =
-                                -1.0 / (PI.sqrt() * l_decay) * (-y * y).exp();
+                            let smooth_der = -1.0 / (PI.sqrt() * l_decay) * (-y * y).exp();
 
                             // Full pair contribution (counted twice in symmetric cell loop, so halved)
                             let pair_e = (f_damp * c6 / r6) * smooth;

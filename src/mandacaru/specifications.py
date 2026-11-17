@@ -32,6 +32,8 @@ METHODS = {
     "subspace-adapt-vqe": Capability(True, False, False, "ceo"),
     "vasqa": Capability(True, True, True, "fermionic"),
     "valsqa": Capability(True, True, True, "fermionic"),
+    "subspace-vasqa": Capability(True, False, True, "fermionic"),
+    "subspace-valsqa": Capability(True, False, True, "fermionic"),
 }
 from . import _native
 from ._native import FUNCTIONALS as _FUNCTIONALS
@@ -88,23 +90,15 @@ def basis_specification(value):
             if not shift > 0:
                 raise ValueError("energy_shift must be positive")
             radius = _native.energy_shift_radius(shift)
-        return dict(
-            name=name,
-            r_c=radius,
-            n_grid=spec.get("n_grid", 2000),
-            n_zeta=zetas,
-            n_polarization=polarization,
-            split_norm=DEFAULT_SPLIT_NORM if split is None else split,
-            tail_norms=tails,
-        )
+        return dict(name=name, r_c=radius, n_grid=spec.get("n_grid", 2000),
+                    n_zeta=zetas, n_polarization=polarization,
+                    split_norm=DEFAULT_SPLIT_NORM if split is None else split, tail_norms=tails)
     if name == "NAO-AE":
         from .models.radial import NAO_AE_DEFAULTS
-
         if set(spec) - NAO_AE_DEFAULTS.keys():
             raise TypeError(f"NAO-AE accepts {tuple(NAO_AE_DEFAULTS)}")
         result = dict(NAO_AE_DEFAULTS, **spec)
-        result["onset"], result["width"], result["wall_radius"] = _native.nao_ae_wall_radii(
-            result["onset"], result["width"])
+        result["onset"], result["width"], result["wall_radius"] = _native.nao_ae_wall_radii(result["onset"], result["width"])
         return dict(name=name, **result)
     if name in ("per_element", "gaussian"):
         return dict(name=name, **spec)

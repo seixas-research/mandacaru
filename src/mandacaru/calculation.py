@@ -38,7 +38,7 @@ DEFAULT_TWO_BODY_TOLERANCE_EV = 1e-8
 NOISE_INTOLERANT = ("SLSQP", "BFGS", "L-BFGS", "CG")
 STABLE_METHODS = tuple(METHODS)
 
-_SEARCH_METHODS = ("vasqa", "valsqa")
+_SEARCH_METHODS = ("vasqa", "valsqa", "subspace-vasqa", "subspace-valsqa")
 #: Options that act only for some methods, and the methods they act for. A value
 #: other than the default on any other method raises: nothing is silently ignored.
 #: ``spin``/``unrestricted`` also suit ``uhf``, which is unrestricted by definition.
@@ -81,8 +81,8 @@ _METHOD_SCOPED_OPTIONS = {
     "quenching": ("vqe", "adapt-vqe"),
     "checkpoint_every": ("vqe", "adapt-vqe"),
     **dict.fromkeys(("tetris", "prune"), ("adapt-vqe",)),
-    "kpts": ("dft", "vqe", "adapt-vqe", "vasqa", "valsqa"),
-    "crystal_orbitals": ("vqe", "adapt-vqe", "vasqa", "valsqa"),
+    "kpts": ("dft", "vqe", "adapt-vqe", "vasqa", "valsqa", "subspace-vasqa", "subspace-valsqa"),
+    "crystal_orbitals": ("vqe", "adapt-vqe", "vasqa", "valsqa", "subspace-vasqa", "subspace-valsqa"),
     **dict.fromkeys(("spin", "unrestricted"), ("dft", "uhf")),
     "pool": tuple(name for name, capability in METHODS.items() if capability.quantum),
 }
@@ -312,12 +312,14 @@ class Mandacaru(ASEProperties, Calculator):
     method : str, default "adapt-vqe"
         One of ``"rhf"``, ``"uhf"``, ``"ghf"``, ``"dft"``, ``"vqe"``,
         ``"adapt-vqe"``, ``"subspace-vqe"``, ``"subspace-adapt-vqe"``,
-        ``"vasqa"``, ``"valsqa"``. Anything else raises ``ValueError`` naming
+        ``"vasqa"``, ``"valsqa"``, ``"subspace-vasqa"``,
+        ``"subspace-valsqa"``. Anything else raises ``ValueError`` naming
         the available methods. ``"ghf"`` has no forces. ``"subspace-*"`` have
         no forces. Forces exist for the other methods on a molecule, with
         ``kinetic="spectral"``, no circuit execution, no ``taper=True`` and no
         periodic cell. A periodic geometry runs ``"dft"``, and ``"vqe"``,
-        ``"adapt-vqe"``, ``"vasqa"`` and ``"valsqa"`` on its Born-von Karman
+        ``"adapt-vqe"``, ``"vasqa"``, ``"valsqa"``, ``"subspace-vasqa"`` and
+        ``"subspace-valsqa"`` on its Born-von Karman
         supercell (see below); the other methods refuse it. The
         classical methods refuse ``shots``, ``execute_circuits=True``,
         ``backend_provider``, ``device``, ``backend_options`` and
@@ -1034,15 +1036,21 @@ class Mandacaru(ASEProperties, Calculator):
         once the density residual passes 0.01. Periodic DFT only.
     symmetry : bool, default True
         Reduce the k-mesh with the space-group operations of the cell (time
-        reversal is always used). Spinor (spin-orbit) calculations never use
-        the space-group reduction. A collinear moment pattern keeps the
+        reversal is always used). A spin-orbit (spinor) calculation is reduced
+        when it is nonmagnetic (a magnetic or spin-polarized one keeps the
+        full mesh: its magnetization would need the spin rotation of every
+        operation). A collinear moment pattern keeps the
         operations that map every atom onto an atom of the same element and
         the same initial moment (an operation that would send a moment to its
         opposite is not kept); with ``symmetry=False`` nonzero initial
-        magnetic moments keep the full mesh. A hybrid functional (``xc="hse06"``) is never reduced
-        by the space group, because its exact exchange sums over the listed
-        k-points; time reversal halves its mesh as it does any other (the
-        exchange builds the states at a missing ``-k`` from those at ``k``).
+        magnetic moments keep the full mesh. A hybrid functional (``xc="hse06"``) is reduced
+        too, collinear (unpolarized or spin-polarized) or with nonmagnetic spin-orbit
+        coupling: its exact exchange rotates the occupied states of each
+        listed k-point to the rest of its star (the energy, the levels and the
+        analytic forces equal the full mesh's). When the operations reduce the
+        mesh no further than time reversal does, a hybrid keeps the
+        time-reversal half. A hybrid's analytic forces and stress on a reduced mesh
+        equal the full mesh's.
         A non-boolean raises ``TypeError``. Ignored for molecules.
     hubbard_u : dict, optional
         The on-site DFT+U correction (fully localized double counting) of a
@@ -1130,8 +1138,11 @@ class Mandacaru(ASEProperties, Calculator):
         with or without ``hubbard_u``, Hartree-Fock PAW-LCAO (``method="rhf"`` or
         ``"uhf"``: CIS for ``"tda"``, TDHF for ``"casida"``), or spinor Kohn-Sham
         (a spin-orbit dataset or noncollinear initial moments) with ``xc="lda"`` or
-        ``"pbe"`` (``spin`` unset; the forces need a closed shell or, without a
-        spin-orbit dataset, a magnetized reference); other references
+        ``"pbe"`` (``spin`` unset; the forces need a closed shell or a
+        magnetized reference with ``xc="lda"`` and no spin-orbit dataset: a
+        magnetized reference with ``xc="pbe"`` or a spin-orbit dataset raises
+        ``NotImplementedError`` by name; ``"casida"`` where both spins flip, a
+        reference with electrons of both spins such as H3, is solved densely); other references
         raise ``NotImplementedError`` by name, a crystal included, as does a
         root within 1e-6 Ha of another (a multiplet has no single gradient),
         except on a spinor reference, where such a group takes the mean of its
@@ -1547,7 +1558,7 @@ class Mandacaru(ASEProperties, Calculator):
             )
         self._checkpoint_every = checkpoint_every
         self._resume_path = resume
-        self._trotter = trotter or self._hva is not None or self._execute_circuits or method in ("vasqa", "valsqa")
+        self._trotter = trotter or self._hva is not None or self._execute_circuits or method in _SEARCH_METHODS
         self._include_singles = include_singles
         from .integrations import tapering
 
@@ -1597,7 +1608,7 @@ class Mandacaru(ASEProperties, Calculator):
         self._atomic_units = atomic_units
         self._search = None
         self._search_geometry = None
-        if method in ("vasqa", "valsqa"):
+        if method in _SEARCH_METHODS:
             from .integrations.search import configure
 
             configure(self, max_steps=200 if max_steps is None else max_steps,
@@ -1609,7 +1620,7 @@ class Mandacaru(ASEProperties, Calculator):
                       record=record, seed=seed, proposal_model=proposal_model,
                       replicas=replicas, replica_spacing=replica_spacing)
         elif max_steps is not None or record is not None or screen_insertions or proposal_model is not None:
-            raise ValueError("architecture-search controls require vasqa or valsqa")
+            raise ValueError("architecture-search controls require vasqa, valsqa, subspace-vasqa or subspace-valsqa")
         self.trace = trace
         self.txt = txt
         requested = (
@@ -2333,128 +2344,86 @@ class Mandacaru(ASEProperties, Calculator):
             if carried.get("hessian") is not None and opts["optimizer"] in ("SLSQP", "BFGS"):
                 opts["initial_hessian"] = carried["hessian"]
         executor = None
-        if self.method.startswith("subspace-"):
+        if self._search is None and self.method.startswith("subspace-"):
             if self._execute_circuits:
                 raise NotImplementedError("subspace SDK execution requires a multi-reference executor")
             weights = [2.0, 1.0] if self._weights is None else list(self._weights)
-            resumed = (None if self._resume_path is None else self.context.read_snapshot(
-                str(self._resume_path), "mandacaru-wavefunction-checkpoint"))
+            resumed = None if self._resume_path is None else self.context.read_snapshot(str(self._resume_path), "mandacaru-wavefunction-checkpoint")
             with self._stage("parameter optimization"):
-                # Always quenched, one operator per step: these options apply to vqe/adapt-vqe.
-                subspace = {k: v for k, v in opts.items()
-                            if k not in ("quenching", "tetris", "prune")}
+                subspace = {k: v for k, v in opts.items() if k not in ("quenching", "tetris", "prune")}
                 raw = self.problem.solve_subspace(weights, resume=resumed, **subspace)
             for note in raw.get("notes", ()):
                 warnings.warn(note, RuntimeWarning, stacklevel=2)
             if self._checkpoint_path is not None:
                 self.problem.subspace_checkpoint(
-                    raw["indices"], raw["parameters"].tolist(), adapt=opts["adapt"],
-                    product_form=opts["adapt"] or self._trotter, weights=weights,
-                    energies_ha=raw["energies_ha"], hessian=raw.get("hessian"),
-                    hessian_optimizer=self._optimizer["method"],
-                    status_json=json.dumps({"complete": True, "converged": raw["success"],
-                                            "termination": raw["message"]}),
+                    raw["indices"], raw["parameters"].tolist(), adapt=opts["adapt"], product_form=opts["adapt"] or self._trotter, weights=weights,
+                    energies_ha=raw["energies_ha"], hessian=raw.get("hessian"), hessian_optimizer=self._optimizer["method"],
+                    status_json=json.dumps({"complete": True, "converged": raw["success"], "termination": raw["message"]}),
                 ).save(str(self._checkpoint_path))
         else:
-            resumed = (
-                None
-                if self._resume_path is None
-                else self.context.read_snapshot(
-                    str(self._resume_path), "mandacaru-wavefunction-checkpoint"
-                )
-            )
+            resumed = None if self._resume_path is None else self.context.read_snapshot(str(self._resume_path), "mandacaru-wavefunction-checkpoint")
             observer = None
-            if callback is not None:
+            if callback is not None and self._search is None:
                 from .analysis.states import AnsatzView
-
                 def observe(info):
                     info = dict(info)
-                    info["energy"] = _native.to_user_units(
-                        float(info["energy_ha"]), "energy", atomic_units=self._atomic_units)
+                    info["energy"] = _native.to_user_units(float(info["energy_ha"]), "energy", atomic_units=self._atomic_units)
                     info["ansatz"] = AnsatzView(self.problem, info["indices"], True)
                     callback(info)
-
                 observer = observe
-
-            executor = None
             if self._execute_circuits:
-                from .integrations.circuits import CircuitExecutor
-
+                if self.method.startswith("subspace-"):
+                    raise NotImplementedError("subspace architecture search requires local state vectors")
+                from .integrations.circuits import CircuitExecutor, preflight_run_budget
                 executor = CircuitExecutor(self)
-                from .integrations.circuits import preflight_run_budget
-
                 preflight_run_budget(self, opts)
             if self._search is not None:
                 if callback is not None:
                     raise ValueError("growth callbacks apply to ADAPT, not architecture edits")
-                from .integrations.search import run
-
+                from .integrations.search import run as run_search
                 with self._stage("parameter optimization"):
-                    raw = run(self, initial_parameters)
+                    raw = run_search(self, initial_parameters, executor=executor, resume=resumed)
             else:
                 self.run_budget_exhausted = None
-                self._resume_lineage = (
-                    None if resumed is None else _native.snapshot_lineage(resumed)
-                )
+                self._resume_lineage = None if resumed is None else _native.snapshot_lineage(resumed)
                 try:
                     with self._stage("parameter optimization"):
-                        raw = self.problem.solve(
-                            resume=resumed, callback=observer, executor=executor,
-                            checkpoint_path=(None if self._checkpoint_every is None
-                                             else str(self._checkpoint_path)),
-                            checkpoint_every=self._checkpoint_every or 0, **opts)
+                        raw = self.problem.solve(resume=resumed, callback=observer, executor=executor,
+                                                 checkpoint_path=None if self._checkpoint_every is None else str(self._checkpoint_path),
+                                                 checkpoint_every=self._checkpoint_every or 0, **opts)
                 except RuntimeError as exc:
                     if executor is not None and executor.stopped is not None:
-                        # The budget ended the run before any energy existed.
                         from .backends.measurement import RunBudgetExceeded
-
                         raise RunBudgetExceeded(executor.stopped) from exc
                     raise
                 for note in raw.get("notes", ()):
                     warnings.warn(note, RuntimeWarning, stacklevel=2)
                 if raw.get("budget_stopped"):
                     self.run_budget_exhausted = raw["message"]
-                    warnings.warn(
-                        "the run budget stopped the optimization at its best "
-                        f"point so far: {raw['message']}",
-                        RuntimeWarning,
-                        stacklevel=2,
-                    )
+                    warnings.warn(f"the run budget stopped the optimization at its best point so far: {raw['message']}", RuntimeWarning, stacklevel=2)
             if executor is not None:
-                raw["execution"] = self.provider.name
-                raw["state_kind"] = "none" if self._shots else "statevector"
-                raw["execution_usage"] = self.provider.run_usage()
+                raw["execution"], raw["state_kind"], raw["execution_usage"] = self.provider.name, "none" if self._shots else "statevector", self.provider.run_usage()
             from .integrations.transfer import record as record_transfer
-
             record_transfer(self, raw)
-            self.checkpoint = self.problem.checkpoint(
-                raw["indices"],
-                raw["parameters"].tolist(),
-                product_form=opts["adapt"] or self._trotter,
-                energy_ha=raw["energy_ha"],
-                method="adapt-vqe" if self.method.endswith("adapt-vqe") else ("vqe" if self.method.endswith("vqe") else self.method),
-                hessian=raw.get("hessian"), hessian_optimizer=self._optimizer["method"],
-                status_json=json.dumps(
-                    {
-                        "complete": True,
-                        "converged": raw["success"],
-                        "termination": raw["message"],
-                    }
-                ),
-            )
+            status_obj = {"complete": True, "converged": raw["success"], "termination": raw["message"]}
+            status = json.dumps({**status_obj, "search_method": self.method, "search_chain": raw["search_chain"]} if "search_chain" in raw else status_obj)
+            method_name = "adapt-vqe" if self.method.endswith("adapt-vqe") else ("vqe" if self.method.endswith("vqe") else self.method)
+            if self.method.startswith("subspace-"):
+                self.checkpoint = self.problem.subspace_checkpoint(
+                    raw["indices"], raw["parameters"].tolist(), adapt=False, product_form=True,
+                    weights=[2.0, 1.0] if self._weights is None else list(self._weights), energies_ha=raw["energies_ha"],
+                    hessian=raw.get("hessian"), hessian_optimizer=self._optimizer["method"], status_json=status)
+            else:
+                self.checkpoint = self.problem.checkpoint(
+                    raw["indices"], raw["parameters"].tolist(), product_form=opts["adapt"] or self._trotter, energy_ha=raw["energy_ha"],
+                    method=method_name, hessian=raw.get("hessian"), hessian_optimizer=self._optimizer["method"], status_json=status)
             if self._checkpoint_path is not None:
                 self.checkpoint.save(str(self._checkpoint_path))
         from .analysis.states import SolverView
 
-        self.solver = SolverView(
-            self.problem, raw, self.checkpoint, opts["adapt"] or self._trotter
-        )
+        self.solver = SolverView(self.problem, raw, self.checkpoint, opts["adapt"] or self._trotter)
         from .optimizers import Optimizer
-        self.solver.optimizer = Optimizer(
-            method=self._optimizer["method"],
-            maxiter=self._optimizer.get("maxiter", 300),
-            tol=self._optimizer.get("tol", 1e-9),
-        )
+        self.solver.optimizer = Optimizer(method=self._optimizer["method"], maxiter=self._optimizer.get("maxiter", 300), tol=self._optimizer.get("tol", 1e-9))
         result = CalculationResult(
             method=self.method,
             context=self.context,

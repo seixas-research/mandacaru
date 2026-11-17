@@ -1,7 +1,7 @@
-//! Loader for the DFT+U crystal fixtures written by
-//! `test/migration/export_hubbard_crystal.py`: a small metadata JSON beside a git-ignored
-//! `.npz` that holds the arrays the metadata names by key. Only what `np.savez` writes is
-//! read (stored entries, optional zip64 extra field, `.npy` version 1 or 2).
+//! Loader for the DFT+U crystal fixtures written by `tests/periodic_freeze_hubbard.rs`: a small
+//! metadata JSON beside a git-ignored `.npz` that holds the arrays the metadata names by key.
+//! Only what `np.savez` writes is read (stored entries, optional zip64 extra field, `.npy`
+//! version 1 or 2).
 #![allow(dead_code)]
 
 use mandacaru_core::{
@@ -31,7 +31,7 @@ fn u64_at(b: &[u8], at: usize) -> u64 {
 }
 
 /// `(name, descr, bytes)` of every `.npy` member of an `.npz`.
-fn members(bytes: &[u8]) -> Vec<(String, String, Vec<u8>)> {
+pub fn members(bytes: &[u8]) -> Vec<(String, String, Vec<u8>)> {
     let mut out = vec![];
     let mut at = 0;
     while at + 30 <= bytes.len() && u32_at(bytes, at) == 0x0403_4b50 {
@@ -99,21 +99,24 @@ pub fn try_load(
     case: &str,
     edit: impl FnOnce(&mut serde_json::Value),
 ) -> mandacaru_core::Result<Crystal> {
-    let dir = directory().join("crystals");
+    try_load_in(ctx, &directory().join("crystals"), case, edit)
+}
+
+/// [`try_load`] from the fixtures in `dir`.
+pub fn try_load_in(
+    ctx: &Context,
+    dir: &std::path::Path,
+    case: &str,
+    edit: impl FnOnce(&mut serde_json::Value),
+) -> mandacaru_core::Result<Crystal> {
     let json = dir.join(format!("{case}.json"));
     let npz = dir.join(format!("{case}.npz"));
-    let text = std::fs::read_to_string(&json).unwrap_or_else(|e| {
-        panic!(
-            "{}: {e}. Generate the fixtures with: python test/migration/export_hubbard_crystal.py",
-            json.display()
-        )
-    });
-    let bytes = std::fs::read(&npz).unwrap_or_else(|e| {
-        panic!(
-            "{}: {e}. Generate the fixtures with: python test/migration/export_hubbard_crystal.py",
-            npz.display()
-        )
-    });
+    let generate =
+        "Generate the fixtures with the ignored `periodic_freeze_hubbard` test (its module doc)";
+    let text = std::fs::read_to_string(&json)
+        .unwrap_or_else(|e| panic!("{}: {e}. {generate}", json.display()));
+    let bytes =
+        std::fs::read(&npz).unwrap_or_else(|e| panic!("{}: {e}. {generate}", npz.display()));
     let mut metadata: serde_json::Value = serde_json::from_str(&text).unwrap();
     edit(&mut metadata);
     let source = metadata.to_string();

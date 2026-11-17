@@ -23,12 +23,14 @@ fn a_signed_surface_lists_the_positive_lobe_then_the_negative_one() {
     let x: Vec<f64> = (0..8).map(|c| axis[c >> 2]).collect();
     let y: Vec<f64> = (0..8).map(|c| axis[(c >> 1) & 1]).collect();
     let z: Vec<f64> = (0..8).map(|c| axis[c & 1]).collect();
-    let (triangles, signs) = viewer::signed_surface([2, 2, 2], &values, [&x, &y, &z], 0.5, true).unwrap();
+    let (triangles, signs) =
+        viewer::signed_surface([2, 2, 2], &values, [&x, &y, &z], 0.5, true).unwrap();
     assert!(!triangles.is_empty());
     let positive = signs.iter().filter(|&&s| s == 1).count();
     assert_eq!(signs[..positive], vec![1; positive]);
     assert!(signs[positive..].iter().all(|&s| s == -1) && positive < signs.len());
-    let (one_sided, signs) = viewer::signed_surface([2, 2, 2], &values, [&x, &y, &z], 0.5, false).unwrap();
+    let (one_sided, signs) =
+        viewer::signed_surface([2, 2, 2], &values, [&x, &y, &z], 0.5, false).unwrap();
     assert_eq!(one_sided.len(), positive);
     assert!(signs.iter().all(|&s| s == 1));
 }
@@ -81,7 +83,10 @@ fn nuclei_closer_than_one_and_a_fifth_covalent_radii_are_bonded() {
 
 #[test]
 fn the_view_is_fitted_to_the_nuclei_and_the_tail_of_what_is_shown() {
-    assert_eq!(viewer::mean_point(&[[0., 0., 0.], [2., 4., 6.]]).unwrap(), [1., 2., 3.]);
+    assert_eq!(
+        viewer::mean_point(&[[0., 0., 0.], [2., 4., 6.]]).unwrap(),
+        [1., 2., 3.]
+    );
     let nuclei = [[0., 0., 0.], [2., 0., 0.]];
     let shown = [[0., 0., 0.], [1., 3., 0.]];
     // The nuclei reach 1 + 0.5; the shown points' worst-axis distances are 1 and 3.

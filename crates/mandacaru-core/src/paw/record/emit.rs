@@ -39,21 +39,17 @@ pub(crate) fn payload_text(
 /// The payload text of `ds` as it is in memory: stride 1 and the spin-orbit projectors
 /// at full precision (the file rule of ten digits applies to what is stored, not to a record
 /// handed to a caller).
-pub(crate) fn payload_text_exact(
-    ctx: &Context,
-    ds: &PawDataset,
-) -> Result<(String, Reservation)> {
+pub(crate) fn payload_text_exact(ctx: &Context, ds: &PawDataset) -> Result<(String, Reservation)> {
     text_of(ctx, ds, 1, false)
 }
 
 /// What the payload text holds.
 #[derive(Clone, Copy, PartialEq)]
 enum Form {
-    /// The file's payload: the version and, at version 3, the core states.
+    /// The file's payload: the version and the core states.
     File,
     /// The content a crystal snapshot depends on (`PawDataset::content_sha256`): no version and
-    /// no core states, so that a version-2 file and its version-3 upgrade, which differ only by
-    /// those, have the same content.
+    /// no core states.
     Content,
 }
 
@@ -125,11 +121,9 @@ fn tables_text<W: Write>(w: &mut W, ds: &PawDataset, stride: usize) -> Result<()
             w.write_char(',').map_err(bad)?;
         }
         key(w, &name)?;
-        list(
-            w,
-            values.iter().skip(stride - 1).step_by(stride),
-            |w, v| num(w, round_digits(*v), &name),
-        )?;
+        list(w, values.iter().skip(stride - 1).step_by(stride), |w, v| {
+            num(w, round_digits(*v), &name)
+        })?;
     }
     w.write_char('}').map_err(bad)
 }
@@ -365,7 +359,14 @@ fn payload<W: Write>(
         w.write_char(',').map_err(bad)?;
     }
     if form == Form::File {
-        if let Some(states) = &ds.core_states {
+        // Every file carries its core states: a record without them is not written.
+        let Some(states) = &ds.core_states else {
+            return Err(fail(
+                "core_states",
+                "the record has no core states; every file carries them",
+            ));
+        };
+        {
             key(w, "core_states")?;
             list(w, states, |w, state| {
                 write!(w, "{{\"n\":{},\"l\":{},", state.n, state.l).map_err(bad)?;

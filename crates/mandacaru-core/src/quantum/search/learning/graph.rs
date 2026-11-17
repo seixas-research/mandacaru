@@ -1,19 +1,21 @@
 //! Hamiltonian factor-graph and excitation descriptors for learned proposals.
 use crate::{
     product,
-    quantum::{CachedProblem, Encoding, C64},
+    quantum::{Encoding, QuantumProblem, C64},
     Context, Error, Reservation, Result,
 };
 use nalgebra::DMatrix;
 use serde_json::Value;
 pub type Matrix = DMatrix<f64>;
-pub struct Graph {
+pub struct BipartiteGraph {
     pub qubit: Matrix,
     pub term: Matrix,
     pub incidence: [Matrix; 3],
     pub weighted: [Matrix; 3],
     pub pool: [Matrix; 3],
     pub descriptors: Matrix,
+    /// Order-aware non-commuting qubit-support overlap between pool generators (`p x p`, `BG3`).
+    pub overlap: Matrix,
     pub term_weights: Vec<f64>,
     pub support: Vec<f64>,
     pub reach: Vec<f64>,
@@ -50,7 +52,7 @@ fn terms(value: &Value, n: usize) -> Result<Vec<(String, C64)>> {
         })
         .collect()
 }
-impl Graph {
+impl BipartiteGraph {
     pub fn from_metadata(context: &Context, value: &Value) -> Result<Self> {
         if value["format"] != "mandacaru-search-problem" || value["version"] != 1 {
             return Err(invalid("unsupported learned-proposal problem format"));
@@ -96,7 +98,7 @@ impl Graph {
             .collect::<Result<Vec<_>>>()?;
         Self::new(context, n, encoding.reference(), &h, &pool)
     }
-    pub fn from_problem(problem: &CachedProblem) -> Result<Self> {
+    pub fn from_problem(problem: &QuantumProblem) -> Result<Self> {
         let _temporary = problem.context.reserve(product(&[
             problem.hamiltonian.terms.len()
                 + problem
@@ -137,6 +139,7 @@ impl Graph {
         let sizes = [
             product(&[t, n, 6])?,
             product(&[p, n, 3])?,
+            product(&[p, p])?,
             product(&[t, 8])?,
             product(&[n, 6])?,
             product(&[p, 4])?,
@@ -252,6 +255,28 @@ impl Graph {
                 }
             }
         }
+        let mut overlap = Matrix::zeros(p, p);
+        for mu in 0..p {
+            for nu in mu..p {
+                let mut sum = 0.;
+                for i in 0..n {
+                    let (x0, y0, z0) = (
+                        pool_edges[0][(mu, i)],
+                        pool_edges[1][(mu, i)],
+                        pool_edges[2][(mu, i)],
+                    );
+                    let (x1, y1, z1) = (
+                        pool_edges[0][(nu, i)],
+                        pool_edges[1][(nu, i)],
+                        pool_edges[2][(nu, i)],
+                    );
+                    sum += x0 * (y1 + z1) + y0 * (x1 + z1) + z0 * (x1 + y1);
+                }
+                let clipped = sum.min(1.);
+                overlap[(mu, nu)] = clipped;
+                overlap[(nu, mu)] = clipped;
+            }
+        }
         Ok(Self {
             qubit,
             term,
@@ -259,6 +284,7 @@ impl Graph {
             weighted,
             pool: pool_edges,
             descriptors,
+            overlap,
             term_weights: weights,
             support,
             reach,
@@ -280,12 +306,14 @@ pub struct Candidates {
     pub positional: Matrix,
     pub operators: Vec<usize>,
     pub descriptors: Matrix,
+    /// Depth-weighted non-commuting overlap of each candidate with the active circuit `sequence` (`BG3`).
+    pub sequence_overlap: Vec<f64>,
     _memory: Reservation,
 }
 impl Candidates {
     pub fn new(
         context: &Context,
-        graph: &Graph,
+        graph: &BipartiteGraph,
         sequence: &[usize],
         operators: &[usize],
         gradients: &[f64],
@@ -304,12 +332,13 @@ impl Candidates {
         }
         let memory = context.reserve(
             pool.checked_mul(16)
-                .and_then(|v| v.checked_add(rows.checked_mul(96)?))
+                .and_then(|v| v.checked_add(rows.checked_mul(104)?))
                 .ok_or(Error::Overflow)?,
         )?;
         let mut occupancy = Matrix::zeros(1, pool);
         let mut positional = Matrix::zeros(1, pool);
         let mut descriptors = Matrix::zeros(rows, 9);
+        let mut sequence_overlap = vec![0.; rows];
         let maximum = gradients.iter().map(|g| g.abs()).fold(0., f64::max);
         let length = sequence.len();
         let sum_positions = (length as f64) * (length + 1) as f64 / 2.;
@@ -331,12 +360,20 @@ impl Candidates {
             descriptors[(r, 6)] = compress(energy_above_reference);
             descriptors[(r, 7)] = sequence.iter().filter(|&&i| i == mu).count() as f64;
             descriptors[(r, 8)] = length as f64;
+            if length > 0 {
+                let mut acc = 0.;
+                for (position, &op) in sequence.iter().enumerate() {
+                    acc += ((position + 1) as f64 / sum_positions) * graph.overlap[(mu, op)];
+                }
+                sequence_overlap[r] = acc;
+            }
         }
         Ok(Self {
             occupancy,
             positional,
             operators: operators.to_vec(),
             descriptors,
+            sequence_overlap,
             _memory: memory,
         })
     }

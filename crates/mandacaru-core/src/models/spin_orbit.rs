@@ -1,9 +1,9 @@
 //! Angular L.S operators and their separable radial-projector contractions.
 use super::invalid;
 use crate::{product, Buffer, Context, Result};
-use std::collections::BTreeMap;
 use nalgebra::DMatrix;
 use num_complex::Complex64 as C64;
+use std::collections::BTreeMap;
 
 pub fn angular(ctx: &Context, l: usize, real: bool) -> Result<Buffer<C64>> {
     if l > 16 {
@@ -220,12 +220,16 @@ pub fn channels(
             .flat_map(|m| radial.iter().map(move |&i| (m, i)))
             .collect();
         if expected.len() != group.len() || expected.iter().any(|e| !group.contains_key(e)) {
-            return Err(invalid("spin-orbit channel needs every angular and radial projector"));
+            return Err(invalid(
+                "spin-orbit channel needs every angular and radial projector",
+            ));
         }
         if coupling.radial != radial.len()
             || coupling.values.len() != product(&[coupling.radial, coupling.radial])?
         {
-            return Err(invalid("spin-orbit block dimensions must match its radial projectors"));
+            return Err(invalid(
+                "spin-orbit block dimensions must match its radial projectors",
+            ));
         }
         let mut indices = ctx.allocate::<usize>(expected.len())?;
         for (to, e) in indices.as_mut_slice().iter_mut().zip(&expected) {
@@ -235,8 +239,13 @@ pub fn channels(
         for (to, v) in matrix.as_mut_slice().iter_mut().zip(&coupling.values) {
             *to = C64::new(*v, 0.);
         }
-        out.push(Channel { l, real, indices, radial: radial.len(), coupling: matrix });
+        out.push(Channel {
+            l,
+            real,
+            indices,
+            radial: radial.len(),
+            coupling: matrix,
+        });
     }
     Ok(out)
 }
-

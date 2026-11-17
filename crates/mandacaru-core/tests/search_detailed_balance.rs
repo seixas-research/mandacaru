@@ -29,8 +29,8 @@ use mandacaru_core::{
     quantum::{
         optimizer,
         search::{
-            driver::Options,
             kernel::{self, Kernel},
+            vasqa::SearchOptions,
         },
     },
     Context,
@@ -135,10 +135,19 @@ fn worst_imbalance(matrix: &[Vec<f64>], pi: &[f64]) -> f64 {
 }
 
 fn check(uniform: bool, move_weights: [f64; 3], seed: u64) {
+    check_with(uniform, move_weights, seed, None);
+}
+
+fn check_with(
+    uniform: bool,
+    move_weights: [f64; 3],
+    seed: u64,
+    learned: Option<&mandacaru_core::quantum::search::learning::training::Model>,
+) {
     let context = Context::new(Some(1), 512 << 20).unwrap();
     let problem = search_support::problem(&context);
     let pool = problem.pool.len();
-    let options = Options {
+    let options = SearchOptions {
         // Long enough that the gradient chain (seed 11) sources all 73 sequences; 4000 missed [6, 4].
         max_steps: 20000,
         max_length: 2,
@@ -156,7 +165,9 @@ fn check(uniform: bool, move_weights: [f64; 3], seed: u64) {
         },
         ..Default::default()
     };
-    let result = problem.search(&options, &[], &[]).unwrap();
+    let result = problem
+        .search_with_model(&options, &[], &[], learned)
+        .unwrap();
     let kernel = Kernel::new(pool, options.max_length, options.move_weights).unwrap();
 
     // The per-sequence data, from the first time each sequence is a source; every later row, and
@@ -257,13 +268,37 @@ fn the_uniform_proposal_chain_balances_on_all_73_sequences() {
 }
 
 #[test]
+fn the_multimove_edit_proposal_chain_balances_on_all_73_sequences() {
+    use mandacaru_core::quantum::search::learning::{
+        ranker::PairwiseRanker,
+        training::{EditModel, Model, EDIT_FEATURES},
+    };
+
+    let make_head = |grad_w: f64, ov_w: f64, curv_w: f64, pos_w: f64| PairwiseRanker {
+        weights: [0., 0., 0., 0., 0., grad_w, 0., 0., 0., ov_w, curv_w, pos_w],
+        mean: [0.; EDIT_FEATURES],
+        std: [1.; EDIT_FEATURES],
+        pairs: 10,
+    };
+    let edit = EditModel {
+        insert: Some(make_head(0.25, 0.15, -0.05, 0.05)),
+        delete: Some(make_head(-0.2, 0.1, 0.05, -0.15)),
+        replace: None,
+        l2: 1e-2,
+    };
+    let model = Model::from_edit(edit, 1.0).unwrap();
+    assert!(model.uses_curvatures());
+    check_with(false, [1., 2., 3.], 11, Some(&model));
+}
+
+#[test]
 fn two_replicas_keep_their_targets_and_the_swap_balances_the_product() {
     let context = Context::new(Some(1), 512 << 20).unwrap();
     let problem = search_support::problem(&context);
     let pool = problem.pool.len();
     let spacing = 2.;
     let temperatures = [TEMPERATURE, TEMPERATURE * spacing];
-    let options = Options {
+    let options = SearchOptions {
         max_steps: 20000,
         max_length: 2,
         move_weights: [1., 2., 3.],

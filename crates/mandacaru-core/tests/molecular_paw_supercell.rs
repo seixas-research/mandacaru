@@ -15,8 +15,8 @@ mod paw_supercell_support;
 mod setup_shells_support;
 
 use paw_supercell_support::{
-    cells_of, closed_shell_energy, hydrogen_chain_cell, lithium_hydride_cell, molecular_integrals, molecule_in_a_box,
-    raw_atomic_orbitals,
+    cells_of, closed_shell_energy, hydrogen_chain_cell, lithium_hydride_cell, molecular_integrals,
+    molecule_in_a_box, raw_atomic_orbitals,
 };
 
 use mandacaru_core::math::storage::MatrixSource;
@@ -36,13 +36,29 @@ fn lithium_hydride(ctx: &Context, library: &str, spinor: bool) -> PeriodicSetup 
 }
 
 /// `cells_of` with a LiH primitive cell (the 4a gates).
-fn cells_of_lithium_hydride(ctx: &Context, library: &str, spinor: bool, copies: usize) -> PeriodicSetup {
-    cells_of(ctx, library, spinor, &lithium_hydride_cell(), copies, [0.; 3])
+fn cells_of_lithium_hydride(
+    ctx: &Context,
+    library: &str,
+    spinor: bool,
+    copies: usize,
+) -> PeriodicSetup {
+    cells_of(
+        ctx,
+        library,
+        spinor,
+        &lithium_hydride_cell(),
+        copies,
+        [0.; 3],
+    )
 }
 
 /// The RHF energy per mesh cell (Hartree) of the PAW supercell of `mesh` on `setup`, and its
 /// Hamiltonian.
-fn rhf_per_cell(ctx: &Context, setup: PeriodicSetup, mesh: [usize; 3]) -> (f64, MolecularIntegrals) {
+fn rhf_per_cell(
+    ctx: &Context,
+    setup: PeriodicSetup,
+    mesh: [usize; 3],
+) -> (f64, MolecularIntegrals) {
     let integrals = MolecularIntegrals::paw_supercell(ctx, Arc::new(setup), mesh, None).unwrap();
     assert_eq!(integrals.kind(), HamiltonianKind::PawSupercell);
     let n = integrals.neutral_electrons();
@@ -50,9 +66,14 @@ fn rhf_per_cell(ctx: &Context, setup: PeriodicSetup, mesh: [usize; 3]) -> (f64, 
         tolerance: 1e-11,
         ..ScfOptions::default()
     };
-    let rhf = integrals.mean_field("rhf", [n / 2, n / 2], &options).unwrap();
+    let rhf = integrals
+        .mean_field("rhf", [n / 2, n / 2], &options)
+        .unwrap();
     let cells: usize = mesh.iter().product();
-    ((rhf.electronic_energy + integrals.nuclear) / cells as f64, integrals)
+    (
+        (rhf.electronic_energy + integrals.nuclear) / cells as f64,
+        integrals,
+    )
 }
 
 /// The pair engine on the supercell's Lowdin functions: orthonormal through the grid overlap and
@@ -63,7 +84,8 @@ fn the_pair_engine_sees_the_lowdin_functions_orthonormal() {
     let ctx = Context::new(Some(2), 1 << 30).unwrap();
     for mesh in [[1, 1, 1], [2, 1, 1]] {
         let setup = cells_of(&ctx, "lda-sr", false, &hydrogen_chain_cell(), 1, [0.; 3]);
-        let integrals = MolecularIntegrals::paw_supercell(&ctx, Arc::new(setup), mesh, None).unwrap();
+        let integrals =
+            MolecularIntegrals::paw_supercell(&ctx, Arc::new(setup), mesh, None).unwrap();
         let source = integrals.paw_supercell.as_ref().unwrap();
         let eri = integrals.eri().unwrap();
         let (imaginary, asymmetry) = source.columns.departures();
@@ -73,7 +95,11 @@ fn the_pair_engine_sees_the_lowdin_functions_orthonormal() {
             source.metric_error,
             eri.report().cholesky
         );
-        assert!(source.metric_error < 1e-10, "{mesh:?}: {:e}", source.metric_error);
+        assert!(
+            source.metric_error < 1e-10,
+            "{mesh:?}: {:e}",
+            source.metric_error
+        );
         assert!(imaginary < 1e-8 && asymmetry < 1e-8, "{mesh:?}");
     }
 }
@@ -83,23 +109,46 @@ fn the_pair_engine_sees_the_lowdin_functions_orthonormal() {
 #[test]
 fn a_two_cell_mesh_is_the_doubled_cell_at_gamma() {
     let ctx = Context::new(Some(2), 1 << 30).unwrap();
-    for (name, cell) in [("H2 chain", hydrogen_chain_cell()), ("LiH", lithium_hydride_cell())] {
-        let (mesh, on_mesh) = rhf_per_cell(&ctx, cells_of(&ctx, "lda-sr", false, &cell, 1, [0.; 3]), [2, 1, 1]);
-        let (doubled, on_doubled) = rhf_per_cell(&ctx, cells_of(&ctx, "lda-sr", false, &cell, 2, [0.; 3]), [1, 1, 1]);
+    for (name, cell) in [
+        ("H2 chain", hydrogen_chain_cell()),
+        ("LiH", lithium_hydride_cell()),
+    ] {
+        let (mesh, on_mesh) = rhf_per_cell(
+            &ctx,
+            cells_of(&ctx, "lda-sr", false, &cell, 1, [0.; 3]),
+            [2, 1, 1],
+        );
+        let (doubled, on_doubled) = rhf_per_cell(
+            &ctx,
+            cells_of(&ctx, "lda-sr", false, &cell, 2, [0.; 3]),
+            [1, 1, 1],
+        );
         // The MP2 shift is v_M of the supercell's lattice (the doubled cell), not the primitive's:
         // the energy's constant 1/2 N_e v_M carries the same v_M.
         let v = on_mesh.exchange_madelung().unwrap();
         let from_constant = 2. * on_mesh.madelung / on_mesh.neutral_electrons() as f64;
-        assert!((v - from_constant).abs() < 1e-10 && (v - on_doubled.exchange_madelung().unwrap()).abs() < 1e-10, "{name}: {v} {from_constant}");
+        assert!(
+            (v - from_constant).abs() < 1e-10
+                && (v - on_doubled.exchange_madelung().unwrap()).abs() < 1e-10,
+            "{name}: {v} {from_constant}"
+        );
         // The doubled cell holds two primitive cells.
         let doubled = doubled / 2.;
-        let (gamma, _) = rhf_per_cell(&ctx, cells_of(&ctx, "lda-sr", false, &cell, 1, [0.; 3]), [1, 1, 1]);
+        let (gamma, _) = rhf_per_cell(
+            &ctx,
+            cells_of(&ctx, "lda-sr", false, &cell, 1, [0.; 3]),
+            [1, 1, 1],
+        );
         println!(
             "{name} RHF per cell: mesh (2,1,1) {mesh:.12}, doubled cell at Gamma {doubled:.12}, \
              difference {:.2e} Ha; Gamma only {gamma:.12}",
             mesh - doubled
         );
-        assert!((mesh - doubled).abs() < 1e-9, "{name}: {:e}", mesh - doubled);
+        assert!(
+            (mesh - doubled).abs() < 1e-9,
+            "{name}: {:e}",
+            mesh - doubled
+        );
     }
 }
 
@@ -111,16 +160,32 @@ fn a_rigid_shift_of_the_crystal_moves_the_energy_by_the_placement_residual() {
     let ctx = Context::new(Some(2), 1 << 30).unwrap();
     let cell = hydrogen_chain_cell();
     let bohr = 1. / 0.529177210903;
-    let (reference, _) = rhf_per_cell(&ctx, cells_of(&ctx, "lda-sr", false, &cell, 1, [0.; 3]), [2, 1, 1]);
+    let (reference, _) = rhf_per_cell(
+        &ctx,
+        cells_of(&ctx, "lda-sr", false, &cell, 1, [0.; 3]),
+        [2, 1, 1],
+    );
     let mut worst = 0f64;
     for shift in [0.001, 0.013, 0.05, 0.137] {
         let moved = [shift * bohr, 0.6 * shift * bohr, -0.3 * shift * bohr];
-        let (energy, _) = rhf_per_cell(&ctx, cells_of(&ctx, "lda-sr", false, &cell, 1, moved), [2, 1, 1]);
-        println!("rigid shift {shift} A: E - E0 = {:.3e} Ha per cell", energy - reference);
+        let (energy, _) = rhf_per_cell(
+            &ctx,
+            cells_of(&ctx, "lda-sr", false, &cell, 1, moved),
+            [2, 1, 1],
+        );
+        println!(
+            "rigid shift {shift} A: E - E0 = {:.3e} Ha per cell",
+            energy - reference
+        );
         worst = worst.max((energy - reference).abs());
     }
-    let spacing = (0..3).map(|a| cell.lattice.column(a).norm() / cell.shape[a] as f64).fold(0f64, f64::max);
-    println!("largest placement residual {worst:.3e} Ha per cell at a grid spacing of {:.3} A", spacing / bohr);
+    let spacing = (0..3)
+        .map(|a| cell.lattice.column(a).norm() / cell.shape[a] as f64)
+        .fold(0f64, f64::max);
+    println!(
+        "largest placement residual {worst:.3e} Ha per cell at a grid spacing of {:.3} A",
+        spacing / bohr
+    );
     assert!(worst < 1e-6, "{worst:e}");
 }
 
@@ -136,28 +201,51 @@ fn the_supercell_blocks_unfold_to_the_crystal_matrices_at_every_mesh_point() {
         assert_eq!(supercell.overlap.shape(), (count * m, count * m));
         assert_eq!(supercell.projections.shape(), (count * m, count * p));
         let mut worst = [0f64; 3];
-        let miss = |got: nalgebra::DMatrix<num_complex::Complex64>, want: &nalgebra::DMatrix<num_complex::Complex64>| {
+        let miss = |got: nalgebra::DMatrix<num_complex::Complex64>,
+                    want: &nalgebra::DMatrix<num_complex::Complex64>| {
             (&got - want).iter().fold(0f64, |a, v| a.max(v.norm()))
         };
         for (k, point) in supercell.kpoints.iter().zip(&supercell.points) {
-            worst[0] = worst[0].max(miss(supercell.unfold(&supercell.overlap, *k).unwrap(), &point.overlap));
-            worst[1] = worst[1].max(miss(supercell.unfold(&supercell.fixed, *k).unwrap(), &point.fixed));
-            worst[2] = worst[2].max(miss(supercell.unfold(&supercell.projections, *k).unwrap(), &point.projections));
+            worst[0] = worst[0].max(miss(
+                supercell.unfold(&supercell.overlap, *k).unwrap(),
+                &point.overlap,
+            ));
+            worst[1] = worst[1].max(miss(
+                supercell.unfold(&supercell.fixed, *k).unwrap(),
+                &point.fixed,
+            ));
+            worst[2] = worst[2].max(miss(
+                supercell.unfold(&supercell.projections, *k).unwrap(),
+                &point.projections,
+            ));
         }
         // The blocks depend on R - R' only: every cell's diagonal block is cell 0's.
         let shift = (1..count)
             .map(|r| {
-                (supercell.overlap.view((r * m, r * m), (m, m)) - supercell.overlap.view((0, 0), (m, m))).abs().max()
+                (supercell.overlap.view((r * m, r * m), (m, m))
+                    - supercell.overlap.view((0, 0), (m, m)))
+                .abs()
+                .max()
             })
             .fold(0f64, f64::max);
-        let symmetric = (&supercell.overlap - supercell.overlap.transpose()).abs().max();
-        let lowest = supercell.overlap.clone().symmetric_eigen().eigenvalues.min();
+        let symmetric = (&supercell.overlap - supercell.overlap.transpose())
+            .abs()
+            .max();
+        let lowest = supercell
+            .overlap
+            .clone()
+            .symmetric_eigen()
+            .eigenvalues
+            .min();
         println!(
             "mesh {mesh:?} ({count} cells, m {m}, p {p}): unfold - matrices_at: S {:.2e}, fixed {:.2e}, C {:.2e}; translation {shift:.2e}, asymmetry {symmetric:.2e}, lowest S eigenvalue {lowest:.3e}",
             worst[0], worst[1], worst[2]
         );
         assert!(worst.iter().all(|w| *w < 1e-12), "{mesh:?}: {worst:?}");
-        assert!(shift < 1e-12 && symmetric < 1e-12 && lowest > 0., "{mesh:?}");
+        assert!(
+            shift < 1e-12 && symmetric < 1e-12 && lowest > 0.,
+            "{mesh:?}"
+        );
     }
 }
 
@@ -165,10 +253,11 @@ fn the_supercell_blocks_unfold_to_the_crystal_matrices_at_every_mesh_point() {
 fn a_spin_orbit_setup_is_refused_by_name() {
     let ctx = Context::new(Some(1), 1 << 30).unwrap();
     let setup = lithium_hydride(&ctx, "lda-fr", true);
-    let error = PawSupercell::new(&ctx, &setup, [2, 1, 1]).err().expect("a spinor setup is refused");
+    let error = PawSupercell::new(&ctx, &setup, [2, 1, 1])
+        .err()
+        .expect("a spinor setup is refused");
     assert!(error.to_string().contains("spin-orbit"), "{error}");
 }
-
 
 /// The fold's convention against an independent build: the 2 x 1 x 1 supercell's folded `S` and
 /// `fixed` equal the doubled cell's own matrices at Gamma (atoms cell-major, the same spacing,
@@ -176,17 +265,34 @@ fn a_spin_orbit_setup_is_refused_by_name() {
 #[test]
 fn the_folded_supercell_is_the_doubled_cell_at_gamma() {
     let ctx = Context::new(Some(2), 1 << 30).unwrap();
-    let supercell = PawSupercell::new(&ctx, &lithium_hydride(&ctx, "lda-sr", false), [2, 1, 1]).unwrap();
+    let supercell =
+        PawSupercell::new(&ctx, &lithium_hydride(&ctx, "lda-sr", false), [2, 1, 1]).unwrap();
     let doubled = cells_of_lithium_hydride(&ctx, "lda-sr", false, 2);
     let gamma = &doubled.matrices_at(&ctx, &[[0.; 3]], &[1.]).unwrap()[0];
-    assert_eq!(gamma.overlap.shape(), supercell.overlap.shape(), "the doubled cell's basis");
+    assert_eq!(
+        gamma.overlap.shape(),
+        supercell.overlap.shape(),
+        "the doubled cell's basis"
+    );
     let miss = |a: &nalgebra::DMatrix<f64>, b: &nalgebra::DMatrix<num_complex::Complex64>| {
-        a.iter().zip(b.iter()).fold(0f64, |x, (u, v)| x.max((v - num_complex::Complex64::new(*u, 0.)).norm()))
+        a.iter().zip(b.iter()).fold(0f64, |x, (u, v)| {
+            x.max((v - num_complex::Complex64::new(*u, 0.)).norm())
+        })
     };
-    let (s, f) = (miss(&supercell.overlap, &gamma.overlap), miss(&supercell.fixed, &gamma.fixed));
-    let coupling = supercell.overlap.view((0, supercell.m), (supercell.m, supercell.m)).abs().max();
+    let (s, f) = (
+        miss(&supercell.overlap, &gamma.overlap),
+        miss(&supercell.fixed, &gamma.fixed),
+    );
+    let coupling = supercell
+        .overlap
+        .view((0, supercell.m), (supercell.m, supercell.m))
+        .abs()
+        .max();
     println!("folded 2x1x1 - doubled cell at Gamma: S {s:.2e}, fixed {f:.2e} (largest cell-0/cell-1 overlap {coupling:.3e})");
-    assert!(coupling > 1e-3, "the two cells do not overlap: the comparison would not see the phase");
+    assert!(
+        coupling > 1e-3,
+        "the two cells do not overlap: the comparison would not see the phase"
+    );
     assert!(s < 1e-10 && f < 1e-10, "S {s:e}, fixed {f:e}");
 }
 
@@ -198,7 +304,9 @@ fn molecular_rhf(ctx: &Context, setup: &PeriodicSetup) -> f64 {
         tolerance: 1e-11,
         ..ScfOptions::default()
     };
-    let rhf = integrals.mean_field("rhf", [n / 2, n / 2], &options).unwrap();
+    let rhf = integrals
+        .mean_field("rhf", [n / 2, n / 2], &options)
+        .unwrap();
     rhf.electronic_energy + integrals.nuclear
 }
 
@@ -234,7 +342,9 @@ fn the_crystal_and_the_molecule_agree_in_kohn_sham_for_a_molecule_in_a_box() {
                 tolerance: 1e-11,
                 ..ScfOptions::default()
             };
-            let lda = molecule.kohn_sham("lda", [n / 2, n / 2], false, &options).unwrap();
+            let lda = molecule
+                .kohn_sham("lda", [n / 2, n / 2], false, &options)
+                .unwrap();
             let molecular = lda.electronic_energy + molecule.nuclear;
             println!(
                 "{name} L {side_angstrom} A: crystal LDA {crystal:.10} molecule LDA {molecular:.10} difference {:.3e} Ha",
@@ -242,7 +352,11 @@ fn the_crystal_and_the_molecule_agree_in_kohn_sham_for_a_molecule_in_a_box() {
             );
             // LiH keeps its dipole's L^-3 tail; the nonpolar molecules agree at 14 A.
             if name != "LiH" && side_angstrom > 12. {
-                assert!((crystal - molecular).abs() < 1e-6, "{name}: {:e}", crystal - molecular);
+                assert!(
+                    (crystal - molecular).abs() < 1e-6,
+                    "{name}: {:e}",
+                    crystal - molecular
+                );
             }
         }
     }
@@ -252,22 +366,58 @@ fn the_crystal_and_the_molecule_agree_in_kohn_sham_for_a_molecule_in_a_box() {
 /// (the RHF energy plus the correlation the solver adds to its reference), the MP2 natural
 /// occupations (occupied, then virtual) of the Hamiltonian `integrals`, and the levels of its MP2
 /// denominators (the RHF levels, the occupied ones with `v_M` added on a supercell).
-fn correlated(ctx: &Context, integrals: &MolecularIntegrals, active: &str) -> (f64, f64, Vec<f64>, Vec<f64>) {
+fn correlated(
+    ctx: &Context,
+    integrals: &MolecularIntegrals,
+    active: &str,
+) -> (f64, f64, Vec<f64>, Vec<f64>) {
     use mandacaru_core::quantum::SolveOptions;
     let n = integrals.neutral_electrons();
-    let options = ScfOptions { tolerance: 1e-11, ..ScfOptions::default() };
-    let rhf = integrals.mean_field("rhf", [n / 2, n / 2], &options).unwrap();
+    let options = ScfOptions {
+        tolerance: 1e-11,
+        ..ScfOptions::default()
+    };
+    let rhf = integrals
+        .mean_field("rhf", [n / 2, n / 2], &options)
+        .unwrap();
     let total = rhf.electronic_energy + integrals.nuclear;
     let model = rhf.active_model(integrals, active).unwrap();
     assert_eq!(model.m, 2, "a 4-qubit active space");
-    let problem = model.problem(ctx, "jordan_wigner", true, false, true).unwrap();
-    let solved = problem.solve(&SolveOptions { adapt: true, ..Default::default() }, None).unwrap();
+    let problem = model
+        .problem(ctx, "jordan_wigner", true, false, true)
+        .unwrap();
+    let solved = problem
+        .solve(
+            &SolveOptions {
+                adapt: true,
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
     let full = rhf.model(integrals).unwrap();
-    let mp2 = mandacaru_core::molecular::correlation::natural_orbitals(ctx, full.m, full.one.as_slice(), full.two.as_slice(), n / 2, full.exchange_madelung).unwrap();
+    let mp2 = mandacaru_core::molecular::correlation::natural_orbitals(
+        ctx,
+        full.m,
+        full.one.as_slice(),
+        full.two.as_slice(),
+        n / 2,
+        full.exchange_madelung,
+    )
+    .unwrap();
     let mut occupations = mp2.occupied_occupations.as_slice().to_vec();
     occupations.extend_from_slice(mp2.virtual_occupations.as_slice());
-    let levels = mandacaru_core::molecular::correlation::denominator_levels(&rhf.energies[0], n / 2, integrals.exchange_madelung().unwrap());
-    (total, total + solved.energy - solved.reference, occupations, levels)
+    let levels = mandacaru_core::molecular::correlation::denominator_levels(
+        &rhf.energies[0],
+        n / 2,
+        integrals.exchange_madelung().unwrap(),
+    );
+    (
+        total,
+        total + solved.energy - solved.reference,
+        occupations,
+        levels,
+    )
 }
 
 /// Least squares of `d = a + b L^-3 + c L^-5` over `(L, d)` (the dipole and the quadrupole tails
@@ -329,9 +479,24 @@ fn the_supercell_of_a_molecule_in_a_box_reaches_the_molecular_energy() {
     // N2's occupations sit at the edge of 1e-6 on 10-16 A with a pure L^-3 fit (vera), so it carries
     // the 18 and 20 A boxes too.
     let cases: [(&str, Vec<(&'static str, [f64; 3])>, &str, Vec<f64>); 3] = [
-        ("H2", vec![("H", [-0.7, 0., 0.]), ("H", [0.7, 0., 0.])], r#"{"orbitals": [0, 1]}"#, vec![10., 12., 14., 16., 18., 20.]),
-        ("LiH", vec![("Li", [-1.5, 0., 0.]), ("H", [1.5, 0., 0.])], r#"{"orbitals": [0, 1]}"#, vec![10., 12., 14., 16., 18., 20.]),
-        ("N2", vec![("N", [-1.04, 0., 0.]), ("N", [1.04, 0., 0.])], r#"{"orbitals": [4, 7], "frozen": [0, 1, 2, 3]}"#, vec![10., 12., 14., 16., 18., 20.]),
+        (
+            "H2",
+            vec![("H", [-0.7, 0., 0.]), ("H", [0.7, 0., 0.])],
+            r#"{"orbitals": [0, 1]}"#,
+            vec![10., 12., 14., 16., 18., 20.],
+        ),
+        (
+            "LiH",
+            vec![("Li", [-1.5, 0., 0.]), ("H", [1.5, 0., 0.])],
+            r#"{"orbitals": [0, 1]}"#,
+            vec![10., 12., 14., 16., 18., 20.],
+        ),
+        (
+            "N2",
+            vec![("N", [-1.04, 0., 0.]), ("N", [1.04, 0., 0.])],
+            r#"{"orbitals": [4, 7], "frozen": [0, 1, 2, 3]}"#,
+            vec![10., 12., 14., 16., 18., 20.],
+        ),
     ];
     let mut failures = Vec::new();
     for (name, atoms, active, boxes) in cases {
@@ -342,7 +507,8 @@ fn the_supercell_of_a_molecule_in_a_box_reaches_the_molecular_energy() {
             let side = nodes as f64 * spacing;
             let setup = molecule_in_a_box(&ctx, &atoms, side, nodes);
             let molecule = correlated(&ctx, &molecular_integrals(&ctx, &setup), active);
-            let integrals = MolecularIntegrals::paw_supercell(&ctx, Arc::new(setup), [1, 1, 1], None).unwrap();
+            let integrals =
+                MolecularIntegrals::paw_supercell(&ctx, Arc::new(setup), [1, 1, 1], None).unwrap();
             assert_eq!(integrals.kind(), HamiltonianKind::PawSupercell);
             let crystal = correlated(&ctx, &integrals, active);
             println!(
@@ -359,22 +525,35 @@ fn the_supercell_of_a_molecule_in_a_box_reaches_the_molecular_energy() {
             .iter()
             .map(|e| {
                 let energy = (e.0 - limit.0).abs().max((e.1 - limit.1).abs());
-                let occupation = e.2.iter().zip(&limit.2).map(|(a, b)| (a - b).abs()).fold(0f64, f64::max);
+                let occupation =
+                    e.2.iter()
+                        .zip(&limit.2)
+                        .map(|(a, b)| (a - b).abs())
+                        .fold(0f64, f64::max);
                 (energy, occupation)
             })
             .collect();
-        let admitted: Vec<usize> = (0..boxes.len()).filter(|&i| departures[i].0 < 1e-6 && departures[i].1 < 1e-7).collect();
+        let admitted: Vec<usize> = (0..boxes.len())
+            .filter(|&i| departures[i].0 < 1e-6 && departures[i].1 < 1e-7)
+            .collect();
         println!(
             "{name}: molecule against its largest box (energy, occupation) {:?}; admitted boxes {:?} A",
             departures.iter().map(|(e, o)| format!("({e:.1e}, {o:.1e})")).collect::<Vec<_>>(),
             admitted.iter().map(|&i| boxes[i]).collect::<Vec<_>>()
         );
         let gap = |value: &dyn Fn(&(f64, f64, Vec<f64>, Vec<f64>)) -> f64, power: i32| {
-            let rows: Vec<(f64, f64)> = admitted.iter().map(|&i| (sides[i], value(&crystals[i]) - value(&limit))).collect();
+            let rows: Vec<(f64, f64)> = admitted
+                .iter()
+                .map(|&i| (sides[i], value(&crystals[i]) - value(&limit)))
+                .collect();
             // a + b L^-3 + c L^-5 on every admitted box and a + b L^-3 on the three largest, for
             // the energies and the occupations alike.
             let (large, slope) = tail_fit(&rows[rows.len() - 3..], power);
-            let all = if power == 3 { polar_tail_fit(&rows) } else { tail_fit(&rows, power).0 };
+            let all = if power == 3 {
+                polar_tail_fit(&rows)
+            } else {
+                tail_fit(&rows, power).0
+            };
             (all, large, slope)
         };
         let rhf = gap(&|e| e.0, 3);
@@ -402,16 +581,27 @@ fn the_supercell_of_a_molecule_in_a_box_reaches_the_molecular_energy() {
         }
         let raw: Vec<f64> = crystals
             .iter()
-            .map(|c| c.2.iter().zip(&limit.2).map(|(a, b)| (a - b).abs()).fold(0f64, f64::max))
+            .map(|c| {
+                c.2.iter()
+                    .zip(&limit.2)
+                    .map(|(a, b)| (a - b).abs())
+                    .fold(0f64, f64::max)
+            })
             .collect();
-        println!("{name}: largest MP2 occupation difference per box {:?}", raw.iter().map(|v| format!("{v:.3e}")).collect::<Vec<_>>());
+        println!(
+            "{name}: largest MP2 occupation difference per box {:?}",
+            raw.iter().map(|v| format!("{v:.3e}")).collect::<Vec<_>>()
+        );
         println!(
             "{name}: {} boxes admitted; extrapolated gaps (a + b L^-3 + c L^-5 on every admitted box; a + b L^-3 on the three largest): RHF {:.3e} ({:.3e}, slope {:.3e} Ha Bohr^3), VQE {:.3e} ({:.3e}) Ha, MP2 natural occupations {:.3e} ({:.3e}); molecule's occupations {:?}",
             admitted.len(), rhf.0, rhf.1, rhf.2, vqe.0, vqe.1, occupations.0, occupations.1, limit.2
         );
         // Every case is measured before the gate is judged (each variant reported).
         if admitted.len() < 5 {
-            failures.push(format!("{name}: {} boxes in the asymptotic regime, five needed", admitted.len()));
+            failures.push(format!(
+                "{name}: {} boxes in the asymptotic regime, five needed",
+                admitted.len()
+            ));
         }
         if rhf.0.abs() >= 1e-5 || rhf.1.abs() >= 1e-5 {
             failures.push(format!("{name}: RHF {rhf:?}"));
@@ -423,7 +613,9 @@ fn the_supercell_of_a_molecule_in_a_box_reaches_the_molecular_energy() {
             failures.push(format!("{name}: level slopes {slopes:?}"));
         }
         if occupations.0 >= 1e-6 || occupations.1 >= 1e-6 {
-            failures.push(format!("{name}: MP2 occupations (every box, three largest) {occupations:?}"));
+            failures.push(format!(
+                "{name}: MP2 occupations (every box, three largest) {occupations:?}"
+            ));
         }
     }
     assert!(failures.is_empty(), "{failures:#?}");
@@ -438,8 +630,11 @@ fn the_one_center_reference_hartree_is_the_molecules() {
     for symbol in ["H", "Li", "N"] {
         let setup = molecule_in_a_box(&ctx, &[(symbol, [0., 0., 0.])], 12., 30);
         let crystal = setup.build(&ctx).unwrap();
-        let ours = mandacaru_core::periodic::wannier::downfold::basis::reference_hartree(&crystal).unwrap();
-        let channels = mandacaru_core::paw::molecular::hartree_fock_onsite_channels(&ctx, &setup.datasets[0]).unwrap();
+        let ours = mandacaru_core::periodic::wannier::downfold::basis::reference_hartree(&crystal)
+            .unwrap();
+        let channels =
+            mandacaru_core::paw::molecular::hartree_fock_onsite_channels(&ctx, &setup.datasets[0])
+                .unwrap();
         let mut worst = 0f64;
         for ch in &channels {
             let rows: Vec<usize> = (0..setup.projectors.len())
@@ -474,8 +669,14 @@ fn the_pair_engine_sees_p_functions_orthonormal_and_symmetric() {
     // the closed-shell atoms Be (s only) and Ne (s and p) separate the one-center terms from the
     // bond.
     for (axis, atoms) in [
-        ("N2 along x", vec![("N", [-1.04, 0., 0.]), ("N", [1.04, 0., 0.])]),
-        ("N2 along z", vec![("N", [0., 0., -1.04]), ("N", [0., 0., 1.04])]),
+        (
+            "N2 along x",
+            vec![("N", [-1.04, 0., 0.]), ("N", [1.04, 0., 0.])],
+        ),
+        (
+            "N2 along z",
+            vec![("N", [0., 0., -1.04]), ("N", [0., 0., 1.04])],
+        ),
         ("Be", vec![("Be", [0., 0., 0.])]),
         ("Ne", vec![("Ne", [0., 0., 0.])]),
     ] {
@@ -511,11 +712,23 @@ fn the_pair_integrals_carry_the_crystals_hartree_energy() {
     ] {
         let setup = molecule_in_a_box(&ctx, &atoms, nodes as f64 * spacing, nodes);
         let crystal = setup.build(&ctx).unwrap();
-        let options = Options { tolerance: 1e-10, density_tolerance: 1e-8, max_iterations: 300, ..Default::default() };
+        let options = Options {
+            tolerance: 1e-10,
+            density_tolerance: 1e-8,
+            max_iterations: 300,
+            ..Default::default()
+        };
         let result = crystal.solve(&options).unwrap();
         let ours = hartree_energy(&crystal, &result.matrices).unwrap();
-        let integrals = MolecularIntegrals::paw_supercell(&ctx, Arc::new(setup), [1, 1, 1], Some(1e-12)).unwrap();
-        let cells = PawSupercell::new(&ctx, integrals.paw_supercell.as_ref().unwrap().setup.as_ref(), [1, 1, 1]).unwrap();
+        let integrals =
+            MolecularIntegrals::paw_supercell(&ctx, Arc::new(setup), [1, 1, 1], Some(1e-12))
+                .unwrap();
+        let cells = PawSupercell::new(
+            &ctx,
+            integrals.paw_supercell.as_ref().unwrap().setup.as_ref(),
+            [1, 1, 1],
+        )
+        .unwrap();
         let d = result.matrices[0].matrix(&ctx).unwrap();
         // The crystal rows to the supercell's real rows, then the Lowdin frame.
         let real = cells.harmonics.adjoint() * &*d * &cells.harmonics;
@@ -541,7 +754,9 @@ fn the_pair_integrals_carry_the_crystals_hartree_energy() {
         let mut onsite = 0.;
         let setup = integrals.paw_supercell.as_ref().unwrap().setup.clone();
         for atom in 0..setup.centers.len() {
-            let own: Vec<usize> = (0..setup.projectors.len()).filter(|&j| setup.projectors[j].atom == atom).collect();
+            let own: Vec<usize> = (0..setup.projectors.len())
+                .filter(|&j| setup.projectors[j].atom == atom)
+                .collect();
             let projectors: Vec<mandacaru_core::paw::onecenter::Projector> = own
                 .iter()
                 .map(|&j| mandacaru_core::paw::onecenter::Projector {
@@ -579,7 +794,11 @@ fn the_pair_integrals_carry_the_crystals_hartree_energy() {
             real.iter().fold(0f64, |x, v| x.max(v.im.abs()))
         );
         // Measured: 1.0e-7 (H2), 2.5e-5 Ha of 17.5 (N2), the grid sphere of the compensation.
-        assert!((pairs - onsite - ours).abs() < 1e-4, "{name}: {:e}", pairs - onsite - ours);
+        assert!(
+            (pairs - onsite - ours).abs() < 1e-4,
+            "{name}: {:e}",
+            pairs - onsite - ours
+        );
     }
 }
 
@@ -604,7 +823,9 @@ fn the_supercell_and_the_molecule_agree_at_one_density_and_each_reaches_its_mini
     ] {
         let setup = molecule_in_a_box(&ctx, &atoms, nodes as f64 * spacing, nodes);
         let molecule = molecular_integrals(&ctx, &setup);
-        let crystal = MolecularIntegrals::paw_supercell(&ctx, Arc::new(setup), [1, 1, 1], Some(1e-12)).unwrap();
+        let crystal =
+            MolecularIntegrals::paw_supercell(&ctx, Arc::new(setup), [1, 1, 1], Some(1e-12))
+                .unwrap();
         let m = molecule.m();
         assert_eq!(m, crystal.m());
         let ao = raw_atomic_orbitals;
@@ -624,7 +845,12 @@ fn the_supercell_and_the_molecule_agree_at_one_density_and_each_reaches_its_mini
         let alpha = (&h_c - &h_m).dot(&s_m) / s_m.dot(&s_m);
         let one_body_gap = (&h_c - &h_m - &s_m * alpha).amax();
         let pair_gap = (0..m * m * m * m)
-            .map(|i| (e_c[i] - e_m[i] - v * s_m[(i / (m * m * m), (i / (m * m)) % m)] * s_m[((i / m) % m, i % m)]).abs())
+            .map(|i| {
+                (e_c[i]
+                    - e_m[i]
+                    - v * s_m[(i / (m * m * m), (i / (m * m)) % m)] * s_m[((i / m) % m, i % m)])
+                    .abs()
+            })
             .fold(0f64, f64::max);
         println!(
             "{name}: S gap {overlap_gap:.2e}; shifts a {alpha:.6}, v {v:.6} Ha (Madelung of the box {:.6}); one-body left {one_body_gap:.2e}, pair integrals left {pair_gap:.2e} Ha",
@@ -632,33 +858,63 @@ fn the_supercell_and_the_molecule_agree_at_one_density_and_each_reaches_its_mini
         );
         assert!(overlap_gap < 1e-7, "{name}: {overlap_gap:e}");
         // The periodic images of the pair densities' dipoles and of the ions' field (L^-3).
-        assert!(one_body_gap < 2e-2 && pair_gap < 5e-3, "{name}: {one_body_gap:e} {pair_gap:e}");
+        assert!(
+            one_body_gap < 2e-2 && pair_gap < 5e-3,
+            "{name}: {one_body_gap:e} {pair_gap:e}"
+        );
         let n = molecule.neutral_electrons();
-        let options = ScfOptions { tolerance: 1e-11, ..ScfOptions::default() };
+        let options = ScfOptions {
+            tolerance: 1e-11,
+            ..ScfOptions::default()
+        };
         let own = crystal.mean_field("rhf", [n / 2, n / 2], &options).unwrap();
-        let rhf = molecule.mean_field("rhf", [n / 2, n / 2], &options).unwrap();
-        let single = ScfOptions { guesses: 1, ..options.clone() };
+        let rhf = molecule
+            .mean_field("rhf", [n / 2, n / 2], &options)
+            .unwrap();
+        let single = ScfOptions {
+            guesses: 1,
+            ..options.clone()
+        };
         let cold = molecule.mean_field("rhf", [n / 2, n / 2], &single).unwrap();
         // The oracle: the molecule's SCF seeded with the supercell's orbitals (the Lowdin frames
         // agree to the overlap gap).
         let seeded = molecule.continue_mean_field(&own, &options).unwrap();
-        let roots = [molecule.stability(&rhf).unwrap().unwrap(), crystal.stability(&own).unwrap().unwrap()];
+        let roots = [
+            molecule.stability(&rhf).unwrap().unwrap(),
+            crystal.stability(&own).unwrap().unwrap(),
+        ];
         println!(
             "{name}: molecule cold start {:.10} (one guess {:.10}), seeded from the supercell {:.10} Ha; lowest Hessian roots: molecule {:.4}, supercell {:.4}",
             rhf.electronic_energy, cold.electronic_energy, seeded.electronic_energy, roots[0], roots[1]
         );
         assert!(rhf.converged && cold.converged && seeded.converged);
-        assert!((rhf.electronic_energy - seeded.electronic_energy).abs() < 1e-8, "{name}");
-        assert!((cold.electronic_energy - seeded.electronic_energy).abs() < 1e-8, "{name}");
+        assert!(
+            (rhf.electronic_energy - seeded.electronic_energy).abs() < 1e-8,
+            "{name}"
+        );
+        assert!(
+            (cold.electronic_energy - seeded.electronic_energy).abs() < 1e-8,
+            "{name}"
+        );
         assert!(roots.iter().all(|r| *r > 0.), "{name}: {roots:?}");
         // Each route's energy at both RHF densities (raw AOs, constants included).
         let total = closed_shell_energy;
-        let ao_density = |state: &mandacaru_core::molecular::MeanField, frame: &nalgebra::DMatrix<f64>| {
+        let ao_density = |state: &mandacaru_core::molecular::MeanField,
+                          frame: &nalgebra::DMatrix<f64>| {
             frame * state.densities[0].map(|v| v.re) * frame.transpose() * 2.
         };
-        let (p_m, p_c) = (ao_density(&rhf, &molecule.lowdin), ao_density(&own, &crystal.lowdin));
-        let molecular = [total(&h_m, &e_m, molecule.nuclear, &p_m), total(&h_m, &e_m, molecule.nuclear, &p_c)];
-        let periodic = [total(&h_c, &e_c, crystal.nuclear, &p_m), total(&h_c, &e_c, crystal.nuclear, &p_c)];
+        let (p_m, p_c) = (
+            ao_density(&rhf, &molecule.lowdin),
+            ao_density(&own, &crystal.lowdin),
+        );
+        let molecular = [
+            total(&h_m, &e_m, molecule.nuclear, &p_m),
+            total(&h_m, &e_m, molecule.nuclear, &p_c),
+        ];
+        let periodic = [
+            total(&h_c, &e_c, crystal.nuclear, &p_m),
+            total(&h_c, &e_c, crystal.nuclear, &p_c),
+        ];
         println!(
             "{name}: at the molecule's density: molecule {:.10}, supercell {:.10}; at the supercell's: molecule {:.10}, supercell {:.10}; supercell - molecule {:.4e} and {:.4e} Ha",
             molecular[0], periodic[0], molecular[1], periodic[1], periodic[0] - molecular[0], periodic[1] - molecular[1]
@@ -667,7 +923,10 @@ fn the_supercell_and_the_molecule_agree_at_one_density_and_each_reaches_its_mini
         assert!((periodic[1] - own.electronic_energy - crystal.nuclear).abs() < 1e-8);
         // The other route's density is idempotent in this route's metric only to the overlap
         // gap (H2: 1.6e-8; its energy then lies 2e-8 Ha below), hence 1e-6 (the saddle was 0.67 Ha).
-        assert!(molecular[1] > molecular[0] - 1e-6 && periodic[0] > periodic[1] - 1e-6, "{name}: a route's own SCF is not its minimum");
+        assert!(
+            molecular[1] > molecular[0] - 1e-6 && periodic[0] > periodic[1] - 1e-6,
+            "{name}: a route's own SCF is not its minimum"
+        );
         // The 8 A box's finite-size term (S4-3 extrapolates it away).
         assert!((periodic[0] - molecular[0]).abs() < 2e-2, "{name}");
     }
@@ -685,18 +944,55 @@ fn the_analytic_force_of_a_paw_supercell_is_per_cell_and_cartesian() {
     let setup = cells_of(&ctx, "lda-sr", false, &hydrogen_chain_cell(), 1, [0.; 3]);
     let atoms = setup.centers.len();
     let (_, integrals) = rhf_per_cell(&ctx, setup, [2, 1, 1]);
-    let reference = integrals.mean_field("rhf", [2, 2], &Default::default()).unwrap();
+    let reference = integrals
+        .mean_field("rhf", [2, 2], &Default::default())
+        .unwrap();
     let model = reference.model(&integrals).unwrap();
-    let problem = model.problem(&ctx, "parity_reduced", true, false, true).unwrap();
-    let solved = problem.solve(&SolveOptions { adapt: true, ..Default::default() }, None).unwrap();
+    let problem = model
+        .problem(&ctx, "parity_reduced", true, false, true)
+        .unwrap();
+    let solved = problem
+        .solve(
+            &SolveOptions {
+                adapt: true,
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
     let state = solved.state.complex128().unwrap();
-    let gradient = response::gradient(&integrals, &reference, &model, &problem, state, &response::Options::default()).unwrap();
-    println!("H2 chain (2,1,1) ADAPT: per-cell gradient {:?} Ha/Bohr ({} directions)", gradient.gradient.as_slice(), gradient.directions);
+    let gradient = response::gradient(
+        &integrals,
+        &reference,
+        &model,
+        &problem,
+        state,
+        &response::Options::default(),
+    )
+    .unwrap();
+    println!(
+        "H2 chain (2,1,1) ADAPT: per-cell gradient {:?} Ha/Bohr ({} directions)",
+        gradient.gradient.as_slice(),
+        gradient.directions
+    );
     assert_eq!(gradient.gradient.as_slice().len(), 3 * atoms);
     assert_eq!(gradient.directions, 3 * atoms);
-    let error = response::gradient(&integrals, &reference, &model, &problem, state, &response::Options { internal: true, ..Default::default() })
-        .err()
-        .expect("internal directions are refused on a crystal");
-    assert!(matches!(error, mandacaru_core::Error::Unsupported(_)), "{error}");
+    let error = response::gradient(
+        &integrals,
+        &reference,
+        &model,
+        &problem,
+        state,
+        &response::Options {
+            internal: true,
+            ..Default::default()
+        },
+    )
+    .err()
+    .expect("internal directions are refused on a crystal");
+    assert!(
+        matches!(error, mandacaru_core::Error::Unsupported(_)),
+        "{error}"
+    );
     assert!(error.to_string().contains("PAW-LCAO supercell"), "{error}");
 }

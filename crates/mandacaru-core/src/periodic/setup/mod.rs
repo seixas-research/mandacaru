@@ -73,7 +73,8 @@ pub struct PeriodicSetup {
     pub shells: shells::Shells,
     pub projectors: Vec<spheres::Projector>,
     pub spin_orbit_projectors: Vec<spheres::Projector>,
-    pub spin_orbit_couplings: std::collections::BTreeMap<(usize, usize), crate::models::spin_orbit::Coupling>,
+    pub spin_orbit_couplings:
+        std::collections::BTreeMap<(usize, usize), crate::models::spin_orbit::Coupling>,
     pub potentials: Vec<ions::LocalPotential>,
     pub datasets: Vec<Arc<PawDataset>>,
     pub kpoints_cart: Vec<[f64; 3]>,
@@ -105,10 +106,15 @@ impl PeriodicSetup {
     /// Dataset for each atom, in atom order. Setup stores datasets by species,
     /// whereas the projector and multipole assemblers index them by atom.
     fn atom_datasets(&self) -> Result<Vec<Arc<PawDataset>>> {
-        self.atoms_species.iter().map(|&species| {
-            self.datasets.get(species).cloned()
-                .ok_or_else(|| invalid("atom dataset index is out of range"))
-        }).collect()
+        self.atoms_species
+            .iter()
+            .map(|&species| {
+                self.datasets
+                    .get(species)
+                    .cloned()
+                    .ok_or_else(|| invalid("atom dataset index is out of range"))
+            })
+            .collect()
     }
 
     /// Build the nonlocal and multipole operators for the setup's atoms.
@@ -124,11 +130,7 @@ impl PeriodicSetup {
     /// The one-center remainders of the plane wave `e^{-ib.(r-R_a)}` for `|b| = length` (1/Bohr),
     /// one `P x P` matrix per compensation channel, in the projector basis of the crystal
     /// ([`blocks::plane_wave_remainders`]).
-    pub fn plane_wave_remainders(
-        &self,
-        ctx: &Context,
-        length: f64,
-    ) -> Result<Vec<pulay::Matrix>> {
+    pub fn plane_wave_remainders(&self, ctx: &Context, length: f64) -> Result<Vec<pulay::Matrix>> {
         let datasets = self.atom_datasets()?;
         blocks::plane_wave_remainders(
             ctx,
@@ -223,14 +225,17 @@ impl PeriodicSetup {
         let species_tables: Vec<fields::Tables<'_>> = self
             .datasets
             .iter()
-            .map(|ds| Ok(fields::Tables {
-                radius: ds.r.as_slice(),
-                valence_density: ds.valence_density.as_slice(),
-                core: fields::core_table(
-                    ds.nlcc.applied, ds.nlcc.source.as_deref().unwrap_or(""),
-                    ds.smooth_core_density.as_slice(),
-                )?,
-            }))
+            .map(|ds| {
+                Ok(fields::Tables {
+                    radius: ds.r.as_slice(),
+                    valence_density: ds.valence_density.as_slice(),
+                    core: fields::core_table(
+                        ds.nlcc.applied,
+                        ds.nlcc.source.as_deref().unwrap_or(""),
+                        ds.smooth_core_density.as_slice(),
+                    )?,
+                })
+            })
             .collect::<Result<Vec<_>>>()?;
 
         let placed_atoms: Vec<fields::Placed> = self
@@ -243,7 +248,13 @@ impl PeriodicSetup {
         let core = fields::core(ctx, &self.grid, &species_tables, &placed_atoms, false)?;
         let definition = crate::models::functional(&self.functional)?;
         let core_tau = if definition.requires_tau {
-            Some(fields::core(ctx, &self.grid, &species_tables, &placed_atoms, true)?)
+            Some(fields::core(
+                ctx,
+                &self.grid,
+                &species_tables,
+                &placed_atoms,
+                true,
+            )?)
         } else {
             None
         };
@@ -295,8 +306,13 @@ impl PeriodicSetup {
                 let table = &species_tables[species];
                 let xc = if ds.xc.is_empty() { "lda" } else { &ds.xc };
                 constants[species] = Some(fields::species_constant(
-                    ctx, ds.one_center_energy, table.radius, table.valence_density,
-                    table.core, xc, ds.relativistic_exchange,
+                    ctx,
+                    ds.one_center_energy,
+                    table.radius,
+                    table.valence_density,
+                    table.core,
+                    xc,
+                    ds.relativistic_exchange,
                 )?);
             }
             total_constant += constants[species].unwrap();
@@ -351,8 +367,15 @@ impl PeriodicSetup {
                         .collect::<Vec<_>>(),
                 });
                 Some(crate::periodic::hybrid_setup::Hybrid::parse(
-                    ctx, &self.grid, p, &self.channels, blocks.as_slice(), &sites, range,
-                    self.spinor, self.time_reversal,
+                    ctx,
+                    &self.grid,
+                    p,
+                    &self.channels,
+                    blocks.as_slice(),
+                    &sites,
+                    range,
+                    self.spinor,
+                    self.time_reversal,
                 )?)
             }
             None => None,
@@ -415,9 +438,10 @@ impl PeriodicSetup {
         fractional_k: &[[f64; 3]],
         weights: &[f64],
     ) -> Result<Vec<KPoint>> {
-        let inv_lattice = self.lattice.try_inverse().ok_or_else(|| {
-            invalid("singular crystal lattice matrix")
-        })?;
+        let inv_lattice = self
+            .lattice
+            .try_inverse()
+            .ok_or_else(|| invalid("singular crystal lattice matrix"))?;
         let rec_lattice = 2.0 * std::f64::consts::PI * inv_lattice.transpose();
 
         let mut cart = Vec::with_capacity(fractional_k.len());
@@ -461,7 +485,10 @@ impl PeriodicSetup {
         let grid = SpatialGrid::new(shape, [0.; 3], step, true)?;
 
         // Recompute Cartesian centers from fractional positions
-        let inv_old = self.lattice.try_inverse().ok_or_else(|| invalid("singular lattice"))?;
+        let inv_old = self
+            .lattice
+            .try_inverse()
+            .ok_or_else(|| invalid("singular lattice"))?;
         let mut new_centers = Vec::with_capacity(self.centers.len());
         for c in &self.centers {
             let old_v = nalgebra::Vector3::new(c[0], c[1], c[2]);
@@ -471,7 +498,9 @@ impl PeriodicSetup {
         }
 
         // Recompute Cartesian k-points from fractional k-points
-        let inv_new = new_lattice.try_inverse().ok_or_else(|| invalid("singular new lattice"))?;
+        let inv_new = new_lattice
+            .try_inverse()
+            .ok_or_else(|| invalid("singular new lattice"))?;
         let rec_new = 2.0 * std::f64::consts::PI * inv_new.transpose();
         let mut new_kpoints_cart = Vec::with_capacity(self.kpoints_frac.len());
         for f in &self.kpoints_frac {
@@ -486,7 +515,9 @@ impl PeriodicSetup {
             let atom_idx = self
                 .centers
                 .iter()
-                .position(|&c| (nalgebra::Vector3::from(c) - nalgebra::Vector3::from(s.center)).norm() < 1e-6)
+                .position(|&c| {
+                    (nalgebra::Vector3::from(c) - nalgebra::Vector3::from(s.center)).norm() < 1e-6
+                })
                 .unwrap_or(0);
             new_shells_vec.push(shells::Shell {
                 center: new_centers[atom_idx],
@@ -505,11 +536,15 @@ impl PeriodicSetup {
             p_new.center = new_centers[p.atom];
             projectors.push(p_new);
         }
-        let spin_orbit_projectors = self.spin_orbit_projectors.iter().map(|p| {
-            let mut moved = p.clone();
-            moved.center = new_centers[p.atom];
-            moved
-        }).collect();
+        let spin_orbit_projectors = self
+            .spin_orbit_projectors
+            .iter()
+            .map(|p| {
+                let mut moved = p.clone();
+                moved.center = new_centers[p.atom];
+                moved
+            })
+            .collect();
 
         let potentials = self
             .potentials
@@ -599,7 +634,12 @@ impl PeriodicSetup {
     /// discretization held (as [`PeriodicSetup::with_geometry`]) and no symmetry operation (a
     /// density of these points is not averaged over a group): the crystal of a PAW-LCAO
     /// supercell's mesh, whose engines the supercell's force contracts.
-    pub fn with_kpoints(&self, ctx: &Context, kpoints: &[[f64; 3]], weights: &[f64]) -> Result<Self> {
+    pub fn with_kpoints(
+        &self,
+        ctx: &Context,
+        kpoints: &[[f64; 3]],
+        weights: &[f64],
+    ) -> Result<Self> {
         let mut input = self.recipe.clone().ok_or_else(|| {
             crate::Error::Unsupported(
                 "this setup holds no request to rebuild at other k-points from".into(),

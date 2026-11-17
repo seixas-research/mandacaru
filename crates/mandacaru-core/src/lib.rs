@@ -19,7 +19,10 @@ pub mod sto_fit;
 pub mod units;
 pub mod volumetric;
 
-pub use context::{default_threads, hardware_threads, worker_threads, Buffer, Context, Layout, Lazy, Level, Reservation};
+pub use context::{
+    default_threads, hardware_threads, worker_threads, Buffer, Context, Layout, Lazy, Level,
+    Reservation,
+};
 pub use geometry::Geometry;
 pub use mandacaru_kernels::bloch::Complex64;
 pub use mandacaru_kernels::runtime::WorkerStats;

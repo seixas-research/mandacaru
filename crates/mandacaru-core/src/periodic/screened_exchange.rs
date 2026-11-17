@@ -14,6 +14,7 @@ use super::{
     input::has_partner,
     invalid,
     screened_augmentation::{add_compensation, Augmentation, OneCenter, OneCenterTerms},
+    star::{self, Image, Reduction},
     Crystal, KPoint,
 };
 use crate::{
@@ -166,6 +167,9 @@ pub(super) struct OccupiedStates {
     /// (at `-k`, built from the listed point's states).
     pub(super) point: usize,
     pub(super) partner: bool,
+    /// On a mesh reduced by space-group operations: the operation (and time reversal) that took the
+    /// listed point's states here ([`star`]). Its `coefficients` stay those of the listed point.
+    pub(super) rotation: Option<Image>,
     // For each occupied state: [up] for collinear, [up, down] for spinor
     pub(super) wavefunctions: Vec<Vec<Buffer<C64>>>,
     // For each occupied state: its coefficients over the basis, the square root of the
@@ -238,6 +242,7 @@ fn extract_occupied(
         k: point.k,
         point: q_idx,
         partner: false,
+        rotation: None,
         wavefunctions,
         coefficients,
         projected: Vec::new(),
@@ -255,6 +260,9 @@ pub(super) fn occupied_states<M: MatrixSource>(
 ) -> Result<Vec<OccupiedStates>> {
     let nk = c.points.len();
     let mut all = Vec::with_capacity(nk);
+    // A mesh reduced by space-group operations lists one point per star: the states of its other
+    // points are rotated from the listed one (`star`).
+    let reduction = star::reduced(c).then(|| Reduction::new(c)).transpose()?;
     for q in 0..nk {
         let d = matrices[spin * nk + q].matrix(&c.context)?;
         let mut occ = extract_occupied(c, q, &d, spin_scale)?;
@@ -264,6 +272,12 @@ pub(super) fn occupied_states<M: MatrixSource>(
                 .iter()
                 .map(|coefficients| augmentation.project(c, &c.points[q], coefficients))
                 .collect();
+        }
+        if let Some(reduction) = &reduction {
+            for image in &reduction.stars[q] {
+                all.push(image_states(c, reduction, &occ, image, stage)?);
+            }
+            continue;
         }
         // A time-reversal-halved mesh lists `q` without `-q`: its states stand for both, at half
         // the listed weight each.
@@ -277,6 +291,42 @@ pub(super) fn occupied_states<M: MatrixSource>(
         }
     }
     Ok(all)
+}
+
+/// The states of the image `image` of the listed point whose states are `occ`: the periodic parts
+/// rotated on the grid (and conjugated when time reversed), the projections through the rotation of
+/// the projectors ([`Reduction`]), the weight of one whole-mesh point. The coefficients stay the
+/// listed point's: the derivative passes differentiate through the rotation.
+fn image_states(
+    c: &Crystal,
+    reduction: &Reduction,
+    occ: &OccupiedStates,
+    image: &Image,
+    stage: Stage,
+) -> Result<OccupiedStates> {
+    let mut wavefunctions = Vec::with_capacity(occ.wavefunctions.len());
+    for components in &occ.wavefunctions {
+        let input: Vec<&[C64]> = components.iter().map(|psi| psi.as_slice()).collect();
+        wavefunctions.push(reduction.grid_states(c, occ.k, image, &input)?);
+    }
+    let projected = match stage {
+        Some((augmentation, _)) => occ
+            .projected
+            .iter()
+            .map(|a| reduction.project(c, augmentation, occ.k, image, a))
+            .collect::<Result<Vec<_>>>()?,
+        None => Vec::new(),
+    };
+    Ok(OccupiedStates {
+        weight: reduction.weight(c, occ.point),
+        k: image.k,
+        point: occ.point,
+        partner: false,
+        rotation: Some(*image),
+        wavefunctions,
+        coefficients: occ.coefficients.clone(),
+        projected,
+    })
 }
 
 /// The states at `-q` of the states at `q`, by time reversal: the complex conjugates on the grid
@@ -315,14 +365,22 @@ fn reversed_states(c: &Crystal, occ: &OccupiedStates, stage: Stage) -> Result<Oc
     let reorder = |v: &[C64], size: usize, reverse: &dyn Fn(&[C64]) -> Result<Vec<C64>>| {
         let mut out = Vec::with_capacity(v.len());
         for &(source, sign) in order {
-            out.extend(reverse(&v[source * size..(source + 1) * size])?.into_iter().map(|x| x * sign));
+            out.extend(
+                reverse(&v[source * size..(source + 1) * size])?
+                    .into_iter()
+                    .map(|x| x * sign),
+            );
         }
         Ok::<_, crate::Error>(out)
     };
     let coefficients = occ
         .coefficients
         .iter()
-        .map(|v| reorder(v, c.m, &|chunk| Ok(chunk.iter().map(|x| x.conj()).collect())))
+        .map(|v| {
+            reorder(v, c.m, &|chunk| {
+                Ok(chunk.iter().map(|x| x.conj()).collect())
+            })
+        })
         .collect::<Result<Vec<_>>>()?;
     let projected = match stage {
         Some((augmentation, _)) => occ
@@ -337,6 +395,7 @@ fn reversed_states(c: &Crystal, occ: &OccupiedStates, stage: Stage) -> Result<Oc
         k: occ.k.map(|v| -v),
         point: occ.point,
         partner: true,
+        rotation: None,
         wavefunctions,
         coefficients,
         projected,
@@ -707,6 +766,43 @@ pub(super) fn one_center<M: MatrixSource>(
     reversal: Option<&[(usize, usize, f64)]>,
 ) -> Result<OneCenterTerms> {
     let (nk, p, m) = (c.points.len(), c.p, c.m);
+    if star::reduced(c) {
+        // The projected density of the whole mesh: every listed point's, moved to each point of its
+        // star (`M P M^+`, `Pi conj(M P M^+) Pi^T` when time reversed), at the weight of a point.
+        let reduction = Reduction::new(c)?;
+        if c.spinor {
+            let mut projected = Matrix::zeros(2 * p, 2 * p);
+            for (k, point) in c.points.iter().enumerate() {
+                let d = matrices[k].matrix(&c.context)?;
+                let mut own = Matrix::zeros(2 * p, 2 * p);
+                for s in 0..2 {
+                    for t in 0..2 {
+                        let block = point.projections.adjoint()
+                            * d.view((s * m, t * m), (m, m))
+                            * &point.projections;
+                        own.view_mut((s * p, t * p), (p, p)).copy_from(&block);
+                    }
+                }
+                for image in &reduction.stars[k] {
+                    projected += reduction.density(c, reversal, point.k, image, &own)?
+                        * C64::new(reduction.weight(c, k), 0.);
+                }
+            }
+            return model.spinor(&c.context, &projected);
+        }
+        let mut projected = vec![Matrix::zeros(p, p); c.spins];
+        for (s, total) in projected.iter_mut().enumerate() {
+            for (k, point) in c.points.iter().enumerate() {
+                let d = matrices[s * nk + k].matrix(&c.context)?;
+                let own = point.projections.adjoint() * &*d * &point.projections;
+                for image in &reduction.stars[k] {
+                    *total += reduction.density(c, reversal, point.k, image, &own)?
+                        * C64::new(reduction.weight(c, k), 0.);
+                }
+            }
+        }
+        return model.collinear(&c.context, &projected);
+    }
     if c.spinor {
         let mut projected = Matrix::zeros(2 * p, 2 * p);
         for (k, point) in c.points.iter().enumerate() {
@@ -735,7 +831,8 @@ pub(super) fn one_center<M: MatrixSource>(
                     for &(i, a, si) in map {
                         for &(j, b, sj) in map {
                             mirrored[(s * p + i, t * p + j)] =
-                                projected[((1 - s) * p + a, (1 - t) * p + b)].conj() * (sign * si * sj);
+                                projected[((1 - s) * p + a, (1 - t) * p + b)].conj()
+                                    * (sign * si * sj);
                         }
                     }
                 }
@@ -812,7 +909,9 @@ pub fn exchange_operators_with<M: MatrixSource>(
         let nk = c.points.len();
         let terms = one_center(c, matrices, model, augmentation.and_then(|a| a.reversal()))?;
         if terms.operators.len() != if c.spinor { 1 } else { c.spins } {
-            return Err(invalid("the one-center model returned the wrong number of operators"));
+            return Err(invalid(
+                "the one-center model returned the wrong number of operators",
+            ));
         }
         for (s, operator) in terms.operators.iter().enumerate() {
             for (k, point) in c.points.iter().enumerate() {

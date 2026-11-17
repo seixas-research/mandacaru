@@ -38,12 +38,20 @@ impl<'py> PeriodicOperator<'py> {
     fn extract(value: &Bound<'py, PyAny>, p: usize) -> PyResult<Self> {
         let result = if let Ok(a) = value.extract::<PyReadonlyArray2<'py, f64>>() {
             super::layout(&a)?;
-            if a.shape() != [p, p] { return Err(PyValueError::new_err("operator shape must be (projectors, projectors)")); }
+            if a.shape() != [p, p] {
+                return Err(PyValueError::new_err(
+                    "operator shape must be (projectors, projectors)",
+                ));
+            }
             Self::Real(a)
         } else {
             let a = value.extract::<PyReadonlyArray2<'py, Complex64>>()?;
             super::layout(&a)?;
-            if a.shape() != [p, p] { return Err(PyValueError::new_err("operator shape must be (projectors, projectors)")); }
+            if a.shape() != [p, p] {
+                return Err(PyValueError::new_err(
+                    "operator shape must be (projectors, projectors)",
+                ));
+            }
             Self::Complex(a)
         };
         Ok(result)
@@ -61,42 +69,69 @@ pub(crate) struct PyContext {
 }
 #[pymethods]
 impl PyContext {
-
     /// Complete the PAW overlap and fixed matrices without Python products.
     fn periodic_paw_matrices<'py>(
-        &self, py: Python<'py>, projections: PyReadonlyArray2<'py, Complex64>,
-        overlap: Bound<'py, PyAny>, ionic: Bound<'py, PyAny>,
+        &self,
+        py: Python<'py>,
+        projections: PyReadonlyArray2<'py, Complex64>,
+        overlap: Bound<'py, PyAny>,
+        ionic: Bound<'py, PyAny>,
         grid_overlap: PyReadonlyArray2<'py, Complex64>,
-        kinetic: PyReadonlyArray2<'py, Complex64>, local: PyReadonlyArray2<'py, Complex64>,
+        kinetic: PyReadonlyArray2<'py, Complex64>,
+        local: PyReadonlyArray2<'py, Complex64>,
     ) -> PyResult<(Array<'py, Complex64>, Array<'py, Complex64>)> {
-        for a in [&projections, &grid_overlap, &kinetic, &local] { super::layout(a)?; }
+        for a in [&projections, &grid_overlap, &kinetic, &local] {
+            super::layout(a)?;
+        }
         let (m, p) = (projections.shape()[0], projections.shape()[1]);
-        if [grid_overlap.shape(), kinetic.shape(), local.shape()].iter().any(|shape| *shape != [m, m]) {
-            return Err(PyValueError::new_err("grid, kinetic and local matrices must have shape (functions, functions)"));
+        if [grid_overlap.shape(), kinetic.shape(), local.shape()]
+            .iter()
+            .any(|shape| *shape != [m, m])
+        {
+            return Err(PyValueError::new_err(
+                "grid, kinetic and local matrices must have shape (functions, functions)",
+            ));
         }
         let q = PeriodicOperator::extract(&overlap, p)?;
         let d = PeriodicOperator::extract(&ionic, p)?;
         let (q, d, c) = (q.view()?, d.view()?, projections.as_slice()?);
         let (s, h) = mandacaru_core::periodic::setup::matrices::assemble_paw_matrices(
-            &self.inner, m, p, grid_overlap.as_slice()?, kinetic.as_slice()?, local.as_slice()?,
-            |i, j| c[i * p + j], |i, j| q.get(i * p + j), |i, j| d.get(i * p + j),
-        ).map_err(error)?;
-        let rows = |matrix: &nalgebra::DMatrix<Complex64>| (0..m)
-            .flat_map(|i| (0..m).map(move |j| (i, j)))
-            .map(|(i, j)| matrix[(i, j)]).collect();
+            &self.inner,
+            m,
+            p,
+            grid_overlap.as_slice()?,
+            kinetic.as_slice()?,
+            local.as_slice()?,
+            |i, j| c[i * p + j],
+            |i, j| q.get(i * p + j),
+            |i, j| d.get(i * p + j),
+        )
+        .map_err(error)?;
+        let rows = |matrix: &nalgebra::DMatrix<Complex64>| {
+            (0..m)
+                .flat_map(|i| (0..m).map(move |j| (i, j)))
+                .map(|(i, j)| matrix[(i, j)])
+                .collect()
+        };
         Ok((array(py, &[m, m], rows(&s))?, array(py, &[m, m], rows(&h))?))
     }
 
     /// Grid overlap, borrowing aligned contiguous orbital samples.
     fn periodic_overlap<'py>(
-        &self, py: Python<'py>, orbitals: PyReadonlyArray2<'py, Complex64>, dv: f64,
+        &self,
+        py: Python<'py>,
+        orbitals: PyReadonlyArray2<'py, Complex64>,
+        dv: f64,
     ) -> PyResult<Array<'py, Complex64>> {
         super::layout(&orbitals)?;
         let (m, n) = (orbitals.shape()[0], orbitals.shape()[1]);
-        let matrix = mandacaru_core::periodic::setup::matrices::grid_overlap(
-            orbitals.as_slice()?, m, n, dv).map_err(error)?;
-        let rows = (0..m).flat_map(|i| (0..m).map(move |j| (i, j)))
-            .map(|(i, j)| matrix[(i, j)]).collect();
+        let matrix =
+            mandacaru_core::periodic::setup::matrices::grid_overlap(orbitals.as_slice()?, m, n, dv)
+                .map_err(error)?;
+        let rows = (0..m)
+            .flat_map(|i| (0..m).map(move |j| (i, j)))
+            .map(|(i, j)| matrix[(i, j)])
+            .collect();
         array(py, &[m, m], rows)
     }
 
@@ -110,12 +145,14 @@ impl PyContext {
         charges: Vec<f64>,
         radii: Vec<f64>,
         channels: Vec<(usize, usize, i32)>,
-        tables: Option<Vec<(
-            f64,
-            usize,
-            PyReadonlyArray1<'py, f64>,
-            PyReadonlyArray1<'py, f64>,
-        )>>,
+        tables: Option<
+            Vec<(
+                f64,
+                usize,
+                PyReadonlyArray1<'py, f64>,
+                PyReadonlyArray1<'py, f64>,
+            )>,
+        >,
         sigma: f64,
         cutoff: f64,
     ) -> PyResult<(Array<'py, Complex64>, Array<'py, Complex64>, f64)> {
@@ -200,8 +237,9 @@ impl PyContext {
         l: i32,
         q: PyReadonlyArrayDyn<'py, f64>,
     ) -> PyResult<Array<'py, f64>> {
-        let fw = mandacaru_core::math::radial::trapezoid_r2_weights(r.as_slice()?, values.as_slice()?)
-            .map_err(error)?;
+        let fw =
+            mandacaru_core::math::radial::trapezoid_r2_weights(r.as_slice()?, values.as_slice()?)
+                .map_err(error)?;
         let q_view = q.as_array();
         let flat_q: Vec<f64> = q_view.iter().copied().collect();
         let (r_buf, _r) = copy(&self.inner, &r)?;
@@ -310,7 +348,11 @@ impl PyContext {
         kinds: Vec<String>,
     ) -> PyResult<String> {
         use mandacaru_core::quantum::search::learning::training::{self, Kind, Options};
-        let kinds = kinds.iter().map(|k| Kind::parse(k)).collect::<mandacaru_core::Result<Vec<_>>>().map_err(error)?;
+        let kinds = kinds
+            .iter()
+            .map(|k| Kind::parse(k))
+            .collect::<mandacaru_core::Result<Vec<_>>>()
+            .map_err(error)?;
         py.detach(|| {
             let options = Options {
                 fractions,
@@ -325,6 +367,24 @@ impl PyContext {
             training::fit_json(&self.inner, data, group_by, &options)
         })
         .map_err(error)
+    }
+    #[pyo3(signature=(data,*,group_by="molecule",l2=1e-2,moves=vec!["insert".to_string(),"delete".to_string(),"replace".to_string()]))]
+    fn fit_edit_proposal(
+        &self,
+        py: Python<'_>,
+        data: &str,
+        group_by: &str,
+        l2: f64,
+        moves: Vec<String>,
+    ) -> PyResult<String> {
+        use mandacaru_core::quantum::search::learning::{data::EditKind, training};
+        let moves = moves
+            .iter()
+            .map(|m| EditKind::parse(m))
+            .collect::<mandacaru_core::Result<Vec<_>>>()
+            .map_err(error)?;
+        py.detach(|| training::fit_edit_json(&self.inner, data, group_by, l2, &moves))
+            .map_err(error)
     }
     #[pyo3(signature=(qubits,num_particles=None))]
     fn active_space_dimension(
@@ -406,7 +466,7 @@ impl PyContext {
         precision: &str,
         taper: bool,
         register_free: bool,
-    ) -> PyResult<quantum::PyProblem> {
+    ) -> PyResult<quantum::PyQuantumProblem> {
         let precision = quantum::parse_precision(precision)?;
         if register_free && sparse {
             return Err(PyValueError::new_err(
@@ -419,7 +479,7 @@ impl PyContext {
                 let encoding =
                     mandacaru_core::quantum::Encoding::new(mapping, modes, num_particles)?;
                 let operator = operator.inner.copy_into(&self.inner)?;
-                let mut problem = mandacaru_core::quantum::CachedProblem::new_in(
+                let mut problem = mandacaru_core::quantum::QuantumProblem::new_in(
                     &self.inner,
                     encoding,
                     operator,
@@ -441,7 +501,7 @@ impl PyContext {
         if sparse {
             quantum::attach_sparse(py, &mut inner)?;
         }
-        Ok(quantum::PyProblem { inner })
+        Ok(quantum::PyQuantumProblem { inner })
     }
     #[pyo3(signature=(variables,*,omega=mandacaru_core::models::HSE06_OMEGA,exact_fraction=mandacaru_core::models::HSE06_EXACT_FRACTION))]
     fn hybrid_points<'py>(
@@ -756,7 +816,9 @@ impl PyContext {
         atol: f64,
     ) -> PyResult<(Vec<(String, Vec<(String, f64, f64)>)>, f64)> {
         let out = py
-            .detach(|| mandacaru_core::execution::qwc_hamiltonian(&self.inner, &terms, drop_identity, atol))
+            .detach(|| {
+                mandacaru_core::execution::qwc_hamiltonian(&self.inner, &terms, drop_identity, atol)
+            })
             .map_err(error)?;
         Ok((out.groups, out.identity))
     }
@@ -771,14 +833,20 @@ impl PyContext {
         weights: Option<Vec<f64>>,
     ) -> PyResult<Vec<Vec<usize>>> {
         py.detach(|| {
-            mandacaru_core::execution::basis_chunks(&self.inner, &labels, weights.as_deref(), max_bases)
+            mandacaru_core::execution::basis_chunks(
+                &self.inner,
+                &labels,
+                weights.as_deref(),
+                max_bases,
+            )
         })
         .map_err(error)
     }
     /// `(strings, bases)` of a batch of measurement requests, one circuit each
     /// (`execution::batch_size`).
     fn batch_size(&self, py: Python<'_>, requests: Vec<Vec<String>>) -> PyResult<(u64, u64)> {
-        py.detach(|| mandacaru_core::execution::batch_size(&self.inner, &requests)).map_err(error)
+        py.detach(|| mandacaru_core::execution::batch_size(&self.inner, &requests))
+            .map_err(error)
     }
     /// `<psi|P|psi>` of each string on a whole-register state (`execution::state_expectations`).
     fn state_expectations(
@@ -820,11 +888,26 @@ impl PyContext {
     #[pyo3(signature=(bases, *, max_bases_per_job=None, job_per_basis=false, shots=0, noise_factors=1,
                       randomizations=1, shots_per_randomization=0))]
     #[allow(clippy::too_many_arguments)]
-    fn measurement_cost(&self, bases: u64, max_bases_per_job: Option<u64>, job_per_basis: bool,
-                        shots: u64, noise_factors: u64, randomizations: u64,
-                        shots_per_randomization: u64) -> PyResult<(u64, u64)> {
-        mandacaru_core::execution::measurement_cost(bases, max_bases_per_job, job_per_basis, shots,
-            noise_factors, randomizations, shots_per_randomization).map_err(error)
+    fn measurement_cost(
+        &self,
+        bases: u64,
+        max_bases_per_job: Option<u64>,
+        job_per_basis: bool,
+        shots: u64,
+        noise_factors: u64,
+        randomizations: u64,
+        shots_per_randomization: u64,
+    ) -> PyResult<(u64, u64)> {
+        mandacaru_core::execution::measurement_cost(
+            bases,
+            max_bases_per_job,
+            job_per_basis,
+            shots,
+            noise_factors,
+            randomizations,
+            shots_per_randomization,
+        )
+        .map_err(error)
     }
     #[pyo3(signature=(*,jobs=None,total_shots=None))]
     fn run_ledger(&self, jobs: Option<u64>, total_shots: Option<u64>) -> persistence::PyLedger {
@@ -858,9 +941,9 @@ impl PyContext {
         }
         let (values, _memory) = copy(&self.inner, &links)?;
         py.detach(|| {
-            let _work = self
-                .inner
-                .reserve(mandacaru_core::product(&[count, occupied, occupied, 16, 2])?)?;
+            let _work = self.inner.reserve(mandacaru_core::product(&[
+                count, occupied, occupied, 16, 2,
+            ])?)?;
             let matrices: Vec<_> = values
                 .chunks(occupied * occupied)
                 .map(|block| nalgebra::DMatrix::from_row_slice(occupied, occupied, block))
@@ -913,7 +996,9 @@ impl PyContext {
         let setup = setup_from_request(&self.inner, &v, &dataset_paths)?;
         let setup_arc = std::sync::Arc::new(setup);
         let setup_for_build = setup_arc.clone();
-        let crystal = py.detach(|| setup_for_build.build(&self.inner)).map_err(error)?;
+        let crystal = py
+            .detach(|| setup_for_build.build(&self.inner))
+            .map_err(error)?;
         Ok(periodic::PyCrystal {
             inner: std::sync::Arc::new(crystal),
             setup: Some(setup_arc),
@@ -1523,7 +1608,7 @@ impl PyContext {
         include_singles: bool,
         sparse: bool,
         precision: &str,
-    ) -> PyResult<quantum::PyProblem> {
+    ) -> PyResult<quantum::PyQuantumProblem> {
         let precision = quantum::parse_precision(precision)?;
         if sparse && dense {
             return Err(PyValueError::new_err(
@@ -1532,7 +1617,7 @@ impl PyContext {
         }
         let mut inner = py
             .detach(|| {
-                mandacaru_core::quantum::CachedProblem::load(
+                mandacaru_core::quantum::QuantumProblem::load(
                     &self.inner,
                     std::path::Path::new(&path),
                     sector,
@@ -1545,7 +1630,7 @@ impl PyContext {
         if sparse {
             quantum::attach_sparse(py, &mut inner)?;
         }
-        Ok(quantum::PyProblem { inner })
+        Ok(quantum::PyQuantumProblem { inner })
     }
     /// A calculation context of `kpts x bands x threads` processors (`threads=None`: the
     /// default worker count, `MANDACARU_NUM_THREADS`, then `OMP_NUM_THREADS`, then the hardware).
@@ -1622,9 +1707,13 @@ impl PyContext {
     #[getter]
     fn parallelization(&self) -> std::collections::BTreeMap<&'static str, usize> {
         let layout = self.inner.layout();
-        [("kpts", layout.kpts), ("bands", layout.bands), ("threads", layout.threads)]
-            .into_iter()
-            .collect()
+        [
+            ("kpts", layout.kpts),
+            ("bands", layout.bands),
+            ("threads", layout.threads),
+        ]
+        .into_iter()
+        .collect()
     }
     #[getter]
     fn memory_limit_bytes(&self) -> usize {
@@ -1946,7 +2035,6 @@ impl PyContext {
         let b = mandacaru_core::math::grid::reciprocal_matrix(&a).map_err(error)?;
         array(py, &[3, 3], b.to_vec())
     }
-
 }
 
 /// The crystal setup of a request (`Context.periodic_problem_from_request`): the parsed input with
@@ -1960,16 +2048,26 @@ pub(crate) fn setup_from_request(
     if input.dataset_files.is_none() && !dataset_paths.is_empty() {
         let mut files = Vec::with_capacity(dataset_paths.len());
         for p in dataset_paths {
-            let digest = mandacaru_core::paw::digest::dataset_content_sha256(ctx, std::path::Path::new(p)).map_err(error)?;
+            let digest =
+                mandacaru_core::paw::digest::dataset_content_sha256(ctx, std::path::Path::new(p))
+                    .map_err(error)?;
             files.push((p.clone(), digest));
         }
         // The supplied paths are indexed by species. Store them in atom
         // order, including when the species and atom counts happen to match.
-        input.dataset_files = Some(input.atoms.iter().map(|atom| {
-            files.get(atom.species).cloned().ok_or_else(|| {
-                pyo3::exceptions::PyValueError::new_err("atom dataset index is out of range")
-            })
-        }).collect::<PyResult<Vec<_>>>()?);
+        input.dataset_files = Some(
+            input
+                .atoms
+                .iter()
+                .map(|atom| {
+                    files.get(atom.species).cloned().ok_or_else(|| {
+                        pyo3::exceptions::PyValueError::new_err(
+                            "atom dataset index is out of range",
+                        )
+                    })
+                })
+                .collect::<PyResult<Vec<_>>>()?,
+        );
     }
     let mut datasets = Vec::with_capacity(dataset_paths.len());
     for p in dataset_paths {

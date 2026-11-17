@@ -1,4 +1,4 @@
-//! The operator importances of a product ansatz (`CachedProblem::importances`) give the bits of the
+//! The operator importances of a product ansatz (`QuantumProblem::importances`) give the bits of the
 //! evaluations they replace.
 //!
 //! The importance of position `i` is `|dE/dtheta_i|` with `theta_i` set to zero: formerly one full
@@ -11,12 +11,12 @@ mod product_ansatz_support;
 
 use mandacaru_core::{
     math::storage::Precision,
-    quantum::{evolution::Work, CachedProblem},
+    quantum::{evolution::Work, QuantumProblem},
 };
 use product_ansatz_support::problem;
 
 /// The importances as the zero-and-evaluate loop computes them.
-fn separate(problem: &CachedProblem, indices: &[usize], theta: &[f64]) -> Vec<u64> {
+fn separate(problem: &QuantumProblem, indices: &[usize], theta: &[f64]) -> Vec<u64> {
     (0..indices.len())
         .map(|i| {
             let mut zeroed = theta.to_vec();
@@ -28,7 +28,7 @@ fn separate(problem: &CachedProblem, indices: &[usize], theta: &[f64]) -> Vec<u6
         .collect()
 }
 
-fn importances(problem: &CachedProblem, indices: &[usize], theta: &[f64]) -> (Vec<u64>, Work) {
+fn importances(problem: &QuantumProblem, indices: &[usize], theta: &[f64]) -> (Vec<u64>, Work) {
     let out = problem.importances(indices, theta).unwrap();
     (out.values.iter().map(|v| v.to_bits()).collect(), out.work)
 }

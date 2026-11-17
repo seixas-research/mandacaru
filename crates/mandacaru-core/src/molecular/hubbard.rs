@@ -221,7 +221,9 @@ impl MolecularHubbard {
             let n: Vec<Matrix> = d.iter().map(|ds| q.transpose() * ds * &q).collect();
             let (energy, potentials) = self.evaluate_real_harmonics(ctx, shell, spin, &n)?;
             if !energy.is_finite() {
-                return Err(invalid("the +U energy of a complex occupation is not finite"));
+                return Err(invalid(
+                    "the +U energy of a complex occupation is not finite",
+                ));
             }
             total += energy;
             let scale = potentials.iter().fold(1f64, |t, v| t.max(v.camax()));

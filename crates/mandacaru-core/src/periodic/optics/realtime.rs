@@ -8,7 +8,8 @@
 //! Loewdin frame of the SCF. The occupied orbitals `C_k(t)` of every spin channel and k-point are
 //! propagated by `math::propagator` (ETRS by default, owner decision Q18b) and the macroscopic
 //! current density is `j(t) = -(1 / Omega) sum_{s,k} w_k tr[D_o (P_o + A 1)]` (electron charge
-//! `-1`; `D_o` carries the band degeneracy), `-(1 / Omega) dE / dA` at fixed `D`.
+//! `-1`; `D_o` carries the band degeneracy), `-(1 / Omega) dE / dA` at fixed `D` (with a
+//! meta-GGA's partial core, plus the exchange-correlation current below).
 //!
 //! **The mesh is rebuilt whole.** A uniform `A` breaks time reversal and every operation that
 //! moves `e`; the SCF's symmetrization would project the response out without an error
@@ -31,9 +32,16 @@
 //! (`Independent`).
 //!
 //! **A meta-GGA reads the gauge-invariant `tau~ = tau - |j|^2 / (2 n)`** (owner decision Q19a,
-//! section 13.6.1; T6c-c): `j` is the paramagnetic current of the propagated Bloch orbitals,
-//! from their Bloch gradients, and the Fock matrix gains `v_tau |j|^2 / (2 n^2)` in the local
-//! potential and the imaginary-antisymmetric `F^j`, so it stays the derivative of the energy.
+//! section 13.6.1; T6c-c): `j` is the current of the propagated Bloch orbitals, from their Bloch
+//! gradients, and the Fock matrix gains `v_tau |u|^2 / (2 n^2)` in the local potential and the
+//! imaginary-antisymmetric `F^j` of `u`, so it stays the derivative of the energy. In the field
+//! `A` the fixed basis's gradients carry no `A`, so `tau` and `j` are made kinetic,
+//! `tau + A . j + n_v A^2 / 2` and `j + n_v A`, and `u = j - n A` (`n` with half the partial
+//! core): the core carries no current, as after a length kick, and `tau~` keeps its share
+//! `(1 - n_v / n)(A . j + n_v A^2 / 2)`. The energy then depends on `A` through `tau~` too, so the
+//! current `-(1 / Omega) dE / dA` carries the exchange-correlation term
+//! `dE_xc / dA = sum_s int v_tau,s (1 - n_v,s / n_s) j_s` (`j_s` kinetic), zero without a partial
+//! core: the run's current and the static field's trace both read it.
 //!
 //! Refused: spinor crystals, hybrids (Q24), rVV10 (Q28), DFT+U or a meta-GGA with
 //! `formulation="moved"` or `kernel="hartree"`, metals and fractional occupations
@@ -42,12 +50,12 @@
 use super::{
     super::{
         bloch_mesh::{MeshIndex, Sampler},
-        fields::{bloch_gradients, kinetic_density},
+        fields::bloch_gradients,
         invalid,
         setup::{parse::create_setup, pulay::Mesh, PeriodicSetup},
         solver::{
             collinear_xc_energy, density, diagonalize_with_exchange, energy, exchange_correlation,
-            hamiltonian, local_potential,
+            hamiltonian, local_potential, sym_field,
         },
         wannier::sampling::Frame,
         Crystal, KPoint, PeriodicResult,
@@ -57,6 +65,7 @@ use super::{
 use crate::{
     math::{
         fft::Fft3,
+        gemm::complex_product,
         linalg::eigen,
         propagator::{Channel, Evaluation, FockMap, Options, Propagator, Scheme},
         storage::{MatrixSource, Precision, StoredMatrix},
@@ -266,7 +275,9 @@ pub fn check_options(kick: &str, gauge: Option<&str>) -> Result<()> {
 #[derive(Clone, Debug)]
 pub struct CrystalRealTime {
     pub times: Vec<f64>,
-    /// `j(t)`, the macroscopic current density (Cartesian, e / (Bohr^2 a.u. of time)).
+    /// `j(t) = -(1 / Omega) dE / dA` at fixed `D`, the macroscopic current density (Cartesian,
+    /// e / (Bohr^2 a.u. of time)): with a meta-GGA's partial core it carries the
+    /// exchange-correlation current (module documentation).
     pub current: Vec<[f64; 3]>,
     /// `e . j(t)`.
     pub along: Vec<f64>,
@@ -281,7 +292,8 @@ pub struct CrystalRealTime {
     pub energy: Vec<f64>,
     pub norm_error: Vec<f64>,
     pub ground_energy: f64,
-    /// `E(0+) - E_ground` (a kick; `N A_0^2 / 2` for a ground state without current).
+    /// `E(0+) - E_ground` (a kick; `N A_0^2 / 2` for a ground state without current, plus a
+    /// meta-GGA's partial-core share of `tau~`).
     pub kick_energy: f64,
     pub energy_drift: f64,
     /// `W = e_max - e_min` of the matrices at `t = 0`, the largest over the run, and `dt W`.
@@ -512,9 +524,10 @@ fn samples_and_gradients(c: &Crystal, point: &KPoint) -> Result<(Matrix, [Matrix
 
 /// The orbital samples and Bloch gradients of every k-point for a meta-GGA run. They depend on
 /// the static basis only, so they are made once and kept for the run when they fit in a quarter
-/// of the free budget, and made at each use otherwise (the same numbers either way): the current
-/// `j` and the operator `F^j` of every build then share one set instead of each transforming the
-/// basis again.
+/// of the free budget, and made at each use otherwise (the same numbers either way). A build
+/// reads them twice per k-point: `tau` and the current `j` in one pass, the `tau` operator and
+/// `F^j` in the other ([`meta_operator`]), so a run that cannot keep them transforms the basis
+/// twice per build, not four times.
 struct Gradients {
     kept: Option<Vec<(Matrix, [Matrix; 3])>>,
     _memory: Option<crate::Reservation>,
@@ -562,15 +575,17 @@ impl Gradients {
 
 /// The gauge-invariant kinetic density of complex Bloch orbitals (TDDFT_PLAN.md 13.6.1): the
 /// paramagnetic current `j_s = Im sum_ab D_ba conj(phi_a) grad phi_b` (summed over the mesh with
-/// its weights; the partial core carries none), the per-spin density `n_s` with the core, and the
-/// `tau` the functional reads, `tau_s - |j_s|^2 / (2 n_s)` per spin (one block of the total for an
-/// unpolarized crystal).
+/// its weights; the partial core carries none), made kinetic in the uniform vector potential
+/// `field` (`j_s + n_v,s A`, `tau_s + A . j_s + n_v,s A^2 / 2`), the per-spin density `n_s` with
+/// the core, and the `tau` the functional reads, `tau_s - |j_s|^2 / (2 n_s)` per spin (one block of
+/// the total for an unpolarized crystal).
 struct GaugeInvariant {
     tau: Buffer<f64>,
     /// `[spin][axis][point]`, per spin channel (half the total current when unpolarized).
     current: Vec<f64>,
     /// `n_s` with half the partial core, `[spin][point]`.
     density: Vec<f64>,
+    field: [f64; 3],
 }
 
 fn gauge_invariant_kinetic(
@@ -578,31 +593,88 @@ fn gauge_invariant_kinetic(
     matrices: &[StoredMatrix],
     rho: &[f64],
     shared: &Gradients,
+    field: [f64; 3],
 ) -> Result<GaugeInvariant> {
     let (n, nk) = (c.grid.index.points(), c.points.len());
-    let mut tau = kinetic_density(c, matrices)?;
     let share = if c.spins == 1 { 0.5 } else { 1. };
     let mut current = vec![0f64; c.spins * 3 * n];
-    for (k, point) in c.points.iter().enumerate() {
-        shared.with(c, k, |samples, gradients| {
-            for s in 0..c.spins {
-                let d = matrices[s * nk + k].matrix(&c.context)?;
-                // T_rb = sum_a conj(Phi_ra) D_ba, then X_r = sum_b T_rb G_rb.
-                let t = samples.conjugate() * d.transpose();
-                for (axis, g) in gradients.iter().enumerate() {
-                    let out = &mut current[(s * 3 + axis) * n..(s * 3 + axis + 1) * n];
-                    for (r, to) in out.iter_mut().enumerate() {
-                        let x: C64 = (0..c.m).map(|b| t[(r, b)] * g[(r, b)]).sum();
-                        *to += share * point.weight * x.im;
-                    }
-                }
+    // `tau_s = 1/2 sum_k w_k sum_axis sum_ab conj(d phi_a) D_ba d phi_b`, from the same gradients
+    // as `j` (the SCF's `fields::kinetic_density`, then its group average and clamp below).
+    let mut raw = vec![0f64; c.spins * n];
+    // Each k-point's share in parallel, a batch of k-points at a time, then summed in k order (the
+    // serial sum, so the fields do not depend on the thread count).
+    let lanes = c.context.lanes(Level::Kpts, nk);
+    let mut states = vec![(); lanes];
+    let batch = 4 * lanes;
+    for first in (0..nk).step_by(batch) {
+        let parts =
+            c.context
+                .map_tasks(Level::Kpts, &mut states, batch.min(nk - first), |_, i| {
+                    let k = first + i;
+                    let weight = c.points[k].weight;
+                    shared.with(c, k, |samples, gradients| {
+                        // `[spin][axis][point]` of the current, then `[spin][point]` of tau.
+                        let mut part = vec![0f64; c.spins * 4 * n];
+                        let mut x = vec![C64::new(0., 0.); n];
+                        for s in 0..c.spins {
+                            let d = matrices[s * nk + k].matrix(&c.context)?;
+                            // conj(Phi D)_rb = sum_a conj(Phi_ra) D_ba for a Hermitian D, then
+                            // X_r = sum_b conj(Phi D)_rb G_rb (and the same with G for tau).
+                            let t = complex_product(samples.as_view(), false, d.as_view())?;
+                            for (axis, g) in gradients.iter().enumerate() {
+                                contract(&t, g, &mut x);
+                                let out = &mut part[(s * 3 + axis) * n..(s * 3 + axis + 1) * n];
+                                for (to, x) in out.iter_mut().zip(&x) {
+                                    *to = share * weight * x.im;
+                                }
+                                let u = complex_product(g.as_view(), false, d.as_view())?;
+                                contract(&u, g, &mut x);
+                                let out =
+                                    &mut part[(c.spins * 3 + s) * n..(c.spins * 3 + s + 1) * n];
+                                for (to, x) in out.iter_mut().zip(&x) {
+                                    *to += 0.5 * weight * x.re;
+                                }
+                            }
+                        }
+                        Ok(part)
+                    })
+                })?;
+        for part in parts {
+            for (to, from) in current.iter_mut().zip(&part[..c.spins * 3 * n]) {
+                *to += from;
             }
-            Ok(())
-        })?;
+            for (to, from) in raw.iter_mut().zip(&part[c.spins * 3 * n..]) {
+                *to += from;
+            }
+        }
+    }
+    let mut tau = c.context.allocate::<f64>(c.spins * n)?;
+    for s in 0..c.spins {
+        sym_field(
+            c,
+            &raw[s * n..(s + 1) * n],
+            &mut tau.as_mut_slice()[s * n..(s + 1) * n],
+        );
+    }
+    for value in tau.as_mut_slice() {
+        *value = value.max(0.);
     }
     let mut density = vec![0f64; c.spins * n];
+    let square: f64 = field.iter().map(|a| a * a).sum();
     for s in 0..c.spins {
         for r in 0..n {
+            if square > 0. {
+                // The kinetic fields of the valence in the field; the functional reads per-spin tau
+                // as share * tau.
+                let valence = share * rho[s * n + r];
+                let mut dot = 0.;
+                for (axis, a) in field.iter().enumerate() {
+                    let j = &mut current[(s * 3 + axis) * n + r];
+                    dot += a * *j;
+                    *j += valence * a;
+                }
+                tau.as_mut_slice()[s * n + r] += (dot + 0.5 * valence * square) / share;
+            }
             let n_s = share * rho[s * n + r] + 0.5 * c.core.as_slice()[r];
             density[s * n + r] = n_s;
             if n_s > 0. {
@@ -618,12 +690,24 @@ fn gauge_invariant_kinetic(
         tau,
         current,
         density,
+        field,
     })
 }
 
+/// `x_r = sum_b conj(t_rb) g_rb` of two `n x m` column-major matrices, column by column.
+fn contract(t: &Matrix, g: &Matrix, x: &mut [C64]) {
+    x.fill(C64::new(0., 0.));
+    for (tc, gc) in t.column_iter().zip(g.column_iter()) {
+        for ((to, a), b) in x.iter_mut().zip(tc.iter()).zip(gc.iter()) {
+            *to += a.conj() * b;
+        }
+    }
+}
+
 impl GaugeInvariant {
-    /// Adds `v_tau,s |j_s|^2 / (2 n_s^2)` to the local potential `[spin][point]` and returns the
-    /// weights `(v_tau,s / n_s) j_s` of [`current_operator`], `[spin][axis * n + point]`.
+    /// Adds `v_tau,s |u_s|^2 / (2 n_s^2)` to the local potential `[spin][point]` and returns the
+    /// weights `(v_tau,s / n_s) u_s` of [`meta_operator`], `[spin][axis * n + point]`, with
+    /// `u_s = j_s - n_s A` (the paramagnetic current when there is no field or no partial core).
     fn current_terms(&self, c: &Crystal, v_tau: &[f64], local: &mut [f64]) -> Vec<Vec<f64>> {
         let n = c.grid.index.points();
         (0..c.spins)
@@ -637,7 +721,7 @@ impl GaugeInvariant {
                     let v = v_tau[s * n + r];
                     let mut j2 = 0.;
                     for axis in 0..3 {
-                        let j = self.current[(s * 3 + axis) * n + r];
+                        let j = self.current[(s * 3 + axis) * n + r] - n_s * self.field[axis];
                         j2 += j * j;
                         weights[axis * n + r] = v / n_s * j;
                     }
@@ -647,24 +731,67 @@ impl GaugeInvariant {
             })
             .collect()
     }
+
+    /// `dE_xc / dA` at fixed `D`: `sum_s (dv / share) int v_tau,s (1 - n_v,s / n_s) j_s`, the
+    /// derivative of the `tau~` the functional reads (`(A . j_s + n_v,s A^2 / 2 - |j_s|^2 /
+    /// (2 n_s)) / share` beyond the paramagnetic `tau_s`, `j_s` kinetic); zero without a partial
+    /// core, where `n_v,s = n_s`.
+    fn exchange_correlation_current(&self, c: &Crystal, v_tau: &[f64]) -> [f64; 3] {
+        let n = c.grid.index.points();
+        let share = if c.spins == 1 { 0.5 } else { 1. };
+        let scale = c.grid.index.dv() / share;
+        let mut out = [0f64; 3];
+        for s in 0..c.spins {
+            for r in 0..n {
+                let n_s = self.density[s * n + r];
+                let core = 0.5 * c.core.as_slice()[r];
+                // 1 - n_v,s / n_s; where n_s <= 0 tau~ keeps the kinetic tau alone.
+                let factor = if n_s > 0. { core / n_s } else { 1. };
+                if factor == 0. {
+                    continue;
+                }
+                let v = v_tau[s * n + r];
+                for (axis, to) in out.iter_mut().enumerate() {
+                    *to += scale * v * factor * self.current[(s * 3 + axis) * n + r];
+                }
+            }
+        }
+        out
+    }
 }
 
-/// `F^j_ab = (i/2) sum_axis int w_axis (conj(phi_a) d phi_b - conj(d phi_a) phi_b)` in the Bloch
-/// basis of `point`: `(i/2) (Y - Y^dagger)` with `Y = Phi^dagger diag(w dv) G`.
-fn current_operator(c: &Crystal, k: usize, weights: &[f64], shared: &Gradients) -> Result<Matrix> {
+/// A meta-GGA's operators in the Bloch basis of k-point `k`, from one read of its gradients: the
+/// `tau` operator `1/2 sum_axis int v_tau conj(d phi_a) d phi_b` (the SCF's
+/// `fields::kinetic_operator`) and, with `weights`,
+/// `F^j_ab = (i/2) sum_axis int w_axis (conj(phi_a) d phi_b - conj(d phi_a) phi_b)`, that is
+/// `(i/2) (Y - Y^dagger)` with `Y = Phi^dagger diag(w dv) G`.
+fn meta_operator(
+    c: &Crystal,
+    k: usize,
+    v_tau: &[f64],
+    weights: Option<&[f64]>,
+    shared: &Gradients,
+) -> Result<Matrix> {
     let n = c.grid.index.points();
     let dv = c.grid.index.dv();
+    // `diag(w) G`, column by column.
+    let scaled = |g: &Matrix, w: &dyn Fn(usize) -> f64| {
+        let mut out = g.clone();
+        for mut column in out.column_iter_mut() {
+            for (r, value) in column.iter_mut().enumerate() {
+                *value *= w(r);
+            }
+        }
+        out
+    };
     shared.with(c, k, |samples, gradients| {
         let mut out = Matrix::zeros(c.m, c.m);
         for (axis, g) in gradients.iter().enumerate() {
-            let mut scaled = g.clone();
-            for r in 0..n {
-                let w = C64::new(weights[axis * n + r] * dv, 0.);
-                for b in 0..c.m {
-                    scaled[(r, b)] *= w;
-                }
-            }
-            let y = samples.adjoint() * scaled;
+            let product = scaled(g, &|r| 0.5 * dv * v_tau[r]);
+            out += complex_product(g.as_view(), true, product.as_view())?;
+            let Some(weights) = weights else { continue };
+            let product = scaled(g, &|r| weights[axis * n + r] * dv);
+            let y = complex_product(samples.as_view(), true, product.as_view())?;
             out += (&y - y.adjoint()) * C64::new(0., 0.5);
         }
         Ok(out)
@@ -691,6 +818,10 @@ struct CrystalMap<'a> {
     workspaces: Vec<Option<crate::math::projection::ComplexProjectorWorkspace>>,
     /// A meta-GGA's orbital samples and Bloch gradients, shared by `j` and `F^j`.
     gradients: Gradients,
+    /// `dE_xc / dA` at fixed `D` of the last [`CrystalMap::bare`] build (a meta-GGA with a partial
+    /// core; zero otherwise). The propagator's last build of a step is at the state it returns, so
+    /// the run's current reads it there.
+    xc_current: [f64; 3],
 }
 
 impl<'a> CrystalMap<'a> {
@@ -719,6 +850,7 @@ impl<'a> CrystalMap<'a> {
                 .map(|_| crate::math::projection::ComplexProjectorWorkspace::new(ctx, m, n).ok())
                 .collect(),
             gradients: Gradients::new(crystal, meta)?,
+            xc_current: [0.; 3],
         })
     }
 
@@ -730,8 +862,10 @@ impl<'a> CrystalMap<'a> {
         self.direction.map(|e| a * e)
     }
 
-    /// `H_o[D]` of every channel (no field) and the energy, from the orthonormal-frame densities.
-    fn bare(&mut self, densities: &[Matrix]) -> Result<(Vec<Matrix>, f64)> {
+    /// `H_o[D]` of every channel without the field's one-body terms `A . P + A^2 / 2` and the
+    /// energy, from the orthonormal-frame densities, in the uniform vector potential `field`
+    /// (which only a meta-GGA's kinetic fields read); sets [`CrystalMap::xc_current`].
+    fn bare(&mut self, densities: &[Matrix], field: [f64; 3]) -> Result<(Vec<Matrix>, f64)> {
         let c = self.crystal;
         let ctx = &c.context;
         let nk = c.points.len();
@@ -744,6 +878,7 @@ impl<'a> CrystalMap<'a> {
                 &matrices,
                 rho.as_slice(),
                 &self.gradients,
+                field,
             )?)
         } else {
             None
@@ -756,10 +891,12 @@ impl<'a> CrystalMap<'a> {
             meta.as_ref().map(|m| m.tau.as_slice()),
         )?;
         // The current's share of the Fock matrix (TDDFT_PLAN.md 13.6.1, vera fixes 2 and 3):
-        // d tau~ / d n_s adds v_tau |j_s|^2 / (2 n_s^2) to the local potential, and the weights
-        // (v_tau,s / n_s) j_s give F^j below.
+        // d tau~ / d n_s adds v_tau |u_s|^2 / (2 n_s^2) to the local potential, and the weights
+        // (v_tau,s / n_s) u_s give F^j below; d tau~ / dA gives the exchange-correlation current.
+        self.xc_current = [0.; 3];
         let current_weights = match (meta.as_ref(), potential.kinetic.as_ref()) {
             (Some(meta), Some(v_tau)) => {
+                self.xc_current = meta.exchange_correlation_current(c, v_tau.as_slice());
                 Some(meta.current_terms(c, v_tau.as_slice(), potential.local.as_mut_slice()))
             }
             _ => None,
@@ -798,18 +935,25 @@ impl<'a> CrystalMap<'a> {
             |ws, idx| {
                 let (s, k) = (idx / nk, idx % nk);
                 let point = &c.points[k];
+                // A meta-GGA's tau operator joins F^j on the shared gradients.
+                let shared = meta.is_some();
                 let h = hamiltonian(
                     c,
                     point,
                     &v[s * n..(s + 1) * n],
                     w,
-                    kinetic.map(|t| &t[s * n..(s + 1) * n]),
+                    kinetic.filter(|_| !shared).map(|t| &t[s * n..(s + 1) * n]),
                     operators.map(|o| &o[s]),
                     None,
                     ws.as_mut(),
                 )?;
-                let h = match &current_weights {
-                    Some(weights) => h + current_operator(c, k, &weights[s], gradients)?,
+                let h = match kinetic.filter(|_| shared) {
+                    Some(t) => {
+                        let weights = current_weights.as_ref().map(|w| w[s].as_slice());
+                        let operator =
+                            meta_operator(c, k, &t[s * n..(s + 1) * n], weights, gradients)?;
+                        h + (&operator + operator.adjoint()) * C64::new(0.5, 0.)
+                    }
                     None => h,
                 };
                 let h = point.lowdin.adjoint() * h * &point.lowdin;
@@ -852,10 +996,10 @@ impl<'a> CrystalMap<'a> {
         }
         out
     }
-}
 
-impl FockMap for CrystalMap<'_> {
-    fn evaluate(&mut self, time: f64, densities: &[Matrix]) -> Result<Evaluation> {
+    /// `H_o(k; A)` of every channel and the energy with the field's one-body terms, in the
+    /// uniform vector potential `a`.
+    fn in_field(&mut self, densities: &[Matrix], a: [f64; 3]) -> Result<(Vec<Matrix>, f64)> {
         let nk = self.crystal.points.len();
         let (mut matrices, mut energy) = match &self.frozen {
             Some(frozen) => {
@@ -865,11 +1009,11 @@ impl FockMap for CrystalMap<'_> {
                     .enumerate()
                     .map(|(idx, (d, h))| self.crystal.points[idx % nk].weight * (d * h).trace().re)
                     .sum();
+                self.xc_current = [0.; 3];
                 (frozen.clone(), energy)
             }
-            None => self.bare(densities)?,
+            None => self.bare(densities, a)?,
         };
-        let a = self.field(time);
         let squared: f64 = a.iter().map(|v| v * v).sum();
         let paramagnetic = self.momentum(densities);
         energy += (0..3).map(|axis| a[axis] * paramagnetic[axis]).sum::<f64>()
@@ -885,6 +1029,13 @@ impl FockMap for CrystalMap<'_> {
                 h[(i, i)] += C64::new(0.5 * squared, 0.);
             }
         }
+        Ok((matrices, energy))
+    }
+}
+
+impl FockMap for CrystalMap<'_> {
+    fn evaluate(&mut self, time: f64, densities: &[Matrix]) -> Result<Evaluation> {
+        let (matrices, energy) = self.in_field(densities, self.field(time))?;
         Ok(Evaluation { matrices, energy })
     }
 }
@@ -1080,7 +1231,7 @@ fn prepare_moved(
     let (ground, width) = {
         let mut map = CrystalMap::new(&c, &momenta, request, fixed.direction)?;
         let densities: Vec<Matrix> = channels.iter().map(Channel::density).collect();
-        let (ground, _) = map.bare(&densities)?;
+        let (ground, _) = map.bare(&densities, [0.; 3])?;
         let mut width = 0f64;
         for h in &ground {
             let (levels, _) = eigen(h.clone())?;
@@ -1166,7 +1317,7 @@ fn prepare_on(
         let mut map = CrystalMap::new(&c, &momenta, request, direction)?;
         // The start is the lowest bands of H_o[D_0]: a state that is not its own fixed point
         // would move without a field.
-        let (focks, _) = map.bare(&densities)?;
+        let (focks, _) = map.bare(&densities, [0.; 3])?;
         let mut channels = Vec::with_capacity(tasks);
         let mut width = 0f64;
         let mut stationarity = 0f64;
@@ -1196,7 +1347,7 @@ fn prepare_on(
             });
         }
         let densities: Vec<Matrix> = channels.iter().map(Channel::density).collect();
-        let (ground, ground_energy) = map.bare(&densities)?;
+        let (ground, ground_energy) = map.bare(&densities, [0.; 3])?;
         (channels, ground, ground_energy, width, stationarity)
     };
     if stationarity > 1e-5 {
@@ -1283,12 +1434,83 @@ const AVERAGE: f64 = 80.;
 pub const STATIC_TOLERANCE: f64 = 1e-12;
 /// The iterations the static self-consistency may take at each sign of the field.
 pub const STATIC_ITERATIONS: usize = 300;
+/// The densities the static self-consistency extrapolates from (Pulay's DIIS).
+const STATIC_HISTORY: usize = 8;
+
+/// One DIIS step of the static self-consistency: the combination `sum c_i (d_i + beta r_i)` of
+/// the kept inputs `d_i` and residuals `r_i = F(d_i) - d_i` (each a list of per-point density
+/// matrices) whose residual `sum c_i r_i` is shortest in the Frobenius norm, with
+/// `sum c_i = 1`. With one input, or with linearly dependent residuals (the history then
+/// restarts from the newest), it is linear mixing by `beta`.
+fn diis_step(history: &mut Vec<(Vec<Matrix>, Vec<Matrix>)>, beta: f64) -> Vec<Matrix> {
+    let combine = |coefficients: &[f64], history: &[(Vec<Matrix>, Vec<Matrix>)]| -> Vec<Matrix> {
+        (0..history[0].0.len())
+            .map(|p| {
+                history
+                    .iter()
+                    .zip(coefficients)
+                    .map(|((d, r), c)| (&d[p] + &r[p] * C64::new(beta, 0.)) * C64::new(*c, 0.))
+                    .fold(
+                        Matrix::zeros(history[0].0[p].nrows(), history[0].0[p].ncols()),
+                        |t, x| t + x,
+                    )
+            })
+            .collect()
+    };
+    let m = history.len();
+    if m >= 2 {
+        let mut system = DMatrix::<f64>::zeros(m + 1, m + 1);
+        for i in 0..m {
+            for j in i..m {
+                let value: f64 = history[i]
+                    .1
+                    .iter()
+                    .zip(&history[j].1)
+                    .map(|(a, b)| {
+                        a.iter()
+                            .zip(b.iter())
+                            .map(|(x, y)| (x.conj() * y).re)
+                            .sum::<f64>()
+                    })
+                    .sum();
+                system[(i, j)] = value;
+                system[(j, i)] = value;
+            }
+            system[(i, m)] = 1.;
+            system[(m, i)] = 1.;
+        }
+        let mut rhs = nalgebra::DVector::<f64>::zeros(m + 1);
+        rhs[m] = 1.;
+        if let Some(c) = system
+            .lu()
+            .solve(&rhs)
+            .filter(|c| c.iter().all(|v| v.is_finite()))
+        {
+            return combine(&c.as_slice()[..m], history);
+        }
+        history.drain(..m - 1);
+    }
+    combine(&[1.], history)
+}
+
+/// The grid fields of [`Prepared::kinetic_fields`].
+#[derive(Clone, Debug)]
+pub struct KineticFields {
+    pub valence: Vec<f64>,
+    pub density: Vec<f64>,
+    pub current: Vec<f64>,
+    pub gauge_invariant: Vec<f64>,
+}
 
 /// The static paramagnetic response of [`Prepared::static_response`].
 #[derive(Clone, Copy, Debug)]
 pub struct StaticResponse {
     /// `N_dia e` (Cartesian).
     pub vector: [f64; 3],
+    /// `e . N_dia e` by the energy route: `N - (E(+A_0) + E(-A_0) - 2 E(0)) / A_0^2`, the energy
+    /// of each fixed point with its field terms, flat to second order in `A` for an insulator
+    /// (R9b). Equal to `e . vector` to the `A_0^2` order and the fixed points' tolerance.
+    pub energy: f64,
     /// The iterations the slower of the two signs took.
     pub iterations: usize,
 }
@@ -1318,15 +1540,80 @@ impl Prepared {
         Ok(run)
     }
 
+    /// The oracle of the derivative gates (the adiabatic kernel): at the orthonormal-frame
+    /// `densities` (index `s * nk + k`, any Hermitian matrices) in the uniform vector potential
+    /// `field`, the matrices `H_o(k; A)` with the field's one-body terms, the energy `E(D, A)` with
+    /// them, and `dE / dA` at fixed `D`, `sum_{s,k} w_k tr[D P_o] + N A + dE_xc / dA` (the run's
+    /// current is `-1 / Omega` of it).
+    pub fn evaluate(
+        &self,
+        densities: &[Matrix],
+        field: [f64; 3],
+    ) -> Result<(Vec<Matrix>, f64, [f64; 3])> {
+        self.check_densities(densities)?;
+        let request = Request::new(self.direction, 1., 1., 1);
+        let mut map = CrystalMap::new(&self.crystal, &self.momenta, &request, self.direction)?;
+        self.crystal.context.run(|| {
+            let (matrices, energy) = map.in_field(densities, field)?;
+            let paramagnetic = map.momentum(densities);
+            let slope = std::array::from_fn(|axis| {
+                paramagnetic[axis] + self.crystal.electrons * field[axis] + map.xc_current[axis]
+            });
+            Ok((matrices, energy, slope))
+        })
+    }
+
+    /// A meta-GGA's grid fields at `densities` in the field `field`, as the build forms them
+    /// (the oracle of the partial core's share of `tau~`), each `[spin][point]` (the current
+    /// `[spin][axis][point]`): the valence `n_v,s`, `n_s` with half the partial core, the kinetic
+    /// current `j_s + n_v,s A` per spin channel (half the total when unpolarized), and `tau~` as
+    /// the functional reads it (for one channel, the total of both spins).
+    pub fn kinetic_fields(&self, densities: &[Matrix], field: [f64; 3]) -> Result<KineticFields> {
+        self.check_densities(densities)?;
+        let c = &self.crystal;
+        if !crate::models::functional(&c.functional)?.requires_tau {
+            return Err(invalid("kinetic_fields needs a meta-GGA crystal"));
+        }
+        c.context.run(|| {
+            let matrices = basis_densities(c, densities)?;
+            let (rho, _) = density(c, &matrices)?;
+            let gradients = Gradients::new(c, true)?;
+            let fields = gauge_invariant_kinetic(c, &matrices, rho.as_slice(), &gradients, field)?;
+            let n = c.grid.index.points();
+            let share = if c.spins == 1 { 0.5 } else { 1. };
+            Ok(KineticFields {
+                valence: (0..c.spins * n)
+                    .map(|i| share * rho.as_slice()[i])
+                    .collect(),
+                density: fields.density,
+                current: fields.current,
+                gauge_invariant: fields.tau.as_slice().to_vec(),
+            })
+        })
+    }
+
+    fn check_densities(&self, densities: &[Matrix]) -> Result<()> {
+        let m = self.crystal.m;
+        if densities.len() != self.channels.len() || densities.iter().any(|d| d.shape() != (m, m)) {
+            return Err(invalid(format!(
+                "one m x m density matrix per (spin, k) channel is needed ({} of {m} x {m})",
+                self.channels.len()
+            )));
+        }
+        Ok(())
+    }
+
     /// The static paramagnetic response `N_dia e` along `request`'s direction by self-consistency
     /// at a fixed field (vera's oracle, R9b): at `A = +-A_0 e` the occupied bands of
     /// `H_o[D] + A . P_o` of every channel are iterated to a fixed point, and
-    /// `N_dia e = -(t(+A_0) - t(-A_0)) / (2 A_0)` with `t_axis = sum_{s,k} w_k tr[D P_o,axis]` (the
+    /// `N_dia e = -(t(+A_0) - t(-A_0)) / (2 A_0)` with `t_axis = sum_{s,k} w_k tr[D P_o,axis]` and,
+    /// for a meta-GGA with a partial core, the exchange-correlation current `dE_xc / dA_axis` (the
     /// static current is `-A_0 (N e - N_dia e) / Omega`). Exact for any kernel at the order the
     /// symmetric pair leaves (`A_0^2`), and the state the adiabatic ramp tends to. The iteration
-    /// takes the new density whole; when the change grows three times in a row the density is
-    /// mixed half and half from then on. It raises when the change is still above
-    /// [`STATIC_TOLERANCE`] after [`STATIC_ITERATIONS`].
+    /// extrapolates from its last [`STATIC_HISTORY`] densities and their changes (DIIS,
+    /// [`diis_step`]), each taken whole; when the change grows three times in a row they are
+    /// taken half from then on. It raises when the change is still above [`STATIC_TOLERANCE`]
+    /// after [`STATIC_ITERATIONS`].
     pub fn static_response(&self, request: &Request) -> Result<StaticResponse> {
         if self.formulation == Formulation::Moved {
             return Err(invalid(
@@ -1370,14 +1657,17 @@ impl Prepared {
             })
         };
         let mut traces = [[0f64; 3]; 2];
+        let mut energies = [0f64; 2];
         let mut iterations = 0usize;
         for (side, sign) in [1f64, -1.].into_iter().enumerate() {
             let a = sign * request.strength;
+            let field = self.direction.map(|e| a * e);
             let mut d = lowest(&self.ground, a)?;
             let (mut previous, mut rising, mut mixing) = (f64::INFINITY, 0usize, 1f64);
             let mut converged = false;
+            let mut history: Vec<(Vec<Matrix>, Vec<Matrix>)> = Vec::with_capacity(STATIC_HISTORY);
             for iteration in 1..=STATIC_ITERATIONS {
-                let (focks, _) = map.bare(&d)?;
+                let (focks, _) = map.bare(&d, field)?;
                 let next = lowest(&focks, a)?;
                 let change = next
                     .iter()
@@ -1389,11 +1679,12 @@ impl Prepared {
                     mixing = 0.5;
                 }
                 previous = change;
-                d = next
-                    .iter()
-                    .zip(&d)
-                    .map(|(x, y)| x * C64::new(mixing, 0.) + y * C64::new(1. - mixing, 0.))
-                    .collect();
+                let residual: Vec<Matrix> = next.iter().zip(&d).map(|(x, y)| x - y).collect();
+                if history.len() == STATIC_HISTORY {
+                    history.remove(0);
+                }
+                history.push((d, residual));
+                d = diis_step(&mut history, mixing);
                 iterations = iterations.max(iteration);
                 if change < STATIC_TOLERANCE {
                     converged = true;
@@ -1406,12 +1697,24 @@ impl Prepared {
                      {STATIC_ITERATIONS} iterations (last density change {previous:.3e})"
                 )));
             }
-            traces[side] = trace(&d);
+            let paramagnetic = trace(&d);
+            let along: f64 = (0..3)
+                .map(|axis| self.direction[axis] * paramagnetic[axis])
+                .sum();
+            energies[side] =
+                map.bare(&d, field)?.1 + a * along + 0.5 * a * a * self.crystal.electrons;
+            // The fixed point's dE/dA less N A: the trace and the build's exchange-correlation
+            // current at this density.
+            traces[side] = std::array::from_fn(|axis| paramagnetic[axis] + map.xc_current[axis]);
         }
+        // `E(0)` from the same map at the start's density (the lowest bands of `H_o[D_0]`).
+        let start = map.bare(&lowest(&self.ground, 0.)?, [0.; 3])?.1;
+        let curvature = (energies[0] + energies[1] - 2. * start) / request.strength.powi(2);
         Ok(StaticResponse {
             vector: std::array::from_fn(|axis| {
                 -(traces[0][axis] - traces[1][axis]) / (2. * request.strength)
             }),
+            energy: self.crystal.electrons - curvature,
             iterations,
         })
     }
@@ -1533,8 +1836,10 @@ impl Prepared {
             let map = propagator.map();
             let a = map.field(time);
             let paramagnetic = map.momentum(&propagator.densities());
-            let j: [f64; 3] =
-                std::array::from_fn(|axis| -(paramagnetic[axis] + electrons * a[axis]) / volume);
+            // -dE/dA / Omega at the state of the propagator's last build (this one).
+            let j: [f64; 3] = std::array::from_fn(|axis| {
+                -(paramagnetic[axis] + electrons * a[axis] + map.xc_current[axis]) / volume
+            });
             let along: f64 = (0..3).map(|axis| j[axis] * direction[axis]).sum();
             let potential: f64 = (0..3).map(|axis| a[axis] * direction[axis]).sum();
             let corrected = match self.formulation {

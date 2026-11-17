@@ -2,7 +2,7 @@ use mandacaru_core::{
     execution,
     math::storage::Precision,
     persistence::{self, Document, CHECKPOINT},
-    quantum::{CachedProblem, Encoding, Operator, SolveOptions, C64},
+    quantum::{Encoding, Operator, QuantumProblem, SolveOptions, C64},
     Context, Error,
 };
 use serde_json::json;
@@ -90,7 +90,7 @@ fn both_native_solvers_resume_their_owned_snapshots() {
             ],
         )
         .unwrap();
-        let problem = CachedProblem::new(
+        let problem = QuantumProblem::new(
             &ctx,
             Encoding::new("jordan_wigner", 4, [1, 0]).unwrap(),
             h,
@@ -139,7 +139,7 @@ fn a_checkpoint_states_its_lineage_and_a_hamiltonian_snapshot_has_none() {
             ],
         )
         .unwrap();
-        let problem = CachedProblem::new(
+        let problem = QuantumProblem::new(
             &ctx,
             Encoding::new("jordan_wigner", 4, [1, 0]).unwrap(),
             h,

@@ -1,8 +1,9 @@
 //! An independent build of K(k): a direct Fourier sum of the pair densities at the wave
 //! vector `Q` of each grid index, with the compensation charges from the raw definition
 //! (explicit loops over projectors and channels), no FFT, no `pair_shapes`, no `moments`.
-//! Only the kernel values, the Bloch squares and the shape transforms are shared with the
-//! code under test (each has its own gate elsewhere).
+//! Only the kernel values, the Bloch squares, the alias sets of the grid's lattice operations and
+//! the shape transforms are shared with the code under test (each has its own gate elsewhere: the
+//! alias sets in `tests/reciprocal.rs`).
 use super::Matrix;
 use mandacaru_core::{
     math::{fft::frequency, linalg::eigen, reciprocal},
@@ -71,6 +72,7 @@ pub fn exchange(
             source.k[2] - point.k[2],
         ];
         let squares = reciprocal::bloch(&c.context, &c.grid, k_diff).unwrap();
+        let aliases = reciprocal::shifted_aliases(&c.context, &c.grid, k_diff).unwrap();
         let kappa = binv * Vector3::from(k_diff);
         for (state, &occupation) in values.iter().enumerate() {
             if occupation <= 1e-10 {
@@ -166,9 +168,26 @@ pub fn exchange(
                 let mut hats =
                     vec![Complex64::default(); compensation.map_or(0, |s| s.sites.channels.len())];
                 if let Some(comp) = compensation {
-                    comp.shapes
-                        .transforms(comp.sites, &[wave.into()], &mut hats, 1)
-                        .unwrap();
+                    // An index the grid's lattice operations give several aliases (a face of the
+                    // box, the edge of a skewed box) is the weighted mean of them, each with its
+                    // own origin phase relative to the grid sum's `G`; the first is `wrapped`.
+                    let (images, weights) = aliases.of(at);
+                    assert!(
+                        (0..3).all(|a| (images[0][a] - wrapped[a]).abs() < 1e-12),
+                        "the first alias is the wrapped vector"
+                    );
+                    for (image, weight) in images.iter().zip(weights) {
+                        let wave_image = b * Vector3::from(*image);
+                        let g_image = wave_image - Vector3::from(k_diff);
+                        let shift = (g_image - g).dot(&Vector3::from(c.grid.origin));
+                        let mut image_hats = vec![Complex64::default(); hats.len()];
+                        comp.shapes
+                            .transforms(comp.sites, &[wave_image.into()], &mut image_hats, 1)
+                            .unwrap();
+                        for (hat, image) in hats.iter_mut().zip(&image_hats) {
+                            *hat += image * Complex64::from_polar(*weight, shift);
+                        }
+                    }
                     if let (Some(alias), true) = (comp.alias_hats, k_diff == [0.; 3]) {
                         for (a, hat) in hats.iter_mut().enumerate() {
                             *hat = alias[a * n + at];

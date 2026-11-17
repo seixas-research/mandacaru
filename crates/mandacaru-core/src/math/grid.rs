@@ -276,7 +276,9 @@ pub fn cell_center(cell: &[f64; 9]) -> [f64; 3] {
 /// whose vectors are the columns of `a` come out as the columns.
 pub fn reciprocal_matrix(a: &[f64; 9]) -> Result<[f64; 9]> {
     let a = Matrix3::from_row_slice(a);
-    let inv = a.try_inverse().ok_or_else(|| invalid("singular lattice matrix"))?;
+    let inv = a
+        .try_inverse()
+        .ok_or_else(|| invalid("singular lattice matrix"))?;
     let b = inv.transpose() * (2.0 * std::f64::consts::PI);
     Ok(std::array::from_fn(|k| b[(k / 3, k % 3)]))
 }

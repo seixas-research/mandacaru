@@ -2,7 +2,7 @@
 //! shared-prefix importances and of the deferred gradient.
 use mandacaru_core::{
     math::storage::Precision,
-    quantum::{CachedProblem, Encoding, Operator, C64},
+    quantum::{Encoding, Operator, QuantumProblem, C64},
     Context,
 };
 
@@ -49,11 +49,11 @@ pub fn problem(
     electrons: [usize; 2],
     operators: usize,
     precision: Precision,
-) -> (CachedProblem, Vec<usize>, Vec<f64>) {
+) -> (QuantumProblem, Vec<usize>, Vec<f64>) {
     let ctx = Context::new(Some(threads), 1 << 30).unwrap();
     let encoding = Encoding::new("jordan_wigner", modes, electrons).unwrap();
     let h = hubbard(&ctx, &encoding, modes / 2);
-    let mut problem = CachedProblem::new(&ctx, encoding, h, true, false, true)
+    let mut problem = QuantumProblem::new(&ctx, encoding, h, true, false, true)
         .unwrap()
         .with_precision(precision);
     let pool = mandacaru_core::quantum::pools::build(&ctx, &problem.encoding, "ceo", true).unwrap();

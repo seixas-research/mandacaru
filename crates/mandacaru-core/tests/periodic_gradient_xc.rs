@@ -44,7 +44,11 @@ struct Case {
 
 impl Case {
     fn library(&self) -> &'static str {
-        if self.spinor { "pbe-fr" } else { "pbe-sr" }
+        if self.spinor {
+            "pbe-fr"
+        } else {
+            "pbe-sr"
+        }
     }
 }
 
@@ -58,7 +62,11 @@ fn input(case: &Case, files: Vec<(String, String)>) -> SetupInput {
         grid_shape: [8, 9, 10],
         atoms: (0..2)
             .map(|i| AtomSpec {
-                species: if case.symbols[i] == case.symbols[0] { 0 } else { 1 },
+                species: if case.symbols[i] == case.symbols[0] {
+                    0
+                } else {
+                    1
+                },
                 symbol: case.symbols[i].into(),
                 fractional: case.fractional[i],
                 moment: case.moments[i],
@@ -88,33 +96,58 @@ fn check(case: &Case) -> f64 {
     if case.symbols[1] != case.symbols[0] {
         species.push(case.symbols[1]);
     }
-    let root = std::path::PathBuf::from(std::env::var_os("MANDACARU_PAW_PATH").unwrap()).join(case.library());
+    let root = std::path::PathBuf::from(std::env::var_os("MANDACARU_PAW_PATH").unwrap())
+        .join(case.library());
     let files: Vec<_> = species
         .iter()
         .map(|symbol| {
             let path = root.join(format!("{symbol}.parquet"));
-            (path.to_string_lossy().into_owned(), dataset_content_sha256(&ctx, &path).unwrap())
+            (
+                path.to_string_lossy().into_owned(),
+                dataset_content_sha256(&ctx, &path).unwrap(),
+            )
         })
         .collect();
-    let datasets: Vec<_> = species.iter().map(|s| Arc::new(dataset(&ctx, case.library(), s))).collect();
+    let datasets: Vec<_> = species
+        .iter()
+        .map(|s| Arc::new(dataset(&ctx, case.library(), s)))
+        .collect();
     let base = input(case, files);
     let options = Options {
         tolerance: 1e-12,
         density_tolerance: 1e-10,
         ..Options::default()
     };
-    let crystal = create_setup(&ctx, base.clone(), datasets.clone()).unwrap().build(&ctx).unwrap();
-    assert_eq!(crystal.spinor, case.spinor, "{}: the crystal's spinor flag", case.label);
+    let crystal = create_setup(&ctx, base.clone(), datasets.clone())
+        .unwrap()
+        .build(&ctx)
+        .unwrap();
+    assert_eq!(
+        crystal.spinor, case.spinor,
+        "{}: the crystal's spinor flag",
+        case.label
+    );
     let result = crystal.solve(&options).unwrap();
-    assert!(result.converged, "{}: the reference SCF did not converge", case.label);
+    assert!(
+        result.converged,
+        "{}: the reference SCF did not converge",
+        case.label
+    );
     let forces = response::forces(&crystal, &result).unwrap();
     // Atom 0, Cartesian x: a fractional step along a1 = (8, 0, 0) Bohr.
     let energy = |h: f64| {
         let mut displaced = base.clone();
         displaced.atoms[0].fractional[0] += h / 8.;
-        let moved = create_setup(&ctx, displaced, datasets.clone()).unwrap().build(&ctx).unwrap();
+        let moved = create_setup(&ctx, displaced, datasets.clone())
+            .unwrap()
+            .build(&ctx)
+            .unwrap();
         let state = moved.solve(&options).unwrap();
-        assert!(state.converged, "{}: a displaced SCF did not converge", case.label);
+        assert!(
+            state.converged,
+            "{}: a displaced SCF did not converge",
+            case.label
+        );
         state.free_energy
     };
     let h = case.step;
@@ -129,16 +162,35 @@ fn check(case: &Case) -> f64 {
         miss * TO_EV_PER_A,
         started.elapsed().as_secs_f64()
     );
-    assert!(oracle.abs() > 100. * GATE, "{}: the oracle {oracle:e} is not above its gate", case.label);
+    assert!(
+        oracle.abs() > 100. * GATE,
+        "{}: the oracle {oracle:e} is not above its gate",
+        case.label
+    );
     // The meta-GGA terms are not vacuous: dropping P6 alone would miss the oracle by far more
     // than the gate (E6 is reported; it vanishes for a species without a partial core).
     let breakdown = response::breakdown(&crystal, &result).unwrap();
-    let (p6, e6) = (breakdown.kinetic_density[0][0], breakdown.core_kinetic[0][0]);
-    eprintln!("{}: P6 kinetic_density {p6:+.3e}, E6 core_kinetic {e6:+.3e} Ha/Bohr (atom 0, x)", case.label);
+    let (p6, e6) = (
+        breakdown.kinetic_density[0][0],
+        breakdown.core_kinetic[0][0],
+    );
+    eprintln!(
+        "{}: P6 kinetic_density {p6:+.3e}, E6 core_kinetic {e6:+.3e} Ha/Bohr (atom 0, x)",
+        case.label
+    );
     if case.functional.starts_with("r2scan") {
-        assert!(p6.abs() > 100. * GATE, "{}: P6 {p6:e} is too small to be tested", case.label);
+        assert!(
+            p6.abs() > 100. * GATE,
+            "{}: P6 {p6:e} is too small to be tested",
+            case.label
+        );
     } else {
-        assert_eq!((p6, e6), (0., 0.), "{}: a GGA has no meta-GGA term", case.label);
+        assert_eq!(
+            (p6, e6),
+            (0., 0.),
+            "{}: a GGA has no meta-GGA term",
+            case.label
+        );
     }
     assert!(miss < GATE, "{}: {miss:e} against {GATE:e}", case.label);
     forces[0][0]
@@ -151,9 +203,13 @@ fn force_of(case: &Case) -> f64 {
     if case.symbols[1] != case.symbols[0] {
         species.push(case.symbols[1]);
     }
-    let datasets: Vec<_> = species.iter().map(|s| Arc::new(dataset(&ctx, case.library(), s))).collect();
+    let datasets: Vec<_> = species
+        .iter()
+        .map(|s| Arc::new(dataset(&ctx, case.library(), s)))
+        .collect();
     // Forces read the datasets again, so the request carries their files and digests.
-    let root = std::path::PathBuf::from(std::env::var_os("MANDACARU_PAW_PATH").unwrap()).join(case.library());
+    let root = std::path::PathBuf::from(std::env::var_os("MANDACARU_PAW_PATH").unwrap())
+        .join(case.library());
     let files: Vec<_> = species
         .iter()
         .map(|symbol| {
@@ -162,8 +218,15 @@ fn force_of(case: &Case) -> f64 {
             (path.to_string_lossy().into_owned(), digest)
         })
         .collect();
-    let crystal = create_setup(&ctx, input(case, files), datasets).unwrap().build(&ctx).unwrap();
-    let options = Options { tolerance: 1e-11, density_tolerance: 1e-9, ..Options::default() };
+    let crystal = create_setup(&ctx, input(case, files), datasets)
+        .unwrap()
+        .build(&ctx)
+        .unwrap();
+    let options = Options {
+        tolerance: 1e-11,
+        density_tolerance: 1e-9,
+        ..Options::default()
+    };
     let result = crystal.solve(&options).unwrap();
     assert!(result.converged);
     response::forces(&crystal, &result).unwrap()[0][0]
@@ -203,22 +266,40 @@ fn a_spin_polarized_r2scan_crystal_force_is_the_reconverged_finite_difference() 
 /// (a gate on a functional that silently dropped it would pass for the plain GGA).
 fn nonlocal_is_present(case: &Case) {
     let mut plain = Case { ..*case };
-    plain.functional = if case.functional.starts_with("r2scan") { "r2scan" } else { "pbe" };
+    plain.functional = if case.functional.starts_with("r2scan") {
+        "r2scan"
+    } else {
+        "pbe"
+    };
     let energy = |c: &Case| {
         let ctx = context();
         let mut species: Vec<&str> = vec![c.symbols[0]];
         if c.symbols[1] != c.symbols[0] {
             species.push(c.symbols[1]);
         }
-        let datasets: Vec<_> = species.iter().map(|s| Arc::new(dataset(&ctx, c.library(), s))).collect();
+        let datasets: Vec<_> = species
+            .iter()
+            .map(|s| Arc::new(dataset(&ctx, c.library(), s)))
+            .collect();
         let mut plain_input = input(c, Vec::new());
         plain_input.dataset_files = None; // an energy comparison: no provenance needed
-        let crystal = create_setup(&ctx, plain_input, datasets).unwrap().build(&ctx).unwrap();
+        let crystal = create_setup(&ctx, plain_input, datasets)
+            .unwrap()
+            .build(&ctx)
+            .unwrap();
         crystal.solve(&Options::default()).unwrap().free_energy
     };
     let (with, without) = (energy(case), energy(&plain));
-    eprintln!("{}: E - E(no rVV10) = {:+.6e} Ha", case.label, with - without);
-    assert!((with - without).abs() > 1e-4, "{}: the rVV10 energy is missing", case.label);
+    eprintln!(
+        "{}: E - E(no rVV10) = {:+.6e} Ha",
+        case.label,
+        with - without
+    );
+    assert!(
+        (with - without).abs() > 1e-4,
+        "{}: the rVV10 energy is missing",
+        case.label
+    );
 }
 
 #[test]
@@ -304,9 +385,20 @@ fn a_spin_orbit_r2scan_crystal_force_is_the_reconverged_finite_difference() {
         step: 1.25e-4,
     };
     let soc = check(&case);
-    let scalar = force_of(&Case { spinor: false, ..case });
-    eprintln!("{}: F(SOC) - F(scalar) = {:+.3e} Ha/Bohr", case.label, soc - scalar);
-    assert!((soc - scalar).abs() > 100. * GATE, "{}: the spin-orbit term is not tested", case.label);
+    let scalar = force_of(&Case {
+        spinor: false,
+        ..case
+    });
+    eprintln!(
+        "{}: F(SOC) - F(scalar) = {:+.3e} Ha/Bohr",
+        case.label,
+        soc - scalar
+    );
+    assert!(
+        (soc - scalar).abs() > 100. * GATE,
+        "{}: the spin-orbit term is not tested",
+        case.label
+    );
 }
 
 #[test]
@@ -328,9 +420,20 @@ fn a_spin_orbit_pbe_rvv10_crystal_force_is_the_reconverged_finite_difference() {
     };
     nonlocal_is_present(&case);
     let soc = check(&case);
-    let scalar = force_of(&Case { spinor: false, ..case });
-    eprintln!("{}: F(SOC) - F(scalar) = {:+.3e} Ha/Bohr", case.label, soc - scalar);
-    assert!((soc - scalar).abs() > 100. * GATE, "{}: the spin-orbit term is not tested", case.label);
+    let scalar = force_of(&Case {
+        spinor: false,
+        ..case
+    });
+    eprintln!(
+        "{}: F(SOC) - F(scalar) = {:+.3e} Ha/Bohr",
+        case.label,
+        soc - scalar
+    );
+    assert!(
+        (soc - scalar).abs() > 100. * GATE,
+        "{}: the spin-orbit term is not tested",
+        case.label
+    );
 }
 
 /// A step scan of the central difference of atom 0 along x: whether the oracle of a case is in its
@@ -341,7 +444,11 @@ fn step_scan() {
     use mandacaru_core::paw::digest::dataset_content_sha256;
     for spinor in [false, true] {
         let case = Case {
-            label: if spinor { "AuH SOC r2SCAN" } else { "AuH r2SCAN" },
+            label: if spinor {
+                "AuH SOC r2SCAN"
+            } else {
+                "AuH r2SCAN"
+            },
             symbols: ["Au", "H"],
             fractional: [[0.1, 0.2, 0.3], [0.35, 0.4, 0.45]],
             moments: [0., 0.],
@@ -351,35 +458,55 @@ fn step_scan() {
             step: 1.25e-4,
         };
         let ctx = context();
-        let root = std::path::PathBuf::from(std::env::var_os("MANDACARU_PAW_PATH").unwrap()).join(case.library());
+        let root = std::path::PathBuf::from(std::env::var_os("MANDACARU_PAW_PATH").unwrap())
+            .join(case.library());
         let files: Vec<_> = ["Au", "H"]
             .iter()
             .map(|s| {
                 let path = root.join(format!("{s}.parquet"));
-                (path.to_string_lossy().into_owned(), dataset_content_sha256(&ctx, &path).unwrap())
+                (
+                    path.to_string_lossy().into_owned(),
+                    dataset_content_sha256(&ctx, &path).unwrap(),
+                )
             })
             .collect();
-        let datasets: Vec<_> = ["Au", "H"].iter().map(|s| Arc::new(dataset(&ctx, case.library(), s))).collect();
+        let datasets: Vec<_> = ["Au", "H"]
+            .iter()
+            .map(|s| Arc::new(dataset(&ctx, case.library(), s)))
+            .collect();
         let base = input(&case, files);
-        let options = Options { tolerance: 1e-12, density_tolerance: 1e-10, ..Options::default() };
+        let options = Options {
+            tolerance: 1e-12,
+            density_tolerance: 1e-10,
+            ..Options::default()
+        };
         let energy = |h: f64| {
             let mut displaced = base.clone();
             displaced.atoms[0].fractional[0] += h / 8.;
-            let moved = create_setup(&ctx, displaced, datasets.clone()).unwrap().build(&ctx).unwrap();
+            let moved = create_setup(&ctx, displaced, datasets.clone())
+                .unwrap()
+                .build(&ctx)
+                .unwrap();
             let state = moved.solve(&options).unwrap();
             assert!(state.converged);
             state.free_energy
         };
-        let crystal = create_setup(&ctx, base.clone(), datasets.clone()).unwrap().build(&ctx).unwrap();
+        let crystal = create_setup(&ctx, base.clone(), datasets.clone())
+            .unwrap()
+            .build(&ctx)
+            .unwrap();
         let result = crystal.solve(&options).unwrap();
         let analytic = response::forces(&crystal, &result).unwrap()[0][0];
         for h in [1e-3, 5e-4, 2.5e-4, 1.25e-4, 6.25e-5] {
             let central = -(energy(h) - energy(-h)) / (2. * h);
-            eprintln!("{}: h {h:.1e} central {central:+.10e}, analytic {analytic:+.10e}, diff {:+.2e}", case.label, central - analytic);
+            eprintln!(
+                "{}: h {h:.1e} central {central:+.10e}, analytic {analytic:+.10e}, diff {:+.2e}",
+                case.label,
+                central - analytic
+            );
         }
     }
 }
-
 
 #[test]
 #[ignore = "slow: 12 s (measured 2026-11-09); run: cargo test --profile release-test -p mandacaru-core --test periodic_gradient_xc -- --ignored a_magnetic_spinor_r2scan"]
@@ -398,9 +525,21 @@ fn a_magnetic_spinor_r2scan_crystal_force_is_the_reconverged_finite_difference()
         step: 2e-3,
     };
     let spinor = check(&case);
-    let collinear = force_of(&Case { spin: true, spinor: false, ..case });
-    eprintln!("{}: F(spinor) - F(UKS) = {:+.3e} Ha/Bohr", case.label, spinor - collinear);
-    assert!((spinor - collinear).abs() < GATE, "{}: the spinor force is not the UKS one", case.label);
+    let collinear = force_of(&Case {
+        spin: true,
+        spinor: false,
+        ..case
+    });
+    eprintln!(
+        "{}: F(spinor) - F(UKS) = {:+.3e} Ha/Bohr",
+        case.label,
+        spinor - collinear
+    );
+    assert!(
+        (spinor - collinear).abs() < GATE,
+        "{}: the spinor force is not the UKS one",
+        case.label
+    );
 }
 
 /// MG-F8 5a: three hydrogen atoms with weakly coupled, noncollinear moments (`triangle_input`),
@@ -423,13 +562,25 @@ fn triangle_force(core: bool, largest_step: f64) {
     let species = triangle_species(&ctx, core);
     let (files, datasets) = (species.files.clone(), species.datasets.clone());
     let base = triangle_input(files, Matrix3::zeros());
-    let options = Options { tolerance: 1e-12, density_tolerance: 1e-9, max_iterations: 1000, ..Options::default() };
+    let options = Options {
+        tolerance: 1e-12,
+        density_tolerance: 1e-9,
+        max_iterations: 1000,
+        ..Options::default()
+    };
     let crystal = textured_triangle(&ctx, &base, &datasets);
     let result = crystal.solve(&options).unwrap();
     assert!(result.converged, "the reference SCF did not converge");
     let turn = frame_turn(result.density.as_slice());
-    eprintln!("H3{}: the magnetization axis turns by {turn:.3} rad, {} iterations", if core { " with a core" } else { "" }, result.history.len());
-    assert!(turn > 1., "the magnetization axis turns by {turn:e} rad: not a noncollinear texture");
+    eprintln!(
+        "H3{}: the magnetization axis turns by {turn:.3} rad, {} iterations",
+        if core { " with a core" } else { "" },
+        result.history.len()
+    );
+    assert!(
+        turn > 1.,
+        "the magnetization axis turns by {turn:e} rad: not a noncollinear texture"
+    );
     let breakdown = response::breakdown(&crystal, &result).unwrap();
     let forces = breakdown.forces();
     // Atom 0 along x, atom 1 along y, atom 2 along z (Cartesian); with a core the components where
@@ -442,17 +593,28 @@ fn triangle_force(core: bool, largest_step: f64) {
     };
     if core {
         let peak = crystal.core.as_slice().iter().cloned().fold(0., f64::max);
-        assert!(peak > 0.035, "the synthetic core is not in the crystal: peak {peak:e}");
+        assert!(
+            peak > 0.035,
+            "the synthetic core is not in the crystal: peak {peak:e}"
+        );
         // E5 and E6 are live, and a grid proxy of the Pauli expression's gap (`pauli_core_force_gap`)
         // is above three gates.
         for (atom, direction) in components {
             let e5: f64 = (0..3).map(|c| breakdown.core[atom][c] * direction[c]).sum();
-            let e6: f64 = (0..3).map(|c| breakdown.core_kinetic[atom][c] * direction[c]).sum();
-            assert!(e5.abs() > 100. * GATE && e6.abs() > 100. * GATE, "atom {atom}: E5 {e5:e} and E6 {e6:e} are too small to be tested");
+            let e6: f64 = (0..3)
+                .map(|c| breakdown.core_kinetic[atom][c] * direction[c])
+                .sum();
+            assert!(
+                e5.abs() > 100. * GATE && e6.abs() > 100. * GATE,
+                "atom {atom}: E5 {e5:e} and E6 {e6:e} are too small to be tested"
+            );
         }
         let gap = pauli_core_force_gap(&crystal, &result);
         eprintln!("H3 with a core: the Pauli-channel core term would move the translation force by {:+.3e} {:+.3e} {:+.3e} Ha/Bohr", gap[0], gap[1], gap[2]);
-        assert!(gap.iter().cloned().fold(0., |m: f64, g| m.max(g.abs())) > 3. * GATE, "the Pauli-channel expression is as good as the exact one: {gap:?}");
+        assert!(
+            gap.iter().cloned().fold(0., |m: f64, g| m.max(g.abs())) > 3. * GATE,
+            "the Pauli-channel expression is as good as the exact one: {gap:?}"
+        );
     }
     let inverse = base.lattice.try_inverse().unwrap();
     let mut worst = 0f64;
@@ -476,7 +638,10 @@ fn triangle_force(core: bool, largest_step: f64) {
         let analytic: f64 = (0..3).map(|c| forces[atom][c] * direction[c]).sum();
         let miss = (analytic - oracle).abs();
         eprintln!("H3 atom {atom} along {direction:?}: force {analytic:+.10e}, oracle {oracle:+.10e} (central {coarse:+.10e} / {fine:+.10e}), miss {miss:.2e} Ha/Bohr; {:.0} s", started.elapsed().as_secs_f64());
-        assert!(oracle.abs() > 100. * GATE, "the oracle {oracle:e} is not above its gate");
+        assert!(
+            oracle.abs() > 100. * GATE,
+            "the oracle {oracle:e} is not above its gate"
+        );
         worst = worst.max(miss);
         // Every component is printed before the first failure stops the test.
         if miss >= GATE {
@@ -488,12 +653,14 @@ fn triangle_force(core: bool, largest_step: f64) {
 
 #[test]
 #[ignore = "slow: 49 s (measured 2026-11-16); run: cargo test --profile release-test -p mandacaru-core --test periodic_gradient_xc -- --ignored a_hydrogen_triangle"]
-fn a_hydrogen_triangle_noncollinear_spinor_r2scan_crystal_force_is_the_reconverged_finite_difference() {
+fn a_hydrogen_triangle_noncollinear_spinor_r2scan_crystal_force_is_the_reconverged_finite_difference(
+) {
     triangle_force(false, 1e-3);
 }
 
 #[test]
 #[ignore = "slow: 129 s (measured 2026-11-16 on a loaded machine); run: cargo test --profile release-test -p mandacaru-core --test periodic_gradient_xc -- --ignored a_cored_hydrogen_triangle"]
-fn a_cored_hydrogen_triangle_noncollinear_spinor_r2scan_crystal_force_is_the_reconverged_finite_difference() {
+fn a_cored_hydrogen_triangle_noncollinear_spinor_r2scan_crystal_force_is_the_reconverged_finite_difference(
+) {
     triangle_force(true, 1.25e-4);
 }

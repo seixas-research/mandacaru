@@ -77,14 +77,14 @@ def test_refusals_name_what_is_missing():
 BOHR = 0.529177210903
 
 
-def chain(tmp_path=None):
+def chain(tmp_path=None, **options):
     """H2 (1.4 Bohr bond) along x in a 6 x 8 x 8 Bohr cell: a centrosymmetric insulator."""
     atoms = Atoms("H2", positions=[[2.3 * BOHR, 4.0 * BOHR, 4.0 * BOHR],
                                    [3.7 * BOHR, 4.0 * BOHR, 4.0 * BOHR]],
                   cell=[6.0 * BOHR, 8.0 * BOHR, 8.0 * BOHR], pbc=True)
     settings = dict(method="dft", xc="lda", basis={"name": "PAW-LCAO", "size": "SZ"},
                     grid_spacing=0.4 * BOHR, kpts={"size": (1, 1, 1), "gamma": True},
-                    smearing={"method": "fermi-dirac", "width": 0.01}, trace=False)
+                    smearing={"method": "fermi-dirac", "width": 0.01}, trace=False, **options)
     if tmp_path is not None:
         settings["txt"] = str(tmp_path / "run.log")
     atoms.calc = Mandacaru(**settings)
@@ -142,6 +142,22 @@ def test_r2scan_propagates_with_the_gauge_invariant_kinetic_density():
     rt = hydrogen(xc="r2scan").calc.get_real_time(duration=0.5, time_step=0.01, direction="z")
     assert rt.functional == "r2scan" and rt.worst_norm_error < 1e-10 and rt.energy_drift < 0.05
     assert np.all(np.isfinite(rt.dipole))
+
+
+def test_a_spin_orbit_crystal_has_its_dielectric_function_and_excitons():
+    """The H2 chain on a spin-orbit dataset (a spinor crystal) has a dielectric function, its
+    momentum matrix carrying the spin-orbit velocity (gated in Rust on solid xenon): hydrogen's
+    coupling is negligible, so its tensor is the collinear chain's; its excitons are spinor
+    pairs, ``spin="singlet"`` only."""
+    energies = [0.0, 10.0, 20.0]
+    collinear = chain().calc.get_dielectric_function(energies, damping=1.0)
+    spinor = chain(paw_dataset="lda-fr")
+    view = spinor.calc.get_dielectric_function(energies, damping=1.0)
+    assert np.allclose(view.tensor, collinear.tensor, rtol=1e-6, atol=1e-8)
+    excitons = spinor.calc.get_excitations(4)
+    assert excitons.transitions == 4 * chain().calc.get_excitations(1).transitions
+    with pytest.raises(ValueError, match="singlet"):
+        spinor.calc.get_excitations(1, spin="triplet")
 
 
 def test_a_crystal_has_a_frequency_domain_dielectric_function(tmp_path):

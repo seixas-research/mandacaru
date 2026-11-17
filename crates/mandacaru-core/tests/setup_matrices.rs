@@ -28,29 +28,63 @@ fn fused_projector_products_match_general_complex_matrix_products() {
     use num_complex::Complex64;
     let ctx = context();
     let (m, p) = (3, 4);
-    let c = DMatrix::from_fn(m, p, |i, j| Complex64::new((i + 2 * j) as f64 * 0.13, (2 * i + j) as f64 * 0.07));
-    let q = DMatrix::from_fn(p, p, |i, j| Complex64::new((i + j) as f64 * 0.11, (i as f64 - j as f64) * 0.03));
-    let d = DMatrix::from_fn(p, p, |i, j| Complex64::new((i * j) as f64 * 0.05, (i + j) as f64 * 0.04));
-    let (actual_q, actual_d) = projector_products(&ctx, m, p,
-        |i, j| c[(i, j)], |i, j| q[(i, j)], |i, j| d[(i, j)]).unwrap();
+    let c = DMatrix::from_fn(m, p, |i, j| {
+        Complex64::new((i + 2 * j) as f64 * 0.13, (2 * i + j) as f64 * 0.07)
+    });
+    let q = DMatrix::from_fn(p, p, |i, j| {
+        Complex64::new((i + j) as f64 * 0.11, (i as f64 - j as f64) * 0.03)
+    });
+    let d = DMatrix::from_fn(p, p, |i, j| {
+        Complex64::new((i * j) as f64 * 0.05, (i + j) as f64 * 0.04)
+    });
+    let (actual_q, actual_d) = projector_products(
+        &ctx,
+        m,
+        p,
+        |i, j| c[(i, j)],
+        |i, j| q[(i, j)],
+        |i, j| d[(i, j)],
+    )
+    .unwrap();
     assert!((&actual_q - &c * &q * c.adjoint()).norm() < 1e-12);
     assert!((&actual_d - &c * &d * c.adjoint()).norm() < 1e-12);
     let hermitian_q = (&q + q.adjoint()) * Complex64::new(0.5, 0.);
     let hermitian_d = (&d + d.adjoint()) * Complex64::new(0.5, 0.);
-    let (actual_q, actual_d) = projector_products(&ctx, m, p,
-        |i, j| c[(i, j)], |i, j| hermitian_q[(i, j)], |i, j| hermitian_d[(i, j)]).unwrap();
+    let (actual_q, actual_d) = projector_products(
+        &ctx,
+        m,
+        p,
+        |i, j| c[(i, j)],
+        |i, j| hermitian_q[(i, j)],
+        |i, j| hermitian_d[(i, j)],
+    )
+    .unwrap();
     assert!((&actual_q - &c * &hermitian_q * c.adjoint()).norm() < 1e-12);
     assert!((&actual_d - &c * &hermitian_d * c.adjoint()).norm() < 1e-12);
     let mut sparse_q = DMatrix::zeros(p, p);
     let mut sparse_d = DMatrix::zeros(p, p);
     sparse_q[(0, p - 1)] = Complex64::new(0.4, -0.2);
     sparse_d[(p - 1, 0)] = Complex64::new(-0.3, 0.7);
-    let (actual_q, actual_d) = projector_products(&ctx, m, p,
-        |i, j| c[(i, j)], |i, j| sparse_q[(i, j)], |i, j| sparse_d[(i, j)]).unwrap();
+    let (actual_q, actual_d) = projector_products(
+        &ctx,
+        m,
+        p,
+        |i, j| c[(i, j)],
+        |i, j| sparse_q[(i, j)],
+        |i, j| sparse_d[(i, j)],
+    )
+    .unwrap();
     assert!((&actual_q - &c * &sparse_q * c.adjoint()).norm() < 1e-12);
     assert!((&actual_d - &c * &sparse_d * c.adjoint()).norm() < 1e-12);
-    let (empty_q, empty_d) = projector_products(&ctx, m, 0, |_, _| unreachable!(),
-        |_, _| unreachable!(), |_, _| unreachable!()).unwrap();
+    let (empty_q, empty_d) = projector_products(
+        &ctx,
+        m,
+        0,
+        |_, _| unreachable!(),
+        |_, _| unreachable!(),
+        |_, _| unreachable!(),
+    )
+    .unwrap();
     assert_eq!(empty_q.norm(), 0.);
     assert_eq!(empty_d.norm(), 0.);
 }
@@ -61,11 +95,35 @@ fn tiled_projector_products_match_general_complex_matrix_products() {
     use num_complex::Complex64;
     let ctx = context();
     let (m, p) = (32, 96);
-    let c = DMatrix::from_fn(m, p, |i, j| Complex64::new(((i + 2*j) as f64 * 0.13).sin(), ((2*i + j) as f64 * 0.07).cos()));
-    let q = DMatrix::from_fn(p, p, |i, j| if i / 3 == j / 3 { Complex64::new((i+j) as f64 * 0.01, (i as f64-j as f64) * 0.003) } else { Complex64::new(0., 0.) });
-    let d = DMatrix::from_fn(p, p, |i, j| if i == j || (i == 0 && j == p-1) { Complex64::new((i+j) as f64 * 0.005, (i+j) as f64 * 0.002) } else { Complex64::new(0., 0.) });
-    let (actual_q, actual_d) = projector_products(&ctx, m, p,
-        |i, j| c[(i, j)], |i, j| q[(i, j)], |i, j| d[(i, j)]).unwrap();
+    let c = DMatrix::from_fn(m, p, |i, j| {
+        Complex64::new(
+            ((i + 2 * j) as f64 * 0.13).sin(),
+            ((2 * i + j) as f64 * 0.07).cos(),
+        )
+    });
+    let q = DMatrix::from_fn(p, p, |i, j| {
+        if i / 3 == j / 3 {
+            Complex64::new((i + j) as f64 * 0.01, (i as f64 - j as f64) * 0.003)
+        } else {
+            Complex64::new(0., 0.)
+        }
+    });
+    let d = DMatrix::from_fn(p, p, |i, j| {
+        if i == j || (i == 0 && j == p - 1) {
+            Complex64::new((i + j) as f64 * 0.005, (i + j) as f64 * 0.002)
+        } else {
+            Complex64::new(0., 0.)
+        }
+    });
+    let (actual_q, actual_d) = projector_products(
+        &ctx,
+        m,
+        p,
+        |i, j| c[(i, j)],
+        |i, j| q[(i, j)],
+        |i, j| d[(i, j)],
+    )
+    .unwrap();
     assert!(ctx.memory_peak() < 2 * m * p * std::mem::size_of::<Complex64>());
     assert!((&actual_q - &c * &q * c.adjoint()).norm() < 1e-10);
     assert!((&actual_d - &c * &d * c.adjoint()).norm() < 1e-10);
@@ -83,18 +141,17 @@ fn test_kpoint_matrices_properties() {
     let n_atoms = cell.centers.len();
     let potentials: Vec<_> = (0..n_atoms)
         .map(|_| {
-            mandacaru_core::periodic::setup::ions::LocalPotential::new(
-                &ctx,
-                ds.r.as_slice(),
-                ds.v_local.as_slice(),
-                ds.valence_charge,
-                ds.r_cut_local,
-            )
-            .unwrap()
+            mandacaru_core::periodic::setup::ions::LocalPotential::from_dataset(&ctx, &ds).unwrap()
         })
         .collect();
 
-    let grid = SpatialGrid::new([10, 10, 10], [0.; 3], [0.5, 0., 0., 0., 0.5, 0., 0., 0., 0.5], true).unwrap();
+    let grid = SpatialGrid::new(
+        [10, 10, 10],
+        [0.; 3],
+        [0.5, 0., 0., 0., 0.5, 0., 0., 0., 0.5],
+        true,
+    )
+    .unwrap();
 
     let mut channels = Vec::new();
     for a in 0..n_atoms {
@@ -171,7 +228,11 @@ fn test_kpoint_matrices_properties() {
         assert!((&stored[0].fixed - &kp.fixed).norm() < 1e-12);
         let reference = kp.psi.read(&ctx).unwrap();
         let actual = stored[0].psi.read(&archived_ctx).unwrap();
-        let tolerance = if precision == Precision::Float32 { 1e-7 } else { 0. };
+        let tolerance = if precision == Precision::Float32 {
+            1e-7
+        } else {
+            0.
+        };
         for (got, want) in actual.iter().zip(reference.iter()) {
             assert!((got - want).norm() <= tolerance);
         }
@@ -185,14 +246,23 @@ fn test_kpoint_matrices_properties() {
 #[test]
 #[ignore = "slow: 18 s (measured 2026-11-08); run: cargo test --profile release-test -p mandacaru-core --test setup_matrices -- --ignored skew_lih_native_setup_response_matches_active_setup"]
 fn skew_lih_native_setup_response_matches_active_setup() {
-    use mandacaru_core::{paw::digest::dataset_content_sha256, periodic::{response, solver::Options}};
+    use mandacaru_core::{
+        paw::digest::dataset_content_sha256,
+        periodic::{response, solver::Options},
+    };
     let ctx = context();
-    let root = std::path::PathBuf::from(std::env::var_os("MANDACARU_PAW_PATH").unwrap())
-        .join("lda-sr");
-    let files: Vec<_> = ["Li", "H"].iter().map(|symbol| {
-        let path = root.join(format!("{symbol}.parquet"));
-        (path.to_string_lossy().into_owned(), dataset_content_sha256(&ctx, &path).unwrap())
-    }).collect();
+    let root =
+        std::path::PathBuf::from(std::env::var_os("MANDACARU_PAW_PATH").unwrap()).join("lda-sr");
+    let files: Vec<_> = ["Li", "H"]
+        .iter()
+        .map(|symbol| {
+            let path = root.join(format!("{symbol}.parquet"));
+            (
+                path.to_string_lossy().into_owned(),
+                dataset_content_sha256(&ctx, &path).unwrap(),
+            )
+        })
+        .collect();
     let input = SetupInput {
         mesh: None,
         recipes: None,
@@ -200,35 +270,82 @@ fn skew_lih_native_setup_response_matches_active_setup() {
         lattice: Matrix3::from_row_slice(&[8., 1., 0.5, 0., 9., 1., 0., 0., 10.]),
         grid_shape: [8, 9, 10],
         atoms: vec![
-            AtomSpec { species: 1, symbol: "Li".into(), fractional: [0.1, 0.2, 0.3], moment: 0. },
-            AtomSpec { species: 0, symbol: "H".into(), fractional: [0.55, 0.6, 0.7], moment: 0. },
+            AtomSpec {
+                species: 1,
+                symbol: "Li".into(),
+                fractional: [0.1, 0.2, 0.3],
+                moment: 0.,
+            },
+            AtomSpec {
+                species: 0,
+                symbol: "H".into(),
+                fractional: [0.55, 0.6, 0.7],
+                moment: 0.,
+            },
         ],
         kpoints_frac: vec![[-0.25, 0., 0.], [0.25, 0., 0.]],
-        weights: vec![0.5, 0.5], functional: "lda".into(), precision: "float64".into(),
-        basis_size: "SZ".into(), spinor: false, spin: false, symmetry: false,
-        filter_cutoff: None, sigma: None, dataset_files: Some(files), hubbard_u: None,
+        weights: vec![0.5, 0.5],
+        functional: "lda".into(),
+        precision: "float64".into(),
+        basis_size: "SZ".into(),
+        spinor: false,
+        spin: false,
+        symmetry: false,
+        filter_cutoff: None,
+        sigma: None,
+        dataset_files: Some(files),
+        hubbard_u: None,
         charge: None,
     };
-    let datasets = vec![Arc::new(dataset(&ctx, "lda-sr", "H")),
-        Arc::new(dataset(&ctx, "lda-sr", "Li"))];
+    let datasets = vec![
+        Arc::new(dataset(&ctx, "lda-sr", "H")),
+        Arc::new(dataset(&ctx, "lda-sr", "Li")),
+    ];
     let setup = create_setup(&ctx, input.clone(), datasets.clone()).unwrap();
     let crystal = setup.build(&ctx).unwrap();
-    let options = Options { tolerance: 1e-11, density_tolerance: 1e-8, ..Options::default() };
+    let options = Options {
+        tolerance: 1e-11,
+        density_tolerance: 1e-8,
+        ..Options::default()
+    };
     let result = crystal.solve(&options).unwrap();
     assert!(result.converged);
     assert!(crystal.description_unavailable.is_none());
     let forces = response::forces(&crystal, &result).unwrap();
-    let expected = [[-0.0015693448701201258, -0.00041682012015089383, 0.005480404682238612],
-        [-0.0011635448014300955, -0.00167223430420251, -0.004134832194651231]];
+    let expected = [
+        [
+            -0.0015693448701201258,
+            -0.00041682012015089383,
+            0.005480404682238612,
+        ],
+        [
+            -0.0011635448014300955,
+            -0.00167223430420251,
+            -0.004134832194651231,
+        ],
+    ];
     for (got, want) in forces.iter().flatten().zip(expected.iter().flatten()) {
-        assert!((got - want).abs() < 1e-7, "force {got} differs from active setup {want}");
+        assert!(
+            (got - want).abs() < 1e-7,
+            "force {got} differs from active setup {want}"
+        );
     }
     let stress = response::stress(&crystal, &result).unwrap();
-    let expected_stress = [[1.11316890e-4, 2.08964592e-6, 1.31574895e-6],
+    let expected_stress = [
+        [1.11316890e-4, 2.08964592e-6, 1.31574895e-6],
         [2.08964592e-6, 1.78219533e-4, -2.84853462e-6],
-        [1.31574895e-6, -2.84853462e-6, 2.12973502e-4]];
-    for (got, want) in stress.sigma.iter().flatten().zip(expected_stress.iter().flatten()) {
-        assert!((got - want).abs() < 1e-10, "stress {got} differs from active setup {want}");
+        [1.31574895e-6, -2.84853462e-6, 2.12973502e-4],
+    ];
+    for (got, want) in stress
+        .sigma
+        .iter()
+        .flatten()
+        .zip(expected_stress.iter().flatten())
+    {
+        assert!(
+            (got - want).abs() < 1e-10,
+            "stress {got} differs from active setup {want}"
+        );
     }
     // Displace Li in Cartesian x with the lattice and all grid pins fixed.
     let h = 2e-3;
@@ -236,14 +353,20 @@ fn skew_lih_native_setup_response_matches_active_setup() {
     for (energy, sign) in displaced_energy.iter_mut().zip([-1., 1.]) {
         let mut displaced = input.clone();
         displaced.atoms[0].fractional[0] += sign * h / 8.;
-        let moved = create_setup(&ctx, displaced, datasets.clone()).unwrap().build(&ctx).unwrap();
+        let moved = create_setup(&ctx, displaced, datasets.clone())
+            .unwrap()
+            .build(&ctx)
+            .unwrap();
         let state = moved.solve(&options).unwrap();
         assert!(state.converged);
         *energy = state.free_energy;
     }
     let finite_difference = -(displaced_energy[1] - displaced_energy[0]) / (2. * h);
-    assert!((forces[0][0] - finite_difference).abs() < 5e-5,
-        "analytic force {} differs from finite difference {finite_difference}", forces[0][0]);
+    assert!(
+        (forces[0][0] - finite_difference).abs() < 5e-5,
+        "analytic force {} differs from finite difference {finite_difference}",
+        forces[0][0]
+    );
 }
 
 #[test]
@@ -258,32 +381,12 @@ fn test_the_sphere_bloch_sums_k_together_vs_one_by_one() {
     let k_all = [k1, k2];
 
     // Projections together
-    let p_together = spheres::projections(
-        &ctx,
-        &basis.shells,
-        &cell.lattice,
-        &k_all,
-        &projectors,
-    )
-    .unwrap();
+    let p_together =
+        spheres::projections(&ctx, &basis.shells, &cell.lattice, &k_all, &projectors).unwrap();
 
     // Projections one by one
-    let p1 = spheres::projections(
-        &ctx,
-        &basis.shells,
-        &cell.lattice,
-        &[k1],
-        &projectors,
-    )
-    .unwrap();
-    let p2 = spheres::projections(
-        &ctx,
-        &basis.shells,
-        &cell.lattice,
-        &[k2],
-        &projectors,
-    )
-    .unwrap();
+    let p1 = spheres::projections(&ctx, &basis.shells, &cell.lattice, &[k1], &projectors).unwrap();
+    let p2 = spheres::projections(&ctx, &basis.shells, &cell.lattice, &[k2], &projectors).unwrap();
 
     let m = basis.shells.functions();
     let p = projectors.len();
@@ -359,16 +462,29 @@ fn test_periodic_setup_build_and_with_cell() {
     assert!(crystal.kernel.as_slice().len() > 0);
     assert!(crystal.u.as_slice().len() > 0);
     assert!(crystal.ion.as_slice().len() > 0);
-    assert!(crystal.description.is_some(), "crystal description should be populated");
+    assert!(
+        crystal.description.is_some(),
+        "crystal description should be populated"
+    );
     assert!(crystal.description_unavailable.is_none());
     // Each identical atom must receive its own copy of the nonzero monopole
     // operator, even though the setup stores only one Si dataset by species.
     let monopole0 = setup.channels.iter().position(|&c| c == (0, 0, 0)).unwrap();
     let monopole1 = setup.channels.iter().position(|&c| c == (1, 0, 0)).unwrap();
-    let first: Vec<_> = setup.projectors.iter().enumerate()
-        .filter(|(_, p)| p.atom == 0).map(|(i, _)| i).collect();
-    let second: Vec<_> = setup.projectors.iter().enumerate()
-        .filter(|(_, p)| p.atom == 1).map(|(i, _)| i).collect();
+    let first: Vec<_> = setup
+        .projectors
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| p.atom == 0)
+        .map(|(i, _)| i)
+        .collect();
+    let second: Vec<_> = setup
+        .projectors
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| p.atom == 1)
+        .map(|(i, _)| i)
+        .collect();
     assert_eq!(first.len(), second.len());
     let mut largest = 0f64;
     for (&i, &ii) in first.iter().zip(&second) {
@@ -416,7 +532,8 @@ fn test_periodic_setup_build_and_with_cell() {
     let off_mesh = vec![[0.125, 0.25, 0.375]];
     let off_kpoints = setup.matrices_at(&ctx, &off_mesh, &[1.0]).unwrap();
     assert_eq!(off_kpoints.len(), 1);
-    let eye_off = off_kpoints[0].lowdin.adjoint() * &off_kpoints[0].overlap * &off_kpoints[0].lowdin;
+    let eye_off =
+        off_kpoints[0].lowdin.adjoint() * &off_kpoints[0].overlap * &off_kpoints[0].lowdin;
     let id_off = DMatrix::identity(crystal.m, crystal.m);
     assert!((eye_off - id_off).norm() < 1e-10);
 
@@ -437,7 +554,12 @@ fn polarized_hydrogen_setup_builds_crystal_matrices() {
         "atoms": [{"species":0,"symbol":"H","fractional":[0.,0.,0.]}],
         "basis_size": "DZP", "symmetry": false
     });
-    let setup = create_setup(&ctx, mandacaru_core::periodic::setup::parse_input_json(&input).unwrap(), vec![ds]).unwrap();
+    let setup = create_setup(
+        &ctx,
+        mandacaru_core::periodic::setup::parse_input_json(&input).unwrap(),
+        vec![ds],
+    )
+    .unwrap();
     assert_eq!(setup.shells.functions(), 5);
     let crystal = setup.build(&ctx).unwrap();
     assert_eq!(crystal.m, 5);
@@ -479,10 +601,23 @@ fn the_setup_reduces_its_mesh_and_its_description_round_trips() {
     let operations = description.operations.as_ref().unwrap();
     assert_eq!(operations.rotations.len(), crystal.permutations.len());
     let (block, sites) = description.blocks();
-    let labels: Vec<_> = description.channels.iter().map(|&(a, l, m)| serde_json::json!([a, l, m])).collect();
+    let labels: Vec<_> = description
+        .channels
+        .iter()
+        .map(|&(a, l, m)| serde_json::json!([a, l, m]))
+        .collect();
     let root = serde_json::json!({"setup": block, "sites": sites, "channel_labels": labels});
     let shape = crystal.grid.index.shape();
     let cell = Matrix3::from_fn(|i, j| shape[j] as f64 * crystal.grid.step[(i, j)]);
-    let back = Description::parse(&ctx, &root, crystal.m, crystal.p, &cell, shape, &crystal.permutations).unwrap();
+    let back = Description::parse(
+        &ctx,
+        &root,
+        crystal.m,
+        crystal.p,
+        &cell,
+        shape,
+        &crystal.permutations,
+    )
+    .unwrap();
     assert_eq!(back.blocks(), description.blocks());
 }

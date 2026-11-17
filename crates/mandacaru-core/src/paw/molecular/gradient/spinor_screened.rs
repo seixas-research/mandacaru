@@ -72,11 +72,15 @@ impl Setup {
         let ctx = &integrals.context;
         let (n, dv) = (integrals.grid.index.points(), integrals.grid.index.dv());
         if pseudo.len() % 4 != 0 || psi.len() != pseudo.len() * n {
-            return Err(invalid("spinor pseudo-orbitals come in fours, each sampled on the grid"));
+            return Err(invalid(
+                "spinor pseudo-orbitals come in fours, each sampled on the grid",
+            ));
         }
         let count = pseudo.len() / 4;
         let e = pseudo_index;
-        let wave = |i: usize, s: usize, k: usize| C64::new(psi[e(i, s, 0) * n + k], psi[e(i, s, 1) * n + k]);
+        let wave = |i: usize, s: usize, k: usize| {
+            C64::new(psi[e(i, s, 0) * n + k], psi[e(i, s, 1) * n + k])
+        };
         let _memory = ctx.reserve(crate::product(&[2 * count.max(1), n, 16, 3])?)?;
 
         // The grid pairs under the screened kernel: one solve per unordered pair.
@@ -89,7 +93,8 @@ impl Setup {
             for i in 0..count {
                 for j in 0..=i {
                     for k in 0..n {
-                        source.as_mut_slice()[k] = (0..2).map(|s| wave(j, s, k).conj() * wave(i, s, k)).sum();
+                        source.as_mut_slice()[k] =
+                            (0..2).map(|s| wave(j, s, k).conj() * wave(i, s, k)).sum();
                     }
                     poisson.solve_into(source.as_slice(), solved.as_mut_slice())?;
                     for s in 0..2 {
@@ -150,7 +155,9 @@ impl Setup {
             let xa = &x[channel.atom];
             for i in 0..count {
                 for j in 0..count {
-                    q[pair(a, i, j)] = (0..2).map(|s| xa[i][s].dotc(&(&blocks[a] * &xa[j][s]))).sum();
+                    q[pair(a, i, j)] = (0..2)
+                        .map(|s| xa[i][s].dotc(&(&blocks[a] * &xa[j][s])))
+                        .sum();
                 }
             }
             compensation::grid_field(integrals, channel, field.as_mut_slice());
@@ -159,7 +166,9 @@ impl Setup {
                 for j in 0..count {
                     let mut value = C64::new(0., 0.);
                     for k in 0..n {
-                        value += (wave(i, 0, k).conj() * wave(j, 0, k) + wave(i, 1, k).conj() * wave(j, 1, k)) * f[k];
+                        value += (wave(i, 0, k).conj() * wave(j, 0, k)
+                            + wave(i, 1, k).conj() * wave(j, 1, k))
+                            * f[k];
                     }
                     xw[pair(a, i, j)] = value * dv;
                 }
@@ -191,7 +200,13 @@ impl Setup {
         }
         drop(t);
         let mut compensation = ctx.allocate::<f64>(crate::product(&[pseudo.len().max(1), n])?)?;
-        scatter(&compensation_action, count, n, fraction, compensation.as_mut_slice());
+        scatter(
+            &compensation_action,
+            count,
+            n,
+            fraction,
+            compensation.as_mut_slice(),
+        );
         drop(compensation_action);
 
         let samples = projections::derivative_samples(self, integrals)?;
@@ -209,7 +224,10 @@ impl Setup {
                     out
                 })
                 .collect();
-            projections::force(integrals, pseudo, &samples, &real).into_iter().map(|v| v * fraction).collect()
+            projections::force(integrals, pseudo, &samples, &real)
+                .into_iter()
+                .map(|v| v * fraction)
+                .collect()
         };
         let mut contributions = Vec::new();
 
@@ -227,13 +245,17 @@ impl Setup {
                 let mut pi: [CVector; 2] = std::array::from_fn(|_| CVector::zeros(p));
                 for j in 0..count {
                     for &a in &own {
-                        let coefficient = (0..nch).map(|b| q[pair(b, j, o)] * usym[(a, b)]).sum::<C64>() + xw[pair(a, j, o)];
+                        let coefficient = (0..nch)
+                            .map(|b| q[pair(b, j, o)] * usym[(a, b)])
+                            .sum::<C64>()
+                            + xw[pair(a, j, o)];
                         for s in 0..2 {
                             pi[s] += &blocks[a] * &xa[j][s] * coefficient;
                         }
                     }
                     for (factor, &w) in factors.iter().zip(weights) {
-                        let element: C64 = (0..2).map(|s| xa[j][s].dotc(&(factor * &xa[o][s]))).sum();
+                        let element: C64 =
+                            (0..2).map(|s| xa[j][s].dotc(&(factor * &xa[o][s]))).sum();
                         for s in 0..2 {
                             pi[s] += factor * &xa[j][s] * (element * w);
                         }
@@ -243,7 +265,10 @@ impl Setup {
             }
             pairs.push(rows);
         }
-        contributions.push(Contribution { name: "hybrid_pairs/projection", gradient: force(pairs) });
+        contributions.push(Contribution {
+            name: "hybrid_pairs/projection",
+            gradient: force(pairs),
+        });
 
         let mut exchange = DMatrix::<f64>::zeros(nch, nch);
         for a in 0..nch {
@@ -257,7 +282,8 @@ impl Setup {
                 exchange[(a, b)] = -0.5 * sum;
             }
         }
-        let electrostatic = compensation::electrostatic_force(self, integrals, &channels, &exchange)?;
+        let electrostatic =
+            compensation::electrostatic_force(self, integrals, &channels, &exchange)?;
         contributions.push(Contribution {
             name: "hybrid_pairs/electrostatic",
             gradient: electrostatic.into_iter().map(|v| v * fraction).collect(),
@@ -275,10 +301,16 @@ impl Setup {
             .enumerate()
             .map(|(atom, &species)| {
                 let v = complex(&sym(&atoms[species].v));
-                x[atom].iter().map(|xi| std::array::from_fn(|s| &v * &xi[s] * C64::new(-2., 0.))).collect()
+                x[atom]
+                    .iter()
+                    .map(|xi| std::array::from_fn(|s| &v * &xi[s] * C64::new(-2., 0.)))
+                    .collect()
             })
             .collect();
-        contributions.push(Contribution { name: "hybrid_one_body/projection", gradient: force(one_body) });
+        contributions.push(Contribution {
+            name: "hybrid_one_body/projection",
+            gradient: force(one_body),
+        });
 
         // Its non-collinear polarization: `O^a = dP/dQ^a` of the sphere's Pauli components,
         // lifted to the spin blocks `H_uu = O^0 + O^3`, `H_dd = O^0 - O^3`, `H_ud = O^1 - i O^2`,
@@ -287,7 +319,8 @@ impl Setup {
         for (atom, &species) in self.atoms.iter().enumerate() {
             let xa = &x[atom];
             let p = xa.first().map_or(0, |v| v[0].len());
-            let mut gamma: [[CMatrix; 2]; 2] = std::array::from_fn(|_| std::array::from_fn(|_| CMatrix::zeros(p, p)));
+            let mut gamma: [[CMatrix; 2]; 2] =
+                std::array::from_fn(|_| std::array::from_fn(|_| CMatrix::zeros(p, p)));
             for xi in xa {
                 for s in 0..2 {
                     for t in 0..2 {
@@ -307,13 +340,24 @@ impl Setup {
             let h = [[&o0 + &o3, &o1 - &o2 * i], [&o1 + &o2 * i, &o0 - &o3]];
             polarization.push(
                 xa.iter()
-                    .map(|xi| std::array::from_fn(|s| (&h[s][0] * &xi[0] + &h[s][1] * &xi[1]) * C64::new(-2., 0.)))
+                    .map(|xi| {
+                        std::array::from_fn(|s| {
+                            (&h[s][0] * &xi[0] + &h[s][1] * &xi[1]) * C64::new(-2., 0.)
+                        })
+                    })
                     .collect(),
             );
         }
-        contributions.push(Contribution { name: "hybrid_polarization/projection", gradient: force(polarization) });
+        contributions.push(Contribution {
+            name: "hybrid_polarization/projection",
+            gradient: force(polarization),
+        });
 
-        Ok(SpinorExchange { grid, compensation, contributions })
+        Ok(SpinorExchange {
+            grid,
+            compensation,
+            contributions,
+        })
     }
 }
 

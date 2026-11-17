@@ -183,5 +183,36 @@
    "n": 300
   }
  ],
- "note": "orbitals._RadialTabulated.radial/radial_slope/_spline (scipy CubicSpline) at HEAD+Wave2 before the native table; nodes include below r0, above r_max, nan, -inf, scalar 0.37"
+ "note": "orbitals._RadialTabulated.radial/radial_slope/_spline (scipy CubicSpline) at HEAD+Wave2 before the native table; nodes include below r0, above r_max, nan, -inf, scalar 0.37",
+ "library_refreeze": {
+  "date": "2026-11-16",
+  "what": "r0, r_max, n and the keys <tag>_radial, _slope, _scalar, _x, _c of the shipped-table cases (H, O, Cu waves and projectors); the synthetic cases and every node set are untouched",
+  "why": "the shipped H, O and Cu tables moved with the library regeneration (file format 3); the SciPy CubicSpline outputs of the old tables no longer describe the input",
+  "cases": [
+   "H_w_0_0",
+   "H_p_0",
+   "H_w_1_0",
+   "H_p_1",
+   "O_w_0_0",
+   "O_p_0",
+   "O_w_1_0",
+   "O_p_1",
+   "Cu_w_0_0",
+   "Cu_p_0",
+   "Cu_w_1_0",
+   "Cu_p_1",
+   "Cu_w_2_0",
+   "Cu_p_2"
+  ],
+  "route": "self-pin of the production routine on the installed library (Rust through the public Python API of the module under test); the old Python outputs of these cases are no longer reproducible because the library was regenerated",
+  "library": {
+   "checkout": "mandacaru-paw 8a6e977 (v3 with tail, installed 2026-11-16 02:21)",
+   "files": {
+    "lda-sr/H": "730c4c02d4e03748",
+    "lda-sr/O": "bc52e9b75d5a1bd6",
+    "lda-sr/Cu": "a6633882cb635038"
+   }
+  },
+  "extension_sha256_prefix": "00e4d7ff"
+ }
 }

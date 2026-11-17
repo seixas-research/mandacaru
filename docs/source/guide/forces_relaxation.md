@@ -31,6 +31,7 @@ relax: a converged optimizer is not evidence that the model has a minimum.
 | `rhf`, `uhf`, `dft` with a PAW-LCAO basis | [analytic stationary gradient](#forces-paw-lcao) (real, collinear state; fractional occupations and `hubbard_u` included) |
 | `vqe`, `adapt-vqe`, `vasqa`, `valsqa` on the local state-vector simulator, PAW-LCAO basis | [analytic, with the orbital response and the Z-vector correction](#forces-variational) |
 | `dft` with a spin-orbit PAW-LCAO dataset (`lda-fr`, `pbe-fr`) on a molecule | analytic spinor gradient in Rust for `lda`, `pbe`, `pbe+rvv10`, `r2scan` and `hse06`; stress raises `PropertyNotImplementedError` |
+| `rhf`, `uhf`, `dft` (`lda`, `pbe`, `r2scan`, `hse06`, with or without `hubbard_u`; a spinor reference with `lda` or `pbe`) of a molecule with a PAW-LCAO basis and `excited_state=` | analytic gradient of one excited state, `E_0 + omega`; the references, the spinor limits and what raises are in [One excited state as the calculation](#excited-states-surface) |
 | `ghf`, `subspace-vqe`, `subspace-adapt-vqe` | not available |
 | `vqe`, `adapt-vqe` with `shots > 0` or `execute_circuits=True` | [analytic, on the density matrices measured on the device](#forces-variational), with a propagated statistical error |
 | `vasqa`, `valsqa` on a circuit device; a tapered register on a device | not available |

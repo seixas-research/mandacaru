@@ -31,14 +31,20 @@ fn a_crystal_on_disk_solves_to_the_crystal_in_memory() {
         let on_disk = Crystal::load(&ctx_disk, &path).unwrap();
         assert!(on_disk.points.iter().all(|p| p.psi.archived()) && on_disk.hats.archived());
         let psi_bytes: usize = on_disk.points.iter().map(|p| p.psi.len() * 16).sum();
-        assert!(ctx_disk.archived_bytes() >= psi_bytes, "psi must be on disk");
+        assert!(
+            ctx_disk.archived_bytes() >= psi_bytes,
+            "psi must be on disk"
+        );
         // The resident reservation shrinks by what left for disk.
         assert!(ctx_disk.memory_used() + psi_bytes / 2 < ctx_memory.memory_used());
         memory = in_memory.solve(&options).unwrap();
         disk = on_disk.solve(&options).unwrap();
         // The saved snapshot carries the metadata text whichever side it was kept on.
         let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR"));
-        let (a, b) = (dir.join("offload_memory.json"), dir.join("offload_disk.json"));
+        let (a, b) = (
+            dir.join("offload_memory.json"),
+            dir.join("offload_disk.json"),
+        );
         in_memory.save(a.to_str().unwrap()).unwrap();
         on_disk.save(b.to_str().unwrap()).unwrap();
         assert_eq!(std::fs::read(&a).unwrap(), std::fs::read(&b).unwrap());

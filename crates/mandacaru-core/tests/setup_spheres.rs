@@ -13,12 +13,17 @@ use mandacaru_core::{
     },
     Error,
 };
-use nalgebra::Vector3;
+use nalgebra::{Matrix3, Vector3};
 use num_complex::Complex64;
 use setup_shells_support::*;
 use std::f64::consts::PI;
 
 const T2: f64 = 1e-9;
+
+/// A cell with no symmetry beyond inversion: the point group leaves the product rule as it is.
+fn skew() -> Matrix3<f64> {
+    Matrix3::new(9., 1.1, 0.7, 0., 10., 0.9, 0., 0., 11.)
+}
 
 fn cartesian(v: &serde_json::Value) -> Vec<[f64; 3]> {
     triples(&real_array(v))
@@ -27,7 +32,7 @@ fn cartesian(v: &serde_json::Value) -> Vec<[f64; 3]> {
 #[test]
 fn the_rule_integrates_the_ball_and_keeps_its_bins_sorted() {
     let ctx = context();
-    let sphere = Sphere::projector(&ctx, [0.3, -1.2, 2.5], 2.4).unwrap();
+    let sphere = Sphere::projector(&ctx, &skew(), [0.3, -1.2, 2.5], 2.4).unwrap();
     assert_eq!(sphere.len(), 64 * 24 * 48);
     let all = 0..sphere.len();
     let volume: f64 = sphere.weights(all.clone()).iter().sum();
@@ -64,7 +69,7 @@ fn the_rule_integrates_the_ball_and_keeps_its_bins_sorted() {
     assert_eq!(chunk_size(1, 8), 2048);
     assert_eq!(chunk_size(50, 2000), 512);
     assert!(matches!(
-        Sphere::projector(&ctx, [0.; 3], 0.),
+        Sphere::projector(&ctx, &skew(), [0.; 3], 0.),
         Err(Error::Invalid(_))
     ));
 }
@@ -77,7 +82,17 @@ fn a_chunk_is_the_plain_sum_over_the_points() {
     let basis = minimal_basis(&ctx, &ds, &cell.centers, cell.filter_wavevector);
     let projectors = projector_list(&ctx, &ds, &cell.centers, true);
     let first = &projectors[0];
-    let sphere = Sphere::rule(&ctx, first.center, first.r_cut, 10, 6, 10, 0.).unwrap();
+    let sphere = Sphere::rule(
+        &ctx,
+        &cell.lattice,
+        first.center,
+        first.r_cut,
+        10,
+        6,
+        10,
+        0.,
+    )
+    .unwrap();
     let range = 0..sphere.len();
     let points = sphere.points(range.clone());
     let weights = sphere.weights(range);
@@ -292,14 +307,7 @@ fn the_short_range_local_matrix_equals_the_frozen_v_sr() {
     let sigma = reference("basis_table.json")["si_sz"]["sigma"]
         .as_f64()
         .unwrap();
-    let potential = LocalPotential::new(
-        &ctx,
-        ds.r.as_slice(),
-        ds.v_local.as_slice(),
-        ds.valence_charge,
-        ds.r_cut_local,
-    )
-    .unwrap();
+    let potential = LocalPotential::from_dataset(&ctx, &ds).unwrap();
     let radius = potential.reach(sigma).unwrap();
     let m = basis.shells.functions();
     let split = reference("local_split.json");
@@ -314,7 +322,17 @@ fn the_short_range_local_matrix_equals_the_frozen_v_sr() {
     let mut total = vec![Complex64::new(0., 0.); ks.len() * m * m];
     for center in &cell.centers {
         // 32 x 16 x 36 points on two panels split at the local cutoff.
-        let sphere = Sphere::rule(&ctx, *center, radius, 32, 16, 36, ds.r_cut_local).unwrap();
+        let sphere = Sphere::rule(
+            &ctx,
+            &cell.lattice,
+            *center,
+            radius,
+            32,
+            16,
+            36,
+            ds.r_cut_local,
+        )
+        .unwrap();
         let all = 0..sphere.len();
         let long = long_range_potential(ds.valence_charge, sigma, sphere.radii(all.clone()));
         let weights: Vec<f64> = sphere
@@ -366,7 +384,7 @@ fn the_short_range_local_matrix_equals_the_frozen_v_sr() {
         assert!(error < T2, "{error:e}");
     }
     // A weight per point is required.
-    let sphere = Sphere::projector(&ctx, [0.; 3], 1.).unwrap();
+    let sphere = Sphere::projector(&ctx, &skew(), [0.; 3], 1.).unwrap();
     assert!(weighted_gram(
         &ctx,
         &basis.shells,

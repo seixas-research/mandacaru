@@ -3,8 +3,8 @@
 //! Hellmann-Feynman identity with a negative control, restricted == unrestricted, explicit
 //! seeding, persistence and refusals.
 //!
-//! The crystals are written by `python test/migration/export_hubbard_crystal.py` (a metadata JSON
-//! and a git-ignored `.npz`); every SCF here is serial (one thread) and under 150 MB.
+//! The crystals are written by `tests/periodic_freeze_hubbard.rs` (a metadata JSON and a
+//! git-ignored `.npz`); every SCF here is serial (one thread) and under 150 MB.
 //!
 //! Parity tolerances (measured, see `PAW_MIGRATION_LOG.md`, HU-3): the frozen runs come from
 //! the old Python mixing the on-site operator, this port mixes the occupations, so the paths
@@ -483,6 +483,21 @@ fn the_reported_operator_reproduces_the_converged_spectrum_and_the_shell_energie
     assert!((total - r.hubbard_energy.unwrap()).abs() < 1e-14);
 }
 
+/// The isolated Ni atom at U = 3 eV and 0.02 eV smearing has several self-consistent orbital
+/// patterns for its two minority holes. On the installed `lda-sr/Ni` the spherical default seed
+/// reaches none of them: the hole orientation drifts and neither this SCF (residual 2e-3 after
+/// 300 iterations, 7e-3 after 600) nor the deleted Python route (2e-2) converges. Hence no
+/// `ni_atom_U3` in `frozen.json`. (`Crystal::solve` now repeats a stalled moment-seeded run from
+/// the integer starts, see `a_default_seeded_ni_atom_converges_to_the_lowest_integer_orbital_pattern`;
+/// an explicit seed, as here, is never retried.) A diagonal seed converges in under 40 iterations. Of the
+/// patterns probed, holes on m = -1, +1 are lowest: 0.253 eV below m = -2, +2 and 0.367 eV below
+/// m = 0, +1 (2026-11-16).
+const LOWEST_HOLES: [f64; 5] = [0.95, 0., 0.95, 0., 0.95];
+/// The filled-shell eigenvalue of the seeded state: a Rust pin (the old route has no converged
+/// U = 3 atom on this library), measured 2026-11-16 on `lda-sr/Ni` (the fixture's provenance);
+/// the 2026-11-13 library gave 0.9532466936.
+const FILLED_SHELL: f64 = 0.9532466942998;
+
 #[test]
 fn the_filled_shell_of_a_ni_atom_is_the_sphere_truncated_projection() {
     let reference = frozen();
@@ -492,32 +507,22 @@ fn the_filled_shell_of_a_ni_atom_is_the_sphere_truncated_projection() {
     let ctx = context();
     let mut c = load(&ctx, "ni_atom_7");
     with_u(&mut c, 3.);
+    seed_minority(&mut c, LOWEST_HOLES);
     let r = solve(&c, 0.02);
     let n = r.hubbard.as_ref().unwrap();
     let majority = eigenvalues(n.occupation(0, 0));
     let minority = eigenvalues(n.occupation(1, 0));
     println!("Ni atom: majority {majority:?} minority {minority:?} sphere fraction {fraction}");
-    let frozen_majority = 0.9532466936455168;
     for x in &majority {
-        assert!((x - frozen_majority).abs() < N_TOLERANCE);
+        assert!((x - FILLED_SHELL).abs() < N_TOLERANCE);
         // the KS orbital is a little more localized than the reference orbital: 0.2 % above
         assert!(*x > fraction && *x < fraction + 0.003 && *x < 1.);
     }
     assert!(minority[0].abs() < 1e-6 && minority[1].abs() < 1e-6);
     for x in &minority[2..] {
-        assert!((x - frozen_majority).abs() < N_TOLERANCE);
+        assert!((x - FILLED_SHELL).abs() < N_TOLERANCE);
     }
     assert!((r.magnetization - 2.).abs() < 1e-6);
-    let (up, down) = (trace(n.occupation(0, 0)), trace(n.occupation(1, 0)));
-    let (frozen_up, frozen_down) = (
-        reference["cases"]["ni_atom_U3"]["n_trace"][0][0]
-            .as_f64()
-            .unwrap(),
-        reference["cases"]["ni_atom_U3"]["n_trace"][1][0]
-            .as_f64()
-            .unwrap(),
-    );
-    assert!((up - frozen_up).abs() < N_TOLERANCE && (down - frozen_down).abs() < N_TOLERANCE);
 }
 
 #[test]
@@ -581,19 +586,22 @@ fn an_explicit_seed_is_the_first_input_and_the_solution_does_not_depend_on_a_per
     assert!(de < ENERGY_TOLERANCE_EV && dn < N_TOLERANCE);
 }
 
-fn ni_atom_with_minority_diagonal(diagonal: Option<[f64; 5]>) -> (f64, Vec<f64>) {
+/// Seeds the Ni shell: 0.95 on every majority orbital, `minority` on the minority diagonal.
+fn seed_minority(c: &mut Crystal, minority: [f64; 5]) {
+    let matrix = |d: [f64; 5]| -> Vec<C64> {
+        (0..25)
+            .map(|i| C64::new(if i / 5 == i % 5 { d[i / 5] } else { 0. }, 0.))
+            .collect()
+    };
+    c.hubbard.as_mut().unwrap().shells[0].seed =
+        Seed::Occupations(vec![matrix([0.95; 5]), matrix(minority)]);
+}
+
+fn ni_atom_with_minority_diagonal(minority: [f64; 5]) -> (f64, Vec<f64>) {
     let ctx = context();
     let mut c = load(&ctx, "ni_atom_7");
     with_u(&mut c, 3.);
-    if let Some(d) = diagonal {
-        let matrix = |d: [f64; 5]| -> Vec<C64> {
-            (0..25)
-                .map(|i| C64::new(if i / 5 == i % 5 { d[i / 5] } else { 0. }, 0.))
-                .collect()
-        };
-        c.hubbard.as_mut().unwrap().shells[0].seed =
-            Seed::Occupations(vec![matrix([0.95; 5]), matrix(d)]);
-    }
+    seed_minority(&mut c, minority);
     let r = solve(&c, 0.02);
     let minority = eigenvalues(r.hubbard.as_ref().unwrap().occupation(1, 0));
     (energy_ev(&r), minority)
@@ -601,22 +609,129 @@ fn ni_atom_with_minority_diagonal(diagonal: Option<[f64; 5]>) -> (f64, Vec<f64>)
 
 /// An isolated d8 atom has several self-consistent orbital patterns for the two minority holes,
 /// all with the same n spectrum (two empty, three filled) and different orientations: the
-/// seed chooses between them. The default spherical seed finds the lowest one probed.
+/// seed chooses between them (see [`LOWEST_HOLES`]).
 #[test]
 fn an_explicit_seed_selects_between_the_orbital_patterns_of_a_ni_atom() {
-    let (default, spectrum) = ni_atom_with_minority_diagonal(None);
-    let (broken, other) = ni_atom_with_minority_diagonal(Some([0., 0.95, 0.95, 0.95, 0.]));
-    println!("Ni atom U = 3: default {default:.9} eV, holes on m = -2, +2: {broken:.9} eV ({:.3} eV higher)", broken - default);
+    let (lowest, spectrum) = ni_atom_with_minority_diagonal(LOWEST_HOLES);
+    let (broken, other) = ni_atom_with_minority_diagonal([0., 0.95, 0.95, 0.95, 0.]);
+    println!("Ni atom U = 3: holes on m = -1, +1: {lowest:.9} eV, holes on m = -2, +2: {broken:.9} eV ({:.3} eV higher)", broken - lowest);
     for s in [&spectrum, &other] {
         assert!(s[0].abs() < 1e-6 && s[1].abs() < 1e-6);
         assert!(s[2..]
             .iter()
-            .all(|x| (x - 0.9532466936).abs() < N_TOLERANCE));
+            .all(|x| (x - FILLED_SHELL).abs() < N_TOLERANCE));
     }
     assert!(
-        broken - default > 0.05,
+        broken - lowest > 0.05,
         "the broken seed must stay in its own fixed point"
     );
+}
+
+/// Without an explicit seed the isolated Ni atom stalls from the spherical start (see
+/// [`LOWEST_HOLES`]); the SCF then repeats from the integer diagonal starts of the shell's
+/// electron counts and keeps the converged run of lowest free energy
+/// (`Crystal::solve_with`, `Spec::integer_starts`). The result is the explicit
+/// [`LOWEST_HOLES`] state, found by ranking the ten orbital choices (2026-11-16: the stalled run
+/// of 300 iterations, then ten starts, 27 s; the state is -169.8607223 Ha, holes on m = -1, +1).
+#[test]
+#[ignore = "slow: 29 s (measured 2026-11-16, 3 threads); run: MANDACARU_PAW_PATH=... cargo test --profile release-test -p mandacaru-core --test periodic_hubbard -- --ignored a_default_seeded_ni_atom"]
+fn a_default_seeded_ni_atom_converges_to_the_lowest_integer_orbital_pattern() {
+    let ctx = context();
+    let mut c = load(&ctx, "ni_atom_7");
+    with_u(&mut c, 3.);
+    let default = solve(&c, 0.02);
+    let (lowest, _) = ni_atom_with_minority_diagonal(LOWEST_HOLES);
+    let n = default.hubbard.as_ref().unwrap();
+    let (majority, minority) = (
+        eigenvalues(n.occupation(0, 0)),
+        eigenvalues(n.occupation(1, 0)),
+    );
+    println!(
+        "default seed: {} iterations, {:.9} eV against {lowest:.9} eV with the explicit seed; minority {minority:?}",
+        default.history.len(),
+        energy_ev(&default)
+    );
+    assert!((energy_ev(&default) - lowest).abs() < ENERGY_TOLERANCE_EV);
+    assert!(majority
+        .iter()
+        .all(|x| (x - FILLED_SHELL).abs() < N_TOLERANCE));
+    assert!(minority[..2].iter().all(|x| x.abs() < 1e-6));
+    assert!(minority[2..]
+        .iter()
+        .all(|x| (x - FILLED_SHELL).abs() < N_TOLERANCE));
+    assert!((default.magnetization - 2.).abs() < 1e-6);
+    // the returned run is the retry's own (it converged in under 100 iterations), not the stalled one
+    assert!(default.history.len() < 100);
+}
+
+/// The integer starts are the orbital choices of the moment seed: ten for the three minority d
+/// electrons of the Ni atom, ten for an ordered pair of sites (they share one choice), none for
+/// an explicit seed or a fractional electron count.
+#[test]
+fn the_integer_starts_are_the_orbital_choices_of_the_moment_seed() {
+    let ctx = context();
+    let diagonal = |n: &[C64]| -> Vec<f64> { (0..5).map(|a| n[a * 5 + a].re).collect() };
+    let atom = load(&ctx, "ni_atom_7");
+    let starts = atom
+        .hubbard
+        .as_ref()
+        .unwrap()
+        .integer_starts(&atom)
+        .unwrap();
+    assert_eq!(starts.len(), 10);
+    let mut holes: Vec<Vec<usize>> = vec![];
+    for start in &starts {
+        assert_eq!(
+            diagonal(&start[0]),
+            vec![1.; 5],
+            "the majority channel is filled"
+        );
+        let minority = diagonal(&start[1]);
+        assert!(
+            minority.iter().all(|x| *x == 0. || *x == 1.) && minority.iter().sum::<f64>() == 3.
+        );
+        let off: f64 = start[1].iter().map(|z| z.norm()).sum::<f64>() - 3.;
+        assert!(off.abs() < 1e-12, "diagonal");
+        holes.push((0..5).filter(|a| minority[*a] == 0.).collect());
+    }
+    holes.sort();
+    holes.dedup();
+    assert_eq!(holes.len(), 10, "every choice of two holes once");
+    let pair = load(&ctx, "nio_afm2");
+    let starts = pair
+        .hubbard
+        .as_ref()
+        .unwrap()
+        .integer_starts(&pair)
+        .unwrap();
+    assert_eq!(starts.len(), 10);
+    for start in &starts {
+        // antiferromagnetic: each site's minority channel is the other's majority
+        assert_eq!(diagonal(&start[0]), diagonal(&start[3]));
+        assert_eq!(diagonal(&start[1]), diagonal(&start[2]));
+    }
+    let mut explicit = load(&ctx, "ni_atom_7");
+    let matrices = explicit.hubbard.as_ref().unwrap().seed(2).unwrap();
+    explicit.hubbard.as_mut().unwrap().shells[0].seed = Seed::Occupations(matrices);
+    assert!(explicit
+        .hubbard
+        .as_ref()
+        .unwrap()
+        .integer_starts(&explicit)
+        .unwrap()
+        .is_empty());
+    let mut odd = load(&ctx, "ni_atom_7");
+    odd.hubbard.as_mut().unwrap().shells[0].seed = Seed::Moment {
+        n_electrons: 8.,
+        moment: 1.,
+    };
+    assert!(odd
+        .hubbard
+        .as_ref()
+        .unwrap()
+        .integer_starts(&odd)
+        .unwrap()
+        .is_empty());
 }
 
 /// The same crystal with every spin mirrored: the initial magnetization density and the

@@ -85,9 +85,17 @@ fn test_catalog_closure_and_centering() {
                     (t[2] + c[2]).rem_euclid(24),
                 ];
                 let key = (
-                    [w[(0, 0)], w[(0, 1)], w[(0, 2)],
-                     w[(1, 0)], w[(1, 1)], w[(1, 2)],
-                     w[(2, 0)], w[(2, 1)], w[(2, 2)]],
+                    [
+                        w[(0, 0)],
+                        w[(0, 1)],
+                        w[(0, 2)],
+                        w[(1, 0)],
+                        w[(1, 1)],
+                        w[(1, 2)],
+                        w[(2, 0)],
+                        w[(2, 1)],
+                        w[(2, 2)],
+                    ],
                     t_full,
                 );
                 if full_set.insert(key) {
@@ -120,14 +128,25 @@ fn test_catalog_closure_and_centering() {
             for (w2, t2) in &full_group {
                 let w_prod = w1 * w2;
                 let t_prod = [
-                    (w1[(0, 0)] * t2[0] + w1[(0, 1)] * t2[1] + w1[(0, 2)] * t2[2] + t1[0]).rem_euclid(24),
-                    (w1[(1, 0)] * t2[0] + w1[(1, 1)] * t2[1] + w1[(1, 2)] * t2[2] + t1[1]).rem_euclid(24),
-                    (w1[(2, 0)] * t2[0] + w1[(2, 1)] * t2[1] + w1[(2, 2)] * t2[2] + t1[2]).rem_euclid(24),
+                    (w1[(0, 0)] * t2[0] + w1[(0, 1)] * t2[1] + w1[(0, 2)] * t2[2] + t1[0])
+                        .rem_euclid(24),
+                    (w1[(1, 0)] * t2[0] + w1[(1, 1)] * t2[1] + w1[(1, 2)] * t2[2] + t1[1])
+                        .rem_euclid(24),
+                    (w1[(2, 0)] * t2[0] + w1[(2, 1)] * t2[1] + w1[(2, 2)] * t2[2] + t1[2])
+                        .rem_euclid(24),
                 ];
                 let key = (
-                    [w_prod[(0, 0)], w_prod[(0, 1)], w_prod[(0, 2)],
-                     w_prod[(1, 0)], w_prod[(1, 1)], w_prod[(1, 2)],
-                     w_prod[(2, 0)], w_prod[(2, 1)], w_prod[(2, 2)]],
+                    [
+                        w_prod[(0, 0)],
+                        w_prod[(0, 1)],
+                        w_prod[(0, 2)],
+                        w_prod[(1, 0)],
+                        w_prod[(1, 1)],
+                        w_prod[(1, 2)],
+                        w_prod[(2, 0)],
+                        w_prod[(2, 1)],
+                        w_prod[(2, 2)],
+                    ],
                     t_prod,
                 );
                 assert!(
@@ -162,11 +181,13 @@ fn test_catalog_snf_invariant_factors_divide_24() {
         let rots: Vec<[[i8; 3]; 3]> = g
             .operations
             .iter()
-            .map(|(r, _)| [
-                [r[0] as i8, r[1] as i8, r[2] as i8],
-                [r[3] as i8, r[4] as i8, r[5] as i8],
-                [r[6] as i8, r[7] as i8, r[8] as i8],
-            ])
+            .map(|(r, _)| {
+                [
+                    [r[0] as i8, r[1] as i8, r[2] as i8],
+                    [r[3] as i8, r[4] as i8, r[5] as i8],
+                    [r[6] as i8, r[7] as i8, r[8] as i8],
+                ]
+            })
             .collect();
 
         let m_l: [[i32; 3]; 3] = match g.centering {
@@ -180,10 +201,8 @@ fn test_catalog_snf_invariant_factors_divide_24() {
             _ => panic!("unknown centering"),
         };
 
-        let factors = mandacaru_core::periodic::space_group::shift::invariant_factors_for_group(
-            &rots,
-            &m_l,
-        );
+        let factors =
+            mandacaru_core::periodic::space_group::shift::invariant_factors_for_group(&rots, &m_l);
 
         for &factor in &factors {
             assert!(
@@ -232,28 +251,30 @@ fn test_catalog_affine_inequivalence_and_enantiomorphic_pairs() {
             let ops1 = to_i8_ops(g1.operations);
             let ops2 = to_i8_ops(g2.operations);
 
-            let is_proper = mandacaru_core::periodic::space_group::matching::are_groups_affine_equivalent(
-                &ops1,
-                &ops2,
-                g1.crystal_system,
-                g2.crystal_system,
-                g1.centering,
-                g2.centering,
-                false,
-            );
+            let is_proper =
+                mandacaru_core::periodic::space_group::matching::are_groups_affine_equivalent(
+                    &ops1,
+                    &ops2,
+                    g1.crystal_system,
+                    g2.crystal_system,
+                    g1.centering,
+                    g2.centering,
+                    false,
+                );
             if is_proper {
                 proper_equiv.push((g1.number, g2.number));
             }
 
-            let is_improper = mandacaru_core::periodic::space_group::matching::are_groups_affine_equivalent(
-                &ops1,
-                &ops2,
-                g1.crystal_system,
-                g2.crystal_system,
-                g1.centering,
-                g2.centering,
-                true,
-            );
+            let is_improper =
+                mandacaru_core::periodic::space_group::matching::are_groups_affine_equivalent(
+                    &ops1,
+                    &ops2,
+                    g1.crystal_system,
+                    g2.crystal_system,
+                    g1.centering,
+                    g2.centering,
+                    true,
+                );
             if is_improper {
                 improper_equiv.push((g1.number, g2.number));
             }
@@ -267,8 +288,7 @@ fn test_catalog_affine_inequivalence_and_enantiomorphic_pairs() {
         proper_equiv
     );
     assert_eq!(
-        improper_equiv,
-        expected_enantiomorphic,
+        improper_equiv, expected_enantiomorphic,
         "Improper affine equivalent pairs mismatch"
     );
     assert_eq!(
@@ -277,4 +297,3 @@ fn test_catalog_affine_inequivalence_and_enantiomorphic_pairs() {
         "Expected 219 affine classes"
     );
 }
-

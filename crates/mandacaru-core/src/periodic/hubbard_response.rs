@@ -109,10 +109,7 @@ impl<'a> PeriodicProbe<'a> {
 
 impl<'a> Probe for PeriodicProbe<'a> {
     fn shells(&self) -> usize {
-        self.crystal
-            .hubbard
-            .as_ref()
-            .map_or(0, |h| h.shells.len())
+        self.crystal.hubbard.as_ref().map_or(0, |h| h.shells.len())
     }
 
     fn channels(&self) -> usize {

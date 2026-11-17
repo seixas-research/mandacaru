@@ -1,7 +1,7 @@
 //! CF-7 / AS-11 at the library entry: `periodic::response::{forces, stress}` build the Rust setup
 //! from the crystal's own `setup` block and `sites` block, with no sidecar, and must give the
 //! numbers the engine gave with the sidecar (the frozen Richardson oracles of
-//! `freeze_periodic_gradients.py` and `freeze_periodic_strain.py`). A snapshot without the block
+//! `periodic_freeze_snapshot.rs`). A snapshot without the block
 //! raises naming it; a block that disagrees with the snapshot is refused.
 //! Needs `MANDACARU_PAW_PATH`.
 mod periodic_gradient_crystals_support;

@@ -16,14 +16,18 @@ use std::collections::BTreeMap;
 fn selenium(ctx: &Context) -> PawDataset {
     let root = std::env::var("MANDACARU_PAW_PATH")
         .expect("MANDACARU_PAW_PATH names the library with a pbe-fr set");
-    let path = std::path::Path::new(&root).join("pbe-fr").join("Se.parquet");
+    let path = std::path::Path::new(&root)
+        .join("pbe-fr")
+        .join("Se.parquet");
     PawDataset::read(ctx, &path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
 }
 
 fn silicon(ctx: &Context) -> PawDataset {
     let root = std::env::var("MANDACARU_PAW_PATH")
         .expect("MANDACARU_PAW_PATH names the library with an lda-fr set");
-    let path = std::path::Path::new(&root).join("lda-fr").join("Si.parquet");
+    let path = std::path::Path::new(&root)
+        .join("lda-fr")
+        .join("Si.parquet");
     PawDataset::read(ctx, &path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
 }
 
@@ -86,7 +90,11 @@ fn a_linear_deficit_is_closed_by_the_inverse_factor_and_the_diagnostic_arrays_st
 fn a_shell_the_atom_does_not_show_keeps_its_coupling() {
     let ctx = Context::new(Some(2), 2 << 30).unwrap();
     let mut ds = silicon(&ctx);
-    let before: Vec<f64> = ds.spin_orbit.values().map(|so| so.coupling.data()[0]).collect();
+    let before: Vec<f64> = ds
+        .spin_orbit
+        .values()
+        .map(|so| so.coupling.data()[0])
+        .collect();
     let scales = calibrate(&mut ds, |d, _floor| {
         Ok(d.spin_orbit
             .keys()
@@ -102,7 +110,11 @@ fn a_shell_the_atom_does_not_show_keeps_its_coupling() {
     })
     .unwrap();
     assert!(scales.iter().all(|s| s.factor == 1. && s.before.is_nan()));
-    let after: Vec<f64> = ds.spin_orbit.values().map(|so| so.coupling.data()[0]).collect();
+    let after: Vec<f64> = ds
+        .spin_orbit
+        .values()
+        .map(|so| so.coupling.data()[0])
+        .collect();
     assert_eq!(before, after);
 }
 
@@ -130,7 +142,10 @@ fn multiplets_group_by_the_box_splitting_and_the_pair_is_the_highest_occupied_on
         .iter()
         .map(|x| x.expect("a pair").0 / ev)
         .collect();
-    assert!((found[0] - 0.5).abs() < 1e-9 && (found[1] - 0.5).abs() < 1e-9, "{found:?}");
+    assert!(
+        (found[0] - 0.5).abs() < 1e-9 && (found[1] - 0.5).abs() < 1e-9,
+        "{found:?}"
+    );
     // A d shell has no (4, 6) pair here.
     assert_eq!(assign(&groups, 2, &[0.5 * ev]), vec![None]);
     // The cubic box splits d5/2 into 4 + 2 by 136 meV and an s level sits between d3/2 and d5/2:
@@ -139,8 +154,14 @@ fn multiplets_group_by_the_box_splitting_and_the_pair_is_the_highest_occupied_on
     d.extend(vec![level(-3.9 * ev, 1.); 2]);
     d.extend(vec![level(-3.5 * ev, 1.); 4]);
     d.extend(vec![level(-3.364 * ev, 1.); 2]);
-    let found = assign(&clusters(&d, MULTIPLET), 2, &[0.55 * ev])[0].expect("the d pair").0 / ev;
-    assert!((found - (4. * 0.5 + 2. * 0.636) / 6.).abs() < 1e-9, "{found}");
+    let found = assign(&clusters(&d, MULTIPLET), 2, &[0.55 * ev])[0]
+        .expect("the d pair")
+        .0
+        / ev;
+    assert!(
+        (found - (4. * 0.5 + 2. * 0.636) / 6.).abs() < 1e-9,
+        "{found}"
+    );
 }
 
 /// An engine whose splitting of the first reference of every channel is `scale^power` of the Dirac
@@ -203,7 +224,11 @@ fn an_open_d_shell_that_does_not_move_is_given_up_with_its_coupling_as_built() {
         }])
     })
     .unwrap();
-    assert!(scales[0].given_up && scales[0].factor == 1., "{:?}", scales[0]);
+    assert!(
+        scales[0].given_up && scales[0].factor == 1.,
+        "{:?}",
+        scales[0]
+    );
     let after = ds.spin_orbit[&2].coupling.data();
     for (x, y) in before.iter().zip(after) {
         assert!((x - y).abs() <= 1e-12 * x.abs().max(1.), "{x} {y}");
@@ -224,7 +249,8 @@ fn an_open_d_shell_that_does_not_move_is_given_up_with_its_coupling_as_built() {
 }
 
 #[test]
-fn an_open_shell_that_was_only_measured_at_another_width_is_given_up_without_a_factor_to_take_back() {
+fn an_open_shell_that_was_only_measured_at_another_width_is_given_up_without_a_factor_to_take_back()
+{
     // Round 0: the p shell is 4 percent low (it is stepped) and the d shell inside the gate. Round 1: the SCF
     // does not converge at the first width (an error), the ladder answers, and the d shell is now out
     // of the gate: it is not stepped at another width, so no factor of it exists when it is given up.

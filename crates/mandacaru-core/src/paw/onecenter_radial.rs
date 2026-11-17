@@ -176,7 +176,13 @@ pub fn long_range_shape_potential(
     if omega == 0. {
         return Ok(vec![0.; radius.len()]);
     }
-    let spline = long_range_shape_spline(ctx, radius.iter().fold(0_f64, |m, v| m.max(*v)), r_g, l, omega)?;
+    let spline = long_range_shape_spline(
+        ctx,
+        radius.iter().fold(0_f64, |m, v| m.max(*v)),
+        r_g,
+        l,
+        omega,
+    )?;
     Ok(radius.iter().map(|&r| spline.value_slope(r).0).collect())
 }
 

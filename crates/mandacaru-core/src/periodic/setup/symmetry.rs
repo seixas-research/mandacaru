@@ -287,19 +287,29 @@ impl Symmetry {
     }
 
     /// Convert the kept symmetry operations to a [`PointGroup`](crate::periodic::point_group::PointGroup).
-    pub fn to_point_group(&self, n_atoms: usize) -> Result<crate::periodic::point_group::PointGroup> {
+    pub fn to_point_group(
+        &self,
+        n_atoms: usize,
+    ) -> Result<crate::periodic::point_group::PointGroup> {
         let n = self.len();
-        let inv_lattice = self.lattice.try_inverse().ok_or_else(|| {
-            crate::periodic::invalid("singular lattice in symmetry")
-        })?;
+        let inv_lattice = self
+            .lattice
+            .try_inverse()
+            .ok_or_else(|| crate::periodic::invalid("singular lattice in symmetry"))?;
         let mut cartesian = Vec::with_capacity(n);
         let mut atom_maps = Vec::with_capacity(n);
         for k in 0..n {
             let w_i32 = self.rotation(k);
             let w = Matrix3::new(
-                w_i32[(0, 0)] as f64, w_i32[(0, 1)] as f64, w_i32[(0, 2)] as f64,
-                w_i32[(1, 0)] as f64, w_i32[(1, 1)] as f64, w_i32[(1, 2)] as f64,
-                w_i32[(2, 0)] as f64, w_i32[(2, 1)] as f64, w_i32[(2, 2)] as f64,
+                w_i32[(0, 0)] as f64,
+                w_i32[(0, 1)] as f64,
+                w_i32[(0, 2)] as f64,
+                w_i32[(1, 0)] as f64,
+                w_i32[(1, 1)] as f64,
+                w_i32[(1, 2)] as f64,
+                w_i32[(2, 0)] as f64,
+                w_i32[(2, 1)] as f64,
+                w_i32[(2, 2)] as f64,
             );
             let r = self.lattice * w * inv_lattice;
             cartesian.push(r);
@@ -307,7 +317,9 @@ impl Symmetry {
             self.atom_map(k, &mut map);
             atom_maps.push(map);
         }
-        Ok(crate::periodic::point_group::PointGroup::from_parts(cartesian, atom_maps))
+        Ok(crate::periodic::point_group::PointGroup::from_parts(
+            cartesian, atom_maps,
+        ))
     }
 }
 
@@ -413,7 +425,11 @@ fn lcm(a: i128, b: i128) -> i128 {
 /// `T^L` for `L = 0..=max_l` of the Cartesian operation `r` (orthogonal to within
 /// `bound`; the nearest orthogonal matrix is used), by the exact product
 /// quadrature `T_{M'M} = int conj(Y_LM'(u)) Y_LM(R u) dOmega`.
-pub fn rotation_tables(r: &Matrix3<f64>, max_l: usize, bound: f64) -> Result<Vec<DMatrix<Complex64>>> {
+pub fn rotation_tables(
+    r: &Matrix3<f64>,
+    max_l: usize,
+    bound: f64,
+) -> Result<Vec<DMatrix<Complex64>>> {
     let svd = r.svd(true, true);
     let (u, vt) = (
         svd.u.ok_or_else(|| invalid("SVD failed"))?,

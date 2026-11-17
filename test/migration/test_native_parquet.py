@@ -10,11 +10,9 @@
 
 ``reference/parquet/references.json`` was written on 2026-10-29 with the stack
 this port replaced (fastparquet 2026.5.0, pandas, pyarrow 26.0.0).  It holds,
-for every one of the 431 shipped pseudopotential files (368 PAW-LCAO plus 63
-UPAW-LCAO), the SHA-256 of each column's float64 bytes and of the key/value
-metadata text, and for the 98 small fixtures under ``reference/parquet`` what a
-conforming reader must return or refuse.  ``old_api_results.json`` records what
-the old Python readers returned for the same fixtures.
+for the 92 small fixtures under ``reference/parquet``, what a conforming reader
+must return or refuse.  ``old_api_results.json`` records what the old Python
+readers returned for the same fixtures.
 
 A ported routine reproduces the number it replaces: every column below must be
 bit-identical.
@@ -25,7 +23,6 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
-import os
 import subprocess
 import sys
 import textwrap
@@ -37,20 +34,12 @@ import pytest
 
 from mandacaru import _native
 from mandacaru.core.serialization import load_hamiltonian
-from mandacaru.pseudopotentials import io as pseudo_io
-from mandacaru.pseudopotentials.io import load_pseudopotential
 
 REFERENCE = Path(__file__).parent / "reference" / "parquet"
 REFERENCES = json.loads((REFERENCE / "references.json").read_text())
 OLD_API = json.loads((REFERENCE / "old_api_results.json").read_text())["fixtures"]
-CORPUS = REFERENCES["corpus_files"]
 FIXTURES = REFERENCES["fixtures"]
 
-#: Where each corpus prefix lives; ``None`` when the variable is unset.
-LIBRARY_ROOTS = {
-    "paw": "MANDACARU_PAW_PATH",
-    "upaw": "MANDACARU_UPAW_PATH",
-}
 HAS_PYARROW = importlib.util.find_spec("pyarrow") is not None
 
 
@@ -72,78 +61,6 @@ def read(path, context=None):
 
 
 # --------------------------------------------------------------------------- #
-# The 431 shipped files: bit-identical columns and metadata.
-# --------------------------------------------------------------------------- #
-
-def corpus_path(key: str) -> Path:
-    """``paw/lda-sr/Si.parquet`` -> ``$MANDACARU_PAW_PATH/lda-sr/Si.parquet``."""
-    prefix, _, rest = key.partition("/")
-    variable = LIBRARY_ROOTS[prefix]
-    root = os.environ.get(variable, "").strip()
-    if not root:
-        pytest.skip(f"{variable} is not set")
-    path = Path(root) / rest
-    if not Path(root).is_dir():
-        pytest.skip(f"{root} is not a directory")
-    return path
-
-
-def test_the_frozen_corpus_is_the_one_the_plan_names():
-    totals = REFERENCES["corpus_totals"]
-    assert len(CORPUS) == totals["files"] == 431
-    # 11994 at the 2026-10-29 freeze; 13154 after the 113 regenerated datasets of 2026-11-09/10
-    # (the Gd pair and the PAW phase-2 and phase-3 installs), re-frozen from the Rust reader
-    # ("refrozen").
-    assert sum(len(entry["columns"]) for entry in CORPUS.values()) == totals[
-        "columns"] == 13154
-    assert totals["files_per_set"] == {
-        "paw/lda-fr": 92, "paw/lda-sr": 92, "paw/pbe-fr": 92,
-        "paw/pbe-sr": 92, "upaw/lda-sr": 63}
-
-
-@pytest.fixture(scope="module")
-def context():
-    return _native.Context(threads=1)
-
-
-@pytest.mark.parametrize("key", sorted(CORPUS))
-def test_shipped_file_is_bit_identical(key, context):
-    expected = CORPUS[key]
-    path = corpus_path(key)
-    assert path.is_file(), f"{path} is missing from the library"
-    assert path.stat().st_size == expected["bytes"]
-
-    table = _native.read_parquet(context, str(path))
-    assert table["num_rows"] == expected["rows"]
-    names = list(table["columns"])
-    assert names == [column[0] for column in expected["columns"]]
-    for name, rows, digest in expected["columns"]:
-        values = table["columns"][name]
-        assert isinstance(values, np.ndarray) and values.dtype == np.float64
-        assert values.size == rows
-        assert float64_digest(values) == digest, f"{key}: column {name!r}"
-
-    metadata = dict(table["metadata"])
-    text = metadata.pop(expected["kv"]["key"])
-    encoded = text.encode("utf-8")
-    assert len(encoded) == expected["kv"]["bytes"]
-    assert sha256_of(encoded) == expected["kv"]["sha256"]
-    assert expected["kv"]["scalars"]["format"] == json.loads(text)["format"]
-    assert sorted(json.loads(text)) == expected["kv"]["top_level_keys"]
-    # Whatever else the writer left in the footer (the key fastparquet adds).
-    assert sorted(metadata) == sorted(expected["kv_other_keys"])
-    for other, record in expected["kv_other_keys"].items():
-        assert len(metadata[other].encode("utf-8")) == record["bytes"]
-        assert sha256_of(metadata[other].encode("utf-8")) == record["sha256"]
-    assert context.memory_used_bytes == 0
-
-    footer = _native.read_parquet_metadata(context, str(path))
-    assert footer["num_rows"] == expected["rows"]
-    assert footer["created_by"] == expected["created_by"]
-    assert footer["metadata"] == table["metadata"]
-
-
-# --------------------------------------------------------------------------- #
 # The fixtures a conforming reader reads.
 # --------------------------------------------------------------------------- #
 
@@ -152,13 +69,11 @@ READABLE = sorted(name for name, info in FIXTURES.items()
 REFUSED = sorted(name for name, info in FIXTURES.items()
                  if info["expect_new_reader"] == "error")
 HAMILTONIANS = [name for name in READABLE if name.startswith("hamiltonian/")]
-PSEUDOPOTENTIALS = [name for name in READABLE
-                    if name.startswith("pseudopotential/")]
 
 
 def test_the_fixture_inventory_is_complete():
-    assert len(FIXTURES) == 98 == len(OLD_API)
-    assert len(READABLE) == 38 and len(REFUSED) == 60
+    assert len(FIXTURES) == 92 == len(OLD_API)
+    assert len(READABLE) == 32 and len(REFUSED) == 60
     for name, info in FIXTURES.items():
         assert (REFERENCE / name).stat().st_size == info["bytes"] < 20_000
         assert sha256_of((REFERENCE / name).read_bytes()) == info["sha256"]
@@ -257,31 +172,6 @@ def test_a_register_of_forty_eight_qubits_survives_the_dictionary_fallback():
     record = load_hamiltonian(
         REFERENCE / "hamiltonian/pyarrow_dictionary_fallback.parquet")
     assert record.num_qubits == 48 and len(record.hamiltonian.terms) == 3200
-
-
-@pytest.mark.parametrize("name", PSEUDOPOTENTIALS)
-def test_pseudopotential_fixture_loads_as_the_old_reader_loaded_it(name):
-    expected = old_result(name, "load_pseudopotential")
-    table = read(REFERENCE / name)
-    recorded = FIXTURES[name]["kv"]["mandacaru.pseudopotential"]
-    text = table["metadata"]["mandacaru.pseudopotential"].encode("utf-8")
-    assert (len(text), sha256_of(text)) == (recorded["bytes"], recorded["sha256"])
-
-    payload = json.loads(table["metadata"]["mandacaru.pseudopotential"])
-    tables = table["columns"]
-    # The recorded digest covers what the dataset codec receives: the payload
-    # without its radial tables and without the three identity keys.
-    scalars = {key: value for key, value in payload.items()
-               if key not in ("format", "version", "family")}
-    assert sha256_of(json.dumps(scalars, sort_keys=True).encode("utf-8")
-                     ) == expected["payload_scalars_sha256"]
-    assert list(tables) == expected["radial_columns"]
-    for column, record in expected["radial_tables"].items():
-        assert len(tables[column]) == record["rows"]
-        assert float64_digest(tables[column]) == record["sha256"]
-    dataset = load_pseudopotential(REFERENCE / name)
-    assert dataset.symbol == expected["symbol"]
-    assert type(dataset).__name__ == expected["class"]
 
 
 # --------------------------------------------------------------------------- #
@@ -675,16 +565,6 @@ def test_pyarrow_reads_what_mandacaru_writes(tmp_path):
         assert theirs["digests"]["imag"] == float64_digest(ours["columns"]["imag"])
         assert theirs["metadata"] == ours["metadata"]
         assert theirs["created_by"] == "mandacaru-parquet 1"
-
-    fixture = REFERENCE / "pseudopotential/fastparquet_zstd.parquet"
-    again = pseudo_io.save_pseudopotential(load_pseudopotential(fixture),
-                                           tmp_path / "pp.parquet", stride=1)
-    theirs = run_pyarrow(READ_WITH_PYARROW, again)
-    ours = read(again)
-    assert set(theirs["types"].values()) == {"double"}
-    assert theirs["metadata"] == ours["metadata"]
-    for name, values in ours["columns"].items():
-        assert theirs["digests"][name] == float64_digest(values)
 
 
 @pyarrow_only

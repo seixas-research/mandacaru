@@ -1,5 +1,5 @@
 //! Orbital-aware molecular ansatz handover between independent geometries.
-use super::{CachedProblem, C64};
+use super::{QuantumProblem, C64};
 use crate::{
     basis::{Basis, Radial},
     math::storage::SampleBlocks,
@@ -12,7 +12,7 @@ pub struct Frame<'a> {
     pub integrals: &'a MolecularIntegrals,
     pub reference: &'a MeanField,
     pub model: &'a Model,
-    pub problem: &'a CachedProblem,
+    pub problem: &'a QuantumProblem,
 }
 /// Immutable handover data without an integral cache, Hamiltonian or solver workspace.
 pub struct Handover {

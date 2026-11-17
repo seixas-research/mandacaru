@@ -32,6 +32,46 @@ print(cation.calc.result.num_particles)            # (n_alpha, n_beta)
 
 The spin state is chosen as described in [Open-shell systems](open_shell.md).
 
+(charges-dipole)=
+## The dipole moment of a molecule
+
+The electric dipole moment is another total, so it needs no partition. After a
+converged run on a molecule, `calc.get_dipole_moment()` returns it as a vector of three
+components about the origin of the coordinates, in e Angstrom (e Bohr with
+`atomic_units=True`). If no calculation has run yet, it runs it first.
+
+```python
+from ase.build import molecule
+from mandacaru import Mandacaru
+
+atoms = molecule("H2O")
+atoms.center(vacuum=4.0)
+atoms.calc = Mandacaru(method="dft", xc="pbe", basis={"name": "PAW-LCAO", "size": "DZP"},
+                       grid_spacing=0.25)
+print(atoms.calc.get_dipole_moment())      # e Angstrom, shape (3,)
+atoms.calc.close()
+```
+
+- **What it is.** The charges of the ions at their positions (the PAW valence
+  charges on a PAW-LCAO basis, the nuclear numbers on an all-electron one) minus the
+  electrons' position expectation, which on a PAW-LCAO basis includes the one-center
+  dipole of the spheres. The moment of a neutral molecule does not depend on the
+  origin; a charged one's does, so read it about a stated point.
+- **Which states.** The mean-field state of `method="dft"`, `"rhf"` or `"uhf"`,
+  closed shell or open shell. With `excited_state=` the call still returns the
+  moment of the ground-state reference, not that of the root
+  ([one excited state as the calculation](#excited-states-surface)).
+- **What raises.** A crystal raises `NotImplementedError` naming
+  `get_polarization`, the Berry-phase polarization of an insulator
+  ([the Berry guide](berry.md)). A correlated method (`vqe`, `adapt-vqe`, `vasqa`,
+  `valsqa` and the subspace methods) raises `ValueError`: the call reads a
+  mean-field state, not the quantum one. Each refusal was read from the code, not
+  requested on this build.
+
+The transition dipoles of `get_excitations()` are a different quantity: the
+matrix elements of the position between the ground state and each root
+([Excited states](excited_states.md)).
+
 ## Densities on the grid
 
 `calc.volumetric_field("density")` returns the electron density on the

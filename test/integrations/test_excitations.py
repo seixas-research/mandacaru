@@ -161,13 +161,57 @@ def test_a_crystal_has_bethe_salpeter_excitons(tmp_path):
     assert block["method"] == "bethe-salpeter" and block["kernel"] == "independent"
     epsilon = atoms.calc.get_dielectric_function([5.0, 10.0], kernel="bse", damping=1.0)
     assert epsilon.kernel == "bse" and epsilon.cutoff is not None and epsilon.tensor.shape == (2, 3, 3)
-    with pytest.raises(NotImplementedError, match="casida"):
-        atoms.calc.get_excitations(1, approximation="casida")
     with pytest.raises(NotImplementedError, match="adiabatic"):
         atoms.calc.get_excitations(1, kernel="adiabatic")
     with pytest.raises(TypeError):
         hydrogen().calc.get_excitations(1, bands=(1, 1))
 
+
+
+def test_a_spin_polarized_crystal_has_the_singlet_and_the_triplet_exciton():
+    """The H2 chain of the test above solved spin-polarized: its two-channel Bethe-Salpeter
+    operator (the exchange across both channels, the direct term within each) has the closed
+    shell's singlet and triplet as its two roots, and ``spin="triplet"`` raises."""
+    bohr = 0.529177210903
+
+    def chain(**options):
+        atoms = Atoms("H2", positions=[[2.3 * bohr, 4.0 * bohr, 4.0 * bohr],
+                                       [3.7 * bohr, 4.0 * bohr, 4.0 * bohr]],
+                      cell=[6.0 * bohr, 8.0 * bohr, 8.0 * bohr], pbc=True)
+        atoms.calc = Mandacaru(method="dft", xc="lda", basis={"name": "PAW-LCAO", "size": "SZ"},
+                               grid_spacing=0.4 * bohr, kpts={"size": (1, 1, 1), "gamma": True},
+                               smearing={"method": "fermi-dirac", "width": 0.01}, trace=False,
+                               **options)
+        return atoms
+
+    closed = chain()
+    singlet = closed.calc.get_excitations(1).energies[0]
+    triplet = closed.calc.get_excitations(1, spin="triplet").energies[0]
+    polarized = chain(spin=True)
+    view = polarized.calc.get_excitations(2)
+    assert view.spin == "singlet" and view.transitions == 2
+    assert np.allclose(view.energies, sorted([singlet, triplet]), atol=1e-5)
+    assert len(view.dominant_channels) == 2 and set(view.dominant_channels) <= {0, 1}
+    with pytest.raises(ValueError, match="singlet"):
+        polarized.calc.get_excitations(1, spin="triplet")
+
+
+def test_a_crystal_has_the_coupling_form_of_the_bethe_salpeter_equation():
+    """``approximation="casida"`` on a crystal (the H2 chain) couples the resonant and
+    antiresonant transitions (gated in Rust against the Dyson equation and the resolvent): its
+    exciton lies below the Tamm-Dancoff one."""
+    bohr = 0.529177210903
+    atoms = Atoms("H2", positions=[[2.3 * bohr, 4.0 * bohr, 4.0 * bohr],
+                                   [3.7 * bohr, 4.0 * bohr, 4.0 * bohr]],
+                  cell=[6.0 * bohr, 8.0 * bohr, 8.0 * bohr], pbc=True)
+    atoms.calc = Mandacaru(method="dft", xc="lda", basis={"name": "PAW-LCAO", "size": "SZ"},
+                           grid_spacing=0.4 * bohr, kpts={"size": (1, 1, 1), "gamma": True},
+                           smearing={"method": "fermi-dirac", "width": 0.01}, trace=False)
+    tda = atoms.calc.get_excitations(1)
+    full = atoms.calc.get_excitations(1, approximation="casida")
+    assert full.approximation == "casida" and full.solver == "coupling"
+    assert tda.approximation == "tda" and full.energies[0] < tda.energies[0]
+    assert full.weights[0, 0] > 0
 
 
 def test_an_excited_state_calculation_returns_the_root_energy_and_its_forces(tmp_path):
@@ -352,3 +396,25 @@ def test_a_magnetized_spinor_reference_has_excited_state_forces():
     assert abs(force - difference) < 2e-3, (force, difference)
     with pytest.raises(NotImplementedError, match="magnetized"):
         hydrogen(charge=1, paw_dataset="lda-fr", excited_state={"root": 1}).get_forces()
+
+
+def test_the_transition_density_is_a_volumetric_field_with_the_one_center_parts(tmp_path):
+    """``Excitations.transition_density`` samples a root's charge transition density in Rust
+    (gated there: its moment with the PAW one-center part is the transition dipole); it writes a
+    cube file, and with the one-center charge it integrates to zero. A closed-shell triplet has
+    none and raises; its channel gives the spatial factor. ``one_center_xc`` sits beside
+    ``one_center_hartree`` on PAW-LCAO Kohn-Sham."""
+    atoms = hydrogen(tmp_path)
+    singlets = atoms.calc.get_excitations(3)
+    roots = parse_output(str(tmp_path / "run.log"))["excited_states"]["roots"]
+    assert abs(roots[0]["one_center_xc_eV"] - singlets.one_center_xc[0]) < 1e-7
+    field = singlets.transition_density(0)
+    assert field.quantity == "transition_density" and field.data.ndim == 3
+    assert abs(field.integral + field.augmentation_charge) < 1e-8
+    path = field.write(tmp_path / "transition.cube")
+    assert (tmp_path / "transition.cube").stat().st_size > 0 and path.endswith(".cube")
+    assert singlets.one_center_xc.shape == singlets.one_center_hartree.shape
+    triplets = atoms.calc.get_excitations(2, spin="triplet")
+    with pytest.raises(ValueError, match="triplet"):
+        triplets.transition_density(0)
+    assert triplets.transition_density(0, channel=0).data.shape == field.data.shape

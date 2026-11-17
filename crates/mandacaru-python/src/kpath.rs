@@ -122,7 +122,11 @@ pub fn ase_band_path<'py>(
                 special.set_item(label, *fractional)?;
             }
             let labels: Vec<&str> = points.iter().map(|(label, _)| label.as_str()).collect();
-            if labels.iter().all(|label| !label.is_empty()) { labels.concat() } else { String::new() }
+            if labels.iter().all(|label| !label.is_empty()) {
+                labels.concat()
+            } else {
+                String::new()
+            }
         }
         None => {
             let convention =
@@ -144,7 +148,13 @@ pub fn ase_band_path<'py>(
     out.set_item("distances", array(py, &[n], sampled.distances.clone())?)?;
     out.set_item("vertex_distances", sampled.vertex_distances.clone())?;
     out.set_item("path", text)?;
-    out.set_item("labels", band.vertices.iter().map(|v| v.label.clone()).collect::<Vec<_>>())?;
+    out.set_item(
+        "labels",
+        band.vertices
+            .iter()
+            .map(|v| v.label.clone())
+            .collect::<Vec<_>>(),
+    )?;
     out.set_item("special_points", special)?;
     out.set_item("convention", &band.convention)?;
     Ok(out)

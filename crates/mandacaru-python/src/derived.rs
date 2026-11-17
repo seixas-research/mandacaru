@@ -2,7 +2,10 @@
 //! and the ASE results derive (`mandacaru_core::derived`). Python formats what these return.
 use crate::arrays::error;
 use mandacaru_core::{derived, units};
-use numpy::{IntoPyArray, PyArrayDyn, PyArrayMethods, PyReadonlyArray2, PyReadonlyArrayDyn, PyUntypedArrayMethods};
+use numpy::{
+    IntoPyArray, PyArrayDyn, PyArrayMethods, PyReadonlyArray2, PyReadonlyArrayDyn,
+    PyUntypedArrayMethods,
+};
 use pyo3::{prelude::*, types::PyDict};
 
 /// `values` (a float, a float64 array or a complex128 array, atomic units) in user units: `quantity` is `energy`,
@@ -37,11 +40,25 @@ pub fn to_user_units<'py>(
         }
         let data: Vec<numpy::Complex64> = complex.as_array().iter().copied().collect();
         let part = |f: fn(&numpy::Complex64) -> f64| {
-            units::to_user_values(&data.iter().map(f).collect::<Vec<_>>(), quantity, atomic_units, cells, None)
+            units::to_user_values(
+                &data.iter().map(f).collect::<Vec<_>>(),
+                quantity,
+                atomic_units,
+                cells,
+                None,
+            )
         };
-        let (re, im) = (part(|z| z.re).map_err(error)?, part(|z| z.im).map_err(error)?);
-        let out: Vec<numpy::Complex64> = re.iter().zip(&im).map(|(&r, &i)| numpy::Complex64::new(r, i)).collect();
-        let result: Bound<'py, PyArrayDyn<numpy::Complex64>> = out.into_pyarray(py).reshape(complex.shape().to_vec())?;
+        let (re, im) = (
+            part(|z| z.re).map_err(error)?,
+            part(|z| z.im).map_err(error)?,
+        );
+        let out: Vec<numpy::Complex64> = re
+            .iter()
+            .zip(&im)
+            .map(|(&r, &i)| numpy::Complex64::new(r, i))
+            .collect();
+        let result: Bound<'py, PyArrayDyn<numpy::Complex64>> =
+            out.into_pyarray(py).reshape(complex.shape().to_vec())?;
         return Ok(result.into_any());
     }
     let array: PyReadonlyArrayDyn<'py, f64> = values.extract()?;
@@ -51,14 +68,18 @@ pub fn to_user_units<'py>(
         return Ok(sum.into_pyobject(py)?.into_any());
     }
     let shape = array.shape().to_vec();
-    let out = units::to_user_values(&data, quantity, atomic_units, cells, plus.as_deref()).map_err(error)?;
+    let out = units::to_user_values(&data, quantity, atomic_units, cells, plus.as_deref())
+        .map_err(error)?;
     let result: Bound<'py, PyArrayDyn<f64>> = out.into_pyarray(py).reshape(shape)?;
     Ok(result.into_any())
 }
 
 /// `values - values[0]` (`derived::relative_to_first`).
 #[pyfunction]
-pub fn relative_to_first<'py>(py: Python<'py>, values: Vec<f64>) -> Bound<'py, numpy::PyArray1<f64>> {
+pub fn relative_to_first<'py>(
+    py: Python<'py>,
+    values: Vec<f64>,
+) -> Bound<'py, numpy::PyArray1<f64>> {
     derived::relative_to_first(&values).into_pyarray(py)
 }
 
@@ -66,27 +87,46 @@ pub fn relative_to_first<'py>(py: Python<'py>, values: Vec<f64>) -> Bound<'py, n
 #[pyfunction]
 #[pyo3(signature=(a, b, quantity, atomic_units=false))]
 pub fn difference_to_user(a: f64, b: f64, quantity: &str, atomic_units: bool) -> PyResult<f64> {
-    derived::difference_to_user(a, b, units::Quantity::parse(quantity).map_err(error)?, atomic_units).map_err(error)
+    derived::difference_to_user(
+        a,
+        b,
+        units::Quantity::parse(quantity).map_err(error)?,
+        atomic_units,
+    )
+    .map_err(error)
 }
 
 /// The electrons of each spin of a crystal from its `(spins, kpoints, bands)` occupations and
 /// k-point weights (`derived::electron_counts`).
 #[pyfunction]
-pub fn electron_counts(occupations: numpy::PyReadonlyArray3<'_, f64>, weights: Vec<f64>) -> PyResult<(f64, f64)> {
+pub fn electron_counts(
+    occupations: numpy::PyReadonlyArray3<'_, f64>,
+    weights: Vec<f64>,
+) -> PyResult<(f64, f64)> {
     let shape = occupations.shape().to_vec();
     let data: Vec<f64> = occupations.as_array().iter().copied().collect();
-    let [a, b] = derived::electron_counts(&data, shape[0], shape[1], shape[2], &weights).map_err(error)?;
+    let [a, b] =
+        derived::electron_counts(&data, shape[0], shape[1], shape[2], &weights).map_err(error)?;
     Ok((a, b))
 }
 
 /// `{"norms", "max", "rms", "net"}` of `(atoms, 3)` forces (`derived::force_summary`).
 #[pyfunction]
-pub fn force_summary<'py>(py: Python<'py>, forces: PyReadonlyArray2<'py, f64>) -> PyResult<Bound<'py, PyDict>> {
+pub fn force_summary<'py>(
+    py: Python<'py>,
+    forces: PyReadonlyArray2<'py, f64>,
+) -> PyResult<Bound<'py, PyDict>> {
     let array = forces.as_array();
     if array.ncols() != 3 {
-        return Err(error(mandacaru_core::Error::Invalid("forces must be (atoms, 3)".into())));
+        return Err(error(mandacaru_core::Error::Invalid(
+            "forces must be (atoms, 3)".into(),
+        )));
     }
-    let rows: Vec<[f64; 3]> = array.rows().into_iter().map(|r| [r[0], r[1], r[2]]).collect();
+    let rows: Vec<[f64; 3]> = array
+        .rows()
+        .into_iter()
+        .map(|r| [r[0], r[1], r[2]])
+        .collect();
     let summary = derived::force_summary(&rows).map_err(error)?;
     let out = PyDict::new(py);
     out.set_item("norms", summary.norms.into_pyarray(py))?;
@@ -108,8 +148,14 @@ pub fn iteration_values<'py>(
     gradient_threshold: Option<f64>,
     energy_threshold: Option<f64>,
 ) -> PyResult<Bound<'py, PyDict>> {
-    let row = derived::iteration_values(energy, previous, gradient_ha, gradient_threshold, energy_threshold)
-        .map_err(error)?;
+    let row = derived::iteration_values(
+        energy,
+        previous,
+        gradient_ha,
+        gradient_threshold,
+        energy_threshold,
+    )
+    .map_err(error)?;
     let out = PyDict::new(py);
     out.set_item("delta", row.delta)?;
     out.set_item("gradient_ev", row.gradient_ev)?;
@@ -145,37 +191,77 @@ fn convert_any<'py>(
     }
     if let Ok(array) = values.extract::<PyReadonlyArrayDyn<'py, f64>>() {
         let shape = array.shape().to_vec();
-        let out: Vec<f64> = array.as_array().iter().map(|&v| conversion.apply(v)).collect();
+        let out: Vec<f64> = array
+            .as_array()
+            .iter()
+            .map(|&v| conversion.apply(v))
+            .collect();
         let result: Bound<'py, PyArrayDyn<f64>> = out.into_pyarray(py).reshape(shape)?;
         return Ok(result.into_any());
     }
     let array: PyReadonlyArrayDyn<'py, C64> = values.extract()?;
     let shape = array.shape().to_vec();
-    let out: Vec<C64> =
-        array.as_array().iter().map(|v| C64::new(conversion.apply(v.re), conversion.apply(v.im))).collect();
+    let out: Vec<C64> = array
+        .as_array()
+        .iter()
+        .map(|v| C64::new(conversion.apply(v.re), conversion.apply(v.im)))
+        .collect();
     let result: Bound<'py, PyArrayDyn<C64>> = out.into_pyarray(py).reshape(shape)?;
     Ok(result.into_any())
 }
 
 /// An energy in Hartree (float, complex or array) in `unit` (`units::energy_factor`).
 #[pyfunction]
-pub fn energy_from_hartree<'py>(py: Python<'py>, values: &Bound<'py, PyAny>, unit: &str) -> PyResult<Bound<'py, PyAny>> {
-    convert_any(py, values, units::EnergyConversion::FromHartree(units::energy_factor(unit).map_err(error)?))
+pub fn energy_from_hartree<'py>(
+    py: Python<'py>,
+    values: &Bound<'py, PyAny>,
+    unit: &str,
+) -> PyResult<Bound<'py, PyAny>> {
+    convert_any(
+        py,
+        values,
+        units::EnergyConversion::FromHartree(units::energy_factor(unit).map_err(error)?),
+    )
 }
 /// An energy in `unit` (float, complex or array) in Hartree.
 #[pyfunction]
-pub fn energy_to_hartree<'py>(py: Python<'py>, values: &Bound<'py, PyAny>, unit: &str) -> PyResult<Bound<'py, PyAny>> {
-    convert_any(py, values, units::EnergyConversion::ToHartree(units::energy_factor(unit).map_err(error)?))
+pub fn energy_to_hartree<'py>(
+    py: Python<'py>,
+    values: &Bound<'py, PyAny>,
+    unit: &str,
+) -> PyResult<Bound<'py, PyAny>> {
+    convert_any(
+        py,
+        values,
+        units::EnergyConversion::ToHartree(units::energy_factor(unit).map_err(error)?),
+    )
 }
 /// An energy from `from_unit` to `to_unit` (the value itself when the units agree).
 #[pyfunction]
-pub fn convert_energy<'py>(py: Python<'py>, values: &Bound<'py, PyAny>, from_unit: &str, to_unit: &str) -> PyResult<Bound<'py, PyAny>> {
-    convert_any(py, values, units::EnergyConversion::between(from_unit, to_unit).map_err(error)?)
+pub fn convert_energy<'py>(
+    py: Python<'py>,
+    values: &Bound<'py, PyAny>,
+    from_unit: &str,
+    to_unit: &str,
+) -> PyResult<Bound<'py, PyAny>> {
+    convert_any(
+        py,
+        values,
+        units::EnergyConversion::between(from_unit, to_unit).map_err(error)?,
+    )
 }
 /// A length in `unit` (float or array) in Bohr (`units::length_factor_to_bohr`).
 #[pyfunction]
-pub fn length_to_bohr<'py>(py: Python<'py>, values: &Bound<'py, PyAny>, unit: &str) -> PyResult<Bound<'py, PyAny>> {
-    convert_any(py, values, units::EnergyConversion::FromHartree(units::length_factor_to_bohr(unit).map_err(error)?))
+pub fn length_to_bohr<'py>(
+    py: Python<'py>,
+    values: &Bound<'py, PyAny>,
+    unit: &str,
+) -> PyResult<Bound<'py, PyAny>> {
+    convert_any(
+        py,
+        values,
+        units::EnergyConversion::FromHartree(units::length_factor_to_bohr(unit).map_err(error)?),
+    )
 }
 /// The Hartree-to-`unit` factor of an accepted energy spelling (`units::energy_factor`).
 #[pyfunction]
@@ -207,7 +293,10 @@ pub fn gaps<'py>(py: Python<'py>, values: Vec<f64>) -> Bound<'py, numpy::PyArray
 
 /// `n` weights `1 / n` (`derived::uniform_weights`).
 #[pyfunction]
-pub fn uniform_weights<'py>(py: Python<'py>, n: usize) -> PyResult<Bound<'py, numpy::PyArray1<f64>>> {
+pub fn uniform_weights<'py>(
+    py: Python<'py>,
+    n: usize,
+) -> PyResult<Bound<'py, numpy::PyArray1<f64>>> {
     Ok(derived::uniform_weights(n).map_err(error)?.into_pyarray(py))
 }
 /// The highest occupied level (Hartree) of `(spins, bands)` levels (`derived::highest_occupied`).
@@ -220,23 +309,50 @@ pub fn highest_occupied(levels: PyReadonlyArray2<'_, f64>, particles: Vec<usize>
 /// An even energy axis (eV) over the levels (Hartree) widened by `margin` eV (`derived::energy_axis`).
 #[pyfunction]
 #[pyo3(signature=(levels_ha, npoints, margin, scale=1.0))]
-pub fn energy_axis<'py>(py: Python<'py>, levels_ha: PyReadonlyArrayDyn<'py, f64>, npoints: usize, margin: f64, scale: f64) -> PyResult<Bound<'py, numpy::PyArray1<f64>>> {
+pub fn energy_axis<'py>(
+    py: Python<'py>,
+    levels_ha: PyReadonlyArrayDyn<'py, f64>,
+    npoints: usize,
+    margin: f64,
+    scale: f64,
+) -> PyResult<Bound<'py, numpy::PyArray1<f64>>> {
     let data: Vec<f64> = levels_ha.as_array().iter().copied().collect();
-    Ok(derived::energy_axis(&data, npoints, margin, scale).map_err(error)?.into_pyarray(py))
+    Ok(derived::energy_axis(&data, npoints, margin, scale)
+        .map_err(error)?
+        .into_pyarray(py))
 }
 /// `(labels, sums)`: the columns of `(rows, labels)` values summed per label (`derived::column_groups`).
 #[pyfunction]
 #[allow(clippy::type_complexity)]
-pub fn column_groups<'py>(py: Python<'py>, values: PyReadonlyArray2<'py, f64>, labels: Vec<String>) -> PyResult<(Vec<String>, Vec<Bound<'py, numpy::PyArray1<f64>>>)> {
+pub fn column_groups<'py>(
+    py: Python<'py>,
+    values: PyReadonlyArray2<'py, f64>,
+    labels: Vec<String>,
+) -> PyResult<(Vec<String>, Vec<Bound<'py, numpy::PyArray1<f64>>>)> {
     let rows = values.shape()[0];
     let data: Vec<f64> = values.as_array().iter().copied().collect();
     let (names, sums) = derived::column_groups(&data, rows, &labels).map_err(error)?;
-    Ok((names, sums.into_iter().map(|v| v.into_pyarray(py)).collect()))
+    Ok((
+        names,
+        sums.into_iter().map(|v| v.into_pyarray(py)).collect(),
+    ))
 }
 /// `positions` with atom `index` moved by `sign * step` along `axis` (`derived::displaced`).
 #[pyfunction]
-pub fn displaced<'py>(py: Python<'py>, positions: PyReadonlyArray2<'py, f64>, index: usize, axis: usize, sign: f64, step: f64) -> PyResult<Bound<'py, numpy::PyArray2<f64>>> {
-    let rows: Vec<[f64; 3]> = positions.as_array().rows().into_iter().map(|r| [r[0], r[1], r[2]]).collect();
+pub fn displaced<'py>(
+    py: Python<'py>,
+    positions: PyReadonlyArray2<'py, f64>,
+    index: usize,
+    axis: usize,
+    sign: f64,
+    step: f64,
+) -> PyResult<Bound<'py, numpy::PyArray2<f64>>> {
+    let rows: Vec<[f64; 3]> = positions
+        .as_array()
+        .rows()
+        .into_iter()
+        .map(|r| [r[0], r[1], r[2]])
+        .collect();
     let n = rows.len();
     let out = derived::displaced(rows, index, axis, sign, step).map_err(error)?;
     let flat: Vec<f64> = out.into_iter().flatten().collect();
@@ -250,15 +366,26 @@ pub fn ratio(a: f64, b: f64) -> PyResult<f64> {
 }
 /// `(voxel volume, cell, cell volume)` of a grid (`derived::grid_cell`).
 #[pyfunction]
-pub fn grid_cell<'py>(py: Python<'py>, step: [[f64; 3]; 3], shape: [usize; 3]) -> PyResult<(f64, Bound<'py, numpy::PyArray2<f64>>, f64)> {
+pub fn grid_cell<'py>(
+    py: Python<'py>,
+    step: [[f64; 3]; 3],
+    shape: [usize; 3],
+) -> PyResult<(f64, Bound<'py, numpy::PyArray2<f64>>, f64)> {
     let (dv, cell, volume) = derived::grid_cell(step, shape).map_err(error)?;
     let flat: Vec<f64> = cell.iter().flatten().copied().collect();
     Ok((dv, flat.into_pyarray(py).reshape([3, 3])?, volume))
 }
 /// The points of a grid, `(3, nx, ny, nz)` (`derived::grid_coordinates`).
 #[pyfunction]
-pub fn grid_coordinates<'py>(py: Python<'py>, origin: [f64; 3], step: [[f64; 3]; 3], shape: [usize; 3]) -> PyResult<Bound<'py, numpy::PyArray4<f64>>> {
-    Ok(derived::grid_coordinates(origin, step, shape).into_pyarray(py).reshape([3, shape[0], shape[1], shape[2]])?)
+pub fn grid_coordinates<'py>(
+    py: Python<'py>,
+    origin: [f64; 3],
+    step: [[f64; 3]; 3],
+    shape: [usize; 3],
+) -> PyResult<Bound<'py, numpy::PyArray4<f64>>> {
+    Ok(derived::grid_coordinates(origin, step, shape)
+        .into_pyarray(py)
+        .reshape([3, shape[0], shape[1], shape[2]])?)
 }
 /// The decimal digits a tolerance resolves (`derived::decimal_digits`).
 #[pyfunction]
@@ -298,8 +425,13 @@ pub fn nyquist_wavevector(fraction: f64, spacing_bohr: f64) -> PyResult<f64> {
 
 /// The weights `n, n - 1, ..., 1` (`derived::descending_weights`).
 #[pyfunction]
-pub fn descending_weights<'py>(py: Python<'py>, n: usize) -> PyResult<Bound<'py, numpy::PyArray1<f64>>> {
-    Ok(derived::descending_weights(n).map_err(error)?.into_pyarray(py))
+pub fn descending_weights<'py>(
+    py: Python<'py>,
+    n: usize,
+) -> PyResult<Bound<'py, numpy::PyArray1<f64>>> {
+    Ok(derived::descending_weights(n)
+        .map_err(error)?
+        .into_pyarray(py))
 }
 
 /// `max |v|` of an array of any shape, zero when empty (`derived::max_abs`).
@@ -312,16 +444,22 @@ pub fn max_abs(values: PyReadonlyArrayDyn<'_, f64>) -> f64 {
 #[pyfunction]
 pub fn array_minimum(values: PyReadonlyArrayDyn<'_, f64>) -> PyResult<f64> {
     let data: Vec<f64> = values.as_array().iter().copied().collect();
-    mandacaru_core::math::numpy_rules::minimum(&data)
-        .ok_or_else(|| error(mandacaru_core::Error::Invalid("the minimum of no values".into())))
+    mandacaru_core::math::numpy_rules::minimum(&data).ok_or_else(|| {
+        error(mandacaru_core::Error::Invalid(
+            "the minimum of no values".into(),
+        ))
+    })
 }
 
 /// `np.argmax(values)` of a nonempty one-dimensional array (`numpy_rules::argmax`).
 #[pyfunction]
 pub fn array_argmax(values: PyReadonlyArrayDyn<'_, f64>) -> PyResult<usize> {
     let data: Vec<f64> = values.as_array().iter().copied().collect();
-    mandacaru_core::math::numpy_rules::argmax(&data)
-        .ok_or_else(|| error(mandacaru_core::Error::Invalid("the argmax of no values".into())))
+    mandacaru_core::math::numpy_rules::argmax(&data).ok_or_else(|| {
+        error(mandacaru_core::Error::Invalid(
+            "the argmax of no values".into(),
+        ))
+    })
 }
 
 /// `i dt` for `i` in `0..n` (`derived::sample_times`).
@@ -367,7 +505,8 @@ pub fn quotients<'py>(
     numerators: numpy::PyReadonlyArray1<'py, f64>,
     denominators: numpy::PyReadonlyArray1<'py, f64>,
 ) -> PyResult<Bound<'py, numpy::PyArray1<f64>>> {
-    let out = derived::quotients(numerators.as_slice()?, denominators.as_slice()?).map_err(error)?;
+    let out =
+        derived::quotients(numerators.as_slice()?, denominators.as_slice()?).map_err(error)?;
     Ok(out.into_pyarray(py))
 }
 

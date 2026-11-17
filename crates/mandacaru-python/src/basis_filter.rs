@@ -25,7 +25,10 @@ fn radial_filter<'py>(
     oversample: Option<usize>,
     renormalize: bool,
     switch_margin: Option<f64>,
-) -> PyResult<(Array<'py, f64>, (f64, f64, f64, f64, bool, f64, f64, Option<f64>))> {
+) -> PyResult<(
+    Array<'py, f64>,
+    (f64, f64, f64, f64, bool, f64, f64, Option<f64>),
+)> {
     let ctx = context.inner.clone();
     let defaults = Options::default();
     let options = Options {

@@ -3,8 +3,7 @@
 //! scheme of the molecular PAW path) for the reference-atom SCF, the unscreening and the
 //! one-center terms alike; the atom-solver scheme the 431 shipped datasets were produced with
 //! (`radial_xc`, derivatives on subset nodes, splined back) survives only as the `doc(hidden)`
-//! `AtomSolver` seam that proves the port against the frozen Python numbers (`paw_generate`,
-//! `paw_assemble`, `paw_one_center`, `paw_search*`, `paw_diagnose*`).
+//! `AtomSolver` seam (`paw_generate`, `paw_search*`, `paw_diagnose*`).
 //!
 //! This file holds the independent evidence that the new scheme is right and the measured size of
 //! the difference:

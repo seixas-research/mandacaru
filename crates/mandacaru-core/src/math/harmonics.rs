@@ -22,13 +22,7 @@ pub fn polar(x: f64, y: f64, z: f64) -> (f64, f64, f64) {
 
 /// `(real value, complex value)` of the harmonic of degree `l` and order `m` at the angles
 /// `(theta, phi)`: the real one fills the first entry for `real`, the complex one the second.
-pub fn harmonic(
-    l: usize,
-    m: i32,
-    theta: f64,
-    phi: f64,
-    real: bool,
-) -> (f64, Complex64) {
+pub fn harmonic(l: usize, m: i32, theta: f64, phi: f64, real: bool) -> (f64, Complex64) {
     let order = m.unsigned_abs() as usize;
     if order > l {
         return (0.0, Complex64::default());
@@ -136,7 +130,7 @@ pub fn harmonic_gradient(
     let mut grad = [Complex64::default(); 3];
     for axis in 0..3 {
         let xa = coords[axis];
-        let du = (((if axis == 2 { 1.0 } else { 0.0 }) - u * xa / r)) / r;
+        let du = ((if axis == 2 { 1.0 } else { 0.0 }) - u * xa / r) / r;
         let dw = (e_axes[axis] - w * (xa / r)) / r;
         grad[axis] = wm * (dq * du) + (wm1 * dw) * (q * order as f64);
     }
@@ -200,9 +194,17 @@ pub fn harmonic_samples(
     }
     let points = theta.iter().zip(phi);
     Ok(if real {
-        Samples::Real(points.map(|(t, p)| harmonic(l, m, *t, *p, true).0).collect())
+        Samples::Real(
+            points
+                .map(|(t, p)| harmonic(l, m, *t, *p, true).0)
+                .collect(),
+        )
     } else {
-        Samples::Complex(points.map(|(t, p)| harmonic(l, m, *t, *p, false).1).collect())
+        Samples::Complex(
+            points
+                .map(|(t, p)| harmonic(l, m, *t, *p, false).1)
+                .collect(),
+        )
     })
 }
 

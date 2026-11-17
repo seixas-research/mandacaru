@@ -9,7 +9,6 @@
 //! - a removed projector: a missing bound state (gate `MISSING_TOLERANCE`);
 //! - a potential that is not finite: the check is unevaluated, never a pass.
 
-mod paw_assemble_support;
 mod paw_diagnose_support;
 
 use mandacaru_core::models::atom::Atom;
@@ -354,9 +353,15 @@ fn an_unconverged_reference_atom_is_named_as_such() {
     let stopped = solve_model(&ctx, 8, &options(2), &model("lda"), None, None).unwrap();
     assert!(!stopped.converged);
     let message = check_reference(&ds, &stopped).unwrap_err().to_string();
-    assert!(message.contains("did not converge in 2 iterations"), "{message}");
+    assert!(
+        message.contains("did not converge in 2 iterations"),
+        "{message}"
+    );
     let other = solve_model(&ctx, 8, &options(200), &model("pbe"), None, None).unwrap();
     assert!(other.converged);
     let message = check_reference(&ds, &other).unwrap_err().to_string();
-    assert!(message.contains("is not the one the record asks for") && !message.contains("converge"), "{message}");
+    assert!(
+        message.contains("is not the one the record asks for") && !message.contains("converge"),
+        "{message}"
+    );
 }

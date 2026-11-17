@@ -58,10 +58,15 @@ impl Propagator {
     /// `(label, time weight / steps)`; the circuit repeats the slice `steps` times.
     pub fn circuit_plan(&self, time: f64, steps: usize) -> Result<(f64, Vec<(String, f64)>)> {
         if steps == 0 || !time.is_finite() {
-            return Err(invalid("a circuit needs a finite time and at least one step"));
+            return Err(invalid(
+                "a circuit needs a finite time and at least one step",
+            ));
         }
         let (constant, rotations) = self.schedule();
-        let angles = rotations.into_iter().map(|(label, weight)| (label, time * weight / steps as f64)).collect();
+        let angles = rotations
+            .into_iter()
+            .map(|(label, weight)| (label, time * weight / steps as f64))
+            .collect();
         Ok((-time * constant, angles))
     }
 
@@ -238,14 +243,19 @@ impl Propagator {
         steps: usize,
     ) -> Result<Vec<C64>> {
         if samples == 0 || !(dt.is_finite() && dt > 0.) {
-            return Err(invalid("echo sampling needs a positive time step and samples"));
+            return Err(invalid(
+                "echo sampling needs a positive time step and samples",
+            ));
         }
         let mut state = ctx.copy_slice(state)?;
         let mut perturbed = kick.apply(ctx, state.as_slice())?;
         let mut out = Vec::with_capacity(samples);
         for i in 0..samples {
             let kicked = kick.apply(ctx, state.as_slice())?;
-            out.push(super::amplitude::inner(perturbed.as_slice(), kicked.as_slice()));
+            out.push(super::amplitude::inner(
+                perturbed.as_slice(),
+                kicked.as_slice(),
+            ));
             if i + 1 < samples {
                 state = self.evolve(ctx, state.as_slice(), dt, steps, false, false)?;
                 perturbed = self.evolve(ctx, perturbed.as_slice(), dt, steps, false, false)?;
@@ -295,11 +305,16 @@ impl Propagator {
         tolerance: f64,
     ) -> Result<(Buffer<A>, C64, f64, Option<i8>)> {
         if k == 0 || !(tolerance.is_finite() && tolerance >= 0.) {
-            return Err(invalid("a nested OTOC needs a positive order and a finite tolerance"));
+            return Err(invalid(
+                "a nested OTOC needs a positive order and a finite tolerance",
+            ));
         }
         let m_psi = m.apply(ctx, psi)?;
         let eigenvalue = [1i8, -1].into_iter().find(|&sign| {
-            let distance: f64 = m_psi.as_slice().iter().zip(psi)
+            let distance: f64 = m_psi
+                .as_slice()
+                .iter()
+                .zip(psi)
                 .map(|(x, y)| (x.widen() - f64::from(sign) * y.widen()).norm_sqr())
                 .sum();
             distance <= tolerance * tolerance
@@ -333,12 +348,23 @@ impl Propagator {
         tolerance: f64,
     ) -> Result<Vec<C64>> {
         if samples == 0 || steps == 0 || !(dt.is_finite() && dt > 0.) {
-            return Err(invalid("OTOC sampling needs a positive time step, samples and steps"));
+            return Err(invalid(
+                "OTOC sampling needs a positive time step, samples and steps",
+            ));
         }
         (0..samples)
             .map(|j| {
-                self.nested_otoc(ctx, b, m, psi, j as f64 * dt, (j * steps).max(1), k, tolerance)
-                    .map(|outcome| outcome.1)
+                self.nested_otoc(
+                    ctx,
+                    b,
+                    m,
+                    psi,
+                    j as f64 * dt,
+                    (j * steps).max(1),
+                    k,
+                    tolerance,
+                )
+                .map(|outcome| outcome.1)
             })
             .collect()
     }
@@ -357,24 +383,37 @@ pub fn fourier_spectrum(
 ) -> Result<(Vec<f64>, Vec<C64>)> {
     let n = signal.len();
     if n < 4 || !(dt.is_finite() && dt > 0.) || !elastic.is_finite() || !finite(signal) {
-        return Err(invalid("a spectrum needs at least four finite samples and a positive time step"));
+        return Err(invalid(
+            "a spectrum needs at least four finite samples and a positive time step",
+        ));
     }
-    let weight = |k: usize| if hann {
-        0.5 - 0.5 * (2. * std::f64::consts::PI * k as f64 / (n - 1) as f64).cos()
-    } else {
-        1.
+    let weight = |k: usize| {
+        if hann {
+            0.5 - 0.5 * (2. * std::f64::consts::PI * k as f64 / (n - 1) as f64).cos()
+        } else {
+            1.
+        }
     };
-    let mut values: Vec<C64> = signal.iter().enumerate()
-        .map(|(k, &c)| (c - elastic) * weight(k)).collect();
+    let mut values: Vec<C64> = signal
+        .iter()
+        .enumerate()
+        .map(|(k, &c)| (c - elastic) * weight(k))
+        .collect();
     let mut fft = crate::math::fft::Fft3::new(ctx, [n, 1, 1])?;
     fft.transform(&mut values, false)?;
     let shift = n / 2;
     let amplitudes: Vec<C64> = (0..n).map(|k| values[(k + n - shift) % n] * dt).collect();
-    let energies: Vec<f64> = (0..n).map(|k| {
-        let index = (k + n - shift) % n;
-        let frequency = if index < n.div_ceil(2) { index as f64 } else { index as f64 - n as f64 };
-        2. * std::f64::consts::PI * frequency / (n as f64 * dt)
-    }).collect();
+    let energies: Vec<f64> = (0..n)
+        .map(|k| {
+            let index = (k + n - shift) % n;
+            let frequency = if index < n.div_ceil(2) {
+                index as f64
+            } else {
+                index as f64 - n as f64
+            };
+            2. * std::f64::consts::PI * frequency / (n as f64 * dt)
+        })
+        .collect();
     Ok((energies, amplitudes))
 }
 
@@ -422,7 +461,9 @@ pub fn qpe_layout(evaluation: usize, system: usize) -> Result<(usize, Vec<usize>
 /// The qubits of a state vector of `amplitudes` entries: `n` for `2^n`; any other length raises.
 pub fn state_qubits(amplitudes: usize) -> Result<usize> {
     if amplitudes == 0 || !amplitudes.is_power_of_two() {
-        return Err(Error::Invalid(format!("a state vector needs 2^n amplitudes, got {amplitudes}")));
+        return Err(Error::Invalid(format!(
+            "a state vector needs 2^n amplitudes, got {amplitudes}"
+        )));
     }
     Ok(amplitudes.trailing_zeros() as usize)
 }
@@ -440,25 +481,37 @@ pub fn sign_phase(sign: f64) -> f64 {
 /// Size a QPE simulation before allocating anything: `amplitude_bytes 2^(n+t)` for the state,
 /// [`QPE_WORKING_SET_FACTOR`] of those for the working set and, when the system is diagonalized
 /// densely (`dense`, or by default `n <= QPE_DENSE_LIMIT`), `16 4^n` for its complex128 unitary.
-pub fn qpe_memory(system: usize, evaluation: usize, dense: Option<bool>, amplitude_bytes: u128)
-    -> Result<QpeMemory>
-{
+pub fn qpe_memory(
+    system: usize,
+    evaluation: usize,
+    dense: Option<bool>,
+    amplitude_bytes: u128,
+) -> Result<QpeMemory> {
     if system == 0 || evaluation == 0 {
         return Err(invalid("need at least one system and one evaluation qubit"));
     }
-    let power = |exponent: usize| u32::try_from(exponent).ok()
-        .and_then(|e| 1u128.checked_shl(e).filter(|_| e < 128)).ok_or(Error::Overflow);
+    let power = |exponent: usize| {
+        u32::try_from(exponent)
+            .ok()
+            .and_then(|e| 1u128.checked_shl(e).filter(|_| e < 128))
+            .ok_or(Error::Overflow)
+    };
     let dense = dense.unwrap_or(system <= QPE_DENSE_LIMIT);
     let statevector = power(system.checked_add(evaluation).ok_or(Error::Overflow)?)?
-        .checked_mul(amplitude_bytes).ok_or(Error::Overflow)?;
+        .checked_mul(amplitude_bytes)
+        .ok_or(Error::Overflow)?;
     let unitary = if dense {
-        power(system.checked_mul(2).ok_or(Error::Overflow)?)?.checked_mul(16).ok_or(Error::Overflow)?
+        power(system.checked_mul(2).ok_or(Error::Overflow)?)?
+            .checked_mul(16)
+            .ok_or(Error::Overflow)?
     } else {
         0
     };
     Ok(QpeMemory {
         statevector,
-        working: statevector.checked_mul(QPE_WORKING_SET_FACTOR).ok_or(Error::Overflow)?,
+        working: statevector
+            .checked_mul(QPE_WORKING_SET_FACTOR)
+            .ok_or(Error::Overflow)?,
         unitary,
         dense,
     })
@@ -482,7 +535,11 @@ pub struct QpeReadout {
 /// `(lo, hi)`: the bins' phases and energies, the resolution, and the `max(8, 2^min(t, 4))` most
 /// probable bins, ordered as `np.argsort(probabilities)[::-1]` orders them (equal probabilities
 /// included).
-pub fn qpe_readout(probabilities: &[f64], evaluation: usize, window: [f64; 2]) -> Result<QpeReadout> {
+pub fn qpe_readout(
+    probabilities: &[f64],
+    evaluation: usize,
+    window: [f64; 2],
+) -> Result<QpeReadout> {
     let n = probabilities.len();
     if evaluation == 0 || evaluation >= 64 || n != 1usize << evaluation {
         return Err(invalid("a QPE register of t qubits has 2^t probabilities"));
@@ -493,57 +550,103 @@ pub fn qpe_readout(probabilities: &[f64], evaluation: usize, window: [f64; 2]) -
     let energies: Vec<f64> = phases.iter().map(|p| lo + width * p).collect();
     let order = crate::math::numpy_rules::argsort(probabilities);
     let wanted = 8usize.max(1usize << evaluation.min(4));
-    let peaks = order.iter().rev().take(wanted).filter(|&&m| probabilities[m] > 0.)
-        .map(|&m| (energies[m], probabilities[m])).collect();
-    Ok(QpeReadout { phases, energies, peaks, resolution: width / n as f64 })
+    let peaks = order
+        .iter()
+        .rev()
+        .take(wanted)
+        .filter(|&&m| probabilities[m] > 0.)
+        .map(|&m| (energies[m], probabilities[m]))
+        .collect();
+    Ok(QpeReadout {
+        phases,
+        energies,
+        peaks,
+        resolution: width / n as f64,
+    })
 }
 
 /// The probability of the ground eigenspace: the sum of the `overlaps` of the levels within
 /// `1e-10` Hartree of the lowest one (`np.isclose(E, E.min(), rtol=0, atol=1e-10)`), added as NumPy
 /// adds. `exact` is in Hartree, or in eV when `hartree` is false.
 pub fn qpe_ground_overlap(exact: &[f64], overlaps: &[f64], hartree: bool) -> Result<f64> {
-    use crate::{math::numpy_rules, units::{energy_factor, EnergyConversion}};
+    use crate::{
+        math::numpy_rules,
+        units::{energy_factor, EnergyConversion},
+    };
     if exact.is_empty() || exact.len() != overlaps.len() {
         return Err(invalid("one overlap per exact level"));
     }
     let to_hartree = EnergyConversion::ToHartree(energy_factor("eV")?);
-    let energies: Vec<f64> = exact.iter().map(|&e| if hartree { e } else { to_hartree.apply(e) }).collect();
+    let energies: Vec<f64> = exact
+        .iter()
+        .map(|&e| if hartree { e } else { to_hartree.apply(e) })
+        .collect();
     let lowest = numpy_rules::minimum(&energies).unwrap_or(f64::NAN);
     let (atol, rtol) = (1e-10, 0.0);
-    let ground: Vec<f64> = energies.iter().zip(overlaps)
-        .filter(|(&e, _)| ((e - lowest).abs() <= atol + rtol * lowest.abs() && lowest.is_finite()) || e == lowest)
-        .map(|(_, &o)| o).collect();
+    let ground: Vec<f64> = energies
+        .iter()
+        .zip(overlaps)
+        .filter(|(&e, _)| {
+            ((e - lowest).abs() <= atol + rtol * lowest.abs() && lowest.is_finite()) || e == lowest
+        })
+        .map(|(_, &o)| o)
+        .collect();
     Ok(numpy_rules::pairwise_sum(&ground))
 }
 
 /// The indices of the positive-energy peaks of an echo spectrum: local maxima of `intensities` at
 /// least `relative_threshold` times its largest value over the positive energies, in increasing
 /// energy order (none for an all-zero positive side).
-pub fn echo_peaks(energies: &[f64], intensities: &[f64], relative_threshold: f64) -> Result<Vec<usize>> {
+pub fn echo_peaks(
+    energies: &[f64],
+    intensities: &[f64],
+    relative_threshold: f64,
+) -> Result<Vec<usize>> {
     if energies.len() != intensities.len() {
         return Err(invalid("one intensity per energy"));
     }
-    let positive: Vec<f64> = energies.iter().zip(intensities).filter(|(&e, _)| e > 0.).map(|(_, &i)| i).collect();
+    let positive: Vec<f64> = energies
+        .iter()
+        .zip(intensities)
+        .filter(|(&e, _)| e > 0.)
+        .map(|(_, &i)| i)
+        .collect();
     let scale = crate::math::numpy_rules::maximum(&positive)
         .ok_or_else(|| invalid("a spectrum needs a positive-energy bin"))?;
     if scale == 0. {
         return Ok(Vec::new());
     }
-    Ok(crate::math::peaks::find_peaks(intensities, relative_threshold * scale)
-        .into_iter().filter(|&i| energies[i] > 0.).collect())
+    Ok(
+        crate::math::peaks::find_peaks(intensities, relative_threshold * scale)
+            .into_iter()
+            .filter(|&i| energies[i] > 0.)
+            .collect(),
+    )
 }
 
 /// The QPE energy window `(lo, hi)`: `explicit`, or the Gershgorin bound `c_I -+ sum |c_P|` over
 /// the non-identity terms (`c_I -+ 1/2` when that is empty), widened by `1 + 2 / 2^t` so that no
 /// phase reaches 1.
-pub fn qpe_window(h: &Operator, evaluation_qubits: usize, explicit: Option<[f64; 2]>) -> Result<[f64; 2]> {
+pub fn qpe_window(
+    h: &Operator,
+    evaluation_qubits: usize,
+    explicit: Option<[f64; 2]>,
+) -> Result<[f64; 2]> {
     let [mut lo, mut hi] = match explicit {
         Some(window) => window,
         None => {
-            let identity: f64 = h.terms.iter().filter(|t| t.x == 0 && t.z == 0)
-                .map(|t| t.coefficient.re).sum();
-            let radius: f64 = h.terms.iter().filter(|t| t.x != 0 || t.z != 0)
-                .map(|t| t.coefficient.norm()).sum();
+            let identity: f64 = h
+                .terms
+                .iter()
+                .filter(|t| t.x == 0 && t.z == 0)
+                .map(|t| t.coefficient.re)
+                .sum();
+            let radius: f64 = h
+                .terms
+                .iter()
+                .filter(|t| t.x != 0 || t.z != 0)
+                .map(|t| t.coefficient.norm())
+                .sum();
             [identity - radius, identity + radius]
         }
     };
@@ -551,7 +654,9 @@ pub fn qpe_window(h: &Operator, evaluation_qubits: usize, explicit: Option<[f64;
         let centre = (lo + hi) / 2.;
         (lo, hi) = (centre - 0.5, centre + 0.5);
     }
-    let bins = u32::try_from(evaluation_qubits).ok().filter(|&t| t > 0 && t < 64)
+    let bins = u32::try_from(evaluation_qubits)
+        .ok()
+        .filter(|&t| t > 0 && t < 64)
         .ok_or_else(|| invalid("evaluation qubits must be in 1..64"))?;
     let width = (hi - lo) * (1. + 2. / (1u64 << bins) as f64);
     if !(lo.is_finite() && width.is_finite()) {
@@ -595,7 +700,11 @@ pub fn qpe<A: Amplitude>(
         let basis = Basis::register(ctx, h.n)?;
         let d = basis.len();
         check_state(state, d, true)?;
-        let memory = ctx.reserve(if h.n <= QPE_DENSE_LIMIT { product(&[d, 16])? } else { 0 })?;
+        let memory = ctx.reserve(if h.n <= QPE_DENSE_LIMIT {
+            product(&[d, 16])?
+        } else {
+            0
+        })?;
         let mut columns = stack::<A>(ctx, bins, d)?;
         let mut exact_energies = None;
         let mut overlaps = None;

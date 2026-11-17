@@ -8,18 +8,40 @@ fn c(re: f64, im: f64) -> C64 {
 
 #[test]
 fn a_sum_adds_equal_keys_where_they_first_occur() {
-    let terms = vec![("ZI", c(1., 0.)), ("XX", c(0., 2.)), ("ZI", c(0.5, 0.)), ("IY", c(-1., 0.))];
+    let terms = vec![
+        ("ZI", c(1., 0.)),
+        ("XX", c(0., 2.)),
+        ("ZI", c(0.5, 0.)),
+        ("IY", c(-1., 0.)),
+    ];
     let out = term_lists::sum(terms).unwrap();
-    assert_eq!(out, vec![("ZI", c(1.5, 0.)), ("XX", c(0., 2.)), ("IY", c(-1., 0.))]);
+    assert_eq!(
+        out,
+        vec![("ZI", c(1.5, 0.)), ("XX", c(0., 2.)), ("IY", c(-1., 0.))]
+    );
     assert!(term_lists::sum(vec![("Z", c(f64::NAN, 0.))]).is_err());
     assert!(term_lists::sum(vec![("Z", c(f64::MAX, 0.)), ("Z", c(f64::MAX, 0.))]).is_err());
 }
 
 #[test]
 fn scale_drop_and_hermiticity_keep_order() {
-    let terms = vec![("ZZ", c(2., 0.)), ("XI", c(0., 1e-13)), ("IY", c(1., 1e-10))];
-    assert_eq!(term_lists::scale(&terms, c(0., 1.)).unwrap()[0], ("ZZ", c(0., 2.)));
-    assert_eq!(term_lists::drop_small(&terms, 1e-12).unwrap().iter().map(|t| t.0).collect::<Vec<_>>(), vec!["ZZ", "IY"]);
+    let terms = vec![
+        ("ZZ", c(2., 0.)),
+        ("XI", c(0., 1e-13)),
+        ("IY", c(1., 1e-10)),
+    ];
+    assert_eq!(
+        term_lists::scale(&terms, c(0., 1.)).unwrap()[0],
+        ("ZZ", c(0., 2.))
+    );
+    assert_eq!(
+        term_lists::drop_small(&terms, 1e-12)
+            .unwrap()
+            .iter()
+            .map(|t| t.0)
+            .collect::<Vec<_>>(),
+        vec!["ZZ", "IY"]
+    );
     // The 1e-13 imaginary string is below the drop threshold and does not count.
     assert!(term_lists::hermitian(&terms, 1e-9, 1e-12));
     assert!(!term_lists::hermitian(&[("Y", c(0., 1e-6))], 1e-9, 1e-12));
@@ -33,13 +55,20 @@ fn a_fermion_product_concatenates_left_outer_and_dagger_reverses() {
     let product = term_lists::fermion_product(&a, &b).unwrap();
     assert_eq!(
         product,
-        vec![(vec![(0, true), (1, false)], c(6., 0.)), (vec![(1, true), (1, false)], c(0., 3.))]
+        vec![
+            (vec![(0, true), (1, false)], c(6., 0.)),
+            (vec![(1, true), (1, false)], c(0., 3.))
+        ]
     );
     let dagger = term_lists::fermion_dagger(&product).unwrap();
     assert_eq!(dagger[0], (vec![(1, true), (0, false)], c(6., 0.)));
     assert_eq!(dagger[1], (vec![(1, true), (1, false)], c(0., -3.)));
     // (a+_1 a_1 + h.c. with opposite phases) adds to the same product.
-    let hermitian = term_lists::fermion_dagger(&[(vec![(1, true), (1, false)], c(0., 1.)), (vec![(1, true), (1, false)], c(0., 1.))]).unwrap();
+    let hermitian = term_lists::fermion_dagger(&[
+        (vec![(1, true), (1, false)], c(0., 1.)),
+        (vec![(1, true), (1, false)], c(0., 1.)),
+    ])
+    .unwrap();
     assert_eq!(hermitian, vec![(vec![(1, true), (1, false)], c(0., -2.))]);
     assert_eq!(term_lists::fermion_modes(&product), 2);
     assert_eq!(term_lists::fermion_modes(&[(vec![], c(1., 0.))]), 0);
@@ -53,7 +82,10 @@ fn a_propagator_keeps_the_real_terms_and_sums_their_magnitudes() {
         ("IZ".to_string(), c(-0.25, 1e-13)),
     ];
     let (real, bound) = term_lists::real_pauli_terms(2, &terms).unwrap();
-    assert_eq!(real, vec![("XX".to_string(), 0.5), ("IZ".to_string(), -0.25)]);
+    assert_eq!(
+        real,
+        vec![("XX".to_string(), 0.5), ("IZ".to_string(), -0.25)]
+    );
     assert_eq!(bound, 0.75);
     // The bound is added as Python's `sum` adds floats (compensated): 0.0005 + 0.5 + 1.25 + 0.5
     // is 2.2505, where a running sum gives 2.2504999999999997.
@@ -63,24 +95,47 @@ fn a_propagator_keeps_the_real_terms_and_sums_their_magnitudes() {
     // No term left: the bound is a positive zero.
     let (none, zero) = term_lists::real_pauli_terms(1, &[("Z".to_string(), c(0., 0.))]).unwrap();
     assert!(none.is_empty() && zero == 0. && zero.is_sign_positive());
-    let refused = |label: &str, value: C64| term_lists::real_pauli_terms(2, &[(label.to_string(), value)]);
+    let refused =
+        |label: &str, value: C64| term_lists::real_pauli_terms(2, &[(label.to_string(), value)]);
     assert!(refused("XQ", c(1., 0.)).is_err());
     assert!(refused("X", c(1., 0.)).is_err());
     assert!(refused("XX", c(1., 1e-9)).is_err());
     assert!(refused("XX", c(f64::INFINITY, 0.)).is_err());
-    let overflow = [("XX".to_string(), c(f64::MAX, 0.)), ("YY".to_string(), c(f64::MAX, 0.))];
+    let overflow = [
+        ("XX".to_string(), c(f64::MAX, 0.)),
+        ("YY".to_string(), c(f64::MAX, 0.)),
+    ];
     assert!(term_lists::real_pauli_terms(2, &overflow).is_err());
 }
 
 #[test]
 fn a_pauli_fingerprint_depends_on_the_terms_above_the_tolerance_and_not_on_their_order() {
     use mandacaru_core::quantum::term_lists::pauli_fingerprint;
-    let a = vec![("ZZ".to_string(), c(0.5, 0.)), ("XI".to_string(), c(-0.25, 0.1))];
-    let b = vec![("XI".to_string(), c(-0.25, 0.1)), ("ZZ".to_string(), c(0.5, 0.)), ("IY".to_string(), c(1e-13, 0.))];
+    let a = vec![
+        ("ZZ".to_string(), c(0.5, 0.)),
+        ("XI".to_string(), c(-0.25, 0.1)),
+    ];
+    let b = vec![
+        ("XI".to_string(), c(-0.25, 0.1)),
+        ("ZZ".to_string(), c(0.5, 0.)),
+        ("IY".to_string(), c(1e-13, 0.)),
+    ];
     let fa = pauli_fingerprint(2, &a, 1e-10).unwrap();
     assert_eq!(fa.len(), 32);
-    assert_eq!(fa, pauli_fingerprint(2, &b, 1e-10).unwrap(), "a term below the tolerance is dropped");
-    assert_ne!(fa, pauli_fingerprint(3, &a, 1e-10).unwrap(), "the register width is part of it");
-    assert_ne!(fa, pauli_fingerprint(2, &a, 1e-12).unwrap(), "a tighter tolerance prints more digits");
+    assert_eq!(
+        fa,
+        pauli_fingerprint(2, &b, 1e-10).unwrap(),
+        "a term below the tolerance is dropped"
+    );
+    assert_ne!(
+        fa,
+        pauli_fingerprint(3, &a, 1e-10).unwrap(),
+        "the register width is part of it"
+    );
+    assert_ne!(
+        fa,
+        pauli_fingerprint(2, &a, 1e-12).unwrap(),
+        "a tighter tolerance prints more digits"
+    );
     assert!(pauli_fingerprint(2, &a, 0.0).is_err());
 }

@@ -484,7 +484,12 @@ pub fn frame_turn(density: &[f64]) -> f64 {
     }
     (0..n)
         .filter(|&k| norm(k) > 0.1 * norm(peak))
-        .map(|k| ((0..3).map(|a| m(a, k) * m(a, peak)).sum::<f64>() / (norm(k) * norm(peak))).abs().clamp(0., 1.).acos())
+        .map(|k| {
+            ((0..3).map(|a| m(a, k) * m(a, peak)).sum::<f64>() / (norm(k) * norm(peak)))
+                .abs()
+                .clamp(0., 1.)
+                .acos()
+        })
         .fold(0., f64::max)
 }
 
@@ -505,7 +510,10 @@ pub fn frame_turn(density: &[f64]) -> f64 {
 /// (a 120 degree state, but a saddle: the ferromagnetic state is 8 mHa lower and displaced SCFs
 /// flow to it), of lithium, chromium and manganese does not converge or ends collinear, and a
 /// lithium atom next to a triangle of hydrogen collapses it to a collinear or nonmagnetic state.
-pub fn triangle_input(files: Vec<(String, String)>, strain: Matrix3<f64>) -> mandacaru_core::periodic::setup::parse::SetupInput {
+pub fn triangle_input(
+    files: Vec<(String, String)>,
+    strain: Matrix3<f64>,
+) -> mandacaru_core::periodic::setup::parse::SetupInput {
     use mandacaru_core::periodic::setup::parse::AtomSpec;
     let lattice = Matrix3::from_row_slice(&[10., 1., 0.5, 0., 10., 1., 0., 0., 8.]);
     let reference = lattice;
@@ -519,7 +527,12 @@ pub fn triangle_input(files: Vec<(String, String)>, strain: Matrix3<f64>) -> man
         .map(|i| {
             let phi = 2. * std::f64::consts::PI * i as f64 / 3.;
             let f = inverse * (center + Vector3::new(radius * phi.cos(), radius * phi.sin(), 0.));
-            AtomSpec { species: 0, symbol: "H".into(), fractional: [f[0], f[1], f[2]], moment: 1. }
+            AtomSpec {
+                species: 0,
+                symbol: "H".into(),
+                fractional: [f[0], f[1], f[2]],
+                moment: 1.,
+            }
         })
         .collect();
     mandacaru_core::periodic::setup::parse::SetupInput {
@@ -555,7 +568,12 @@ pub fn textured_triangle(
     datasets: &[Arc<PawDataset>],
 ) -> mandacaru_core::periodic::Crystal {
     use mandacaru_core::periodic::setup::parse::create_setup;
-    let build = |input| create_setup(ctx, input, datasets.to_vec()).unwrap().build(ctx).unwrap();
+    let build = |input| {
+        create_setup(ctx, input, datasets.to_vec())
+            .unwrap()
+            .build(ctx)
+            .unwrap()
+    };
     let mut crystal = build(input.clone());
     let n = crystal.grid.index.points();
     let mut texture = vec![0.; 3 * n];
@@ -583,8 +601,14 @@ pub fn textured_triangle(
 pub fn restart(crystal: &mut mandacaru_core::periodic::Crystal, density: &[f64]) {
     let n = crystal.grid.index.points();
     assert_eq!(density.len(), 4 * n, "a spinor density has four blocks");
-    crystal.initial.as_mut_slice().copy_from_slice(&density[..n]);
-    crystal.initial_m.as_mut_slice().copy_from_slice(&density[n..]);
+    crystal
+        .initial
+        .as_mut_slice()
+        .copy_from_slice(&density[..n]);
+    crystal
+        .initial_m
+        .as_mut_slice()
+        .copy_from_slice(&density[n..]);
 }
 
 /// Peak (electrons per Bohr cubed) and 1/e radius (Bohr) of the synthetic smooth core of the
@@ -619,10 +643,14 @@ impl Drop for TriangleSpecies {
 }
 
 pub fn triangle_species(ctx: &Context, core: bool) -> TriangleSpecies {
-    use mandacaru_core::{parquet::Codec, paw::digest::dataset_content_sha256, paw::record::WriteSpec};
+    use mandacaru_core::{
+        parquet::Codec, paw::digest::dataset_content_sha256, paw::record::WriteSpec,
+    };
     use std::sync::atomic::{AtomicUsize, Ordering};
     static COUNTER: AtomicUsize = AtomicUsize::new(0);
-    let shipped = PathBuf::from(std::env::var_os("MANDACARU_PAW_PATH").expect("MANDACARU_PAW_PATH is unset")).join("pbe-fr/H.parquet");
+    let shipped =
+        PathBuf::from(std::env::var_os("MANDACARU_PAW_PATH").expect("MANDACARU_PAW_PATH is unset"))
+            .join("pbe-fr/H.parquet");
     if !core {
         let digest = dataset_content_sha256(ctx, &shipped).unwrap();
         return TriangleSpecies {
@@ -652,7 +680,16 @@ pub fn triangle_species(ctx: &Context, core: bool) -> TriangleSpecies {
         std::process::id(),
         COUNTER.fetch_add(1, Ordering::Relaxed)
     ));
-    record.write(ctx, &path, &WriteSpec { stride: 1, codec: Codec::Zstd }).unwrap();
+    record
+        .write(
+            ctx,
+            &path,
+            &WriteSpec {
+                stride: 1,
+                codec: Codec::Zstd,
+            },
+        )
+        .unwrap();
     let digest = dataset_content_sha256(ctx, &path).unwrap();
     TriangleSpecies {
         files: vec![(path.to_string_lossy().into_owned(), digest)],
@@ -668,16 +705,37 @@ pub fn triangle_species(ctx: &Context, core: bool) -> TriangleSpecies {
 /// (it is 3.0e-5 along x where the engine's per-atom differences sum to about 7e-6). It is zero for
 /// a state whose frame does not turn or whose core is nowhere magnetic: the floor that makes the
 /// cored gates count. The exact old-minus-new numbers are in `dev_plan/DECISIONS.md`.
-pub fn pauli_core_force_gap(crystal: &mandacaru_core::periodic::Crystal, result: &mandacaru_core::periodic::PeriodicResult) -> [f64; 3] {
+pub fn pauli_core_force_gap(
+    crystal: &mandacaru_core::periodic::Crystal,
+    result: &mandacaru_core::periodic::PeriodicResult,
+) -> [f64; 3] {
     use mandacaru_core::{math::fft::Fft3, periodic::spinor, quantum::C64};
     let ctx = &crystal.context;
     let n = crystal.grid.index.points();
-    let tau = result.kinetic_density.as_ref().expect("a meta-GGA state keeps its kinetic density");
+    let tau = result
+        .kinetic_density
+        .as_ref()
+        .expect("a meta-GGA state keeps its kinetic density");
     let mut fft = Fft3::new(ctx, crystal.grid.index.shape()).unwrap();
-    let terms = spinor::exchange_correlation(crystal, &mut fft, result.density.as_slice(), Some(tau.as_slice())).unwrap();
-    let sources = terms.core.as_ref().expect("a spinor meta-GGA returns its core sources");
-    let pauli_kinetic = terms.kinetic_potential.as_ref().expect("a meta-GGA returns v_tau");
-    let core_tau = crystal.core_tau.as_ref().expect("a meta-GGA crystal has its core kinetic density");
+    let terms = spinor::exchange_correlation(
+        crystal,
+        &mut fft,
+        result.density.as_slice(),
+        Some(tau.as_slice()),
+    )
+    .unwrap();
+    let sources = terms
+        .core
+        .as_ref()
+        .expect("a spinor meta-GGA returns its core sources");
+    let pauli_kinetic = terms
+        .kinetic_potential
+        .as_ref()
+        .expect("a meta-GGA returns v_tau");
+    let core_tau = crystal
+        .core_tau
+        .as_ref()
+        .expect("a meta-GGA crystal has its core kinetic density");
     let mut gap = [0.; 3];
     for (axis, to) in gap.iter_mut().enumerate() {
         let mut slope = |field: &[f64]| -> Vec<f64> {

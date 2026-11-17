@@ -299,7 +299,10 @@ fn density_and_projected_matches_explicit() {
     let p_refs: Vec<&[Complex64]> = matrices.iter().map(|v| v.as_slice()).collect();
     let psi_refs: Vec<&[Complex64]> = psi_list.iter().map(|v| v.as_slice()).collect();
     let proj_refs: Vec<&[Complex64]> = proj_list.iter().map(|v| v.as_slice()).collect();
-    let res = density_and_projected(&ctx, M, POINTS, p_proj, &WEIGHTS, &p_refs, &psi_refs, &proj_refs).unwrap();
+    let res = density_and_projected(
+        &ctx, M, POINTS, p_proj, &WEIGHTS, &p_refs, &psi_refs, &proj_refs,
+    )
+    .unwrap();
     let mut want_rho = vec![0.; POINTS];
     let mut want_r = vec![Complex64::default(); p_proj * p_proj];
     for (k, &w) in WEIGHTS.iter().enumerate() {
@@ -318,7 +321,8 @@ fn density_and_projected_matches_explicit() {
                     for b in 0..M {
                         let ci = proj_list[k][a * p_proj + i];
                         let cj = proj_list[k][b * p_proj + j];
-                        want_r[i * p_proj + j] += Complex64::new(w, 0.) * ci.conj() * matrices[k][a * M + b] * cj;
+                        want_r[i * p_proj + j] +=
+                            Complex64::new(w, 0.) * ci.conj() * matrices[k][a * M + b] * cj;
                     }
                 }
             }

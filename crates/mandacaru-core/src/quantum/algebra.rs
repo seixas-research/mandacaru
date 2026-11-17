@@ -79,6 +79,27 @@ impl Operator {
         }
         Ok(out)
     }
+    /// Truncated copy retaining at most `limit` Pauli terms of largest magnitude, sorted
+    /// deterministically by descending `|coefficient|` and canonical `(x, z)` tie-break.
+    pub fn top_terms(&self, ctx: &Context, limit: usize) -> Result<Self> {
+        if limit == 0 {
+            return Err(invalid("top_terms requires a positive term limit"));
+        }
+        if limit >= self.terms.len() {
+            return self.copy_into(ctx);
+        }
+        let _temporary = ctx.reserve(product(&[self.terms.len(), 32])?)?;
+        let mut ordered = self.terms.clone();
+        ordered.sort_by(|a, b| {
+            b.coefficient
+                .norm()
+                .total_cmp(&a.coefficient.norm())
+                .then_with(|| a.x.cmp(&b.x))
+                .then_with(|| a.z.cmp(&b.z))
+        });
+        ordered.truncate(limit);
+        Self::from_masks(ctx, self.n, ordered)
+    }
     pub(crate) fn from_terms(ctx: &Context, n: usize, terms: Vec<Term>) -> Result<Self> {
         Self::from_masks(ctx, n, terms)
     }
@@ -342,6 +363,175 @@ impl Operator {
             output,
         )
     }
+    /// `apply_centered_into` when the ascending nonzero `support` of `input` is already known,
+    /// skipping the `O(D)` scan for nonzeros on the sparse scatter path.
+    pub(super) fn apply_centered_support_into<A: Amplitude>(
+        &self,
+        basis: &Basis,
+        input: &[A],
+        support: &[usize],
+        output: &mut [C64],
+    ) {
+        output.fill(C64::default());
+        let terms = self.centered_terms();
+        let rows = output.len();
+        let work = rows.saturating_mul(terms.len());
+        let scale = C64::new(1., 0.);
+        if work >= super::parallel::PARALLEL_WORK {
+            if Self::gathers(rows, terms.len(), support.len()) {
+                return Self::gather_terms(terms, basis, input, scale, output);
+            }
+            let shared = Self::shares_mask(terms);
+            let products = if shared { 1 } else { terms.len() };
+            if super::parallel::ordered_scatter(
+                &basis.context,
+                support.len(),
+                || support.to_vec(),
+                products,
+                output,
+                |column, queue| {
+                    Self::column_products(
+                        terms,
+                        shared,
+                        basis,
+                        input,
+                        column,
+                        scale,
+                        |row, value| queue.push(row, value),
+                    )
+                },
+            ) {
+                return;
+            }
+        }
+        Self::scatter_columns(
+            terms,
+            basis,
+            input,
+            support.iter().copied(),
+            scale,
+            output,
+            |_| {},
+        )
+    }
+    /// `<psi | (self - identity) | psi>` computed directly on the sparse state `entries` and its
+    /// ascending computational `kets`, without `O(D)` allocations or basis-wide lookups.
+    pub(super) fn centered_expectation_sparse(
+        &self,
+        entries: &[(usize, C64)],
+        kets: &[u64],
+    ) -> C64 {
+        let terms = self.centered_terms();
+        let mut wide_on_supp = vec![C64::default(); entries.len()];
+        if Self::shares_mask(terms) {
+            if let Some(first) = terms.first() {
+                for (&(_, amp_c), &ket_c) in entries.iter().zip(kets) {
+                    if amp_c == C64::default() {
+                        continue;
+                    }
+                    if let Ok(row_pos) = kets.binary_search(&(ket_c ^ first.x)) {
+                        let coeff: C64 = terms.iter().map(|t| t.amplitude(ket_c)).sum();
+                        wide_on_supp[row_pos] += coeff * amp_c;
+                    }
+                }
+            }
+        } else {
+            for (&(_, amp_c), &ket_c) in entries.iter().zip(kets) {
+                if amp_c == C64::default() {
+                    continue;
+                }
+                for group in terms.chunk_by(|a, b| a.x == b.x) {
+                    if let Ok(row_pos) = kets.binary_search(&(ket_c ^ group[0].x)) {
+                        for t in group {
+                            wide_on_supp[row_pos] += t.amplitude(ket_c) * amp_c;
+                        }
+                    }
+                }
+            }
+        }
+        entries
+            .iter()
+            .zip(&wide_on_supp)
+            .map(|(&(_, p), &w)| p.conj() * w)
+            .sum()
+    }
+    /// Compute `(self - identity) |psi>` as an ascending, coalesced, nonzero sparse vector
+    /// `(row, amplitude)` directly from sparse state `entries` and its computational `kets`, with
+    /// zero `O(D)` allocations or tree-map overhead.
+    pub(super) fn centered_action_sparse_on_kets(
+        &self,
+        basis: &Basis,
+        entries: &[(usize, C64)],
+        kets: &[u64],
+    ) -> Vec<(usize, C64)> {
+        let terms = self.centered_terms();
+        if terms.is_empty() || entries.is_empty() {
+            return Vec::new();
+        }
+        let shared = Self::shares_mask(terms);
+        let est_groups = if shared {
+            1
+        } else {
+            terms.chunk_by(|a, b| a.x == b.x).count()
+        };
+        let mut raw = Vec::with_capacity(entries.len().saturating_mul(est_groups.min(64)));
+        if shared {
+            let x = terms[0].x;
+            for (&(_, amp_c), &ket_c) in entries.iter().zip(kets) {
+                if amp_c == C64::default() {
+                    continue;
+                }
+                if let Some(row) = basis.index(ket_c ^ x) {
+                    let coeff: C64 = terms.iter().map(|t| t.amplitude(ket_c)).sum();
+                    let val = coeff * amp_c;
+                    if val != C64::default() {
+                        raw.push((row, val));
+                    }
+                }
+            }
+        } else {
+            for (&(col, amp_c), &ket_c) in entries.iter().zip(kets) {
+                if amp_c == C64::default() {
+                    continue;
+                }
+                for group in terms.chunk_by(|a, b| a.x == b.x) {
+                    let row = if group[0].x == 0 {
+                        Some(col)
+                    } else {
+                        basis.index(ket_c ^ group[0].x)
+                    };
+                    if let Some(row) = row {
+                        let mut coeff = C64::default();
+                        for t in group {
+                            coeff += t.amplitude(ket_c);
+                        }
+                        let val = coeff * amp_c;
+                        if val != C64::default() {
+                            raw.push((row, val));
+                        }
+                    }
+                }
+            }
+        }
+        raw.sort_unstable_by_key(|&(row, _)| row);
+        let mut write = 0usize;
+        let mut read = 0usize;
+        while read < raw.len() {
+            let row = raw[read].0;
+            let mut sum = raw[read].1;
+            read += 1;
+            while read < raw.len() && raw[read].0 == row {
+                sum += raw[read].1;
+                read += 1;
+            }
+            if sum != C64::default() {
+                raw[write] = (row, sum);
+                write += 1;
+            }
+        }
+        raw.truncate(write);
+        raw
+    }
     /// `output += scale * (H - identity) input`, accumulated in float64.
     pub(super) fn add_centered_into<A: Amplitude>(
         &self,
@@ -357,9 +547,12 @@ impl Operator {
     ///
     /// A small action, or one on a sparse input (fewer than one row in eight
     /// nonzero, as near the reference determinant), scatters each nonzero
-    /// column on the calling thread. A large action on a dense input gathers
-    /// across the context's workers ([`Self::gather_terms`]). The choice
-    /// depends on the data, never on the thread count. (A cost rule that
+    /// column; a large sparse one splits that scatter over the context's
+    /// workers with every row's additions in the serial order
+    /// ([`Self::ordered_scatter_terms`], the same bits on any worker count).
+    /// A large action on a dense input gathers across the context's workers
+    /// ([`Self::gather_terms`]). The choice between the scatter's bits and the
+    /// gather's depends on the data, never on the thread count. (A cost rule that
     /// gathered whenever eight workers would beat the scatter measured slower,
     /// 2026-11-10: a 30-iteration H2O ADAPT growth took 125.8 s on 8 threads
     /// and 329.3 s on 1, against 115.1 s and 162.0 s with this rule.)
@@ -377,6 +570,9 @@ impl Operator {
             if Self::gathers(rows, terms.len(), nonzero) {
                 return Self::gather_terms(terms, basis, input, scale, output);
             }
+            if Self::ordered_scatter_terms(terms, basis, input, nonzero, scale, output) {
+                return;
+            }
         }
         Self::scatter_terms(terms, basis, input, scale, output)
     }
@@ -386,7 +582,8 @@ impl Operator {
     /// row in another order than a scatter, so the two are not bit-equal and the rule must not
     /// differ between the dense action and its support-restricted twin.
     fn gathers(rows: usize, terms: usize, nonzero: usize) -> bool {
-        rows.saturating_mul(terms) >= super::parallel::PARALLEL_WORK && nonzero.saturating_mul(8) >= rows
+        rows.saturating_mul(terms) >= super::parallel::PARALLEL_WORK
+            && nonzero.saturating_mul(8) >= rows
     }
     /// `self input` into `output` by scattering only the columns of `support` (the ascending
     /// indices of every nonzero amplitude of `input`), and the rows written, ascending and
@@ -448,11 +645,17 @@ impl Operator {
     fn summed(phased: &[(u64, C64)], ket: u64) -> C64 {
         phased
             .iter()
-            .map(|&(z, c)| c * if (ket & z).count_ones() % 2 == 0 { 1. } else { -1. })
+            .map(|&(z, c)| {
+                c * if (ket & z).count_ones() % 2 == 0 {
+                    1.
+                } else {
+                    -1.
+                }
+            })
             .sum()
     }
     /// The basis state of row `i`.
-    fn ket(basis: &Basis, i: usize) -> u64 {
+    pub(super) fn ket(basis: &Basis, i: usize) -> u64 {
         if basis.full_register {
             i as u64
         } else {
@@ -511,7 +714,10 @@ impl Operator {
         let phased = self.phased();
         // The new value at `r` from the old values at `r` and its partner `c`.
         let updated = |ket_r: u64, old_r: A, old_c: A| {
-            let (to_r, to_c) = (Self::summed(&phased, ket_r ^ x), Self::summed(&phased, ket_r));
+            let (to_r, to_c) = (
+                Self::summed(&phased, ket_r ^ x),
+                Self::summed(&phased, ket_r),
+            );
             Self::rotated(to_r, to_c, linear, quadratic, old_r, old_c)
         };
         let rows = row.len();
@@ -534,6 +740,149 @@ impl Operator {
             row[r] = updated(ket_r, old_r, old_c);
             row[c] = updated(ket_r ^ x, old_c, old_r);
         }
+    }
+    /// Sparse-support counterpart to [`Self::rotate_pairs`]: updates only the pairs `(r, c)`
+    /// reachable from `support` (the ascending indices of every nonzero amplitude of `row`, with
+    /// every index outside `support` equal to `+0`). Returns the updated sorted nonzero support.
+    pub(super) fn rotate_pairs_support<A: Amplitude>(
+        &self,
+        basis: &Basis,
+        x: u64,
+        linear: f64,
+        quadratic: f64,
+        row: &mut [A],
+        support: &[usize],
+    ) -> Vec<usize> {
+        let phased = self.phased();
+        let updated = |ket_r: u64, old_r: A, old_c: A| {
+            let (to_r, to_c) = (
+                Self::summed(&phased, ket_r ^ x),
+                Self::summed(&phased, ket_r),
+            );
+            Self::rotated(to_r, to_c, linear, quadratic, old_r, old_c)
+        };
+        let mut added = Vec::new();
+        for &r in support {
+            let ket_r = Self::ket(basis, r);
+            let Some(c) = basis.index(ket_r ^ x) else {
+                continue;
+            };
+            let old_c = row[c];
+            if c < r && old_c != A::default() {
+                continue;
+            }
+            let old_r = row[r];
+            row[r] = updated(ket_r, old_r, old_c);
+            row[c] = updated(ket_r ^ x, old_c, old_r);
+            if old_c == A::default() && row[c] != A::default() {
+                added.push(c);
+            }
+        }
+        let mut next: Vec<usize> = support
+            .iter()
+            .copied()
+            .filter(|&r| row[r] != A::default())
+            .collect();
+        if !added.is_empty() {
+            next.extend(added);
+            next.sort_unstable();
+        }
+        next
+    }
+    /// Evaluate `f` with the precomputed [`Self::phased`] terms using stack storage when small.
+    #[inline]
+    fn with_phased<R>(&self, f: impl FnOnce(&[(u64, C64)]) -> R) -> R {
+        if self.terms.len() <= 16 {
+            let mut buf = [(0u64, C64::default()); 16];
+            for (dst, t) in buf.iter_mut().zip(&self.terms) {
+                *dst = (t.z, t.coefficient * phase((t.x & t.z).count_ones() as i32));
+            }
+            f(&buf[..self.terms.len()])
+        } else {
+            let heap = self.phased();
+            f(&heap)
+        }
+    }
+    /// Apply `self` to a sparse `(row, amplitude)` state vector, returning a sorted sparse
+    /// `(row, amplitude)` vector of nonzero entries.
+    pub(super) fn apply_sparse_state(
+        &self,
+        basis: &Basis,
+        state: &[(usize, C64)],
+    ) -> Vec<(usize, C64)> {
+        if let Some(x) = self.single_mask() {
+            return self.with_phased(|phased| {
+                let mut out = Vec::with_capacity(state.len());
+                for &(col, amp) in state {
+                    if amp == C64::default() {
+                        continue;
+                    }
+                    let ket = Self::ket(basis, col);
+                    if let Some(row) = basis.index(ket ^ x) {
+                        let val = Self::summed(phased, ket) * amp;
+                        if val != C64::default() {
+                            out.push((row, val));
+                        }
+                    }
+                }
+                out.sort_unstable_by_key(|&(row, _)| row);
+                out
+            });
+        }
+        let mut map = BTreeMap::<usize, C64>::new();
+        for &(col, amp) in state {
+            if amp == C64::default() {
+                continue;
+            }
+            let ket = Self::ket(basis, col);
+            for term in &self.terms {
+                if let Some(row) = basis.index(ket ^ term.x) {
+                    *map.entry(row).or_default() += term.amplitude(ket) * amp;
+                }
+            }
+        }
+        map.into_iter()
+            .filter(|&(_, val)| val != C64::default())
+            .collect()
+    }
+    /// Apply the single-mask rotation `1 + linear G + quadratic G^2` to a sorted sparse
+    /// `(row, amplitude)` state vector, returning the updated sorted sparse state vector.
+    pub(super) fn rotate_sparse_state(
+        &self,
+        basis: &Basis,
+        x: u64,
+        linear: f64,
+        quadratic: f64,
+        state: &[(usize, C64)],
+    ) -> Vec<(usize, C64)> {
+        self.with_phased(|phased| {
+            let mut out = Vec::with_capacity(state.len().saturating_mul(2));
+            for &(r, old_r) in state {
+                let ket_r = Self::ket(basis, r);
+                let Some(c) = basis.index(ket_r ^ x) else {
+                    if old_r != C64::default() {
+                        out.push((r, old_r));
+                    }
+                    continue;
+                };
+                let old_c = match state.binary_search_by_key(&c, |&(idx, _)| idx) {
+                    Ok(_j) if c < r => continue,
+                    Ok(j) => state[j].1,
+                    Err(_) => C64::default(),
+                };
+                let (to_r, to_c) = (Self::summed(phased, ket_r ^ x), Self::summed(phased, ket_r));
+                let new_r = Self::rotated(to_r, to_c, linear, quadratic, old_r, old_c);
+                let new_c = Self::rotated(to_c, to_r, linear, quadratic, old_c, old_r);
+                if new_r != C64::default() {
+                    out.push((r, new_r));
+                }
+                if new_c != C64::default() {
+                    out.push((c, new_c));
+                }
+            }
+            out.sort_unstable_by_key(|&(row, _)| row);
+            out
+        })
     }
     /// Whether the lockstep kernels ([`Self::rotate_gather`], [`Self::adjoint_step`]) run on this
     /// problem: a large action (the same threshold as the threaded overlap, whose block sums
@@ -559,19 +908,28 @@ impl Operator {
         let phased = self.phased();
         let rows = source.len();
         let work = rows.saturating_mul(self.terms.len()).saturating_mul(2);
-        parallel_rows(&basis.context, rows, work, &mut out[..rows], |start, block| {
-            for (offset, value) in block.iter_mut().enumerate() {
-                let r = start + offset;
-                let ket_r = Self::ket(basis, r);
-                *value = match basis.index(ket_r ^ x) {
-                    Some(c) => {
-                        let (to_r, to_c) = (Self::summed(&phased, ket_r ^ x), Self::summed(&phased, ket_r));
-                        Self::rotated(to_r, to_c, linear, quadratic, source[r], source[c])
-                    }
-                    None => source[r],
-                };
-            }
-        });
+        parallel_rows(
+            &basis.context,
+            rows,
+            work,
+            &mut out[..rows],
+            |start, block| {
+                for (offset, value) in block.iter_mut().enumerate() {
+                    let r = start + offset;
+                    let ket_r = Self::ket(basis, r);
+                    *value = match basis.index(ket_r ^ x) {
+                        Some(c) => {
+                            let (to_r, to_c) = (
+                                Self::summed(&phased, ket_r ^ x),
+                                Self::summed(&phased, ket_r),
+                            );
+                            Self::rotated(to_r, to_c, linear, quadratic, source[r], source[c])
+                        }
+                        None => source[r],
+                    };
+                }
+            },
+        );
     }
     /// One step of the adjoint sweep in one pass over the rows: `sum_r conj(lambda_r) (G psi)_r`
     /// ([`Self::overlap_single`], the same fixed blocks) and both rows rotated by
@@ -601,30 +959,46 @@ impl Operator {
             &mut lambda_out[..rows],
             &mut partial,
             |first, psi_block, lambda_block, sum| {
-                for (offset, (p, l)) in psi_block.iter_mut().zip(lambda_block.iter_mut()).enumerate() {
+                for (offset, (p, l)) in psi_block
+                    .iter_mut()
+                    .zip(lambda_block.iter_mut())
+                    .enumerate()
+                {
                     let r = first + offset;
                     let ket_r = Self::ket(basis, r);
                     let Some(c) = basis.index(ket_r ^ x) else {
                         (*p, *l) = (psi[r], lambda[r]);
                         continue;
                     };
-                    let (to_r, to_c) = (Self::summed(&phased, ket_r ^ x), Self::summed(&phased, ket_r));
+                    let (to_r, to_c) = (
+                        Self::summed(&phased, ket_r ^ x),
+                        Self::summed(&phased, ket_r),
+                    );
                     if psi[c] != A::default() {
-                        *sum += lambda[r].widen().conj() * (C64::default() + to_r * (one * psi[c].widen()));
+                        *sum += lambda[r].widen().conj()
+                            * (C64::default() + to_r * (one * psi[c].widen()));
                     }
                     *p = Self::rotated(to_r, to_c, linear, quadratic, psi[r], psi[c]);
                     *l = Self::rotated(to_r, to_c, linear, quadratic, lambda[r], lambda[c]);
                 }
             },
         );
-        partial.into_iter().fold(C64::default(), |sum, block| sum + block)
+        partial
+            .into_iter()
+            .fold(C64::default(), |sum, block| sum + block)
     }
     /// `sum_r conj(bra_r) (G ket)_r` for a single-mask generator: the action and the overlap in
     /// one pass, without the action's row. A small one folds in row order, equal to forming the
     /// row and folding the overlap; a large one sums fixed blocks of [`OVERLAP_BLOCK`] rows across
     /// the context's threads and adds the block sums in order, so its bits do not depend on the
     /// thread count either.
-    pub(super) fn overlap_single<A: Amplitude>(&self, basis: &Basis, x: u64, bra: &[A], ket: &[A]) -> C64 {
+    pub(super) fn overlap_single<A: Amplitude>(
+        &self,
+        basis: &Basis,
+        x: u64,
+        bra: &[A],
+        ket: &[A],
+    ) -> C64 {
         let one = C64::new(1., 0.);
         let phased = self.phased();
         let term = |r: usize, b: &A| {
@@ -652,18 +1026,25 @@ impl Operator {
         let mut partial = vec![C64::default(); blocks];
         let threads = super::parallel::threads_for(&basis.context, work, blocks);
         let mut lanes = vec![(); threads];
-        super::parallel::parallel_tasks(&basis.context, &mut partial, &mut lanes, |first, sums, _| {
-            for (k, sum) in sums.iter_mut().enumerate() {
-                let start = (first + k) * OVERLAP_BLOCK;
-                let end = (start + OVERLAP_BLOCK).min(rows);
-                for r in start..end {
-                    if let Some(value) = term(r, &bra[r]) {
-                        *sum += value;
+        super::parallel::parallel_tasks(
+            &basis.context,
+            &mut partial,
+            &mut lanes,
+            |first, sums, _| {
+                for (k, sum) in sums.iter_mut().enumerate() {
+                    let start = (first + k) * OVERLAP_BLOCK;
+                    let end = (start + OVERLAP_BLOCK).min(rows);
+                    for r in start..end {
+                        if let Some(value) = term(r, &bra[r]) {
+                            *sum += value;
+                        }
                     }
                 }
-            }
-        });
-        partial.into_iter().fold(C64::default(), |sum, block| sum + block)
+            },
+        );
+        partial
+            .into_iter()
+            .fold(C64::default(), |sum, block| sum + block)
     }
     /// Scatter every nonzero column through the strings, on one thread.
     fn scatter_terms<A: Amplitude>(
@@ -688,52 +1069,95 @@ impl Operator {
         output: &mut [C64],
         mut written: impl FnMut(usize),
     ) {
-        if let Some(first) = terms.first() {
-            if terms.iter().all(|term| term.x == first.x) {
-                // Excitation strings share their flip mask. Sum their exact
-                // Pauli coefficient before multiplying a state amplitude:
-                // forbidden occupations cancel without roundoff leakage.
-                for column in columns {
-                    if input[column] == A::default() {
-                        continue;
-                    }
-                    let ket = basis.indices.as_slice()[column];
-                    if let Some(row) = basis.index(ket ^ first.x) {
-                        let coefficient: C64 = terms.iter().map(|term| term.amplitude(ket)).sum();
-                        output[row] += coefficient * (scale * input[column].widen());
-                        written(row);
-                    }
-                }
-                return;
-            }
+        let shared = Self::shares_mask(terms);
+        for column in columns {
+            Self::column_products(terms, shared, basis, input, column, scale, |row, value| {
+                output[row] += value;
+                written(row);
+            });
         }
-        if basis.full_register {
-            for ket in columns {
-                if input[ket] == A::default() {
-                    continue;
-                }
-                let weighted = scale * input[ket].widen();
-                for term in terms {
-                    let row = (ket as u64 ^ term.x) as usize;
-                    output[row] += term.amplitude(ket as u64) * weighted;
-                    written(row);
-                }
+    }
+    /// Whether every string has the first one's flip mask (an excitation generator).
+    fn shares_mask(terms: &[Term]) -> bool {
+        terms
+            .first()
+            .is_some_and(|first| terms.iter().all(|term| term.x == first.x))
+    }
+    /// What one input column adds to the output, `add(row, value)` per product in the scatter's
+    /// order: the one body of the serial scatter ([`Self::scatter_columns`]) and of its
+    /// split over workers ([`Self::ordered_scatter_terms`]), so both form the same values. A zero
+    /// amplitude adds nothing.
+    #[inline]
+    fn column_products<A: Amplitude>(
+        terms: &[Term],
+        shared: bool,
+        basis: &Basis,
+        input: &[A],
+        column: usize,
+        scale: C64,
+        mut add: impl FnMut(usize, C64),
+    ) {
+        if input[column] == A::default() {
+            return;
+        }
+        if shared {
+            // Excitation strings share their flip mask. Sum their exact
+            // Pauli coefficient before multiplying a state amplitude:
+            // forbidden occupations cancel without roundoff leakage.
+            let ket = basis.indices.as_slice()[column];
+            if let Some(row) = basis.index(ket ^ terms[0].x) {
+                let coefficient: C64 = terms.iter().map(|term| term.amplitude(ket)).sum();
+                add(row, coefficient * (scale * input[column].widen()));
             }
             return;
         }
-        for col in columns {
-            if input[col] == A::default() {
-                continue;
+        let weighted = scale * input[column].widen();
+        if basis.full_register {
+            let ket = column as u64;
+            for term in terms {
+                add((ket ^ term.x) as usize, term.amplitude(ket) * weighted);
             }
-            let ket = basis.indices.as_slice()[col];
-            let weighted = scale * input[col].widen();
-            for t in terms {
-                if let Some(row) = basis.index(ket ^ t.x) {
-                    output[row] += t.amplitude(ket) * weighted;
-                    written(row);
-                }
+            return;
+        }
+        let ket = basis.indices.as_slice()[column];
+        for t in terms {
+            if let Some(row) = basis.index(ket ^ t.x) {
+                add(row, t.amplitude(ket) * weighted);
             }
         }
+    }
+    /// The serial scatter of a large action on a sparse input, split over the context's workers
+    /// with each output row adding the scatter's values in the scatter's order
+    /// ([`parallel::ordered_scatter`]): bit-identical to [`Self::scatter_terms`] on any worker
+    /// count. Returns `false` when it runs on one worker (the caller scatters).
+    fn ordered_scatter_terms<A: Amplitude>(
+        terms: &[Term],
+        basis: &Basis,
+        input: &[A],
+        nonzero: usize,
+        scale: C64,
+        output: &mut [C64],
+    ) -> bool {
+        let columns = || {
+            (0..input.len())
+                .filter(|&c| input[c] != A::default())
+                .collect()
+        };
+        let shared = Self::shares_mask(terms);
+        let products = if shared { 1 } else { terms.len() };
+        let ctx = &basis.context;
+        super::parallel::ordered_scatter(
+            ctx,
+            nonzero,
+            columns,
+            products,
+            output,
+            |column, queue| {
+                Self::column_products(terms, shared, basis, input, column, scale, |row, value| {
+                    queue.push(row, value)
+                })
+            },
+        )
     }
     /// Gather: each output row reads, for every flip mask `x`, the one source
     /// amplitude at `ket ^ x`, with the exact sum of that mask's Pauli
@@ -783,7 +1207,13 @@ impl Operator {
                 *value += scale * sum;
             }
         };
-        parallel_rows(&basis.context, rows, rows.saturating_mul(terms.len()), output, block);
+        parallel_rows(
+            &basis.context,
+            rows,
+            rows.saturating_mul(terms.len()),
+            output,
+            block,
+        );
     }
     /// `finish(k, H inputs[k])` for every input (`centered`: without the identity term), in
     /// order. The applications are independent, so they spread over the context's workers, each
@@ -802,7 +1232,10 @@ impl Operator {
             return Err(invalid("states must match the operator basis"));
         }
         let rows = basis.len();
-        let work = inputs.len().saturating_mul(rows).saturating_mul(self.terms.len());
+        let work = inputs
+            .len()
+            .saturating_mul(rows)
+            .saturating_mul(self.terms.len());
         super::parallel::parallel_each(&basis.context, inputs.len(), rows, work, |k, out| {
             if centered {
                 self.apply_centered_into(basis, inputs[k], out);
@@ -1430,6 +1863,15 @@ pub fn excitation_pool(
     encoding: &Encoding,
     singles: bool,
 ) -> Result<Vec<Generator>> {
+    excitation_pool_filtered(ctx, encoding, singles, |_, _| true)
+}
+
+pub fn excitation_pool_filtered(
+    ctx: &Context,
+    encoding: &Encoding,
+    singles: bool,
+    mut keep: impl FnMut(&[usize], &[usize]) -> bool,
+) -> Result<Vec<Generator>> {
     let m = encoding.modes / 2;
     let [na, nb] = encoding.particles;
     let occ: Vec<_> = (0..na).chain(m..m + nb).collect();
@@ -1444,7 +1886,7 @@ pub fn excitation_pool(
     if singles {
         for &i in &occ {
             for &a in &virt {
-                if i / m == a / m {
+                if i / m == a / m && keep(&[i], &[a]) {
                     append(format!("S({i}->{a})"), &[(a, true), (i, false)])?;
                 }
             }
@@ -1454,7 +1896,7 @@ pub fn excitation_pool(
         for &j in &occ[ix + 1..] {
             for (ax, &a) in virt.iter().enumerate() {
                 for &b in &virt[ax + 1..] {
-                    if i / m + j / m == a / m + b / m {
+                    if i / m + j / m == a / m + b / m && keep(&[i, j], &[a, b]) {
                         append(
                             format!("D({i},{j}->{a},{b})"),
                             &[(a, true), (b, true), (j, false), (i, false)],

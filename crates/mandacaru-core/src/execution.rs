@@ -287,7 +287,9 @@ pub fn measurement_cost(
     shots_per_randomization: u64,
 ) -> Result<(u64, u64)> {
     if max_bases_per_job == Some(0) || noise_factors == 0 {
-        return Err(invalid("a job carries at least one basis and one noise factor"));
+        return Err(invalid(
+            "a job carries at least one basis and one noise factor",
+        ));
     }
     let jobs = if job_per_basis {
         bases
@@ -298,11 +300,15 @@ pub fn measurement_cost(
         }
     };
     let per_instance = if randomizations > 1 {
-        randomizations.checked_mul(shots_per_randomization).ok_or(Error::Overflow)?
+        randomizations
+            .checked_mul(shots_per_randomization)
+            .ok_or(Error::Overflow)?
     } else {
         shots
     };
-    let total = bases.checked_mul(noise_factors).and_then(|v| v.checked_mul(per_instance))
+    let total = bases
+        .checked_mul(noise_factors)
+        .and_then(|v| v.checked_mul(per_instance))
         .ok_or(Error::Overflow)?;
     Ok((jobs, total))
 }
@@ -353,7 +359,10 @@ pub fn qwc_hamiltonian(
     }
     let labels: Vec<String> = terms.iter().map(|(l, _, _)| l.clone()).collect();
     let n = labels_width(&labels)?;
-    if terms.iter().any(|(_, re, im)| !re.is_finite() || !im.is_finite()) {
+    if terms
+        .iter()
+        .any(|(_, re, im)| !re.is_finite() || !im.is_finite())
+    {
         return Err(invalid("Pauli coefficients must be finite"));
     }
     let mut identity = 0.;
@@ -379,7 +388,12 @@ pub fn qwc_hamiltonian(
         groups: grouped
             .groups
             .iter()
-            .map(|(basis, members)| (basis.clone(), members.iter().map(|&i| kept[i].clone()).collect()))
+            .map(|(basis, members)| {
+                (
+                    basis.clone(),
+                    members.iter().map(|&i| kept[i].clone()).collect(),
+                )
+            })
             .collect(),
         identity,
     })
@@ -389,7 +403,10 @@ pub fn qwc_hamiltonian(
 /// group: `sum |c_j| / sqrt(shots)` over the non-identity strings above `atol` (each `<P_j>` has
 /// variance at most one). `shots` below one counts as one.
 pub fn shot_noise(terms: &[(String, f64, f64)], shots: u64, atol: f64) -> Result<f64> {
-    if terms.iter().any(|(_, re, im)| !re.is_finite() || !im.is_finite()) {
+    if terms
+        .iter()
+        .any(|(_, re, im)| !re.is_finite() || !im.is_finite())
+    {
         return Err(invalid("Pauli coefficients must be finite"));
     }
     let norm: f64 = terms
@@ -410,7 +427,9 @@ pub fn twirled_instances(
     shots_per_randomization: Option<u64>,
 ) -> Result<(u64, u64)> {
     if randomizations == Some(0) || shots_per_randomization == Some(0) {
-        return Err(invalid("twirling needs at least one randomization and one shot per randomization"));
+        return Err(invalid(
+            "twirling needs at least one randomization and one shot per randomization",
+        ));
     }
     let (count, per) = match (randomizations, shots_per_randomization) {
         (None, None) => {
@@ -449,7 +468,12 @@ pub fn basis_chunks(
     Ok(partition
         .groups
         .chunks(limit)
-        .map(|bases| bases.iter().flat_map(|(_, members)| members.iter().copied()).collect::<Vec<_>>())
+        .map(|bases| {
+            bases
+                .iter()
+                .flat_map(|(_, members)| members.iter().copied())
+                .collect::<Vec<_>>()
+        })
         .filter(|chunk| !chunk.is_empty())
         .collect())
 }
@@ -461,8 +485,14 @@ pub fn batch_size(ctx: &Context, requests: &[Vec<String>]) -> Result<(u64, u64)>
     let mut strings = 0u64;
     let mut bases = 0u64;
     for labels in requests {
-        strings = strings.checked_add(labels.len() as u64).ok_or(Error::Overflow)?;
-        let groups = if labels.is_empty() { 0 } else { qwc(ctx, labels, None)?.groups.len() };
+        strings = strings
+            .checked_add(labels.len() as u64)
+            .ok_or(Error::Overflow)?;
+        let groups = if labels.is_empty() {
+            0
+        } else {
+            qwc(ctx, labels, None)?.groups.len()
+        };
         bases = bases.checked_add(groups as u64).ok_or(Error::Overflow)?;
     }
     Ok((strings, bases))
@@ -480,20 +510,29 @@ pub fn budget_check(
     limits: (Option<u64>, Option<u64>),
 ) -> Result<((u64, u64), Vec<(&'static str, u64, u64)>)> {
     let add = |base: u64, each: u64| {
-        each.checked_mul(times).and_then(|v| v.checked_add(base)).ok_or(Error::Overflow)
+        each.checked_mul(times)
+            .and_then(|v| v.checked_add(base))
+            .ok_or(Error::Overflow)
     };
     let after = (add(used.0, per.0)?, add(used.1, per.1)?);
-    let exceeded = [("jobs", after.0, limits.0), ("total_shots", after.1, limits.1)]
-        .into_iter()
-        .filter_map(|(name, total, limit)| limit.filter(|&l| total > l).map(|l| (name, total, l)))
-        .collect();
+    let exceeded = [
+        ("jobs", after.0, limits.0),
+        ("total_shots", after.1, limits.1),
+    ]
+    .into_iter()
+    .filter_map(|(name, total, limit)| limit.filter(|&l| total > l).map(|l| (name, total, l)))
+    .collect();
     Ok((after, exceeded))
 }
 
 /// The standard error an Estimator targets at `shots` per circuit, `1 / sqrt(shots)`, and zero
 /// (exact) without shots.
 pub fn estimator_precision(shots: u64) -> f64 {
-    if shots == 0 { 0. } else { 1. / (shots as f64).sqrt() }
+    if shots == 0 {
+        0.
+    } else {
+        1. / (shots as f64).sqrt()
+    }
 }
 
 /// The memory, in GB, a matrix-product-state simulator holds for one job of `bases` measurement
@@ -518,14 +557,20 @@ pub fn state_expectations(
     }
     let basis = Basis::register(ctx, n)?;
     if state.len() != basis.len() {
-        return Err(invalid("the state must cover the whole register of the strings"));
+        return Err(invalid(
+            "the state must cover the whole register of the strings",
+        ));
     }
     labels
         .iter()
         .map(|label| {
             let operator = Operator::new(ctx, n, &[(label.clone(), C64::new(1., 0.))])?;
             let image = operator.apply(ctx, &basis, state)?;
-            Ok(state.iter().zip(image.as_slice()).map(|(a, b)| (a.conj() * b).re).sum())
+            Ok(state
+                .iter()
+                .zip(image.as_slice())
+                .map(|(a, b)| (a.conj() * b).re)
+                .sum())
         })
         .collect()
 }
@@ -612,9 +657,20 @@ impl RunLedger {
 /// rdm_circuits bases` (the energy evaluations of the parameter Hessian and the RDM circuits of
 /// every basis) and the shots of all of them, `instances shots`. Returns
 /// `(rdm_circuits, instances, total_shots)`.
-pub fn device_force_cost(rotations: u64, circuits: u64, bases: u64, shots: u64) -> Result<(u64, u64, u64)> {
-    let rdm = rotations.checked_mul(2).and_then(|v| v.checked_add(1)).ok_or(Error::Overflow)?;
-    let instances = rdm.checked_mul(bases).and_then(|v| v.checked_add(circuits)).ok_or(Error::Overflow)?;
+pub fn device_force_cost(
+    rotations: u64,
+    circuits: u64,
+    bases: u64,
+    shots: u64,
+) -> Result<(u64, u64, u64)> {
+    let rdm = rotations
+        .checked_mul(2)
+        .and_then(|v| v.checked_add(1))
+        .ok_or(Error::Overflow)?;
+    let instances = rdm
+        .checked_mul(bases)
+        .and_then(|v| v.checked_add(circuits))
+        .ok_or(Error::Overflow)?;
     let total = instances.checked_mul(shots).ok_or(Error::Overflow)?;
     Ok((rdm, instances, total))
 }
@@ -647,8 +703,13 @@ pub fn pack_jobs(loads: &[u64], limit: Option<u64>) -> Vec<(Vec<usize>, u64)> {
 /// there and the single-qubit ones the other unskipped gates; without, an entangling gate is any
 /// unskipped gate acting on two qubits (whatever it is called), so a fractional-gate entangler
 /// is counted as one.
-pub fn gate_tally(gates: &[(String, usize, u64)], skipped: &[String], entanglers: Option<&[String]>) -> (u64, u64, u64) {
-    let named = |list: &[String], name: &str| list.iter().any(|item| item.eq_ignore_ascii_case(name));
+pub fn gate_tally(
+    gates: &[(String, usize, u64)],
+    skipped: &[String],
+    entanglers: Option<&[String]>,
+) -> (u64, u64, u64) {
+    let named =
+        |list: &[String], name: &str| list.iter().any(|item| item.eq_ignore_ascii_case(name));
     let (mut entangling, mut single, mut total) = (0u64, 0u64, 0u64);
     for (name, qubits, count) in gates {
         total += count;

@@ -1,14 +1,10 @@
-//! The attempt table of the search (`paw::generate::search::plan`), the choices a recipe pins and
-//! the text of a refusal: static checks that build no dataset. The table is compared with the 33
-//! labels the Python search recorded for cerium and with the remedies it recorded for silicon.
-mod paw_assemble_support;
+//! The choices a recipe pins and the text of a refusal: static checks that build no dataset.
 
 use mandacaru_core::models::relativity::Treatment;
 use mandacaru_core::paw::generate::{
     recipe::{Cutoffs, Recipe},
-    search::{general, plan, Pinned},
+    search::{general, Pinned},
 };
-use paw_assemble_support::Frozen;
 use std::collections::BTreeMap;
 
 #[test]
@@ -33,66 +29,6 @@ fn what_a_recipe_pins() {
     assert!(Pinned::of(&upaw).local_shift && !Pinned::of(&upaw).r_cut);
     let plain = Recipe::upaw("O", "lda", Treatment::Scalar).unwrap();
     assert_eq!(Pinned::of(&plain), Pinned::default());
-}
-
-#[test]
-fn the_attempt_table_is_the_one_the_python_search_recorded() {
-    // Cerium's 33 attempts of the freeze: the first construction and 32 remedies, with the
-    // balanced radius of its largest channel.
-    let frozen = Frozen::open("lda-sr_Ce");
-    let attempts = frozen.doc["ghost_free"]["attempts"].as_array().unwrap();
-    assert_eq!(attempts.len(), 33);
-    let selected = &attempts[8]["generated"];
-    let radii = selected["r_cut"]
-        .as_object()
-        .unwrap()
-        .iter()
-        .map(|(l, r)| (l.parse::<usize>().unwrap(), r.as_f64().unwrap()))
-        .collect::<BTreeMap<_, _>>();
-    let recipe = Recipe::for_dataset("Ce", "lda", Treatment::Scalar).unwrap();
-    let table = plan(&recipe, &radii);
-    assert_eq!(table.len(), 32);
-    for (i, attempt) in table.iter().enumerate() {
-        assert_eq!(
-            attempt.label,
-            attempts[i + 1]["label"].as_str().unwrap(),
-            "attempt {}",
-            i + 1
-        );
-        assert_eq!(attempt.recipe.norm_deficit, 0.0, "{}", attempt.label);
-    }
-    // The recorded remedies of the selected attempts of the freeze, as recipe fields.
-    assert_eq!(table[7].recipe.local_shift, 40.0);
-    let si = Recipe::for_dataset("Si", "lda", Treatment::Scalar).unwrap();
-    let shorter = &plan(&si, &BTreeMap::from([(0, 2.3), (1, 2.8)]))[1];
-    assert_eq!(shorter.recipe.local_shift, 0.0);
-    assert_eq!(shorter.recipe.local_factor, si.local_factor * 0.75);
-    let remedy = &Frozen::open("lda-sr_Si").doc["ghost_free"]["attempts"][2]["remedy"];
-    assert_eq!(
-        remedy["local_factor"].as_f64(),
-        Some(shorter.recipe.local_factor)
-    );
-    // The balanced attempts give every channel the largest radius and a local radius to match.
-    let balanced = &table[27];
-    assert_eq!(balanced.label, "balanced at 4.993 Bohr, shift 0");
-    match &balanced.recipe.cutoffs {
-        Cutoffs::PerChannel(map) => {
-            assert!(map.values().all(|&r| r == 4.992701233319157) && map.len() == 2)
-        }
-        other => panic!("{other:?}"),
-    }
-    assert_eq!(
-        balanced.recipe.local_radius,
-        Some(recipe.local_factor * 4.992701233319157)
-    );
-    // The shorter s spheres scale l = 0 only.
-    match &table[18].recipe.cutoffs {
-        Cutoffs::PerChannel(map) => {
-            assert_eq!(map[&0], 4.992701233319157 * 0.95);
-            assert_eq!(map[&3], 0.944816726244526);
-        }
-        other => panic!("{other:?}"),
-    }
 }
 
 #[test]

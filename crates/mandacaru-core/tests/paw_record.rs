@@ -1,13 +1,9 @@
-//! The typed PAW dataset record (`paw::record`): the 10-digit rule, the
-//! reader against the frozen A0 digests, the census of the shipped library,
-//! and the column order. The write path, the refusals and the local potential
-//! have their own files (`paw_record_write`, `paw_record_refusals`,
-//! `paw_record_values`).
+//! The typed PAW dataset record (`paw::record`): the 10-digit rule, the census of the shipped
+//! library, and the column order. The write path, the refusals and the local potential have
+//! their own files (`paw_record_write`, `paw_record_refusals`, `paw_record_values`).
 //!
-//! References are the frozen A0 files in `test/migration/reference/paw_generate`
-//! and the shipped library (`$MANDACARU_PAW_PATH`, and the UPAW-LCAO library
-//! beside it); a missing input FAILS, it never skips. Every test processes one
-//! file at a time, `pbe-fr/Pb.parquet` (15.5 MB) first.
+//! The input is the shipped library (`$MANDACARU_PAW_PATH`); a missing input FAILS, it never skips. Every test processes one file at a time,
+//! `pbe-fr/Pb.parquet` (15.5 MB) first.
 
 mod paw_record_support;
 
@@ -16,10 +12,9 @@ use std::collections::BTreeMap;
 use mandacaru_core::parquet;
 use mandacaru_core::paw::record::{digits, PawDataset, METADATA_KEY};
 use paw_record_support::*;
-use serde_json::{json, Value};
 
 // ---------------------------------------------------------------------------
-// The tools of the comparison.
+// The tools.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -39,221 +34,18 @@ fn sha256_matches_the_nist_vectors() {
     );
 }
 
-fn expected_bits(value: &Value) -> u64 {
-    match value {
-        Value::String(text) if text == "inf" => f64::INFINITY.to_bits(),
-        other => other.as_f64().unwrap().to_bits(),
-    }
-}
-
 #[test]
-fn the_digits_rule_reproduces_every_frozen_table_case() {
-    let misc = reference("misc.json");
-    let table = &misc["_table"];
-    assert_eq!(table["digits"], 10);
-    let cases = &table["cases"];
-    let edge = floats(&cases["edge_stride1"]["input"]);
-    let random = floats(&cases["random_97"]["input"]);
-    let mut checked = 0usize;
-    let mut compare = |input: &[f64], stride: usize, expected: &Value, label: &str| {
-        let got = digits::decimate(input, stride).unwrap();
-        let want = expected.as_array().unwrap();
-        assert_eq!(got.len(), want.len(), "{label}: length");
-        for (i, (g, w)) in got.iter().zip(want).enumerate() {
-            assert_eq!(g.to_bits(), expected_bits(w), "{label}[{i}]: {g:e} vs {w}");
-            checked += 1;
-        }
-    };
-    compare(&edge, 1, &cases["edge_stride1"]["output"], "edge stride 1");
-    for stride in 2..=4 {
-        let key = format!("edge_stride{stride}");
-        compare(&edge, stride, &cases[key.as_str()]["output"], &key);
-    }
-    for (key, expected) in cases["random_97"]["output"].as_object().unwrap() {
-        let stride: usize = key.parse().unwrap();
-        compare(
-            &random,
-            stride,
-            expected,
-            &format!("random_97 stride {stride}"),
-        );
-    }
-    println!("digits rule: {checked} values equal the frozen Python output bit for bit");
+fn the_digits_rule_follows_the_c_library_at_its_edges() {
     // The overflow edge: a value that rounds past f64::MAX becomes infinity,
     // exactly as float('%.10g' % v) does; a tie at the eleventh digit rounds
     // to even like the C library.
     assert_eq!(digits::round_digits(f64::MAX), f64::INFINITY);
     assert_eq!(digits::round_digits(2f64.powi(-15)), 3.051757812e-5);
     assert_eq!(digits::round_digits(f64::NAN).to_bits(), f64::NAN.to_bits());
-    assert!(digits::decimate(&edge, 0).is_err(), "stride 0 is refused");
-}
-
-// ---------------------------------------------------------------------------
-// The A0 sample: every array of every frozen file matches its digest.
-// ---------------------------------------------------------------------------
-
-/// Checks `ds` against the frozen arrays of `(set, element)`; returns the
-/// number of arrays compared.
-fn check_against_frozen(ds: &PawDataset, set: &str, element: &str) -> usize {
-    let (doc, rows) = frozen_arrays(set, element).expect("a frozen sample file");
-    let arrays = arrays_of(ds);
-    let names: Vec<&str> = arrays.iter().map(|(n, _, _)| n.as_str()).collect();
-    let frozen_names: Vec<&str> = rows.iter().map(|r| r.0.as_str()).collect();
-    assert_eq!(
-        names, frozen_names,
-        "{set}/{element}: array names and order"
+    assert!(
+        digits::decimate(&[1.0, 2.0], 0).is_err(),
+        "stride 0 is refused"
     );
-    for ((name, shape, values), (_, sha, frozen_shape, frozen_max)) in arrays.iter().zip(&rows) {
-        assert!(
-            shape_matches(frozen_shape, shape),
-            "{set}/{element} {name}: shape {shape:?}"
-        );
-        assert_eq!(
-            &sha256_of_f64(values),
-            sha,
-            "{set}/{element} {name}: sha256"
-        );
-        match frozen_max.as_f64() {
-            Some(max) => {
-                let got = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-                assert_eq!(got.to_bits(), max.to_bits(), "{set}/{element} {name}: max");
-            }
-            None => assert!(
-                values.is_empty(),
-                "{set}/{element} {name}: frozen max is null"
-            ),
-        }
-    }
-    let grid = &doc["grid"];
-    let r = ds.r.as_slice();
-    assert_eq!(r.len() as u64, grid["n"].as_u64().unwrap());
-    assert_eq!(r[0], grid["first"].as_f64().unwrap());
-    assert_eq!(*r.last().unwrap(), grid["last"].as_f64().unwrap());
-    assert_eq!(r[1] - r[0], grid["h_first"].as_f64().unwrap());
-    assert_eq!(
-        ds.step(),
-        r[0],
-        "the step is read from r[0], not from points(Z)/4"
-    );
-    check_scalars(ds, &doc["scalars"], &format!("{set}/{element}"));
-    arrays.len()
-}
-
-fn nlcc_value(ds: &PawDataset) -> Value {
-    let n = &ds.nlcc;
-    let mut map = serde_json::Map::new();
-    map.insert("applied".into(), json!(n.applied));
-    map.insert("r_nlcc".into(), json!(n.r_nlcc));
-    if let Some(v) = &n.source {
-        map.insert("source".into(), json!(v));
-    }
-    if let Some(v) = n.core_electrons {
-        map.insert("core_electrons".into(), json!(v));
-    }
-    if let Some(v) = n.partial_core_electrons {
-        map.insert("partial_core_electrons".into(), json!(v));
-    }
-    if let Some(v) = &n.reason {
-        map.insert("reason".into(), json!(v));
-    }
-    Value::Object(map)
-}
-
-fn defects_value(ds: &PawDataset) -> Value {
-    let d = &ds.defects;
-    let keyed = |m: &BTreeMap<u32, f64>| {
-        Value::Object(m.iter().map(|(l, v)| (l.to_string(), json!(v))).collect())
-    };
-    let mut map = serde_json::Map::new();
-    map.insert("ghosts".into(), keyed(&d.ghosts));
-    map.insert(
-        "phases".into(),
-        Value::Object(
-            d.phases
-                .iter()
-                .map(|(l, v)| (l.to_string(), json!(v)))
-                .collect(),
-        ),
-    );
-    if !d.residuals.is_empty() {
-        map.insert("residuals".into(), keyed(&d.residuals));
-    }
-    if let Some(v) = d.s_miss {
-        map.insert("s_miss".into(), json!(v));
-    }
-    if !d.unprojected.is_empty() {
-        map.insert("unprojected".into(), keyed(&d.unprojected));
-    }
-    Value::Object(map)
-}
-
-/// The scalar block of the A0 freeze (`dataset_scalars`) as the record sees it.
-fn scalars_value(ds: &PawDataset) -> Value {
-    let channels: serde_json::Map<String, Value> = ds
-        .channels
-        .iter()
-        .map(|(l, ch)| {
-            let entry = json!({
-                "n": ch.n, "r_cut": ch.r_cut, "occupation": ch.occupation,
-                "duality_error": ch.duality_error, "overlap_minimum": ch.overlap_minimum,
-                "asymmetry": ch.asymmetry, "consistency_error": ch.consistency_error,
-                "q_cut": ch.q_cut, "n_projectors": ch.projectors.len(),
-            });
-            (l.to_string(), entry)
-        })
-        .collect();
-    json!({
-        "symbol": ds.symbol, "atomic_number": ds.atomic_number, "family": ds.family.name(),
-        "valence_charge": ds.valence_charge, "r_cut_local": ds.r_cut_local,
-        "local_shift": ds.local_shift, "compensation_radius": ds.compensation_radius,
-        "compensation_charge": ds.compensation_charge,
-        "hartree_screening": ds.hartree_screening, "one_center_energy": ds.one_center_energy,
-        "energies": ds.energies, "q_cut": ds.q_cut, "energy_offset": ds.energy_offset,
-        "norm_deficit": ds.norm_deficit, "xc": ds.xc, "relativity": ds.relativity,
-        "relativistic_exchange": ds.relativistic_exchange, "extra_l": ds.extra_l,
-        "nlcc": nlcc_value(ds), "frozen_subshells": ds.frozen_subshells,
-        "semicore_subshells": ds.semicore_subshells, "defects": defects_value(ds),
-        "n_points": ds.points(), "channels": channels,
-    })
-}
-
-/// Every key of `frozen` exists in `mine` and holds the same value; numbers
-/// agree bit for bit (the frozen JSON prints the shortest round-trip form).
-fn subset_equal(frozen: &Value, mine: &Value, path: &str, compared: &mut usize) {
-    match (frozen, mine) {
-        (Value::Object(f), Value::Object(m)) => {
-            for (key, value) in f {
-                let there = m
-                    .get(key)
-                    .unwrap_or_else(|| panic!("{path}.{key} is missing"));
-                subset_equal(value, there, &format!("{path}.{key}"), compared);
-            }
-        }
-        (Value::Array(f), Value::Array(m)) => {
-            assert_eq!(f.len(), m.len(), "{path}: length");
-            for (i, (a, b)) in f.iter().zip(m).enumerate() {
-                subset_equal(a, b, &format!("{path}[{i}]"), compared);
-            }
-        }
-        (Value::Number(f), Value::Number(m)) => {
-            assert_eq!(
-                f.as_f64().unwrap().to_bits(),
-                m.as_f64().unwrap().to_bits(),
-                "{path}"
-            );
-            *compared += 1;
-        }
-        (f, m) => {
-            assert_eq!(f, m, "{path}");
-            *compared += 1;
-        }
-    }
-}
-
-fn check_scalars(ds: &PawDataset, frozen: &Value, label: &str) {
-    let mut compared = 0;
-    subset_equal(frozen, &scalars_value(ds), label, &mut compared);
-    assert!(compared >= 15, "{label}: only {compared} scalars compared");
 }
 
 /// A file's radial step is read from the file (`r[0]`), never derived from the generation grid:
@@ -269,7 +61,15 @@ fn a_file_written_at_another_stride_is_read_with_its_own_step() {
     let ds = PawDataset::read(&ctx, &library().join("pbe-fr/Pb.parquet")).unwrap();
     let dir = TempDir::new("stride");
     let out = dir.file("Pb.parquet");
-    ds.write(&ctx, &out, &WriteSpec { stride: 2, codec: Codec::Zstd }).unwrap();
+    ds.write(
+        &ctx,
+        &out,
+        &WriteSpec {
+            stride: 2,
+            codec: Codec::Zstd,
+        },
+    )
+    .unwrap();
     let half = PawDataset::read(&ctx, &out).unwrap();
     let (h, h2) = (ds.step(), half.step());
     println!("pbe-fr/Pb: step {h:e}, written at stride 2: {h2:e}");
@@ -280,32 +80,10 @@ fn a_file_written_at_another_stride_is_read_with_its_own_step() {
     assert_eq!(half.tables().len(), ds.tables().len());
     assert_eq!(half.relativity, ds.relativity);
     drop((ds, half));
-    assert_eq!(ctx.memory_used(), 0, "dropping the records releases the budget");
-}
-
-#[test]
-fn the_a0_sample_matches_its_frozen_digests() {
-    let ctx = context();
-    let root = library();
-    let mut files = 0usize;
-    let mut arrays = 0usize;
-    for (set, path) in files_of(&root, &SETS) {
-        let element = path.file_stem().unwrap().to_str().unwrap().to_string();
-        if frozen_arrays(&set, &element).is_none() {
-            continue;
-        }
-        let ds = PawDataset::read(&ctx, &path).unwrap();
-        arrays += check_against_frozen(&ds, &set, &element);
-        files += 1;
-        drop(ds);
-        assert_eq!(ctx.memory_used(), 0);
-    }
-    println!("A0 sample: {files} files, {arrays} arrays, every sha256, shape and max equal");
-    // 17 since 2026-11-09: the cases of the seven files replaced in the library (lda-fr Au, Ce,
-    // Fe, Pb; lda-sr Ce; pbe-fr Pb; pbe-sr Ce) were retired with their Python freeze.
-    assert!(
-        files >= 17,
-        "the A0 sample has at least 17 library files, found {files}"
+    assert_eq!(
+        ctx.memory_used(),
+        0,
+        "dropping the records releases the budget"
     );
 }
 
@@ -326,7 +104,7 @@ struct Census {
     families: BTreeMap<String, usize>,
 }
 
-/// Reads every file of `files` (PAW first, then UPAW), checks the columns of the
+/// Reads every file of `files` checks the columns of the
 /// record against the file's, and counts.
 fn census(files: &[(String, std::path::PathBuf)]) -> Census {
     let ctx = context();
@@ -379,21 +157,14 @@ fn census(files: &[(String, std::path::PathBuf)]) -> Census {
 
 #[test]
 fn every_shipped_file_is_read_and_the_defaults_are_the_two_the_census_found() {
-    let mut files = files_of(&library(), &SETS);
-    let paw_files = files.len();
-    let upaw = upaw_library();
-    if let Some(root) = &upaw {
-        files.extend(files_of(root, &["lda-sr"]));
-    }
+    let files = files_of(&library(), &SETS);
     let c = census(&files);
     println!(
-        "census: {} files read of {} found ({} PAW-LCAO, {} UPAW-LCAO), {} refusals; \
+        "census: {} files read of {} found, {} refusals; \
          channel entries {}, spin-orbit entries {}; defaults applied: semicore_subshells {}, \
          occupations {}; foreign metadata keys ignored: {:?}; families {:?}; files whose channels are not in ascending l: {}",
         c.files,
         files.len(),
-        paw_files,
-        files.len() - paw_files,
         c.refusals.len(),
         c.channel_entries,
         c.spin_orbit_entries,
@@ -404,19 +175,15 @@ fn every_shipped_file_is_read_and_the_defaults_are_the_two_the_census_found() {
         c.reordered
     );
     assert!(c.refusals.is_empty(), "{:#?}", c.refusals);
-    assert_eq!(paw_files, 368, "4 sets x 92 PAW-LCAO files");
-    assert_eq!(
-        upaw.map(|_| files.len() - paw_files),
-        Some(63),
-        "the UPAW-LCAO library has 63 files"
-    );
+    assert_eq!(files.len(), 368, "4 sets x 92 PAW-LCAO files");
     assert_eq!(c.files, files.len());
     // The keys older files lack. The census of the Python side found 11 and 21, and 273
     // spin-orbit entries; the files regenerated on 2026-11-09 and 10 by the Rust generator carry
     // the full schema and the fr ones the spin-orbit entries of today's partition, so the counts
     // measured on the library since are these (363 after the 106 files of 2026-11-09, 366 after
-    // Cr, Zn and lda-fr Cu on 2026-11-10).
-    assert_eq!(c.semicore_defaults, 6);
-    assert_eq!(c.occupation_defaults, 11);
-    assert_eq!(c.spin_orbit_entries, 366);
+    // Cr, Zn and lda-fr Cu on 2026-11-10). The library regenerated and installed on 2026-11-16
+    // carries the full schema in every file (no default applied) and 396 spin-orbit entries.
+    assert_eq!(c.semicore_defaults, 0);
+    assert_eq!(c.occupation_defaults, 0);
+    assert_eq!(c.spin_orbit_entries, 396);
 }

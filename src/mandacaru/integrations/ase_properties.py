@@ -171,26 +171,34 @@ class ASEProperties:
         residual (atomic units). A request that would cut a degenerate multiplet returns the
         whole multiplet. On a PAW-LCAO basis the kernel is the exact second derivative of the
         engine's energy, whose one-center terms are linearized; the view reports, per root,
-        the first-order shift the missing one-center Hartree kernel would make. The view holds
+        the first-order shifts the missing one-center Hartree kernel and (LDA and PBE) the
+        missing one-center exchange-correlation kernel would make, and samples each root's
+        transition density as a volumetric field (``transition_density``). The view holds
         the length-form strengths and the velocity form (with the PAW one-center part of the
         gradient), which agree only as the basis is completed. A spinor reference (a spin-orbit
         dataset or noncollinear moments; ``xc="lda"`` or ``"pbe"``, ``kernel="adiabatic"``,
         ``spin`` unset) gives the two-component excitations with the noncollinear kernel: one
         channel of spinors, complex transition moments and amplitudes (the phase of each state
         is a convention) and ``spin == "spinor"``; its transition densities and natural
-        transition orbitals raise ``NotImplementedError`` and ``one_center_hartree`` is
-        ``None``. rVV10, fractional occupations and ``precision="float32"`` raise.
+        transition orbitals raise ``NotImplementedError`` and ``one_center_hartree`` and
+        ``one_center_xc`` are ``None``. rVV10, fractional occupations and ``precision="float32"`` raise.
         ``kernel=None`` is ``"adiabatic"`` on a molecule.
 
-        On a crystal (``method="dft"``, ``xc="lda"`` or ``"pbe"``, closed shell) the Tamm-Dancoff
-        Bethe-Salpeter equation runs on the Kohn-Sham states of the whole Gamma-anchored mesh
-        ``kpts`` (keyword; default the SCF's): ``kernel=None`` or ``"bse"`` (exchange and the
+        On a crystal (``method="dft"``, ``xc="lda"`` or ``"pbe"``; closed shell, spin-polarized or
+        spinor, with or without spin-orbit coupling) the Bethe-Salpeter equation, Tamm-Dancoff
+        (``approximation="tda"``) or in its coupling form (``"casida"``: dense, at most 1500
+        transitions; an unstable reference raises ``NotImplementedError``), runs on the
+        Kohn-Sham states of the whole Gamma-anchored mesh ``kpts`` (keyword; default the SCF's): ``kernel=None`` or ``"bse"`` (exchange and the
         statically screened direct term, the RPA ``W`` of every band), ``"hartree"`` (exchange
-        only) or ``"independent"``; ``spin`` ``"singlet"`` (default) or ``"triplet"``; the
+        only) or ``"independent"``; ``spin`` ``"singlet"`` (default) or ``"triplet"`` (a
+        spin-polarized crystal's excitons are the spin-conserving ones of both channels, coupled
+        by the exchange, and a spinor crystal's mix the spins, so both take ``"singlet"`` only and
+        ``"triplet"`` raises ``ValueError``); the
         keywords ``bands=(valence, conduction)`` (default every band), ``scissor`` (eV) and
         ``cutoff`` (1/Angstrom, the largest ``|q + G|``). Each exciton's binding is measured
-        against the continuum's onset on the same mesh. ``approximation="casida"``,
-        ``kernel="adiabatic"`` and spin-polarized crystals raise ``NotImplementedError``. Each
+        against the continuum's onset on the same mesh. ``kernel="adiabatic"`` raises
+        ``NotImplementedError``, as does a window above the memory budget (the message names
+        the largest that fits). Each
         call appends an ``[EXCITED STATES]`` block to the run log.
         """
         from .excitations import excitations
@@ -198,6 +206,21 @@ class ASEProperties:
         return excitations(self._calculation_owner(), num_states, approximation=approximation,
                            spin=spin, kernel=kernel, tolerance=tolerance,
                            max_iterations=max_iterations, **crystal)
+
+    def get_dipole_moment(self, atoms=None):
+        """The electric dipole moment ``(3,)`` of a converged molecule's mean-field state
+        (``method="dft"``, ``"rhf"`` or ``"uhf"``), about the
+        origin of the coordinates, in e Angstrom (e Bohr with ``atomic_units=True``).
+
+        It is the ions' charges at their positions (the PAW valence charges on PAW-LCAO) less
+        the electrons' position expectation, with the PAW one-center dipole; a neutral
+        molecule's moment does not depend on the origin. With ``excited_state=`` it is the
+        ground-state reference's. A crystal raises ``NotImplementedError`` (its polarization is
+        ``get_polarization``), and a correlated method ``ValueError``.
+        """
+        from .excitations import dipole_moment
+
+        return dipole_moment(self._calculation_owner(), atoms)
 
     def get_real_time(self, duration=40.0, time_step=0.005, *, direction="x", strength=0.002,
                       kick="density", gauge=None, propagator="etrs", corrector_tolerance=1e-6,
@@ -235,8 +258,8 @@ class ASEProperties:
 
         For DFT+U and r2SCAN crystals, whose kernels respond to the current, ``N_dia`` is
         measured first by self-consistency at a static field (``diamagnetic_source``). rVV10,
-        spin-orbit datasets, fractional occupations, metals, hybrid crystals and
-        ``precision="float32"`` raise. Each call appends a ``[REAL TIME]`` block to
+        spinor crystals (spin-orbit datasets), fractional occupations, metals, hybrid crystals
+        and ``precision="float32"`` raise. Each call appends a ``[REAL TIME]`` block to
         the run log.
         """
         from .real_time import real_time
@@ -264,14 +287,21 @@ class ASEProperties:
         ``-alpha / |q + G|^2``; ``alpha`` given, or fitted as ``4.615 / eps_inf - 0.213`` to the
         computed local-field ``eps_inf``; exact along the axes of a cubic crystal).
         ``bands=(valence, conduction)`` keeps that many bands of each spin channel on each side
-        of the gap (default: every band); ``scissor`` (eV) is added to every transition energy,
+        of the gap (default: the smallest window that holds every transition up to the highest
+        of ``energies``, ``scissor`` included, and whose omitted transitions carry at most 1e-5
+        of the independent-particle ``eps(0) - 1``, so the static limit is kept); ``scissor``
+        (eV) is added to every transition energy,
         the dipoles kept. ``direction`` (``"x"``, ``"y"``, ``"z"`` or a vector) sets the view's
         ``epsilon``, ``loss`` and ``absorption``; ``None`` takes the isotropic average, and the
-        view always holds the whole ``tensor``. Its first moment is the basis's diamagnetic band
-        sum (``sum_rule``), not the valence count.
+        view always holds the whole ``tensor``. Its first moment (``sum_rule``) is the
+        diamagnetic band sum of the window's transitions (the basis's whole band sum with every
+        band), not the valence count. A window above the memory budget raises
+        ``NotImplementedError`` naming the largest that fits.
 
-        Metals, fractional occupations, spinor, hybrid, DFT+U and meta-GGA crystals (the
-        velocity of their nonlocal or ``tau`` terms is not in the momentum matrix), ``precision="float32"``,
+        A spinor crystal's momentum matrix carries the velocity ``i [h_SO, r]`` of its
+        spin-orbit term. Metals, fractional occupations, hybrid, DFT+U and meta-GGA crystals
+        (the velocity of their nonlocal or ``tau`` terms is not in the momentum
+        matrix), ``precision="float32"``,
         a mesh not closed under ``k -> -k`` and a molecule raise; so do ``kernel="adiabatic"``,
         which is not built. Each call appends a ``[DIELECTRIC FUNCTION]`` block to the run log.
         """
@@ -373,11 +403,14 @@ class ASEProperties:
         return np.asarray(_bloch.supercell(self._calculation_owner())["kpoints"])
 
     def get_spectral_function(self, energies=None, eta=0.1, kpoints=None, krylov=200, *,
-                              path=None, irreducible=False):
+                              path=None, irreducible=False, root=0):
         """The Lehmann spectral function ``A(k, omega)`` of the correlated state.
 
         Available after a quantum method on a crystal (``vqe``, ``adapt-vqe``, ``vasqa``,
-        ``valsqa`` on a periodic structure), without shots, tapering or an active space. ``energies`` is the axis in eV (by default
+        ``valsqa``, ``subspace-vasqa``, or ``subspace-valsqa`` on a periodic structure),
+        without shots, tapering or an active space. ``root`` selects the eigenstate index
+        (default ``0``, the ground state; ``root > 0`` requires a subspace crystal run).
+        ``energies`` is the axis in eV (by default
         2001 points spanning the poles), ``eta`` the Lorentzian half-width in eV, ``kpoints``
         a subset of the mesh points (fractional; the default is all of them) and ``krylov`` the
         Lanczos vectors per part. See :class:`~mandacaru.analysis.bloch.SpectralFunction`.
@@ -391,7 +424,7 @@ class ASEProperties:
         """
         return _bloch.spectral_function(
             self._calculation_owner(), energies=energies, eta=eta, kpoints=kpoints,
-            krylov=krylov, path=path, irreducible=irreducible,
+            krylov=krylov, path=path, irreducible=irreducible, root=root,
         )
 
     def symmetry(self, symprec=1e-5):

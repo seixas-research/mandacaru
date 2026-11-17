@@ -16,3 +16,7 @@ rustfft.workspace = true
 libm.workspace = true
 rayon.workspace = true
 ruzstd.workspace = true
+
+[[bench]]
+name = "vasqa_bench"
+harness = false

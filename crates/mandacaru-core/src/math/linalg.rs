@@ -94,7 +94,11 @@ pub fn davidson(
                 let r_j = wu[(j, band)] - C64::new(theta, 0.) * u[(j, band)];
                 let denom = theta - diag[j];
                 let safe_denom = if denom.abs() < 1e-4 {
-                    if denom >= 0.0 { 1e-4 } else { -1e-4 }
+                    if denom >= 0.0 {
+                        1e-4
+                    } else {
+                        -1e-4
+                    }
                 } else {
                     denom
                 };
@@ -181,7 +185,11 @@ pub fn rmm_diis(
             for j in 0..n {
                 let denom = eps - diag[j];
                 let safe_denom = if denom.abs() < 1e-4 {
-                    if denom >= 0.0 { 1e-4 } else { -1e-4 }
+                    if denom >= 0.0 {
+                        1e-4
+                    } else {
+                        -1e-4
+                    }
                 } else {
                     denom
                 };
@@ -199,7 +207,10 @@ pub fn rmm_diis(
                 let mut b = DMatrix::<f64>::zeros(m_diis + 1, m_diis + 1);
                 for i in 0..m_diis {
                     for j in 0..m_diis {
-                        b[(i, j)] = (0..n).map(|k| residuals[i][k].conj() * residuals[j][k]).sum::<C64>().re;
+                        b[(i, j)] = (0..n)
+                            .map(|k| residuals[i][k].conj() * residuals[j][k])
+                            .sum::<C64>()
+                            .re;
                     }
                     b[(i, m_diis)] = -1.0;
                     b[(m_diis, i)] = -1.0;

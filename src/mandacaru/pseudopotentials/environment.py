@@ -31,9 +31,9 @@ reads the set of its functional (:func:`default_library_folder`): ``pbe-sr/``
 for PBE, HSE06, r2SCAN and r2SCAN+rVV10, ``lda-sr/`` for LDA and every
 method without a functional.  A set without an entry sits in the folder
 named for the functional.
-UPAW-LCAO is the one optional library: without ``MANDACARU_UPAW_PATH`` its
-datasets are generated on demand (a few seconds per element), so an unset
-variable is not an error for it (:data:`OPTIONAL_FAMILIES`).
+UPAW-LCAO is the one optional library: it holds no format-3 data, so its
+datasets are generated on demand (a few seconds per element), and an unset
+``MANDACARU_UPAW_PATH`` is not an error for it (:data:`OPTIONAL_FAMILIES`).
 
 The variables are read at the moment a dataset is needed, never cached, so a
 calculation that needs a library and cannot find it fails in the

@@ -203,7 +203,9 @@ pub fn density_and_projected(
     let _scratch = ctx.reserve(product(&[m, chunk.max(p_proj), 16])?)?;
     let mut rho = vec![0.; points];
     let mut r_mat = DMatrix::zeros(p_proj, p_proj);
-    for (((&w, matrix), psi), c_slice) in weights.iter().zip(matrices).zip(psi_list).zip(projections) {
+    for (((&w, matrix), psi), c_slice) in
+        weights.iter().zip(matrices).zip(psi_list).zip(projections)
+    {
         let p_mat = DMatrix::from_fn(m, m, |a, b| matrix[a * m + b]);
         for x0 in (0..points).step_by(CHUNK) {
             let x_len = (points - x0).min(CHUNK);

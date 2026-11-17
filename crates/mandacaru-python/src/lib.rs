@@ -15,13 +15,14 @@ mod bloch;
 mod context;
 mod derived;
 mod dipole;
+mod downfold;
+mod excitations;
 mod factorization;
 mod finite_size;
 mod geometry;
 mod hubbard;
 mod kpath;
 mod measurement;
-mod term_lists;
 mod models;
 mod molecular;
 mod orbitals;
@@ -39,13 +40,12 @@ mod persistence;
 mod quantum;
 mod real_time;
 mod run_log;
-mod symmetry;
 mod sparse;
+mod symmetry;
+mod term_lists;
 mod viewer;
-mod workflows;
-mod downfold;
-mod excitations;
 mod wannier;
+mod workflows;
 use arrays::{array, complex, complex_array, copy, error, layout, Array};
 use context::PyContext;
 use geometry::{PyGeometry, PyGrid, PySpatialGrid, Workspace};
@@ -57,7 +57,10 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("BOHR_TO_ANGSTROM", mandacaru_core::units::BOHR_TO_ANGSTROM)?;
     m.add("HARTREE_TO_EV", mandacaru_core::units::HARTREE_TO_EV)?;
     m.add("ANGSTROM_TO_BOHR", mandacaru_core::units::ANGSTROM_TO_BOHR)?;
-    m.add("PERIODIC_FORCE_STEP", mandacaru_core::quantum::periodic_response::FORCE_STEP)?;
+    m.add(
+        "PERIODIC_FORCE_STEP",
+        mandacaru_core::quantum::periodic_response::FORCE_STEP,
+    )?;
     m.add("EV_TO_HARTREE", mandacaru_core::units::EV_TO_HARTREE)?;
     // The defaults of the basis options, one definition, in Rust.
     m.add(
@@ -76,11 +79,26 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
         "CONFINEMENT_INNER_FRACTION",
         mandacaru_core::basis::confinement::INNER_FRACTION,
     )?;
-    m.add("FILTER_NYQUIST_FRACTION", mandacaru_core::basis::filter::NYQUIST_FRACTION)?;
-    m.add("DEFAULT_RMS_RATIO", mandacaru_core::basis::diffuse::DEFAULT_RMS_RATIO)?;
-    m.add("DEFAULT_SHELL_RATIO", mandacaru_core::basis::diffuse::default_shell_ratio())?;
-    m.add("DEFAULT_CUTOFF_NORM", mandacaru_core::basis::diffuse::DEFAULT_CUTOFF_NORM)?;
-    m.add("MAX_CUTOFF_NORM", mandacaru_core::basis::diffuse::MAX_CUTOFF_NORM)?;
+    m.add(
+        "FILTER_NYQUIST_FRACTION",
+        mandacaru_core::basis::filter::NYQUIST_FRACTION,
+    )?;
+    m.add(
+        "DEFAULT_RMS_RATIO",
+        mandacaru_core::basis::diffuse::DEFAULT_RMS_RATIO,
+    )?;
+    m.add(
+        "DEFAULT_SHELL_RATIO",
+        mandacaru_core::basis::diffuse::default_shell_ratio(),
+    )?;
+    m.add(
+        "DEFAULT_CUTOFF_NORM",
+        mandacaru_core::basis::diffuse::DEFAULT_CUTOFF_NORM,
+    )?;
+    m.add(
+        "MAX_CUTOFF_NORM",
+        mandacaru_core::basis::diffuse::MAX_CUTOFF_NORM,
+    )?;
     m.add(
         "LINEAR_DEPENDENCE_TOL",
         mandacaru_core::paw::basis_recipe::DIFFUSE_LINEAR_DEPENDENCE_TOL,
@@ -196,8 +214,14 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(bloch::bloch_path_spectral_function, m)?)?;
     m.add_function(wrap_pyfunction!(bloch::tetrahedron_dos, m)?)?;
     m.add_function(wrap_pyfunction!(quantum::periodic_quantum_stress_fd, m)?)?;
-    m.add_function(wrap_pyfunction!(quantum::periodic_quantum_forces_analytic, m)?)?;
-    m.add_function(wrap_pyfunction!(quantum::periodic_quantum_stress_analytic, m)?)?;
+    m.add_function(wrap_pyfunction!(
+        quantum::periodic_quantum_forces_analytic,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
+        quantum::periodic_quantum_stress_analytic,
+        m
+    )?)?;
     kpath::register(m)?;
     paw_basis::register(m)?;
     paw_diagnose::register(m)?;
@@ -235,10 +259,13 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(advanced::fourier_spectrum, m)?)?;
     m.add_function(wrap_pyfunction!(advanced::givens_decomposition, m)?)?;
     m.add_function(wrap_pyfunction!(factorization::double_factorization, m)?)?;
-    m.add_function(wrap_pyfunction!(factorization::spatial_double_factorization, m)?)?;
+    m.add_function(wrap_pyfunction!(
+        factorization::spatial_double_factorization,
+        m
+    )?)?;
     m.add_function(wrap_pyfunction!(factorization::pair_spectrum, m)?)?;
     m.add_function(wrap_pyfunction!(factorization::factorized_energy_rdm, m)?)?;
-    m.add_class::<quantum::PyProblem>()?;
+    m.add_class::<quantum::PyQuantumProblem>()?;
     m.add_class::<quantum::PyRdmMeasurement>()?;
     m.add_class::<PySpatialGrid>()?;
     m.add_class::<molecular::PyIntegrals>()?;

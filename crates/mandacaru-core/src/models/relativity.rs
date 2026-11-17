@@ -75,7 +75,9 @@ pub fn kappa_of(l: usize, j: f64) -> Result<i32> {
     if (j - (l as f64 - 0.5)).abs() < 1e-9 && l > 0 {
         return Ok(l as i32);
     }
-    Err(invalid(format!("j must be l +/- 1/2 (and positive); got l={l}, j={j}")))
+    Err(invalid(format!(
+        "j must be l +/- 1/2 (and positive); got l={l}, j={j}"
+    )))
 }
 /// The orbital angular momentum of a Dirac quantum number `kappa` (never 0).
 pub fn l_of(kappa: i32) -> Result<usize> {
@@ -306,7 +308,16 @@ pub fn relativistic_f(
     terms: &PotentialTerms,
     treatment: Treatment,
 ) -> Vec<f64> {
-    relativistic_f_with(r, potential, l, kappa, energy, terms, treatment, SPEED_OF_LIGHT)
+    relativistic_f_with(
+        r,
+        potential,
+        l,
+        kappa,
+        energy,
+        terms,
+        treatment,
+        SPEED_OF_LIGHT,
+    )
 }
 
 /// [`relativistic_f`] at the speed of light `c`.

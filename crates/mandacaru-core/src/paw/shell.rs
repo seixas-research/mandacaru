@@ -258,9 +258,7 @@ fn weights_parts<'a>(
         for p in 0..count {
             let wave = match &transform {
                 None => wave(i)[p],
-                Some(t) => {
-                    (0..channel.waves).fold(0., |s, k| s + t[(i, k)] * wave(k)[p])
-                }
+                Some(t) => (0..channel.waves).fold(0., |s, k| s + t[(i, k)] * wave(k)[p]),
             };
             work[p] = reference.chi[p] * wave * (r[p] * r[p]);
         }

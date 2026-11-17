@@ -87,11 +87,7 @@ impl HybridResponse<'_> {
     pub fn contributions(&self) -> Result<Vec<Contribution>> {
         let parent = self.parent;
         let (setup, integrals, occupied) = (parent.setup, parent.integrals, parent.occupied);
-        let (nocc, n, fraction) = (
-            occupied.len(),
-            integrals.grid.index.points(),
-            self.fraction,
-        );
+        let (nocc, n, fraction) = (occupied.len(), integrals.grid.index.points(), self.fraction);
         let samples = projections::derivative_samples(setup, integrals)?;
         let scaled = |mut values: Vec<f64>| {
             for v in &mut values {

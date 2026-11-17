@@ -144,7 +144,10 @@ fn a_two_cell_mesh_is_the_one_cell_problem_of_the_doubled_cell() {
     // The MP2 shift is v_M of the supercell's lattice: the doubled cell's, as the energy's constant.
     let v = mesh.exchange_madelung().unwrap();
     assert!((v - single.exchange_madelung().unwrap()).abs() < 1e-12);
-    assert!((v - 2. * mesh.madelung / mesh.neutral_electrons() as f64).abs() < 1e-12, "{v}");
+    assert!(
+        (v - 2. * mesh.madelung / mesh.neutral_electrons() as f64).abs() < 1e-12,
+        "{v}"
+    );
     let options = ScfOptions::default();
     let a = mesh.mean_field("rhf", [1, 1], &options).unwrap();
     let b = single.mean_field("rhf", [1, 1], &options).unwrap();
@@ -399,24 +402,44 @@ fn the_hao_supercell_mp2_denominators_take_the_exchange_madelung_shift() {
     use mandacaru_core::molecular::correlation::natural_orbitals;
     let ctx = Context::new(Some(4), 1800 << 20).unwrap();
     let spacing = 0.3;
-    let options = ScfOptions { tolerance: 1e-11, ..ScfOptions::default() };
+    let options = ScfOptions {
+        tolerance: 1e-11,
+        ..ScfOptions::default()
+    };
     let h2 = |side: f64, offset: f64| {
         let cell = [[side, 0., 0.], [0., side, 0.], [0., 0., side]];
         let center = side / 2. + offset;
-        let positions = vec![[center - 0.37, center, center], [center + 0.37, center, center]];
+        let positions = vec![
+            [center - 0.37, center, center],
+            [center + 0.37, center, center],
+        ];
         Geometry::new(vec![1, 1], positions, cell, [true; 3], LengthUnit::Angstrom).unwrap()
     };
     let (mut levels, mut raw, mut shifted) = (Vec::new(), Vec::new(), Vec::new());
     for nodes in (24..=60).step_by(4) {
         let side = nodes as f64 * spacing;
         let crystal = supercell(&ctx, &h2(side, 0.), [1, 1, 1], spacing);
-        assert_eq!(crystal.grid.index.shape(), [nodes; 3], "the box is n x grid_spacing");
+        assert_eq!(
+            crystal.grid.index.shape(),
+            [nodes; 3],
+            "the box is n x grid_spacing"
+        );
         let rhf = crystal.mean_field("rhf", [1, 1], &options).unwrap();
         assert!(rhf.converged);
         let model = rhf.model(&crystal).unwrap();
         let v = crystal.exchange_madelung().unwrap();
         let occupation = |shift: f64| {
-            natural_orbitals(&ctx, model.m, model.one.as_slice(), model.two.as_slice(), 1, shift).unwrap().occupied_occupations.as_slice()[0]
+            natural_orbitals(
+                &ctx,
+                model.m,
+                model.one.as_slice(),
+                model.two.as_slice(),
+                1,
+                shift,
+            )
+            .unwrap()
+            .occupied_occupations
+            .as_slice()[0]
         };
         let (o0, o1) = (occupation(0.), occupation(v));
         let l = side / BOHR;
@@ -443,8 +466,14 @@ fn the_hao_supercell_mp2_denominators_take_the_exchange_madelung_shift() {
     };
     let moved = (energy(0.5 * spacing) - energy(0.)).abs();
     println!("H2 HAO: RHF energy change under a half-step rigid shift {moved:.2e} Ha");
-    assert!((c_level - 2.837297479).abs() < 0.03 * 2.837297479, "{c_level}");
-    assert!(c_shifted.abs() < 0.1 * c_raw.abs(), "{c_shifted:e} {c_raw:e}");
+    assert!(
+        (c_level - 2.837297479).abs() < 0.03 * 2.837297479,
+        "{c_level}"
+    );
+    assert!(
+        c_shifted.abs() < 0.1 * c_raw.abs(),
+        "{c_shifted:e} {c_raw:e}"
+    );
     assert!(moved < 1e-7, "{moved:e}");
 }
 
@@ -466,15 +495,29 @@ fn the_hao_supercell_mp2_denominators_take_the_exchange_madelung_shift() {
 #[test]
 fn the_box_scatter_of_the_hao_supercell_is_measured_against_its_band_limit() {
     let ctx = Context::new(Some(4), 1800 << 20).unwrap();
-    let options = ScfOptions { tolerance: 1e-11, ..ScfOptions::default() };
+    let options = ScfOptions {
+        tolerance: 1e-11,
+        ..ScfOptions::default()
+    };
     for spacing in [0.3, 0.2] {
         let (mut kinetic, mut overlap, mut levels) = (Vec::new(), Vec::new(), Vec::new());
-        let nodes: Vec<usize> = if spacing > 0.25 { (24..=60).step_by(4).collect() } else { (36..=84).step_by(6).collect() };
+        let nodes: Vec<usize> = if spacing > 0.25 {
+            (24..=60).step_by(4).collect()
+        } else {
+            (36..=84).step_by(6).collect()
+        };
         for &n in &nodes {
             let side = n as f64 * spacing;
             let cell = [[side, 0., 0.], [0., side, 0.], [0., 0., side]];
             let c = side / 2.;
-            let geometry = Geometry::new(vec![1, 1], vec![[c - 0.37, c, c], [c + 0.37, c, c]], cell, [true; 3], LengthUnit::Angstrom).unwrap();
+            let geometry = Geometry::new(
+                vec![1, 1],
+                vec![[c - 0.37, c, c], [c + 0.37, c, c]],
+                cell,
+                [true; 3],
+                LengthUnit::Angstrom,
+            )
+            .unwrap();
             let crystal = supercell(&ctx, &geometry, [1, 1, 1], spacing);
             let m = crystal.m();
             let rhf = crystal.mean_field("rhf", [1, 1], &options).unwrap();
@@ -492,12 +535,19 @@ fn the_box_scatter_of_the_hao_supercell_is_measured_against_its_band_limit() {
             tail.iter().fold(0f64, |w, v| w.max((v - mean).abs()))
         };
         let (a, c, b) = inverse_power_fit(&levels);
-        let residual = levels.iter().fold(0f64, |w, &(l, e)| w.max((e - a - c / l - b / l.powi(3)).abs()));
+        let residual = levels.iter().fold(0f64, |w, &(l, e)| {
+            w.max((e - a - c / l - b / l.powi(3)).abs())
+        });
         println!("HAO H2 {spacing} A: boxes of 12 A and more, largest departure from the mean: kinetic {:.2e} Ha, overlap {:.2e}; HOMO residual of a + c/L + b/L^3 {residual:.2e} Ha", spread(&kinetic), spread(&overlap));
-        assert!(spread(&kinetic) < if spacing > 0.25 { 1e-3 } else { 2e-4 }, "{spacing}: {:e}", spread(&kinetic));
+        assert!(
+            spread(&kinetic) < if spacing > 0.25 { 1e-3 } else { 2e-4 },
+            "{spacing}: {:e}",
+            spread(&kinetic)
+        );
         // The model lattice sum on the same boxes.
         let zeta: f64 = 1.2;
-        let phi2 = |k: f64| 64. * std::f64::consts::PI * zeta.powi(5) / (zeta * zeta + k * k).powi(4);
+        let phi2 =
+            |k: f64| 64. * std::f64::consts::PI * zeta.powi(5) / (zeta * zeta + k * k).powi(4);
         let grid_spacing = spacing / BOHR;
         let cutoff = std::f64::consts::PI / (2. * grid_spacing);
         for start in [1.0, 0.9, 0.8, 0.7, 0.5] {
@@ -507,7 +557,9 @@ fn the_box_scatter_of_the_hao_supercell_is_measured_against_its_band_limit() {
                 } else if k <= start * cutoff || start >= 1. {
                     1.
                 } else {
-                    (0.5 * std::f64::consts::PI * (k / cutoff - start) / (1. - start)).cos().powi(2)
+                    (0.5 * std::f64::consts::PI * (k / cutoff - start) / (1. - start))
+                        .cos()
+                        .powi(2)
                 }
             };
             // The limit: (1 / 2 pi^2) int k^2 |phi|^2 w^2 dk (norm) and with k^2 / 2 (kinetic).
@@ -539,7 +591,11 @@ fn the_box_scatter_of_the_hao_supercell_is_measured_against_its_band_limit() {
                 norms.push((n as f64 * spacing, norm - norm_limit));
                 kinetics.push((n as f64 * spacing, kin - kinetic_limit));
             }
-            let largest = |rows: &[(f64, f64)]| rows.iter().filter(|r| r.0 >= 12.).fold(0f64, |w, r| w.max(r.1.abs()));
+            let largest = |rows: &[(f64, f64)]| {
+                rows.iter()
+                    .filter(|r| r.0 >= 12.)
+                    .fold(0f64, |w, r| w.max(r.1.abs()))
+            };
             println!(
                 "model 1s {spacing} A taper from {start} k_c: norm limit {norm_limit:.6} (sharp limit loses {:.2e}), kinetic limit {kinetic_limit:.6}; lattice sum minus limit on boxes of 12 A and more: norm {:.2e}, kinetic {:.2e} Ha",
                 1. - norm_limit, largest(&norms), largest(&kinetics)

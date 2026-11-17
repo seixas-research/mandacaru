@@ -17,7 +17,9 @@ impl Synthetic {
         let n = m * (m + 1) / 2;
         let mut state = 0x9e37_79b9_7f4a_7c15u64;
         let mut next = move || {
-            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             ((state >> 11) as f64 / (1u64 << 53) as f64) - 0.5
         };
         let a: Vec<f64> = (0..n * rank)
@@ -128,7 +130,10 @@ fn the_reserved_peak_of_a_factorization_is_the_factors() {
     let peak = ctx.memory_peak();
     println!("rank {rank}: factors {} B, reserved peak {peak} B", factors);
     assert!(rank > 1000);
-    assert!(peak < factors + factors / 5, "peak {peak} factors {factors}");
+    assert!(
+        peak < factors + factors / 5,
+        "peak {peak} factors {factors}"
+    );
 }
 
 /// A budget the factors outgrow is a named refusal (not an abort), and nothing beyond the
@@ -137,6 +142,11 @@ fn the_reserved_peak_of_a_factorization_is_the_factors() {
 fn factors_beyond_the_budget_are_refused() {
     let ctx = Context::new(Some(2), 8 << 20).unwrap();
     let source = Synthetic::new(64, 2080, 64);
-    let error = cholesky_from_columns(&ctx, &source, 1e-12, None).err().unwrap();
-    assert!(matches!(error, mandacaru_core::Error::Budget { .. }), "{error}");
+    let error = cholesky_from_columns(&ctx, &source, 1e-12, None)
+        .err()
+        .unwrap();
+    assert!(
+        matches!(error, mandacaru_core::Error::Budget { .. }),
+        "{error}"
+    );
 }

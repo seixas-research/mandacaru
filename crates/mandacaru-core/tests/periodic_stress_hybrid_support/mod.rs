@@ -472,7 +472,13 @@ pub fn controls_kernel(case: &'static str, exxdiv: ExxDivTreatment, step: f64) {
     }
     if exxdiv == ExxDivTreatment::GygiBaldereschi {
         // Only the pairs with `k_diff = 0` (one per k-point) have a head entry.
-        assert!(no_head.heads.load(std::sync::atomic::Ordering::Relaxed) > 0, "no head entry in any pair");
-        println!("  the head control removed {} entries", no_head.heads.load(std::sync::atomic::Ordering::Relaxed));
+        assert!(
+            no_head.heads.load(std::sync::atomic::Ordering::Relaxed) > 0,
+            "no head entry in any pair"
+        );
+        println!(
+            "  the head control removed {} entries",
+            no_head.heads.load(std::sync::atomic::Ordering::Relaxed)
+        );
     }
 }

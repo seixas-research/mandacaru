@@ -1,16 +1,19 @@
 //! The pair densities of the periodic screened exact exchange with compensation charges
 //! (W-E4P / P1): the pair moments against the solver's multipole moments, the shapes against the
-//! setup's alias-averaged hats, and the one-center seam.
+//! setup's alias-averaged hats, the shapes of a pair and of its reverse (reciprocity, with the
+//! faces of the box), and the one-center seam.
 mod periodic_screened_augmentation_support;
 mod setup_support;
 
 use mandacaru_core::{
+    math::{fft::frequency, reciprocal},
     periodic::{
         screened_augmentation::{Augmentation, OneCenter, OneCenterTerms},
         screened_exchange::exchange_operators_with,
     },
     Context, Result,
 };
+use nalgebra::Vector3;
 use num_complex::Complex64;
 use periodic_screened_augmentation_support::{reference::Compensation, *};
 
@@ -18,7 +21,8 @@ use periodic_screened_augmentation_support::{reference::Compensation, *};
 fn at_the_same_point_the_shapes_are_the_setups_alias_averaged_hats_up_to_the_box_edge() {
     // At k = q the wave vectors are the setup's G. The setup averages every shape over the
     // aliases the grid's lattice operations pick (a skewed grid cuts the star at many indices);
-    // `pair_shapes` takes the one wrapped vector, which keeps K exactly translation invariant.
+    // `pair_shapes` takes the same aliases, each with its own origin phase (the hats share one),
+    // which keeps K exactly translation invariant.
     // The two agree where no operation wraps; the difference elsewhere is the box-edge tail of
     // the shapes, and it moves K by the amount printed.
     for (fixture, gamma, occupied) in [
@@ -78,6 +82,154 @@ fn at_the_same_point_the_shapes_are_the_setups_alias_averaged_hats_up_to_the_box
         assert!(differ < 0.05 * peak, "{fixture}: {differ:e}");
         assert!(relative(&plain, &mean) < 0.05 * relative(&plain, &none));
     }
+}
+
+/// The shapes of `rig` at `k_diff` as the one-sided wrap read them: every index at its wrapped
+/// frequency alone, a face of the box (`-N/2`) read at `-N/2` whichever way it was reached. The
+/// control of the reciprocity test below.
+fn one_sided_shapes(rig: &Rig, k_diff: [f64; 3]) -> Vec<Complex64> {
+    let c = &rig.crystal;
+    let (n, shape, dv) = (
+        c.grid.index.points(),
+        c.grid.index.shape(),
+        c.grid.index.dv(),
+    );
+    let b = reciprocal::reciprocal_cell(&c.grid).unwrap();
+    let kappa = b.try_inverse().unwrap() * Vector3::from(k_diff);
+    let sites = rig.geometry.sites();
+    let mut out = vec![Complex64::default(); c.channels * n];
+    for at in 0..n {
+        let index = [
+            at / (shape[1] * shape[2]),
+            at / shape[2] % shape[1],
+            at % shape[2],
+        ];
+        let wrapped = Vector3::from_fn(|a, _| {
+            let size = shape[a] as f64;
+            let x = frequency(index[a], shape[a]) + kappa[a];
+            x - size * ((x + 0.5 * size + 1e-9) / size).floor()
+        });
+        let q = b * wrapped;
+        let g = q - Vector3::from(k_diff);
+        let phase = Complex64::from_polar(
+            1. / dv,
+            g[0] * c.grid.origin[0] + g[1] * c.grid.origin[1] + g[2] * c.grid.origin[2],
+        );
+        let mut column = vec![Complex64::default(); c.channels];
+        rig.shapes
+            .transforms(&sites, &[q.into()], &mut column, 1)
+            .unwrap();
+        for (a, hat) in column.iter().enumerate() {
+            out[a * n + at] = hat * phase;
+        }
+    }
+    out
+}
+
+#[test]
+fn the_shapes_of_a_pair_and_of_its_reverse_are_conjugates_on_the_faces_of_the_box_too() {
+    // The pair (q, k) is the complex conjugate of the pair (k, q) at the negated frequency, and
+    // the channel (L, M) of one is the channel (L, -M) of the other, with `(-1)^M`:
+    // `T_{LM}(k_diff, v)^* = (-1)^M T_{L -M}(-k_diff, -v)`. On a face of the box the frequency
+    // `N/2` is its own negative and a single wrapped vector cannot satisfy it: the exchange then
+    // fails `tr(D1 K[D2]) = tr(D2 K[D1])` (1.98e-12 on the Si `lda-fr` spinor fixture). The shapes
+    // take the mean of their aliases, both faces among them; the one-sided wrap is the control
+    // that must break it.
+    let mut faces_seen = 0usize;
+    for (fixture, gamma, occupied) in CASES.iter() {
+        let rig = Rig::new(fixture, *gamma, occupied);
+        let c = &rig.crystal;
+        let sites = rig.geometry.sites();
+        let aug = Augmentation::new(c, sites, &rig.shapes).unwrap();
+        let (n, shape) = (c.grid.index.points(), c.grid.index.shape());
+        let b = reciprocal::reciprocal_cell(&c.grid).unwrap();
+        let partner = |a: usize| {
+            let (atom, l, m) = rig.geometry.channels[a];
+            rig.geometry
+                .channels
+                .iter()
+                .position(|x| *x == (atom, l, -m))
+                .unwrap()
+        };
+        let sign = |a: usize| {
+            if rig.geometry.channels[a].2 % 2 == 0 {
+                1.
+            } else {
+                -1.
+            }
+        };
+        let negated = |at: usize| {
+            let index = [
+                at / (shape[1] * shape[2]),
+                at / shape[2] % shape[1],
+                at % shape[2],
+            ];
+            let minus: [usize; 3] = std::array::from_fn(|a| (shape[a] - index[a]) % shape[a]);
+            (minus[0] * shape[1] + minus[1]) * shape[2] + minus[2]
+        };
+        let (mut worst, mut control, mut peak, mut faces) = (0f64, 0f64, 0f64, 0usize);
+        for source in &c.points {
+            for target in &c.points {
+                let kd: [f64; 3] = std::array::from_fn(|a| target.k[a] - source.k[a]);
+                let reverse = kd.map(|x| -x);
+                let (t, tr) = (
+                    aug.pair_shapes(c, kd).unwrap(),
+                    aug.pair_shapes(c, reverse).unwrap(),
+                );
+                let (one, one_reverse) =
+                    (one_sided_shapes(&rig, kd), one_sided_shapes(&rig, reverse));
+                // The indices on a face: a frequency N/2 of an axis whose shift is a whole number.
+                let kappa = b.try_inverse().unwrap() * Vector3::from(kd);
+                let on_face = |at: usize| {
+                    let index = [
+                        at / (shape[1] * shape[2]),
+                        at / shape[2] % shape[1],
+                        at % shape[2],
+                    ];
+                    (0..3).any(|a| {
+                        shape[a] % 2 == 0
+                            && index[a] == shape[a] / 2
+                            && (kappa[a] - kappa[a].round()).abs() < 1e-9
+                    })
+                };
+                for at in 0..n {
+                    for a in 0..c.channels {
+                        let (x, y) = (
+                            t.as_slice()[a * n + at].conj(),
+                            tr.as_slice()[partner(a) * n + negated(at)] * sign(a),
+                        );
+                        let (u, v) = (
+                            one[a * n + at].conj(),
+                            one_reverse[partner(a) * n + negated(at)] * sign(a),
+                        );
+                        peak = peak.max(x.norm());
+                        worst = worst.max((x - y).norm());
+                        if on_face(at) {
+                            control = control.max((u - v).norm());
+                        } else {
+                            // Off the faces the two conventions are one and the same.
+                            assert!((u - v).norm() < 1e-12 * peak.max(1.), "{fixture}");
+                        }
+                    }
+                }
+                faces += (0..n).filter(|&at| on_face(at)).count();
+            }
+        }
+        println!(
+            "{fixture}: {faces} face entries; reciprocity of the pair shapes {:.2e} of the peak {peak:.3}; the one-sided wrap misses by {:.2e}",
+            worst / peak,
+            control / peak
+        );
+        assert!(worst < 1e-13 * peak, "{fixture}: {worst:e}");
+        if faces > 0 {
+            assert!(
+                control > 1e-3 * peak,
+                "{fixture}: the control does not bite ({control:e})"
+            );
+        }
+        faces_seen += faces;
+    }
+    assert!(faces_seen > 0, "no fixture has a face of the box to test");
 }
 
 #[test]
@@ -143,7 +295,8 @@ impl OneCenter for Toy {
         Ok(OneCenterTerms {
             energy: self.energy,
             operators: vec![
-                Matrix::identity(projected.nrows(), projected.ncols()) * Complex64::new(self.shift, 0.),
+                Matrix::identity(projected.nrows(), projected.ncols())
+                    * Complex64::new(self.shift, 0.),
             ],
         })
     }

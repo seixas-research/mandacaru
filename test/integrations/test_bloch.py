@@ -221,6 +221,37 @@ class TestTheArchitectureSearches:
         assert atoms.calc.result.proposal_ready
         assert energy == pytest.approx(exact_per_cell(atoms.calc, 2, 2), abs=1e-8)
 
+    def test_subspace_vasqa_solves_crystal_and_excited_spectral_function(self):
+        atoms = chain()
+        atoms.calc = Mandacaru(method="subspace-vasqa", basis="HAO", grid_spacing=0.35,
+                               mapping="jordan_wigner", kpts=GAMMA2, num_states=2,
+                               weights=[0.7, 0.3], max_steps=12, max_length=4, seed=5,
+                               trace=False, **REAL)
+        atoms.get_potential_energy()
+        result = atoms.calc.result
+        assert len(result.energies) == 2 and result.energies[0] <= result.energies[1] + 1e-12
+        sf0 = atoms.calc.get_spectral_function(root=0)
+        sf1 = atoms.calc.get_spectral_function(root=1)
+        assert np.allclose(sf0.sum_rule, 1.0, atol=1e-12)
+        assert np.allclose(sf1.sum_rule, 1.0, atol=1e-12)
+        assert sf1.values.shape == sf0.values.shape
+
+    def test_vasqa_checkpoint_resumes_identically(self, tmp_path):
+        atoms = chain()
+        ckpt = tmp_path / "vasqa_ckpt.json"
+        common = dict(method="vasqa", basis="HAO", grid_spacing=0.35, mapping="jordan_wigner",
+                      kpts=GAMMA2, optimizer=SLSQP, max_length=4, temperature=0.25, seed=7,
+                      trace=False, **REAL)
+        c_full = Mandacaru(max_steps=6, **common)
+        r_full = c_full.run(atoms)
+        c1 = Mandacaru(max_steps=3, checkpoint=str(ckpt), **common)
+        c1.run(atoms)
+        c2 = Mandacaru(max_steps=6, resume=str(ckpt), **common)
+        r2 = c2.run(atoms)
+        assert r2.energy_hartree == pytest.approx(r_full.energy_hartree, abs=1e-12)
+        assert r2.final_energy == pytest.approx(r_full.final_energy, abs=1e-12)
+        assert r2.operators == r_full.operators
+
 
 class TestTheUnfoldedMeanField:
     def test_the_mesh_points_are_gamma_and_the_zone_boundary(self):

@@ -13,7 +13,9 @@
 //! - R15: the whole-mesh start of a symmetry-reduced SCF has the SCF's density and energy;
 //! - Si in R8, R10 and R2; `direction="all"` (the cubic tensor); a magnetic crystal's two
 //!   unequal channels; DFT+U with the ramp-measured `N_dia`; r2SCAN with `tau~` (T6c-c); R13
-//!   against the RPA head (recorded); and the F1/F2 comparison that sets the default (Q20).
+//!   against the RPA head (recorded); and the F1/F2 comparison that sets the default (Q20);
+//! - r2SCAN with a partial core in a field: the Fock matrix and the current (with its
+//!   exchange-correlation term) are the derivatives of the energy, and `tau~` keeps the core's share.
 //!
 //! Needs `MANDACARU_PAW_PATH`.
 mod berry_support;
@@ -340,6 +342,29 @@ fn the_current_does_not_depend_on_the_layout() {
         let sampler = solved.sampler();
         let run = propagate(&sampler, &Request::new([1., 0., 0.], 0.01, 0.2, 10)).unwrap();
         traces.push(run.current);
+    }
+    for trace in &traces[1..] {
+        assert_eq!(trace, &traces[0]);
+    }
+}
+
+/// R14 with r2SCAN: the meta-GGA's `tau` and current pass, parallel over the k-points and summed in
+/// k order, and its exchange-correlation current change no bit of `j(t)` across layouts.
+#[test]
+fn the_meta_gga_current_does_not_depend_on_the_layout() {
+    let mut cell = lih("lda-sr");
+    cell.functional = "r2scan";
+    let mut traces = vec![];
+    for (threads, kpts) in [(1, 1), (2, 1), (1, 2), (2, 2)] {
+        let ctx = Context::new(Some(threads), 1 << 30)
+            .unwrap()
+            .with_layout(kpts, 1)
+            .unwrap();
+        let solved = solve_on(&cell, "raw", "SZ", ctx);
+        let sampler = solved.sampler();
+        let mut request = Request::new([1., 0., 0.], 0.01, 0.2, 5);
+        request.statics = Some([0.; 3]);
+        traces.push(propagate(&sampler, &request).unwrap().current);
     }
     for trace in &traces[1..] {
         assert_eq!(trace, &traces[0]);
@@ -1217,6 +1242,63 @@ fn the_static_response_of_a_meta_gga_crystal() {
     assert!(fixed.vector[0] > run.band_sum && fixed.vector[0] < run.electrons);
 }
 
+/// The energy route of the static response (R9b, `StaticResponse::energy`): at a fixed field the
+/// insulator's energy is `E(0) + A^2 (N - N_dia) / 2`, flat to second order, so
+/// `N - (E(+A_0) + E(-A_0) - 2 E(0)) / A_0^2` is `N_dia` with the current route's. On Si LDA (SZ,
+/// 2^3), where the band sum is exact for the density-only kernel, both routes at `A_0` = 5e-3 and
+/// 1e-3, extrapolated in `A_0^2`, are the band sum; the energy route's truncation is half the
+/// current route's (the `A^4` term of `E` against the `A^3` of the current).
+#[test]
+fn the_energy_route_of_the_static_response_is_its_current_route() {
+    let mut cell = silicon();
+    cell.mesh = [2, 2, 2];
+    let solved = solve(&cell);
+    let sampler = solved.sampler();
+    let band = transitions(
+        &sampler,
+        &MeshIndex::new([2, 2, 2], [0.; 3]).unwrap(),
+        [1., 0., 0.],
+    )
+    .unwrap()
+    .diamagnetic(1)
+    .total;
+    let routes: Vec<(f64, f64)> = [5e-3, 1e-3]
+        .iter()
+        .map(|&strength| {
+            let request = Request::new([1., 0., 0.], strength, 0.2, 10);
+            let fixed = prepare(&sampler, &request)
+                .unwrap()
+                .static_response(&request)
+                .unwrap();
+            (fixed.vector[0], fixed.energy)
+        })
+        .collect();
+    // `N(A) = N + a A^2`: from 5e-3 and 1e-3, `(25 N(1e-3) - N(5e-3)) / 24`.
+    let extrapolate = |coarse: f64, fine: f64| (25. * fine - coarse) / 24.;
+    let current = extrapolate(routes[0].0, routes[1].0);
+    let energy = extrapolate(routes[0].1, routes[1].1);
+    let truncation = [(routes[1].0 - band) / band, (routes[1].1 - band) / band];
+    eprintln!(
+        "Si LDA SZ 2^3: band sum {band:.8}; at 5e-3 / 1e-3 current {:.8} / {:.8}, energy {:.8} / \
+         {:.8}; extrapolated current {current:.8} ({:+.2e}), energy {energy:.8} ({:+.2e}); \
+         truncation at 1e-3 {:+.2e} / {:+.2e}",
+        routes[0].0,
+        routes[1].0,
+        routes[0].1,
+        routes[1].1,
+        (current - band) / band,
+        (energy - band) / band,
+        truncation[0],
+        truncation[1]
+    );
+    assert!(((current - band) / band).abs() < 1e-6);
+    assert!(((energy - band) / band).abs() < 1e-6);
+    assert!(
+        (truncation[1] / truncation[0] - 0.5).abs() < 0.05,
+        "{truncation:?}"
+    );
+}
+
 #[test]
 #[ignore = "R9b on Si with r2SCAN, recorded: the static field against the ramp and the band sum, and direction=\"all\" (SZ, 2^3; several minutes)"]
 fn silicon_r2scan_takes_its_static_response_by_self_consistency() {
@@ -1233,6 +1315,24 @@ fn silicon_r2scan_takes_its_static_response_by_self_consistency() {
     let started = std::time::Instant::now();
     let fixed = prepared.static_response(&request).unwrap();
     let seconds = started.elapsed().as_secs_f64();
+    // The energy route (the discriminator of the static value on Si): both routes at 5e-3 and
+    // 1e-3, extrapolated in A_0^2.
+    let mut coarse_request = request.clone();
+    coarse_request.strength = 5e-3;
+    let coarse = prepared.static_response(&coarse_request).unwrap();
+    let extrapolate = |coarse: f64, fine: f64| (25. * fine - coarse) / 24.;
+    let (current, energy) = (
+        extrapolate(coarse.vector[0], fixed.vector[0]),
+        extrapolate(coarse.energy, fixed.energy),
+    );
+    eprintln!(
+        "Si r2SCAN SZ 2^3: extrapolated current route {current:.8}, energy route {energy:.8} \
+         ({:+.2e})",
+        (energy - current) / current
+    );
+    // With `A` in `tau~` the current needs the exchange-correlation term `dE_xc / dA`: without
+    // it the routes parted by +1.31e-4 (seventeenth session); with it +4.86e-8.
+    assert!(((energy - current) / current).abs() < 2e-7);
     let started = std::time::Instant::now();
     let ramp = prepared.ramp_response(&sampler, &request).unwrap()[0];
     let ramp_seconds = started.elapsed().as_secs_f64();
@@ -1247,13 +1347,205 @@ fn silicon_r2scan_takes_its_static_response_by_self_consistency() {
         (fixed.vector[0] - band) / band,
         runs.iter().map(|r| r.diamagnetic).collect::<Vec<_>>()
     );
-    // Measured 2026-11-15: static 10.502205 in 10 iterations (3 s), the ramp 10.462611 (-3.8e-3,
-    // 895 s): on Si the ramp's own error is ten times LiH's, so it is a loose cross-check here.
+    // Measured 2026-11-16 (`mandacaru-paw` 8a6e977), with the DIIS static iteration and `A` in
+    // `tau~` (eighteenth session): static 10.509847 in 5 iterations (2 s), the energy route
+    // +4.86e-8 from the current route, the ramp 10.470218 (-3.77e-3, 517 s): on Si the ramp's own
+    // error is ten times LiH's, so it is a loose cross-check. Before `A` entered `tau~`: 10.502460.
     assert!((ramp - fixed.vector[0]).abs() < 1e-2 * fixed.vector[0]);
     assert!(runs.iter().all(|r| r.self_consistent));
     assert!((runs[0].diamagnetic - fixed.vector[0]).abs() < 1e-10);
     for run in &runs[1..] {
         assert!((run.diamagnetic - runs[0].diamagnetic).abs() < 1e-6 * runs[0].diamagnetic);
+    }
+}
+
+/// A deterministic Hermitian `m x m` matrix (`seed` varies it), for the derivative gates.
+fn hermitian(m: usize, seed: f64) -> Matrix {
+    DMatrix::from_fn(m, m, |a, b| {
+        let (i, j) = (a.min(b) as f64, a.max(b) as f64);
+        let real = ((i + 1.) * 0.37 + (j + 1.) * 0.91 + seed).sin() / (1. + i + j);
+        let imaginary = ((i + 2.) * 0.53 - (j + 1.) * 0.29 + seed).cos() / (1. + i + j);
+        C64::new(
+            real,
+            if a < b {
+                imaginary
+            } else if a > b {
+                -imaginary
+            } else {
+                0.
+            },
+        )
+    })
+}
+
+/// `exp(i e X) D exp(-i e X)` of every channel of `prepared`'s start, `X` [`hermitian`] per
+/// channel: an idempotent state that carries a current.
+fn rotated_start(prepared: &Prepared, e: f64) -> Vec<Matrix> {
+    prepared
+        .channels
+        .iter()
+        .enumerate()
+        .map(|(idx, channel)| {
+            let m = channel.orbitals.nrows();
+            let (values, vectors) = eigen(hermitian(m, 0.1 * idx as f64)).unwrap();
+            let phases = Matrix::from_diagonal(&nalgebra::DVector::from_iterator(
+                m,
+                values.iter().map(|v| C64::from_polar(1., e * v)),
+            ));
+            let u = &vectors * phases * vectors.adjoint();
+            &u * channel.density() * u.adjoint()
+        })
+        .collect()
+}
+
+/// Item 4 on crystals (TDDFT_PLAN.md 13.6.1): with `A` in `tau~` and a partial core, the crystal's
+/// Fock matrix is still the derivative of its energy, and its current `dE / dA` carries the
+/// exchange-correlation term `dE_xc / dA = sum_s int v_tau,s (1 - n_v,s / n_s) j_s`. Si r2SCAN
+/// (`lda-sr`, silicon's partial core; SZ on the 2^3 whole mesh) at a rotated start
+/// `exp(i e X) D exp(-i e X)` that carries a current, at `A = 0` and two nonzero fields: (1)
+/// `dE / de` along the tangent `dD = i [Y, D]` against `sum w Re tr(F dD)`; (2) `dE / dA_axis` at
+/// fixed `D` against the observable, both by central differences at 1e-3 and 5e-4 (Richardson).
+/// Red: the observable without its exchange-correlation term misses by that term.
+#[test]
+fn the_crystal_fock_matrix_and_current_are_the_derivatives_of_its_energy_in_a_field() {
+    let mut cell = silicon();
+    cell.functional = "r2scan";
+    cell.mesh = [2, 2, 2];
+    let solved = solve(&cell);
+    let sampler = solved.sampler();
+    let request = Request::new([1., 0., 0.], 1e-3, 0.2, 1);
+    let prepared = prepare(&sampler, &request).unwrap();
+    let nk = prepared.crystal.points.len();
+    let d = rotated_start(&prepared, 0.05);
+    let tangent: Vec<Matrix> = d
+        .iter()
+        .enumerate()
+        .map(|(idx, x)| {
+            let y = hermitian(x.nrows(), 1.3 + 0.2 * idx as f64);
+            (&y * x - x * &y) * C64::new(0., 1.)
+        })
+        .collect();
+    let weight = |idx: usize| prepared.crystal.points[idx % nk].weight;
+    let richardson = |slope: &dyn Fn(f64) -> f64| (4. * slope(5e-4) - slope(1e-3)) / 3.;
+    let mut worst = [0f64; 2];
+    for field in [[0.; 3], [0.05, 0., 0.], [0.02, -0.03, 0.04]] {
+        let (focks, _, current) = prepared.evaluate(&d, field).unwrap();
+        let energy_along = |h: f64| {
+            let moved: Vec<Matrix> = d
+                .iter()
+                .zip(&tangent)
+                .map(|(x, t)| x + t * C64::new(h, 0.))
+                .collect();
+            prepared.evaluate(&moved, field).unwrap().1
+        };
+        let numeric = richardson(&|h| (energy_along(h) - energy_along(-h)) / (2. * h));
+        let analytic: f64 = focks
+            .iter()
+            .zip(&tangent)
+            .enumerate()
+            .map(|(idx, (f, t))| weight(idx) * (f * t).trace().re)
+            .sum();
+        let fock_miss = (numeric - analytic).abs() / analytic.abs();
+        worst[0] = worst[0].max(fock_miss);
+        // The observable without the exchange-correlation term: the trace and N A.
+        let orbital: [f64; 3] = std::array::from_fn(|axis| {
+            d.iter()
+                .enumerate()
+                .map(|(idx, x)| weight(idx) * (x * &prepared.momenta[idx % nk][axis]).trace().re)
+                .sum::<f64>()
+                + prepared.crystal.electrons * field[axis]
+        });
+        for axis in 0..3 {
+            let energy_in = |h: f64| {
+                let mut a = field;
+                a[axis] += h;
+                prepared.evaluate(&d, a).unwrap().1
+            };
+            let slope = richardson(&|h| (energy_in(h) - energy_in(-h)) / (2. * h));
+            let miss = (slope - current[axis]).abs();
+            let exchange = current[axis] - orbital[axis];
+            eprintln!(
+                "Si r2SCAN SZ 2^3, A {field:?}: dE/de {numeric:.12e} against sum w Re tr(F dD) \
+                 {analytic:.12e} ({fock_miss:.2e}); axis {axis}: dE/dA {slope:.12e} against the \
+                 observable {:.12e} (miss {miss:.2e}), its exchange-correlation part {exchange:.6e} \
+                 (red: without it the miss is {:.2e})",
+                current[axis],
+                (slope - orbital[axis]).abs()
+            );
+            worst[1] = worst[1].max(miss / current[axis].abs().max(1e-12));
+            assert!(
+                miss < 1e-8 * current[axis].abs().max(1.),
+                "{field:?} {axis}"
+            );
+            assert!(exchange.abs() > 1e3 * miss, "{field:?} {axis}: no signal");
+        }
+        assert!(fock_miss < 1e-7, "{field:?}: {fock_miss:e}");
+    }
+    eprintln!(
+        "worst: Fock {:.2e}, current {:.2e} (relative)",
+        worst[0], worst[1]
+    );
+}
+
+/// Item 4 on crystals: in `A = kappa e_x` the start's kinetic fields are `j = kappa n_v` and
+/// `tau + kappa^2 n_v / 2` (its paramagnetic current is zero), so `tau~` shifts by the partial
+/// core's share `(1 - n_v / n) n_v kappa^2 / 2` per spin, as for a molecule
+/// (`molecular_realtime::in_the_velocity_gauge_tau_tilde_keeps_the_partial_cores_share`). Si r2SCAN
+/// (`lda-sr`), SZ on the 2^3 whole mesh. Before the change the shift was zero (the field did not
+/// enter `tau~`).
+#[test]
+fn in_a_crystal_tau_tilde_keeps_the_partial_cores_share_in_the_field() {
+    let mut cell = silicon();
+    cell.functional = "r2scan";
+    cell.mesh = [2, 2, 2];
+    let solved = solve(&cell);
+    let sampler = solved.sampler();
+    let prepared = prepare(&sampler, &Request::new([1., 0., 0.], 1e-3, 0.2, 1)).unwrap();
+    let d: Vec<Matrix> = prepared.channels.iter().map(Channel::density).collect();
+    let n = prepared.crystal.grid.index.points();
+    let spins = prepared.crystal.spins;
+    let share = if spins == 1 { 0.5 } else { 1. };
+    let ground = prepared.kinetic_fields(&d, [0.; 3]).unwrap();
+    for kappa in [0.05, 0.1] {
+        let moved = prepared.kinetic_fields(&d, [kappa, 0., 0.]).unwrap();
+        let [mut scale, mut core, mut tilde_miss, mut flow, mut flow_miss] = [0f64; 5];
+        for s in 0..spins {
+            for r in 0..n {
+                let valence = ground.valence[s * n + r];
+                if valence <= 1e-4 {
+                    continue;
+                }
+                let total = ground.density[s * n + r];
+                let boost = 0.5 * kappa * kappa * valence;
+                let expected = (1. - valence / total) * boost / share;
+                scale += boost / share;
+                core += expected;
+                tilde_miss += ((moved.gauge_invariant[s * n + r]
+                    - ground.gauge_invariant[s * n + r])
+                    - expected)
+                    .abs();
+                flow += kappa * valence;
+                flow_miss += (0..3)
+                    .map(|axis| {
+                        let j = moved.current[(s * 3 + axis) * n + r]
+                            - ground.current[(s * 3 + axis) * n + r];
+                        (j - if axis == 0 { kappa * valence } else { 0. }).abs()
+                    })
+                    .sum::<f64>();
+            }
+        }
+        eprintln!(
+            "Si r2SCAN SZ 2^3, kappa {kappa}: the core term {:.4e} of int kappa^2 n_v / 2, tau~ \
+             misses it by {:.2e} of itself, j misses kappa n_v by {:.2e}",
+            core / scale,
+            tilde_miss / core,
+            flow_miss / flow
+        );
+        assert!(
+            tilde_miss < 1e-8 * core && core > 1e-6 * scale,
+            "{tilde_miss:e} of {core:e}"
+        );
+        assert!(flow_miss < 1e-12 * flow);
     }
 }
 
@@ -1327,4 +1619,336 @@ fn the_band_sum_tensor_is_symmetric_on_a_skew_cell() {
     eprintln!("LiH N_dia: x column {x:.8?}, y column {y:.8?}");
     assert!(x[1].abs() > 1e-4 * x[0], "{x:?}");
     assert!((x[1] - y[0]).abs() < 1e-12 * x[0], "{x:?} {y:?}");
+}
+
+#[test]
+#[ignore = "R13 on Si, a recorded diagnostic (not a gate): Wannier s and p on both atoms, the downfold's RPA head against T5a's local-field static tensor (SZ, 2^3; 9 s)"]
+fn the_static_hartree_response_of_silicon_against_the_rpa_head() {
+    // R13 on a covalent crystal: `eps_M(0)` with local fields at q = 0 (T5a's frequency route,
+    // the static limit of the real-time TD-Hartree run, E2) against `1 / eps^-1_00` of the
+    // downfold's RPA head at the finite `HEAD_WAVEVECTOR`. Measured 2026-11-16: T5a 23.58952 on
+    // every axis, mean `1/eps` 0.04239, head `eps^-1_00` 0.02995 (1/head 33.38372), +41.5 %. The
+    // coarse 2^3 mesh and the SZ basis's length/velocity gap separate the two, as on the H2 chain.
+    use mandacaru_core::periodic::{
+        bloch_mesh::Sampler,
+        optics::dielectric::{dielectric, Kernel as Optical, Request as OpticalRequest},
+        wannier::{
+            downfold::{Request as Downfold, Screening},
+            setup::Wannier,
+            Options as Localization,
+        },
+    };
+    let mut cell = silicon();
+    cell.mesh = [2, 2, 2];
+    let solved = solve(&cell);
+    let quarter = 10.26 / 4.;
+    let trials = serde_json::json!({
+        "size": [2, 2, 2],
+        "trials": [
+            {"center": [0., 0., 0.], "orbital": "s", "label": "Si0s"},
+            {"center": [0., 0., 0.], "orbital": "p", "label": "Si0p"},
+            {"center": [quarter, quarter, quarter], "orbital": "s", "label": "Si1s"},
+            {"center": [quarter, quarter, quarter], "orbital": "p", "label": "Si1p"},
+        ],
+    });
+    let wannier = Wannier::build(
+        solved.crystal.clone(),
+        solved.state.clone(),
+        solved.setup.clone(),
+        &trials.to_string(),
+        &Localization::default(),
+    )
+    .unwrap();
+    let head = wannier
+        .downfold(&Downfold {
+            screening: Some(Screening::Rpa),
+            ..wannier_downfold_support::request(Some(vec![(0, [0; 3])]))
+        })
+        .unwrap()
+        .problem
+        .dielectric_head
+        .unwrap();
+    let sampler = Sampler::new(&wannier.crystal, &wannier.state, &wannier.setup).unwrap();
+    let mut request = OpticalRequest::new(vec![0.], 0.02, Optical::Hartree);
+    request.cutoff = 2.;
+    let eps = dielectric(
+        &sampler,
+        &MeshIndex::new([2, 2, 2], [0.; 3]).unwrap(),
+        &request,
+    )
+    .unwrap();
+    let diagonal: Vec<f64> = (0..3).map(|i| eps.static_tensor[i][i]).collect();
+    let inverse: f64 = diagonal.iter().map(|e| 1. / e / 3.).sum();
+    eprintln!(
+        "R13 Si SZ 2^3: T5a local-field static eps {diagonal:.5?}, mean 1/eps {inverse:.5}; RPA \
+         head eps^-1_00 {head:.5} (1/head {:.5}); relative difference {:+.3e}",
+        1. / head,
+        (inverse - head) / head
+    );
+    assert!(head > 0. && head <= 1.);
+    assert!(diagonal.iter().all(|e| *e > 1.));
+}
+
+#[test]
+#[ignore = "R13 on LiF, a recorded diagnostic (not a gate): Wannier functions on every band, the downfold's RPA head against T5a's local-field static tensor (SZ, 2^3; a few minutes at load 15); run: cargo test --profile release-test -p mandacaru-core --test periodic_realtime -- --ignored lithium_fluoride --nocapture"]
+fn the_static_hartree_response_of_lithium_fluoride_against_the_rpa_head() {
+    // R13 on an ionic crystal, recorded the way Si's is: `eps_M(0)` with local fields at q = 0
+    // (T5a's frequency route, the static limit of the TD-Hartree run) against `1 / eps^-1_00` of
+    // the downfold's RPA head at the finite `HEAD_WAVEVECTOR`. Rocksalt LiF, 4.03 Angstrom.
+    use mandacaru_core::periodic::{
+        bloch_mesh::Sampler,
+        optics::dielectric::{dielectric, Kernel as Optical, Request as OpticalRequest},
+        wannier::{
+            downfold::{Request as Downfold, Screening},
+            setup::Wannier,
+            Options as Localization,
+        },
+    };
+    let a = 4.03 / 0.529177210903 / 2.;
+    let cell = Cell {
+        library: "lda-sr",
+        symbols: vec!["Li", "F"],
+        lattice: Matrix3::from_columns(&[
+            Vector3::new(0., a, a),
+            Vector3::new(a, 0., a),
+            Vector3::new(a, a, 0.),
+        ]),
+        grid: [24, 24, 24],
+        fractional: vec![[0.; 3], [0.5; 3]],
+        moments: vec![0., 0.],
+        spin: false,
+        spinor: false,
+        functional: "lda",
+        mesh: [2, 2, 2],
+        hubbard: None,
+        width: 1e-3,
+    };
+    let solved = solve(&cell);
+    let trials = serde_json::json!({
+        "size": [2, 2, 2],
+        "trials": [
+            {"center": [0., 0., 0.], "orbital": "s", "label": "Li s"},
+            {"center": [a, a, a], "orbital": "s", "label": "F s"},
+            {"center": [a, a, a], "orbital": "p", "label": "F p"},
+        ],
+    });
+    let wannier = Wannier::build(
+        solved.crystal.clone(),
+        solved.state.clone(),
+        solved.setup.clone(),
+        &trials.to_string(),
+        &Localization::default(),
+    )
+    .unwrap();
+    let head = wannier
+        .downfold(&Downfold {
+            screening: Some(Screening::Rpa),
+            // The fragment is the empty Li s function (0.263 Kohn-Sham electrons measured).
+            num_particles: Some([0, 0]),
+            ..wannier_downfold_support::request(Some(vec![(0, [0; 3])]))
+        })
+        .unwrap()
+        .problem
+        .dielectric_head
+        .unwrap();
+    let sampler = Sampler::new(&wannier.crystal, &wannier.state, &wannier.setup).unwrap();
+    let mut request = OpticalRequest::new(vec![0.], 0.02, Optical::Hartree);
+    request.cutoff = 2.;
+    let eps = dielectric(
+        &sampler,
+        &MeshIndex::new([2, 2, 2], [0.; 3]).unwrap(),
+        &request,
+    )
+    .unwrap();
+    let diagonal: Vec<f64> = (0..3).map(|i| eps.static_tensor[i][i]).collect();
+    let inverse: f64 = diagonal.iter().map(|e| 1. / e / 3.).sum();
+    eprintln!(
+        "R13 LiF SZ 2^3: T5a local-field static eps {diagonal:.5?}, mean 1/eps {inverse:.5}; RPA \
+         head eps^-1_00 {head:.5} (1/head {:.5}); relative difference {:+.3e}",
+        1. / head,
+        (inverse - head) / head
+    );
+    assert!(head > 0. && head <= 1.);
+    assert!(diagonal.iter().all(|e| *e > 1.));
+}
+
+/// Toward the +U insulator with a partly filled shell off inversion (TDDFT_PLAN.md 13.5.3, open
+/// in T6b): CuH2 bent and unequal (Cu-H 2.9 and 3.1 Bohr) in a 9 x 8 x 8 Bohr cell at Gamma,
+/// spin-polarized (11 and 10 electrons, a gap in each channel), Cu 3d with U = 3 and 6 eV. Its
+/// shell is nearly full (4.70 and 4.72 electrons per channel at U = 3 eV); the partly filled
+/// fixture is NiO, below. The static self-consistency (Richardson of 2e-3 and 1e-3) departs
+/// from the band sum with U and equals it without U, and the energy route agrees with the
+/// current route. Recorded: a Cu(II) d9 fixture (CuF2) is a metal in LDA when linear, and bent
+/// its gap is too small for the static iteration to converge.
+#[test]
+#[ignore = "slow: about 64 s, three CuH2 SCFs and their static responses (recorded, 2026-11-16)"]
+fn a_nearly_full_hubbard_shell_off_inversion_shifts_the_static_response() {
+    let mut shifts = vec![];
+    for u in [
+        None,
+        Some(r#"{"Cu": {"l": "d", "U": 3.0}}"#),
+        Some(r#"{"Cu": {"l": "d", "U": 6.0}}"#),
+    ] {
+        let cell = Cell {
+            library: "lda-sr",
+            symbols: vec!["Cu", "H", "H"],
+            lattice: Matrix3::from_diagonal(&Vector3::new(9., 8., 8.)),
+            grid: [36, 32, 32],
+            fractional: vec![
+                [0.5, 0.5, 0.5],
+                [0.5 - 2.9 / 9., 0.52, 0.5],
+                [0.5 + 3.1 / 9., 0.49, 0.5],
+            ],
+            moments: vec![1., 0., 0.],
+            spin: true,
+            spinor: false,
+            functional: "lda",
+            mesh: [1, 1, 1],
+            hubbard: u,
+            width: 1e-3,
+        };
+        let solved = solve(&cell);
+        let sampler = solved.sampler();
+        let shell: Vec<f64> = solved.state.hubbard.as_ref().map_or(vec![], |report| {
+            report
+                .occupations
+                .iter()
+                .map(|n| {
+                    let p = (n.len() as f64).sqrt().round() as usize;
+                    (0..p).map(|i| n[i * p + i].re).sum()
+                })
+                .collect()
+        });
+        let band = transitions(
+            &sampler,
+            &MeshIndex::new([1, 1, 1], [0.; 3]).unwrap(),
+            [1., 0., 0.],
+        )
+        .unwrap()
+        .diamagnetic(2)
+        .total;
+        let routes: Vec<(f64, f64)> = [2e-3, 1e-3]
+            .iter()
+            .map(|&strength| {
+                let request = Request::new([1., 0., 0.], strength, 0.2, 10);
+                let fixed = prepare(&sampler, &request)
+                    .unwrap()
+                    .static_response(&request)
+                    .unwrap();
+                (fixed.vector[0], fixed.energy)
+            })
+            .collect();
+        let extrapolate = |coarse: f64, fine: f64| (4. * fine - coarse) / 3.;
+        let current = extrapolate(routes[0].0, routes[1].0);
+        let energy = extrapolate(routes[0].1, routes[1].1);
+        eprintln!(
+            "CuH2 {}: d per channel {shell:.4?}; static N_dia {current:.8}, energy route \
+             {energy:.8}, band sum {band:.8}: static - band {:+.4e} ({:+.3e} relative)",
+            u.unwrap_or("without U"),
+            current - band,
+            (current - band) / band
+        );
+        assert!(((energy - current) / current).abs() < 3e-6);
+        shifts.push((current - band) / band);
+    }
+    // Measured: -5.1e-9 without U, +1.85e-5 and +1.45e-5 with U = 3 and 6 eV.
+    assert!(shifts[0].abs() < 1e-7, "{shifts:?}");
+    assert!(shifts[1..].iter().all(|s| *s > 1e-5), "{shifts:?}");
+}
+
+/// The +U insulator with a partly filled shell off inversion (TDDFT_PLAN.md 13.5.3, open in T6b):
+/// the NiO molecule in a 10 x 9 x 9 Bohr cell at Gamma (Ni-O 3.08 Bohr along x, off the cell's
+/// mirror planes; spin-polarized, moment 2, a gap of 1.4 to 3.0 eV in each channel), Ni 3d with
+/// U = 3 and 6 eV. Its minority shell is partly filled: 3.48 and 3.45 electrons, the occupation
+/// eigenvalues from 0.44 and 0.37 to 0.97 (CuH2's shell above holds 4.70, nearly full). The
+/// static self-consistency equals the band sum without U and departs from it with U by 15 to 38
+/// times the nearly full shell's shift, and the energy route agrees with the current route. The
+/// static map of this molecule diverges under plain mixing (a density change of 0.65 after 300
+/// iterations, even without U); the DIIS of `static_response` converges it in 9 to 45.
+#[test]
+#[ignore = "slow: 60 s, three NiO SCFs and their static responses (recorded, 2026-11-16)"]
+fn a_partly_filled_hubbard_shell_off_inversion_departs_from_the_band_sum() {
+    let mut shifts = vec![];
+    for u in [
+        None,
+        Some(r#"{"Ni": {"l": "d", "U": 3.0}}"#),
+        Some(r#"{"Ni": {"l": "d", "U": 6.0}}"#),
+    ] {
+        let cell = Cell {
+            library: "lda-sr",
+            symbols: vec!["Ni", "O"],
+            lattice: Matrix3::from_diagonal(&Vector3::new(10., 9., 9.)),
+            grid: [40, 36, 36],
+            fractional: vec![[0.5 - 0.154, 0.52, 0.5], [0.5 + 0.154, 0.49, 0.5]],
+            moments: vec![2., 0.],
+            spin: true,
+            spinor: false,
+            functional: "lda",
+            mesh: [1, 1, 1],
+            hubbard: u,
+            width: 1e-3,
+        };
+        let solved = solve(&cell);
+        let sampler = solved.sampler();
+        // Each channel's shell occupation eigenvalues.
+        let shells: Vec<Vec<f64>> = solved.state.hubbard.as_ref().map_or(vec![], |report| {
+            report
+                .occupations
+                .iter()
+                .map(|n| {
+                    let p = (n.len() as f64).sqrt().round() as usize;
+                    let matrix = DMatrix::from_fn(p, p, |i, j| n[i * p + j]);
+                    let mut values: Vec<f64> = ((&matrix + matrix.adjoint()) * C64::new(0.5, 0.))
+                        .symmetric_eigen()
+                        .eigenvalues
+                        .iter()
+                        .copied()
+                        .collect();
+                    values.sort_by(f64::total_cmp);
+                    values
+                })
+                .collect()
+        });
+        let band = transitions(
+            &sampler,
+            &MeshIndex::new([1, 1, 1], [0.; 3]).unwrap(),
+            [1., 0., 0.],
+        )
+        .unwrap()
+        .diamagnetic(2)
+        .total;
+        let routes: Vec<(f64, f64)> = [2e-3, 1e-3]
+            .iter()
+            .map(|&strength| {
+                let request = Request::new([1., 0., 0.], strength, 0.2, 10);
+                let fixed = prepare(&sampler, &request)
+                    .unwrap()
+                    .static_response(&request)
+                    .unwrap();
+                (fixed.vector[0], fixed.energy)
+            })
+            .collect();
+        let extrapolate = |coarse: f64, fine: f64| (4. * fine - coarse) / 3.;
+        let current = extrapolate(routes[0].0, routes[1].0);
+        let energy = extrapolate(routes[0].1, routes[1].1);
+        eprintln!(
+            "NiO {}: shell eigenvalues per channel {shells:.4?}; static N_dia {current:.8}, energy \
+             route {energy:.8}, band sum {band:.8}: static - band {:+.4e} ({:+.3e} relative)",
+            u.unwrap_or("without U"),
+            current - band,
+            (current - band) / band
+        );
+        assert!(((energy - current) / current).abs() < 5e-6);
+        if let Some(minority) = shells.get(1) {
+            assert!(
+                minority[0] < 0.5 && minority[minority.len() - 1] > 0.9,
+                "{shells:?}"
+            );
+        }
+        shifts.push((current - band) / band);
+    }
+    // Measured 2026-11-16: -1.7e-10 without U, +2.80e-4 and +5.46e-4 with U = 3 and 6 eV (U = 8
+    // eV, whose shell reorders, +3.52e-4); CuH2's nearly full shell +1.85e-5 and +1.45e-5.
+    assert!(shifts[0].abs() < 1e-8, "{shifts:?}");
+    assert!(shifts[1..].iter().all(|s| *s > 1e-4), "{shifts:?}");
 }

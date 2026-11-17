@@ -123,7 +123,10 @@ pub fn percentile(values: &[f64], q: f64) -> Result<f64> {
     let virtual_index = (n - 1) as f64 * quantile;
     // NumPy's bounds: at or above the last index both neighbors are the last element (-1), at or
     // below zero both are the first; gamma is measured from the bounded `previous`.
-    let (mut previous, mut next) = (virtual_index.floor() as i64, virtual_index.floor() as i64 + 1);
+    let (mut previous, mut next) = (
+        virtual_index.floor() as i64,
+        virtual_index.floor() as i64 + 1,
+    );
     if virtual_index >= (n - 1) as f64 {
         (previous, next) = (-1, -1);
     }
@@ -131,11 +134,21 @@ pub fn percentile(values: &[f64], q: f64) -> Result<f64> {
         (previous, next) = (0, 0);
     }
     let gamma = virtual_index - previous as f64;
-    let at = |i: i64| if i < 0 { sorted[n - 1] } else { sorted[i as usize] };
+    let at = |i: i64| {
+        if i < 0 {
+            sorted[n - 1]
+        } else {
+            sorted[i as usize]
+        }
+    };
     let (a, b) = (at(previous), at(next));
     let diff = b - a;
     let lerp = a + diff * gamma;
-    Ok(if gamma >= 0.5 { b - diff * (1.0 - gamma) } else { lerp })
+    Ok(if gamma >= 0.5 {
+        b - diff * (1.0 - gamma)
+    } else {
+        lerp
+    })
 }
 
 /// `np.abs(z)` of a contiguous complex128 array: the SIMD magnitude `larger * sqrt(fma(r, r, 1))`

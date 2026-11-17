@@ -37,7 +37,10 @@ pub fn relativity_potential_derivatives<'py>(
     let r = r.as_slice()?;
     let terms = PotentialTerms::new(r, potential.as_slice()?, atomic_number).map_err(error)?;
     let d2v = terms.second_derivative(r);
-    Ok((array(py, &[r.len()], terms.dv)?, array(py, &[r.len()], d2v)?))
+    Ok((
+        array(py, &[r.len()], terms.dv)?,
+        array(py, &[r.len()], d2v)?,
+    ))
 }
 
 #[pyfunction]
@@ -56,7 +59,11 @@ pub fn relativity_darwin_spin_orbit<'py>(
     layout(&m)?;
     let r = r.as_slice()?;
     let terms = PotentialTerms::new(r, potential.as_slice()?, atomic_number).map_err(error)?;
-    array(py, &[r.len()], terms.darwin_spin_orbit_with(r, kappa, m.as_slice()?, c))
+    array(
+        py,
+        &[r.len()],
+        terms.darwin_spin_orbit_with(r, kappa, m.as_slice()?, c),
+    )
 }
 
 #[pyfunction]
@@ -108,7 +115,11 @@ pub fn relativity_mass_factor<'py>(
     let terms = PotentialTerms::new(r, potential, atomic_number).map_err(error)?;
     let (m, dm, d2m) = relativity::mass_terms(r, potential, energy, &terms, c);
     let n = r.len();
-    Ok((array(py, &[n], m)?, array(py, &[n], dm)?, array(py, &[n], d2m)?))
+    Ok((
+        array(py, &[n], m)?,
+        array(py, &[n], dm)?,
+        array(py, &[n], d2m)?,
+    ))
 }
 
 #[pyfunction]
@@ -148,12 +159,12 @@ pub fn relativity_f_evaluate<'py>(
 
 #[pyfunction]
 #[pyo3(signature = (points, r_max))]
-pub fn uniform_grid<'py>(
-    py: Python<'py>,
-    points: usize,
-    r_max: f64,
-) -> PyResult<Array<'py, f64>> {
-    array(py, &[points], mandacaru_core::math::radial::uniform_grid(points, r_max))
+pub fn uniform_grid<'py>(py: Python<'py>, points: usize, r_max: f64) -> PyResult<Array<'py, f64>> {
+    array(
+        py,
+        &[points],
+        mandacaru_core::math::radial::uniform_grid(points, r_max),
+    )
 }
 
 /// `kappa` of the `(l, j)` subshell (`models::relativity::kappa_of`).
@@ -198,7 +209,11 @@ pub fn relativity_spin_orbit_difference(values: &Bound<'_, PyDict>, l: usize) ->
             .ok_or_else(|| pyo3::exceptions::PyKeyError::new_err(kappa))?
             .extract::<f64>()
     };
-    Ok(relativity::spin_orbit_difference(l, get(-(l as i64 + 1))?, get(l as i64)?))
+    Ok(relativity::spin_orbit_difference(
+        l,
+        get(-(l as i64 + 1))?,
+        get(l as i64)?,
+    ))
 }
 
 /// The valence subshells `(n, l)` of a configuration `[(n, l, occupation)]`.

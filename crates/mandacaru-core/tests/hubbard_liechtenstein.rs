@@ -8,9 +8,7 @@
 //! - Hellmann-Feynman derivatives dE/dU and dE/dJ vs finite differences.
 //! - Inert/active behavior and refusals.
 //! - Bit-identical reproducibility on repeated calls.
-use mandacaru_core::models::hubbard::{
-    evaluate, Form, Hubbard, Spin,
-};
+use mandacaru_core::models::hubbard::{evaluate, Form, Hubbard, Spin};
 use mandacaru_core::models::hubbard_liechtenstein::{
     evaluate_with_basis, evaluate_with_coupling, evaluate_with_ratios, Liechtenstein,
 };
@@ -168,7 +166,11 @@ fn determinant_energies_and_analytic_limits() {
                 &[&n_up, &n_dn],
             )
             .unwrap();
-            assert!(eval.energy.abs() < tol, "l={l} half-filled: E_U={}", eval.energy);
+            assert!(
+                eval.energy.abs() < tol,
+                "l={l} half-filled: E_U={}",
+                eval.energy
+            );
 
             // Check analytic E_Hub formula for d5 up:
             // E_Hub(d5 up) = 10 F0 - 5/7 F2 - 5/7 F4
@@ -448,12 +450,18 @@ fn potential_is_hermitian_and_derivative_of_energy() {
                 .map(|(a, b)| (v_transposed[(a, b)] * delta[(b, a)]).re)
                 .sum::<f64>();
             let err_vt = (richardson - pred_vt).abs() / predicted.abs();
-            assert!(err_vt > 1e-3, "l={l} s={s}: V^T control failed to reject ({err_vt:e})");
+            assert!(
+                err_vt > 1e-3,
+                "l={l} s={s}: V^T control failed to reject ({err_vt:e})"
+            );
 
             // Control 2: V x 1.01 fails
             let pred_scale = predicted * 1.01;
             let err_scale = (richardson - pred_scale).abs() / predicted.abs();
-            assert!(err_scale > 5e-3, "l={l} s={s}: V x 1.01 control failed ({err_scale:e})");
+            assert!(
+                err_scale > 5e-3,
+                "l={l} s={s}: V x 1.01 control failed ({err_scale:e})"
+            );
 
             // Control 3: wrong-spin potential fails
             let other_s = 1 - s;
@@ -463,7 +471,10 @@ fn potential_is_hermitian_and_derivative_of_energy() {
                 .map(|(a, b)| (v_other[(a, b)] * delta[(b, a)]).re)
                 .sum::<f64>();
             let err_other = (richardson - pred_other).abs() / predicted.abs();
-            assert!(err_other > 1e-3, "l={l} s={s}: wrong spin control failed ({err_other:e})");
+            assert!(
+                err_other > 1e-3,
+                "l={l} s={s}: wrong spin control failed ({err_other:e})"
+            );
         }
     }
 }
@@ -506,10 +517,7 @@ fn so3_rotational_invariance() {
 
         // SO(3) invariance of energy (1e-11)
         let delta_e = (eval_rot.energy - eval_base.energy).abs();
-        assert!(
-            delta_e < 1e-11,
-            "l={l} SO(3) energy change {delta_e:e}"
-        );
+        assert!(delta_e < 1e-11, "l={l} SO(3) energy change {delta_e:e}");
 
         // Covariance of V: V(D n D^+) = D V D^+
         for s in 0..2 {
@@ -627,8 +635,12 @@ fn hellmann_feynman_derivatives_in_u_and_j() {
         let du = 1e-5;
         let h_u_plus = Hubbard::with_form(u + du, j, Form::LiechtensteinFll).unwrap();
         let h_u_minus = Hubbard::with_form(u - du, j, Form::LiechtensteinFll).unwrap();
-        let e_u_plus = evaluate(&ctx, &h_u_plus, l, Spin::Unrestricted, &[&n_up, &n_dn]).unwrap().energy;
-        let e_u_minus = evaluate(&ctx, &h_u_minus, l, Spin::Unrestricted, &[&n_up, &n_dn]).unwrap().energy;
+        let e_u_plus = evaluate(&ctx, &h_u_plus, l, Spin::Unrestricted, &[&n_up, &n_dn])
+            .unwrap()
+            .energy;
+        let e_u_minus = evaluate(&ctx, &h_u_minus, l, Spin::Unrestricted, &[&n_up, &n_dn])
+            .unwrap()
+            .energy;
         let fd_u = (e_u_plus - e_u_minus) / (2. * du);
         assert!(
             (fd_u - eval.d_energy_d_u()).abs() < 1e-8,
@@ -640,8 +652,12 @@ fn hellmann_feynman_derivatives_in_u_and_j() {
         let dj = 1e-5;
         let h_j_plus = Hubbard::with_form(u, j + dj, Form::LiechtensteinFll).unwrap();
         let h_j_minus = Hubbard::with_form(u, j - dj, Form::LiechtensteinFll).unwrap();
-        let e_j_plus = evaluate(&ctx, &h_j_plus, l, Spin::Unrestricted, &[&n_up, &n_dn]).unwrap().energy;
-        let e_j_minus = evaluate(&ctx, &h_j_minus, l, Spin::Unrestricted, &[&n_up, &n_dn]).unwrap().energy;
+        let e_j_plus = evaluate(&ctx, &h_j_plus, l, Spin::Unrestricted, &[&n_up, &n_dn])
+            .unwrap()
+            .energy;
+        let e_j_minus = evaluate(&ctx, &h_j_minus, l, Spin::Unrestricted, &[&n_up, &n_dn])
+            .unwrap()
+            .energy;
         let fd_j = (e_j_plus - e_j_minus) / (2. * dj);
         assert!(
             (fd_j - eval.d_energy_d_j()).abs() < 1e-8,
@@ -666,14 +682,20 @@ fn inert_and_active_behavior() {
     assert_eq!(eval_inert.energy, 0.0);
     assert_eq!(eval_inert.interaction, 0.0);
     assert_eq!(eval_inert.double_counting, 0.0);
-    assert!(eval_inert.potentials[0].as_slice().iter().all(|x| *x == C64::default()));
+    assert!(eval_inert.potentials[0]
+        .as_slice()
+        .iter()
+        .all(|x| *x == C64::default()));
 
     // U = J != 0 is active for Liechtenstein (nonzero F2, F4)
     let active_h = Hubbard::with_form(4.0, 4.0, Form::LiechtensteinFll).unwrap();
     assert!(!active_h.is_inert());
     let eval_active = evaluate(&ctx, &active_h, 2, Spin::Restricted, &[&n]).unwrap();
     assert!(eval_active.energy.abs() > 1e-4);
-    assert!(eval_active.potentials[0].as_slice().iter().any(|x| x.norm() > 1e-4));
+    assert!(eval_active.potentials[0]
+        .as_slice()
+        .iter()
+        .any(|x| x.norm() > 1e-4));
 }
 
 #[test]
@@ -770,16 +792,29 @@ fn custom_ratios_and_basis_evaluation() {
 
     // Custom ratios for d shell
     let ratios = Ratios::new(2, Some(0.6), None).unwrap();
-    let e_custom = evaluate_with_ratios(&ctx, 6.0, 1.0, 2, &ratios, Basis::Complex, Spin::Restricted, &[&n]).unwrap();
+    let e_custom = evaluate_with_ratios(
+        &ctx,
+        6.0,
+        1.0,
+        2,
+        &ratios,
+        Basis::Complex,
+        Spin::Restricted,
+        &[&n],
+    )
+    .unwrap();
     assert!(e_custom.energy.is_finite());
 
     // Liechtenstein struct evaluation
     let lie = Liechtenstein::new(2, 6.0, 1.0, Some(ratios)).unwrap();
     assert!(!lie.is_inert());
-    let e_lie = lie.evaluate_with_basis(&ctx, 2, Basis::Complex, Spin::Restricted, &[&n]).unwrap();
+    let e_lie = lie
+        .evaluate_with_basis(&ctx, 2, Basis::Complex, Spin::Restricted, &[&n])
+        .unwrap();
     assert_eq!(e_custom.energy.to_bits(), e_lie.energy.to_bits());
 
     // Evaluate in real basis
-    let e_real = evaluate_with_basis(&ctx, 6.0, 1.0, 2, Basis::Real, Spin::Restricted, &[&n]).unwrap();
+    let e_real =
+        evaluate_with_basis(&ctx, 6.0, 1.0, 2, Basis::Real, Spin::Restricted, &[&n]).unwrap();
     assert!(e_real.energy.is_finite());
 }

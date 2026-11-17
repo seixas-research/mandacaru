@@ -107,7 +107,7 @@ impl ProjectionTable {
             if reached.rows.is_empty() {
                 continue;
             }
-            let sphere = Sphere::projector(ctx, first.center, first.r_cut)?;
+            let sphere = Sphere::projector(ctx, lattice, first.center, first.r_cut)?;
             let mut group = Group {
                 center: first.center,
                 rows: reached.rows.clone(),

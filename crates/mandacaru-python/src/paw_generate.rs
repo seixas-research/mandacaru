@@ -6,7 +6,9 @@
 use super::{error, paw_record, PyContext};
 use mandacaru_core::paw::{
     generate::{
-        build::{build, build_at_library_stride, recalibrate, reionize, Error as BuildError, Format},
+        build::{
+            build, build_at_library_stride, recalibrate, reionize, Error as BuildError, Format,
+        },
         recipe::{Cutoffs, Nlcc, Recipe},
         request::{resolve, Overrides},
         search::{search, Error as SearchError, Mode, Options, Searched},
@@ -282,7 +284,10 @@ fn paw_build<'py>(
             let diagnosis = crate::paw_diagnose::diagnosis_dict(py, &built.diagnosis)?;
             diagnosis.set_item("unprojected_missing", built.unprojected_missing.clone())?;
             out.set_item("diagnosis", diagnosis)?;
-            out.set_item("gates", crate::paw_validate::report_dict(py, &built.report)?)?;
+            out.set_item(
+                "gates",
+                crate::paw_validate::report_dict(py, &built.report)?,
+            )?;
         }
         Err(BuildError::Search(SearchError::Failed(failure)))
         | Err(BuildError::Failed(failure)) => return Err(error(failure)),
@@ -297,45 +302,6 @@ fn paw_build<'py>(
             out.set_item("gates", crate::paw_validate::report_dict(py, &report)?)?;
         }
     }
-    Ok(out)
-}
-
-/// Upgrade the format-2 dataset file `input` to format 3 at `output` with its core states solved
-/// again and checked (`paw::generate::core_states::upgrade_file`; never over a file): `symbol`,
-/// `scheme` (the radial scheme identified by the stored core density, `record::CORE_SCHEMES`, or
-/// `None` when both schemes reproduce it and agree), `tie` (`None`, or the two schemes' largest
-/// orbital and energy differences on such a tie),
-/// `stride`, `states` (`[n, l, occupation]`), `density_deviation`, `charge_deviation`,
-/// `core_charge`, `radius`, `charge_outside`. A file that fails a check raises and nothing is
-/// written.
-#[pyfunction]
-fn paw_upgrade_core_states<'py>(
-    context: PyRef<'_, PyContext>,
-    py: Python<'py>,
-    input: &str,
-    output: &str,
-) -> PyResult<Bound<'py, PyDict>> {
-    let ctx = &context.inner;
-    let found = py
-        .detach(|| {
-            mandacaru_core::paw::generate::core_states::upgrade_file(
-                ctx,
-                std::path::Path::new(input),
-                std::path::Path::new(output),
-            )
-        })
-        .map_err(error)?;
-    let out = PyDict::new(py);
-    out.set_item("symbol", &found.symbol)?;
-    out.set_item("stride", found.stride)?;
-    out.set_item("states", found.states.clone())?;
-    out.set_item("scheme", found.scheme)?;
-    out.set_item("tie", found.tie)?;
-    out.set_item("density_deviation", found.density_deviation)?;
-    out.set_item("charge_deviation", found.charge_deviation)?;
-    out.set_item("core_charge", found.core_charge)?;
-    out.set_item("radius", found.radius)?;
-    out.set_item("charge_outside", found.charge_outside)?;
     Ok(out)
 }
 
@@ -371,7 +337,10 @@ fn paw_recalibrate_spin_orbit<'py>(
                 rows.append(row)?;
             }
             out.set_item("scales", rows)?;
-            out.set_item("gates", crate::paw_validate::report_dict(py, &released.report)?)?;
+            out.set_item(
+                "gates",
+                crate::paw_validate::report_dict(py, &released.report)?,
+            )?;
         }
         Err(BuildError::Search(SearchError::Failed(failure)))
         | Err(BuildError::Failed(failure)) => return Err(error(failure)),
@@ -409,7 +378,10 @@ fn paw_reionize<'py>(
         Ok(released) => {
             out.set_item("kind", "ok")?;
             out.set_item("path", path)?;
-            out.set_item("gates", crate::paw_validate::report_dict(py, &released.report)?)?;
+            out.set_item(
+                "gates",
+                crate::paw_validate::report_dict(py, &released.report)?,
+            )?;
         }
         Err(BuildError::Search(SearchError::Failed(failure)))
         | Err(BuildError::Failed(failure)) => return Err(error(failure)),
@@ -432,6 +404,5 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(paw_reionize, m)?)?;
     m.add_function(wrap_pyfunction!(paw_build, m)?)?;
     m.add_function(wrap_pyfunction!(paw_recalibrate_spin_orbit, m)?)?;
-    m.add_function(wrap_pyfunction!(paw_upgrade_core_states, m)?)?;
     Ok(())
 }

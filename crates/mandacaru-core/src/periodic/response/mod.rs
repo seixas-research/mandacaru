@@ -13,7 +13,7 @@
 //! state that is not converged is refused: the force is first order in the SCF residual.
 //!
 //! What is refused, with its cause (the engines' own words): float32 data, DFT+U, a mesh reduced by symmetry in a snapshot without its operations, a
-//! spin-orbit or hybrid crystal on a reduced mesh, a hybrid without its PAW spheres and projectors
+//! magnetic spin-orbit crystal on a reduced mesh, a hybrid without its PAW spheres and projectors
 //! in the dual basis.
 use super::{
     description::Description,
@@ -124,6 +124,14 @@ impl Response {
     /// Rebuilds the geometry of `c` from its snapshot; raises, naming the cause, for a crystal
     /// the engines do not differentiate.
     pub fn new(c: &Crystal) -> Result<Self> {
+        // A reduced mesh's cause first: without its operations the setup block is moot.
+        if scf::is_reduced(c) {
+            scf::reduced_mesh(c).map_err(|cause| {
+                Error::Unsupported(format!(
+                    "crystal forces and stress are not available for {cause}"
+                ))
+            })?;
+        }
         Ok(Self {
             setup: Setup::new(c)?,
             projections: Arc::new(SetupTables::new()),
@@ -251,13 +259,16 @@ impl Response {
         let (inputs, layout, operators) =
             (setup.inputs(c, &cores), setup.layout(c), setup.operators());
         if c.screened_exchange()?.is_some() {
-            if group.is_some() {
-                return Err(Error::Unsupported(
-                    "the analytic crystal stress is not available for a hybrid crystal on a k mesh \
-                     reduced by space-group symmetry (use symmetry=False)"
-                        .into(),
-                ));
-            }
+            // On a reduced mesh the directions of the group handed in (invariant tensors, or the
+            // six symmetric ones without it: the unaveraged control), as the semilocal stress takes
+            // them below; a whole mesh keeps its own.
+            let entries = match entries {
+                Some(entries) => Some(entries),
+                None if crate::periodic::star::reduced(c) => {
+                    Some(Directions::invariant(group.as_ref())?)
+                }
+                None => None,
+            };
             return crystal_stress_along(
                 &c.context, inputs, layout, operators, c, &r.options, state, spin_orbit, entries,
                 reuse,
@@ -291,7 +302,9 @@ pub fn forces_with_group(
     r: &PeriodicResult,
     group: Option<PointGroup>,
 ) -> Result<Vec<[f64; 3]>> {
-    Ok(Response::new(c)?.breakdown_with_group(c, r, group)?.forces())
+    Ok(Response::new(c)?
+        .breakdown_with_group(c, r, group)?
+        .forces())
 }
 
 /// The per-term [`Breakdown`] (`dF/dtau`) behind [`forces`], for the tests that check a term is

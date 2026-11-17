@@ -45,14 +45,7 @@ impl PyWannierResult {
                     .collect(),
             )?,
         )?;
-        out.set_item(
-            "spreads",
-            array(
-                py,
-                &[n],
-                localized.spread.spreads(),
-            )?,
-        )?;
+        out.set_item("spreads", array(py, &[n], localized.spread.spreads())?)?;
         out.set_item("omega_invariant", localized.spread.invariant)?;
         out.set_item("omega_offdiagonal", localized.spread.off_diagonal)?;
         out.set_item("omega_diagonal", localized.spread.diagonal)?;

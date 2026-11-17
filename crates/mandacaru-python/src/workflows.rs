@@ -23,7 +23,11 @@ pub fn spectrum_magnitudes<'py>(
     amplitudes: PyReadonlyArray1<'py, numpy::Complex64>,
 ) -> PyResult<Bound<'py, numpy::PyArray1<f64>>> {
     layout(&amplitudes)?;
-    let values: Vec<C64> = amplitudes.as_slice()?.iter().map(|v| C64::new(v.re, v.im)).collect();
+    let values: Vec<C64> = amplitudes
+        .as_slice()?
+        .iter()
+        .map(|v| C64::new(v.re, v.im))
+        .collect();
     Ok(derived::magnitudes(&values).into_pyarray(py))
 }
 
@@ -73,7 +77,11 @@ pub fn qpe_ground_overlap(
 /// `state / divisor` of a complex64 or complex128 state by a Python float, by NumPy's complex
 /// quotient (`numpy_rules::divide_by_real`), in the state's own dtype.
 #[pyfunction]
-pub fn divide_state<'py>(py: Python<'py>, state: &Bound<'py, PyAny>, divisor: f64) -> PyResult<Bound<'py, PyAny>> {
+pub fn divide_state<'py>(
+    py: Python<'py>,
+    state: &Bound<'py, PyAny>,
+    divisor: f64,
+) -> PyResult<Bound<'py, PyAny>> {
     if let Ok(values) = state.extract::<PyReadonlyArray1<'py, numpy::Complex64>>() {
         layout(&values)?;
         let out: Vec<numpy::Complex64> = values
@@ -101,8 +109,14 @@ pub fn divide_state<'py>(py: Python<'py>, state: &Bound<'py, PyAny>, divisor: f6
 /// `(terms, norm_bound)`: the real terms of a Hermitian Pauli sum and the sum of their magnitudes
 /// (`term_lists::real_pauli_terms`). Terms cross as `(label, re, im)`.
 #[pyfunction]
-pub fn real_pauli_terms(n_qubits: usize, terms: Vec<(String, f64, f64)>) -> PyResult<(Vec<(String, f64)>, f64)> {
-    let terms: Vec<(String, C64)> = terms.into_iter().map(|(k, re, im)| (k, C64::new(re, im))).collect();
+pub fn real_pauli_terms(
+    n_qubits: usize,
+    terms: Vec<(String, f64, f64)>,
+) -> PyResult<(Vec<(String, f64)>, f64)> {
+    let terms: Vec<(String, C64)> = terms
+        .into_iter()
+        .map(|(k, re, im)| (k, C64::new(re, im)))
+        .collect();
     term_lists::real_pauli_terms(n_qubits, &terms).map_err(error)
 }
 

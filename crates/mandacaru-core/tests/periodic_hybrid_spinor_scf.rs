@@ -187,13 +187,21 @@ fn halve(v: &mut serde_json::Value, last: bool) {
         points.reverse();
     }
     let fractional = |p: &serde_json::Value| -> Vec<f64> {
-        p["fractional"].as_array().unwrap().iter().map(|x| x.as_f64().unwrap()).collect()
+        p["fractional"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|x| x.as_f64().unwrap())
+            .collect()
     };
     let mut kept: Vec<serde_json::Value> = Vec::new();
     for point in &points {
         let k = fractional(point);
         let mirrored = |q: &serde_json::Value| {
-            fractional(q).iter().zip(&k).all(|(a, b)| ((a + b) - (a + b).round()).abs() < 1e-8)
+            fractional(q)
+                .iter()
+                .zip(&k)
+                .all(|(a, b)| ((a + b) - (a + b).round()).abs() < 1e-8)
         };
         if let Some(first) = kept.iter_mut().find(|q| mirrored(q)) {
             let w = first["weight"].as_f64().unwrap() + point["weight"].as_f64().unwrap();
@@ -202,7 +210,10 @@ fn halve(v: &mut serde_json::Value, last: bool) {
             kept.push(point.clone());
         }
     }
-    assert!(kept.len() < points.len(), "the mesh has no pair (k, -k) to halve");
+    assert!(
+        kept.len() < points.len(),
+        "the mesh has no pair (k, -k) to halve"
+    );
     v["kpoints"] = serde_json::json!(kept);
 }
 
@@ -255,7 +266,9 @@ fn a_time_reversal_halved_mesh_gives_the_whole_mesh_energy() {
             for (k, point) in h.points.iter().enumerate() {
                 let at = (0..c.points.len())
                     .find(|&j| {
-                        (0..3).all(|a| (c.points[j].fractional[a] - point.fractional[a]).abs() < 1e-12)
+                        (0..3).all(|a| {
+                            (c.points[j].fractional[a] - point.fractional[a]).abs() < 1e-12
+                        })
                     })
                     .unwrap();
                 for (a, b) in half.eigenvalues[k].iter().zip(&whole.eigenvalues[at]) {

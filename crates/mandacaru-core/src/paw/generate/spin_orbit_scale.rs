@@ -180,7 +180,11 @@ pub fn calibrate(
                 .get(&(*l as u32))
                 .map(|so| so.reference_energies.data().len() / 2)
                 .ok_or_else(|| invalid(format!("the record has no spin-orbit entry l={l}")))?;
-            let states: Vec<usize> = found.iter().filter(|t| t.l == *l).map(|t| t.state).collect();
+            let states: Vec<usize> = found
+                .iter()
+                .filter(|t| t.l == *l)
+                .map(|t| t.state)
+                .collect();
             let mut g = vec![1.; count];
             for (&state, &value) in f {
                 for a in range(&states, state, count) {
@@ -226,7 +230,11 @@ fn give_up(
                 }
                 continue;
             };
-            let states: Vec<usize> = found.iter().filter(|t| t.l == s.l).map(|t| t.state).collect();
+            let states: Vec<usize> = found
+                .iter()
+                .filter(|t| t.l == s.l)
+                .map(|t| t.state)
+                .collect();
             let count = g.len();
             let mut back = vec![1.; count];
             for a in range(&states, s.state, count) {

@@ -14,5 +14,58 @@
  "wave_stride": 7,
  "remainder_q": "linspace(0.1, 9.0, 11)",
  "remainder_shape_transform": "exp(-0.15 q^2)",
- "removed": "multipole_coulomb_matrix and multipole_potentials_cartesian had no caller outside their test and are deleted (the native molecular path owns this physics)"
+ "removed": "multipole_coulomb_matrix and multipole_potentials_cartesian had no caller outside their test and are deleted (the native molecular path owns this physics)",
+ "library_refreeze": {
+  "date": "2026-11-16",
+  "what": "the arrays listed under 'cases' (<symbol>_pw_sm_<l>, _mom_, _rem_ whose test comparison failed; the _pw_ae_ and _dual_ keys, which no test reads, are left as they were)",
+  "why": "the library regeneration (file format 3) moved the smooth partial waves and the moments of H, O and Cu",
+  "cases": [
+   "H_pw_sm_0",
+   "H_pw_sm_1",
+   "H_rem_011",
+   "H_rem_101",
+   "H_mom_110",
+   "H_rem_110",
+   "H_mom_112",
+   "H_rem_112",
+   "O_pw_sm_0",
+   "O_pw_sm_1",
+   "Cu_pw_sm_0",
+   "Cu_pw_sm_1",
+   "Cu_pw_sm_2",
+   "Cu_mom_000",
+   "Cu_rem_000",
+   "Cu_mom_011",
+   "Cu_rem_011",
+   "Cu_mom_022",
+   "Cu_rem_022",
+   "Cu_mom_101",
+   "Cu_rem_101",
+   "Cu_mom_110",
+   "Cu_rem_110",
+   "Cu_mom_112",
+   "Cu_rem_112",
+   "Cu_mom_121",
+   "Cu_rem_121",
+   "Cu_mom_123",
+   "Cu_rem_123",
+   "Cu_mom_202",
+   "Cu_rem_202",
+   "Cu_mom_211",
+   "Cu_rem_211",
+   "Cu_mom_213",
+   "Cu_rem_213",
+   "Cu_mom_220"
+  ],
+  "route": "self-pin of the production routine on the installed library (Rust through the public Python API of the module under test); the old Python outputs of these cases are no longer reproducible because the library was regenerated",
+  "library": {
+   "checkout": "mandacaru-paw 8a6e977 (v3 with tail, installed 2026-11-16 02:21)",
+   "files": {
+    "lda-sr/H": "730c4c02d4e03748",
+    "lda-sr/O": "bc52e9b75d5a1bd6",
+    "lda-sr/Cu": "a6633882cb635038"
+   }
+  },
+  "extension_sha256_prefix": "00e4d7ff"
+ }
 }

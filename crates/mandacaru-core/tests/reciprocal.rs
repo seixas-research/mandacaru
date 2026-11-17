@@ -343,15 +343,29 @@ fn the_norm_strain_is_the_derivative_of_the_alias_averaged_norms() {
     let context = Context::new(Some(1), 4 << 20).unwrap();
     for (shape, step) in [
         ([6, 5, 4], [0.9, 0., 0., 0., 1.1, 0., 0., 0., 1.3]),
-        ([6, 6, 4], [1., 0.5, 0., 0., 3f64.sqrt() / 2., 0., 0., 0., 1.2]),
+        (
+            [6, 6, 4],
+            [1., 0.5, 0., 0., 3f64.sqrt() / 2., 0., 0., 0., 1.2],
+        ),
     ] {
         let n = shape[0] * shape[1] * shape[2];
         let weights: Vec<f64> = (0..n).map(|i| 0.3 + ((i * 7) % 11) as f64 / 11.).collect();
         let weighted = |eps: Matrix3<f64>| {
             let moved = (Matrix3::identity() + eps) * Matrix3::from_row_slice(&step);
-            let grid = SpatialGrid::new(shape, [0.; 3], std::array::from_fn(|k| moved[(k / 3, k % 3)]), true).unwrap();
+            let grid = SpatialGrid::new(
+                shape,
+                [0.; 3],
+                std::array::from_fn(|k| moved[(k / 3, k % 3)]),
+                true,
+            )
+            .unwrap();
             let norms = reciprocal::norms(&context, &grid).unwrap();
-            norms.as_slice().iter().zip(&weights).map(|(g, w)| g * w).sum::<f64>()
+            norms
+                .as_slice()
+                .iter()
+                .zip(&weights)
+                .map(|(g, w)| g * w)
+                .sum::<f64>()
         };
         let grid = SpatialGrid::new(shape, [0.; 3], step, true).unwrap();
         let analytic = reciprocal::norm_strain(&context, &grid, &weights).unwrap();
@@ -368,6 +382,193 @@ fn the_norm_strain_is_the_derivative_of_the_alias_averaged_norms() {
             );
         }
     }
-    assert!(reciprocal::norm_strain(&context, &SpatialGrid::new([4; 3], [0.; 3], [0.4, 0., 0., 0., 0.4, 0., 0., 0., 0.4], true).unwrap(), &[1.; 3]).is_err());
+    assert!(reciprocal::norm_strain(
+        &context,
+        &SpatialGrid::new(
+            [4; 3],
+            [0.; 3],
+            [0.4, 0., 0., 0., 0.4, 0., 0., 0., 0.4],
+            true
+        )
+        .unwrap(),
+        &[1.; 3]
+    )
+    .is_err());
     assert_eq!(context.memory_used(), 0);
+}
+
+/// The alias vectors of an index, `(vector, weight)`, as the grid's lattice operations pick them.
+fn alias_set(aliases: &reciprocal::ShiftedAliases, at: usize) -> Vec<(Vector3<f64>, f64)> {
+    let (vectors, weights) = aliases.of(at);
+    vectors
+        .iter()
+        .zip(weights)
+        .map(|(v, w)| (Vector3::from(*v), *w))
+        .collect()
+}
+
+#[test]
+fn shifted_aliases_are_what_bloch_averages_and_move_with_the_lattice_operations() {
+    let context = Context::new(Some(1), 8 << 20).unwrap();
+    // The hexagonal box and the fcc primitive box (the skewed grids of wurtzite and of Si, Al).
+    let fcc = [0., 0.25, 0.25, 0.25, 0., 0.25, 0.25, 0.25, 0.];
+    for (shape, step) in [([6, 6, 5], HEX), ([6, 6, 6], fcc)] {
+        let grid = SpatialGrid::new(shape, [0.; 3], step, true).unwrap();
+        let b = reciprocal::reciprocal_cell(&grid).unwrap();
+        let n = grid.index.points();
+        let group = operations(shape, step);
+        let mut moved = 0usize;
+        for k in [[0.; 3], [0.031, -0.043, 0.047]] {
+            let aliases = reciprocal::shifted_aliases(&context, &grid, k).unwrap();
+            let symbols = reciprocal::bloch(&context, &grid, k).unwrap();
+            for at in 0..n {
+                let set = alias_set(&aliases, at);
+                moved += usize::from(set.len() > 1);
+                let total: f64 = set.iter().map(|(_, w)| w).sum();
+                assert!(
+                    (total - 1.).abs() < 1e-13,
+                    "{k:?} index {at}: weights add to {total}"
+                );
+                let square: f64 = set.iter().map(|(v, w)| w * (b * v).norm_squared()).sum();
+                assert!(
+                    (square - symbols.squares.as_slice()[at]).abs() < 1e-11,
+                    "{k:?} index {at}: {square} against the Bloch mean square"
+                );
+            }
+            // An operation `v` takes the aliases of an index (at the shift `k`) to those of the
+            // image index (at the shift `b v b^-1 k`): the multiset is covariant, which one wrapped
+            // vector is not.
+            for w in &group {
+                let v = w.try_inverse().unwrap().transpose();
+                let rotated = (b * v * b.try_inverse().unwrap() * Vector3::from(k)).into();
+                let image_aliases = reciprocal::shifted_aliases(&context, &grid, rotated).unwrap();
+                for at in 0..n {
+                    let index = [
+                        at / (shape[1] * shape[2]),
+                        at / shape[2] % shape[1],
+                        at % shape[2],
+                    ];
+                    let m = Vector3::from_fn(|a, _| frequency(index[a], shape[a]));
+                    let want = alias_set(&aliases, at);
+                    let got = alias_set(&image_aliases, box_index(v * m, shape));
+                    assert_eq!(want.len(), got.len(), "{k:?} index {at}: alias counts");
+                    for (vector, weight) in &want {
+                        let target = v * vector;
+                        assert!(
+                            got.iter()
+                                .any(|(u, x)| (u - target).norm() < 1e-9
+                                    && (x - weight).abs() < 1e-12),
+                            "{k:?} index {at}: {target} is not among the image's aliases"
+                        );
+                    }
+                }
+            }
+        }
+        // Non-vacuous: indices on the skewed box have several aliases, and the group is the
+        // lattice's (24 hexagonal, 48 cubic operations).
+        println!(
+            "{shape:?}: {} operations, {moved} (shift, index) pairs with several aliases",
+            group.len()
+        );
+        assert!(moved > 0, "no index has more than one alias");
+        assert!(group.len() >= 24, "{} operations", group.len());
+    }
+    assert_eq!(context.memory_used(), 0);
+}
+
+#[test]
+fn the_lattice_rotations_are_the_point_group_of_the_bravais_lattice() {
+    let context = Context::new(Some(1), 8 << 20).unwrap();
+    let h = 7.6524 / 2.;
+    let (a, c) = (5.877, 9.411);
+    let cells = [
+        // fcc primitive cell: O_h.
+        (
+            Matrix3::from_columns(&[
+                Vector3::new(0., h, h),
+                Vector3::new(h, 0., h),
+                Vector3::new(h, h, 0.),
+            ]),
+            48,
+        ),
+        // Hexagonal: D_6h.
+        (
+            Matrix3::from_columns(&[
+                Vector3::new(a, 0., 0.),
+                Vector3::new(-a / 2., a * 3f64.sqrt() / 2., 0.),
+                Vector3::new(0., 0., c),
+            ]),
+            24,
+        ),
+        // No symmetry beyond inversion.
+        (Matrix3::new(9., 1.1, 0.7, 0., 10., 0.9, 0., 0., 11.), 2),
+    ];
+    for (cell, count) in cells {
+        let group = reciprocal::lattice_rotations(&context, &cell).unwrap();
+        assert_eq!(group.len(), count);
+        assert_eq!(group[0], Matrix3::identity());
+        for r in &group {
+            assert!((r.transpose() * r - Matrix3::identity()).norm() < 1e-13);
+            // It maps the lattice onto itself: the integer matrix `cell^-1 r cell`.
+            let w = cell.try_inverse().unwrap() * r * cell;
+            assert!(w.iter().all(|x| (x - x.round()).abs() < 1e-9));
+            // Closed under products.
+            for s in &group {
+                assert!(group.iter().any(|t| (t - r * s).norm() < 1e-9));
+            }
+        }
+    }
+    assert_eq!(context.memory_used(), 0);
+}
+
+/// The per-axis face rule the compensation shapes used before the alias sets: the frequency
+/// wrapped into `[-N/2, N/2)`, and on a face (`-N/2`) along `t` axes the `2^t` sign choices.
+fn per_axis_face_images(m: Vector3<f64>, shape: [usize; 3]) -> Vec<Vector3<f64>> {
+    let base = Vector3::from_fn(|a, _| boxed(m[a], shape[a] as f64));
+    let faces: Vec<usize> = (0..3)
+        .filter(|&a| (base[a] + 0.5 * shape[a] as f64).abs() < 1.5e-9)
+        .collect();
+    (0..1usize << faces.len())
+        .map(|mask| {
+            let mut image = base;
+            for (bit, &a) in faces.iter().enumerate() {
+                if mask >> bit & 1 == 1 {
+                    image[a] += shape[a] as f64;
+                }
+            }
+            image
+        })
+        .collect()
+}
+
+#[test]
+fn the_per_axis_face_images_of_a_hexagonal_box_are_not_covariant() {
+    // The control of `shifted_aliases_are_what_bloch_averages_and_move_with_the_lattice_operations`:
+    // on the skewed box an operation takes the face images of an index to vectors that are not
+    // the face images of the image index, so a mean over them is not symmetric.
+    let shape = [6, 6, 5];
+    let n = shape.iter().product::<usize>();
+    let mut broken = 0usize;
+    for w in &operations(shape, HEX) {
+        let v = w.try_inverse().unwrap().transpose();
+        for at in 0..n {
+            let index = [at / 30, at / 5 % 6, at % 5];
+            let m = Vector3::from_fn(|a, _| frequency(index[a], shape[a]));
+            let want: Vec<Vector3<f64>> = per_axis_face_images(m, shape)
+                .iter()
+                .map(|x| v * x)
+                .collect();
+            let got = per_axis_face_images(v * m, shape);
+            let same = want.len() == got.len()
+                && want
+                    .iter()
+                    .all(|x| got.iter().any(|y| (x - y).norm() < 1e-9));
+            broken += usize::from(!same);
+        }
+    }
+    println!("{broken} (operation, index) pairs break the per-axis face rule");
+    assert!(
+        broken > 0,
+        "the per-axis face rule is covariant on the hexagonal box"
+    );
 }

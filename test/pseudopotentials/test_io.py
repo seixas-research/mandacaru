@@ -408,7 +408,9 @@ class TestPBEDiracLibrary:
 
     def test_lda_fr_holds_protactinium_too(self):
         """``lda-fr/`` has all 92 elements since Pa was added on the same
-        reference (2026-10-14)."""
+        reference (2026-10-14). The regenerated library (file format 3) gives
+        its Pa the partition of the scalar twin, the 6s6p semicore in valence,
+        so a p channel too, like ``pbe-fr/``."""
         from mandacaru.pseudopotentials.environment import (LibraryPathError,
                                                             library_folder)
 
@@ -421,7 +423,7 @@ class TestPBEDiracLibrary:
         assert set(available_elements(folder)) == set(library_elements())
         pp = get_paw("Pa", paw_dataset=folder)
         assert (pp.xc, pp.relativity) == ("lda", "dirac")
-        assert sorted(pp.channels) == [0, 2, 3] and not pp.defects
+        assert sorted(pp.channels) == [0, 1, 2, 3] and not pp.defects
         assert all(energy[0] < 0.0
                    for energy in pp.spin_orbit[3]["reference_energies"])
 

@@ -12,7 +12,7 @@
 //! The matrix is `(2M, 2M)` over `(spin, function)`, alpha block first; the crystal's projectors
 //! carry complex harmonics.
 use super::shells::Shells;
-use super::spheres::{projection_slopes, projections, Projector};
+use super::spheres::{moment_projections, projection_slopes, projections, Projector};
 use crate::{
     models::spin_orbit::{channels, pair, Coupling, Label, Projectors},
     product, Buffer, Context, Error, Result,
@@ -25,7 +25,12 @@ use std::collections::BTreeMap;
 pub fn labels(projectors: &[Projector]) -> Vec<Label> {
     projectors
         .iter()
-        .map(|p| Label { atom: p.atom, l: p.l, m: p.m, index: p.index })
+        .map(|p| Label {
+            atom: p.atom,
+            l: p.l,
+            m: p.m,
+            index: p.index,
+        })
         .collect()
 }
 
@@ -62,6 +67,66 @@ pub fn matrices(
             true,
         )?;
         out.as_mut_slice()[k * 4 * m * m..(k + 1) * 4 * m * m].copy_from_slice(h.as_slice());
+    }
+    Ok(out)
+}
+
+/// The velocity of the term, `i [h^SO, r]`, between the spinor Bloch sums at the Cartesian `k`:
+/// three `(2M, 2M)` row-major matrices over `(spin, function)`, Hermitian, zero when `couplings`
+/// is empty. The term is separable, `h^SO = sum |p_i> W_ij <p_j|` per atom, so with `r` measured
+/// from the atom (the constant drops out of the commutator)
+///
+/// ```text
+/// i [h^SO, r_c] = i (sum |p_i> W_ij <(r - R)_c p_j| - sum |(r - R)_c p_i> W_ij <p_j|)
+/// ```
+///
+/// from the projections on the projectors and on their first moments
+/// ([`moment_projections`]). It is the derivative of `exp(-i A.r) h^SO exp(i A.r)` along a
+/// uniform `A`, the coupling the velocity gauge gives every other term of the Hamiltonian.
+pub fn velocity(
+    ctx: &Context,
+    shells: &Shells,
+    lattice: &Matrix3<f64>,
+    k: [f64; 3],
+    projectors: &[Projector],
+    couplings: &BTreeMap<(usize, usize), Coupling>,
+) -> Result<[Buffer<Complex64>; 3]> {
+    let m = shells.functions();
+    let size = product(&[2 * m, 2 * m])?;
+    let mut out = [
+        ctx.allocate::<Complex64>(size)?,
+        ctx.allocate::<Complex64>(size)?,
+        ctx.allocate::<Complex64>(size)?,
+    ];
+    if couplings.is_empty() {
+        return Ok(out);
+    }
+    let found = channels(ctx, &labels(projectors), couplings, false)?;
+    let c = projections(ctx, shells, lattice, &[k], projectors)?;
+    let count = projectors.len();
+    for (axis, to) in out.iter_mut().enumerate() {
+        let moments = moment_projections(ctx, shells, lattice, &[k], projectors, axis)?;
+        // `pair(C, M)` is `<chi| h^SO (r - R)_c |chi>`; its adjoint is `pair(M, C)`.
+        let right = pair(
+            ctx,
+            Projectors {
+                left: c.as_slice(),
+                right: moments.as_slice(),
+                rows: m,
+                columns: m,
+                count,
+            },
+            &found,
+            false,
+        )?;
+        let r = right.as_slice();
+        let v = to.as_mut_slice();
+        for i in 0..2 * m {
+            for j in 0..2 * m {
+                v[i * 2 * m + j] =
+                    Complex64::new(0., 1.) * (r[i * 2 * m + j] - r[j * 2 * m + i].conj());
+            }
+        }
     }
     Ok(out)
 }

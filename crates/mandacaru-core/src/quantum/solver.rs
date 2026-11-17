@@ -84,26 +84,26 @@ pub type GrowthObserver<'a> = dyn FnMut(&[usize], &[f64], f64) -> Result<()> + '
 pub trait Execution {
     fn evaluate(
         &mut self,
-        problem: &CachedProblem,
+        problem: &QuantumProblem,
         indices: &[usize],
         parameters: &[f64],
         gradients: bool,
     ) -> Result<evolution::Evaluation>;
     fn pool_gradients(
         &mut self,
-        problem: &CachedProblem,
+        problem: &QuantumProblem,
         indices: &[usize],
         parameters: &[f64],
     ) -> Result<Vec<f64>>;
 }
 
-pub struct CachedProblem {
+pub struct QuantumProblem {
     pub context: Context,
     pub encoding: Encoding,
     pub hamiltonian: Operator,
     /// The state-vector register (the particle sector or the whole register), or `None` for a
     /// register-free problem: Pauli operators only, built for shot-based execution, where no
-    /// `2^n` or sector-sized object may exist. Read it through [`CachedProblem::register`].
+    /// `2^n` or sector-sized object may exist. Read it through [`QuantumProblem::register`].
     pub basis: Option<Basis>,
     /// The alpha and beta number operators a register-free problem checks its Hamiltonian and
     /// pool generators against (algebraically, in place of `Basis::check_invariant`); empty when
@@ -120,7 +120,7 @@ pub struct CachedProblem {
     pub hva: Option<super::hva::HVA>,
     /// The name of the pool `pool` was built from (`pools::kind` describes it).
     pub pool_name: String,
-    /// The Z2 symmetries removed from the register, when [`CachedProblem::taper`] found any. Then
+    /// The Z2 symmetries removed from the register, when [`QuantumProblem::taper`] found any. Then
     /// `hamiltonian`, `pool` and `basis` live on the tapered register while `encoding` still
     /// describes the fermionic problem.
     pub taper: Option<Taper>,
@@ -128,13 +128,26 @@ pub struct CachedProblem {
     /// built, and their label.
     pub dropped: Vec<(usize, String)>,
     /// The `O(M)` basis-rotation measurement of the energy, when the problem was built from a
-    /// molecular model and asked for it (`CachedProblem::factorize`). Circuit execution then
+    /// molecular model and asked for it (`QuantumProblem::factorize`). Circuit execution then
     /// measures the energy in its `L + 1` bases instead of the qubit-wise commuting groups of
     /// `hamiltonian`; pool gradients stay on the commuting groups.
     pub factorized: Option<FactorizedMeasurement>,
     pub(super) _pool_metadata: Reservation,
 }
-impl CachedProblem {
+/// Shared slot capturing `(parameters, energy, gradient, state, centered_hpsi)` at an optimizer's
+/// evaluated step (`centered_hpsi` is `Some` when the gradient pass left `(H - I) psi` intact).
+pub(super) struct CapturedPoint {
+    pub parameters: Vec<f64>,
+    pub energy: f64,
+    pub gradient: Vec<f64>,
+    pub state: State,
+    pub centered_hpsi: Option<Buffer<C64>>,
+}
+
+/// Shared capture slot filled whenever an optimizer requests the deferred gradient of a trial.
+pub(super) type CapturedScreen = std::rc::Rc<std::cell::RefCell<Option<CapturedPoint>>>;
+
+impl QuantumProblem {
     /// Read a bounded schema-v1 JSON cache; integrals and quantum SDKs are absent.
     pub fn load(
         ctx: &Context,
@@ -305,7 +318,11 @@ impl CachedProblem {
                  Hamiltonian-variational ansatz",
             ));
         }
-        if plan.bases.iter().any(|b| b.observable.n != self.hamiltonian.n) {
+        if plan
+            .bases
+            .iter()
+            .any(|b| b.observable.n != self.hamiltonian.n)
+        {
             return Err(invalid("the measurement plan is not for this register"));
         }
         self.factorized = Some(plan);
@@ -358,18 +375,46 @@ impl CachedProblem {
         parameters: &[f64],
         trotter: bool,
     ) -> Result<evolution::Evaluation> {
-        by_precision!(self.precision, A => self.evaluate_as::<A>(indices, parameters, trotter))
+        self.evaluate_with_mode(indices, parameters, trotter, true)
+    }
+    /// Like [`Self::evaluate`], letting the caller enable or disable sparse forward/tangent kernels.
+    pub fn evaluate_with_mode(
+        &self,
+        indices: &[usize],
+        parameters: &[f64],
+        trotter: bool,
+        sparse_kernels: bool,
+    ) -> Result<evolution::Evaluation> {
+        by_precision!(
+            self.precision,
+            A => self.evaluate_as::<A>(indices, parameters, trotter, None, sparse_kernels)
+        )
+    }
+    /// Evaluates energy and parameter gradients starting from an arbitrary float64 state `initial`.
+    pub fn evaluate_from_state(
+        &self,
+        indices: &[usize],
+        parameters: &[f64],
+        trotter: bool,
+        initial: &[C64],
+    ) -> Result<evolution::Evaluation> {
+        if self.precision != Precision::Float64 {
+            return Err(invalid("state-seeded evaluations require float64"));
+        }
+        self.evaluate_as::<C64>(indices, parameters, trotter, Some(initial), true)
     }
     fn evaluate_as<A: Amplitude>(
         &self,
         indices: &[usize],
         parameters: &[f64],
         trotter: bool,
+        initial: Option<&[A]>,
+        sparse_kernels: bool,
     ) -> Result<evolution::Evaluation> {
         let basis = self.register("a state-vector energy evaluation")?;
         if let Some(hva) = &self.hva {
             let expanded = hva.expand(&self.pool, indices, parameters)?;
-            let mut out = evolution::evaluate::<A>(
+            let mut out = evolution::evaluate_from_with_mode::<A>(
                 &self.context,
                 basis,
                 &self.hamiltonian,
@@ -378,6 +423,8 @@ impl CachedProblem {
                 &expanded.operators,
                 &expanded.parameters,
                 true,
+                initial,
+                sparse_kernels,
             )?;
             let mut gradient = vec![0.; parameters.len()];
             for (g, (i, w)) in out.gradient.iter().zip(expanded.links) {
@@ -387,7 +434,7 @@ impl CachedProblem {
             return Ok(out);
         }
         let ops = self.product_operators(indices)?;
-        evolution::evaluate::<A>(
+        evolution::evaluate_from_with_mode::<A>(
             &self.context,
             basis,
             &self.hamiltonian,
@@ -396,11 +443,13 @@ impl CachedProblem {
             &ops,
             parameters,
             trotter,
+            initial,
+            sparse_kernels,
         )
     }
     /// The energy at `parameters` with the gradient deferred: what an optimizer's line search
     /// needs to test a trial point. The gradient is computed from the state this call prepared,
-    /// by the code [`CachedProblem::evaluate`] runs, so the energy and the gradient are its bits;
+    /// by the code [`QuantumProblem::evaluate`] runs, so the energy and the gradient are its bits;
     /// a point whose gradient is never read costs the forward half only. A summed (non-product)
     /// ansatz keeps its derivative rows in the forward pass, so it defers only the final
     /// contractions; an HVA ansatz, whose gradient is folded onto its shared angles, is evaluated
@@ -411,23 +460,64 @@ impl CachedProblem {
         parameters: &[f64],
         trotter: bool,
     ) -> Result<optimizer::Probe<'p>> {
-        by_precision!(self.precision, A => self.probe_as::<A>(indices, parameters, trotter))
+        self.probe_with_mode(indices, parameters, trotter, true)
+    }
+    /// Like [`Self::probe`], letting the caller enable or disable sparse forward/tangent kernels.
+    pub fn probe_with_mode<'p>(
+        &'p self,
+        indices: &[usize],
+        parameters: &[f64],
+        trotter: bool,
+        sparse_kernels: bool,
+    ) -> Result<optimizer::Probe<'p>> {
+        by_precision!(
+            self.precision,
+            A => self.probe_as::<A>(indices, parameters, trotter, None, sparse_kernels)
+        )
+    }
+    /// Like [`Self::probe_with_mode`], capturing `(parameters, energy, gradient, state,
+    /// centered_hpsi)` whenever the optimizer accepts a point and evaluates its gradient.
+    pub(super) fn probe_capturing<'p>(
+        &'p self,
+        indices: &[usize],
+        parameters: &[f64],
+        trotter: bool,
+        capture: CapturedScreen,
+        sparse_kernels: bool,
+    ) -> Result<optimizer::Probe<'p>> {
+        by_precision!(
+            self.precision,
+            A => self.probe_as::<A>(indices, parameters, trotter, Some(capture), sparse_kernels)
+        )
     }
     fn probe_as<'p, A: Amplitude>(
         &'p self,
         indices: &[usize],
         parameters: &[f64],
         trotter: bool,
+        capture: Option<CapturedScreen>,
+        sparse_kernels: bool,
     ) -> Result<optimizer::Probe<'p>> {
         if self.hva.is_some() {
-            let full = self.evaluate_as::<A>(indices, parameters, trotter)?;
+            let full = self.evaluate_as::<A>(indices, parameters, trotter, None, sparse_kernels)?;
+            if let Some(slot) = capture {
+                let gradient = full.gradient.clone();
+                *slot.borrow_mut() = Some(CapturedPoint {
+                    parameters: parameters.to_vec(),
+                    energy: full.energy,
+                    gradient: gradient.clone(),
+                    state: full.state,
+                    centered_hpsi: None,
+                });
+                return Ok(optimizer::Probe::ready(full.energy, gradient));
+            }
             return Ok(optimizer::Probe::ready(full.energy, full.gradient));
         }
         let basis = self.register("a state-vector energy evaluation")?;
         let ops = self.product_operators(indices)?;
         let theta = parameters.to_vec();
         let context = &self.context;
-        let forward = evolution::forward_from::<A>(
+        let forward = evolution::forward_from_with_mode::<A>(
             context,
             basis,
             &self.hamiltonian,
@@ -437,10 +527,26 @@ impl CachedProblem {
             &theta,
             trotter,
             None,
+            sparse_kernels,
         )?;
         let energy = forward.energy();
         Ok(optimizer::Probe::deferred(energy, move || {
-            Ok(forward.finish(context, basis, &ops, &theta, trotter)?.gradient)
+            if let Some(slot) = capture {
+                let (eval, hpsi) =
+                    forward.finish_with_hpsi(context, basis, &ops, &theta, trotter)?;
+                let gradient = eval.gradient.clone();
+                *slot.borrow_mut() = Some(CapturedPoint {
+                    parameters: theta,
+                    energy: eval.energy,
+                    gradient: gradient.clone(),
+                    state: eval.state,
+                    centered_hpsi: hpsi,
+                });
+                return Ok(gradient);
+            }
+            Ok(forward
+                .finish(context, basis, &ops, &theta, trotter)?
+                .gradient)
         }))
     }
     /// The pool generators of `indices`, in order.
@@ -456,7 +562,7 @@ impl CachedProblem {
             .collect()
     }
     /// `|dE/dtheta_i|` at the angles with `theta_i` set to zero, for every position `i` of a
-    /// product ansatz: each equals the `i`-th gradient entry of [`CachedProblem::evaluate`] at
+    /// product ansatz: each equals the `i`-th gradient entry of [`QuantumProblem::evaluate`] at
     /// that point, in the same bits, from one shared forward prefix and a sweep that stops at
     /// `i` (see [`evolution::importances`]).
     pub fn importances(
@@ -464,20 +570,33 @@ impl CachedProblem {
         indices: &[usize],
         parameters: &[f64],
     ) -> Result<evolution::Importances> {
+        self.importances_with_mode(indices, parameters, true)
+    }
+    /// Like [`Self::importances`], letting the caller enable or disable sparse prefix tracking.
+    pub fn importances_with_mode(
+        &self,
+        indices: &[usize],
+        parameters: &[f64],
+        sparse_kernels: bool,
+    ) -> Result<evolution::Importances> {
         if self.hva.is_some() {
             return Err(invalid(
                 "operator importances belong to a product ansatz; an HVA ties its parameters",
             ));
         }
-        by_precision!(self.precision, A => self.importances_as::<A>(indices, parameters))
+        by_precision!(
+            self.precision,
+            A => self.importances_as::<A>(indices, parameters, sparse_kernels)
+        )
     }
     fn importances_as<A: Amplitude>(
         &self,
         indices: &[usize],
         parameters: &[f64],
+        sparse_kernels: bool,
     ) -> Result<evolution::Importances> {
         let basis = self.register("an importance evaluation")?;
-        evolution::importances::<A>(
+        evolution::importances_with_mode::<A>(
             &self.context,
             basis,
             &self.hamiltonian,
@@ -485,6 +604,37 @@ impl CachedProblem {
             self.sparse.as_ref(),
             &self.product_operators(indices)?,
             parameters,
+            sparse_kernels,
+        )
+    }
+    /// Importances starting from an explicit computational basis `start_row` (for subspace ensembles).
+    pub(super) fn importances_from_row(
+        &self,
+        indices: &[usize],
+        parameters: &[f64],
+        start_row: usize,
+        sparse_kernels: bool,
+    ) -> Result<evolution::Importances> {
+        if self.hva.is_some() {
+            return Err(invalid(
+                "operator importances belong to a product ansatz; an HVA ties its parameters",
+            ));
+        }
+        let basis = self.register("an importance evaluation")?;
+        let ops = self.product_operators(indices)?;
+        by_precision!(
+            self.precision,
+            A => evolution::importances_from_row::<A>(
+                &self.context,
+                basis,
+                &self.hamiltonian,
+                self.dense.as_ref().map(|d| d.as_slice()),
+                self.sparse.as_ref(),
+                &ops,
+                parameters,
+                start_row,
+                sparse_kernels,
+            )
         )
     }
     pub fn prepare_state(
@@ -527,34 +677,141 @@ impl CachedProblem {
     /// without its identity term when `centered`). `H psi` is stored in the
     /// state precision, `G_i psi` is a float64 row, the sums are float64.
     pub fn pool_gradients(&self, state: &State, centered: bool) -> Result<Vec<f64>> {
+        self.pool_gradients_for(state, centered, &self.hamiltonian)
+    }
+    /// Like [`Self::pool_gradients`], evaluated against an explicit Pauli `hamiltonian` (for
+    /// example, a top-term surrogate operator used during proposal screening).
+    pub fn pool_gradients_for(
+        &self,
+        state: &State,
+        centered: bool,
+        hamiltonian: &Operator,
+    ) -> Result<Vec<f64>> {
         match state {
-            State::Float64(buffer) => self.pool_gradients_of::<C64>(buffer.as_slice(), centered),
+            State::Float64(buffer) => {
+                self.pool_gradients_of::<C64>(hamiltonian, buffer.as_slice(), centered, None)
+            }
             State::Float32(buffer) => {
-                self.pool_gradients_of::<Complex32>(buffer.as_slice(), centered)
+                self.pool_gradients_of::<Complex32>(hamiltonian, buffer.as_slice(), centered, None)
             }
         }
     }
-    fn pool_gradients_of<A: Amplitude>(&self, state: &[A], centered: bool) -> Result<Vec<f64>> {
-        let ctx = &self.context;
+    /// Exact diagonal second-order curvature `<psi | [[H, G_i], G_i] | psi>` (= `d^2 E / d theta_i^2 |_{0}`)
+    /// for every generator `G_i` in the pool on `state`.
+    pub fn pool_curvatures(&self, state: &State) -> Result<Vec<f64>> {
+        match state {
+            State::Float64(buffer) => self.pool_curvatures_of::<C64>(buffer.as_slice()),
+            State::Float32(buffer) => self.pool_curvatures_of::<Complex32>(buffer.as_slice()),
+        }
+    }
+    /// Like [`Self::pool_gradients`] with `centered = true`, reusing a precomputed `(H - I) psi`
+    /// float64 buffer (such as the one retained from [`evolution::Forward::finish_with_hpsi`]).
+    pub(super) fn pool_gradients_with_centered_hpsi(
+        &self,
+        state: &State,
+        hpsi_wide: &[C64],
+    ) -> Result<Vec<f64>> {
         let basis = self.register("pool gradients on a local state")?;
+        match state {
+            State::Float64(buffer) => {
+                // Zero-copy reuse of `(H - I) psi` directly in Float64 without allocating `D`.
+                self.pool_gradients_with_slice::<C64, C64>(basis, buffer.as_slice(), hpsi_wide)
+            }
+            State::Float32(buffer) => self.pool_gradients_of::<Complex32>(
+                &self.hamiltonian,
+                buffer.as_slice(),
+                true,
+                Some(hpsi_wide),
+            ),
+        }
+    }
+    pub fn pool_curvatures_of<A: Amplitude>(&self, state: &[A]) -> Result<Vec<f64>> {
+        let ctx = &self.context;
+        let basis = self.register("pool curvatures on a local state")?;
         let d = basis.len();
         if state.len() != d || !amplitude::finite(state) {
             return Err(invalid("state must be finite and match the operator basis"));
         }
-        let mut hpsi = ctx.allocate::<A>(d)?;
-        {
-            let mut acc = ctx.allocate::<C64>(A::accumulator_len(d))?;
-            A::with_wide(hpsi.as_mut_slice(), acc.as_mut_slice(), |wide| {
-                if centered {
+        let mut hpsi = ctx.allocate::<C64>(d)?;
+        self.hamiltonian
+            .add_centered_into(basis, state, C64::new(1., 0.), hpsi.as_mut_slice());
+        let hpsi_slice = hpsi.as_slice();
+        let work = self
+            .pool
+            .len()
+            .saturating_mul(d)
+            .saturating_mul(self.hamiltonian.terms.len().max(1));
+        let threads = super::parallel::threads_for(ctx, work, self.pool.len());
+        let mut lanes = (0..threads)
+            .map(|_| Ok((ctx.allocate::<C64>(d)?, ctx.allocate::<C64>(d)?)))
+            .collect::<Result<Vec<_>>>()?;
+        let mut out = vec![0.; self.pool.len()];
+        super::parallel::parallel_tasks(
+            ctx,
+            &mut out,
+            &mut lanes,
+            |first, values, (g_buf, work)| {
+                let g_slice = g_buf.as_mut_slice();
+                let w_slice = work.as_mut_slice();
+                for (k, value) in values.iter_mut().enumerate() {
+                    let op = &self.pool[first + k].operator;
+                    op.apply_into(basis, state, g_slice);
+                    w_slice.fill(C64::default());
                     self.hamiltonian
-                        .add_centered_into(basis, state, C64::new(1., 0.), wide)
-                } else {
-                    self.hamiltonian
-                        .add_into(basis, state, C64::new(1., 0.), wide)
+                        .add_centered_into(basis, g_slice, C64::new(1., 0.), w_slice);
+                    let ghg = inner_wide(g_slice, w_slice).re;
+                    op.apply_into(basis, g_slice, w_slice);
+                    let hgg = inner_wide(hpsi_slice, w_slice).re;
+                    *value = 2. * (ghg + hgg);
                 }
-            });
+            },
+        );
+        Ok(out)
+    }
+    fn pool_gradients_of<A: Amplitude>(
+        &self,
+        hamiltonian: &Operator,
+        state: &[A],
+        centered: bool,
+        precomputed_hpsi_wide: Option<&[C64]>,
+    ) -> Result<Vec<f64>> {
+        let ctx = &self.context;
+        let basis = self.register("pool gradients on a local state")?;
+        let d = basis.len();
+        if let Some(pre) = precomputed_hpsi_wide {
+            if pre.len() != d {
+                return Err(invalid(
+                    "precomputed H psi length must match the operator basis",
+                ));
+            }
+            let mut buf = ctx.allocate::<A>(d)?;
+            for (dst, &src) in buf.as_mut_slice().iter_mut().zip(pre) {
+                *dst = A::narrow(src);
+            }
+            return self.pool_gradients_with_slice(basis, state, buf.as_slice());
         }
-        let hpsi = hpsi.as_slice();
+        let mut buf = ctx.allocate::<A>(d)?;
+        let mut acc = ctx.allocate::<C64>(A::accumulator_len(d))?;
+        A::with_wide(buf.as_mut_slice(), acc.as_mut_slice(), |wide| {
+            if centered {
+                hamiltonian.add_centered_into(basis, state, C64::new(1., 0.), wide)
+            } else {
+                hamiltonian.add_into(basis, state, C64::new(1., 0.), wide)
+            }
+        });
+        self.pool_gradients_with_slice(basis, state, buf.as_slice())
+    }
+    fn pool_gradients_with_slice<A: Amplitude, H: Amplitude>(
+        &self,
+        basis: &Basis,
+        state: &[A],
+        hpsi: &[H],
+    ) -> Result<Vec<f64>> {
+        let ctx = &self.context;
+        let d = basis.len();
+        if state.len() != d || hpsi.len() != d || !amplitude::finite(state) {
+            return Err(invalid("state must be finite and match the operator basis"));
+        }
         // A sparse state restricts each generator's work to the rows it can write. The route is
         // chosen once from the data (the support of the state and the finiteness of `H psi`),
         // never from the thread count, and gives the dense bits: see `Operator::apply_support_into`
@@ -562,7 +819,11 @@ impl CachedProblem {
         // into a NaN the dense dot has, so it takes the dense route.
         let nonzero = state.iter().filter(|a| **a != A::default()).count();
         let restricted = nonzero.saturating_mul(RESTRICTED_SUPPORT) < d && amplitude::finite(hpsi);
-        let _support_bytes = ctx.reserve(if restricted { nonzero.saturating_mul(size_of::<usize>()) } else { 0 })?;
+        let _support_bytes = ctx.reserve(if restricted {
+            nonzero.saturating_mul(size_of::<usize>())
+        } else {
+            0
+        })?;
         let support = restricted.then(|| {
             state
                 .iter()
@@ -576,7 +837,11 @@ impl CachedProblem {
         // (clean, `+0` throughout, between generators on the restricted route) and its own list
         // of the rows a generator wrote.
         let work = match support {
-            Some(support) => self.pool.len().saturating_mul(support.len()).saturating_mul(16),
+            Some(support) => self
+                .pool
+                .len()
+                .saturating_mul(support.len())
+                .saturating_mul(16),
             None => self.pool.len().saturating_mul(d),
         };
         let threads = super::parallel::threads_for(ctx, work, self.pool.len());
@@ -590,26 +855,32 @@ impl CachedProblem {
             .map(|_| Ok((ctx.allocate::<C64>(d)?, Vec::<usize>::new())))
             .collect::<Result<Vec<_>>>()?;
         let mut out = vec![0.; self.pool.len()];
-        super::parallel::parallel_tasks(ctx, &mut out, &mut lanes, |first, values, (action, written)| {
-            let action = action.as_mut_slice();
-            for (k, value) in values.iter_mut().enumerate() {
-                let operator = &self.pool[first + k].operator;
-                let restricted = support
-                    .is_some_and(|support| operator.apply_support_into(basis, state, support, action, written));
-                if restricted {
-                    *value = 2. * amplitude::inner_wide_rows(hpsi, action, written).re;
-                    for &row in written.iter() {
-                        action[row] = C64::default();
-                    }
-                } else {
-                    operator.apply_into(basis, state, action);
-                    *value = 2. * inner_wide(hpsi, action).re;
-                    if support.is_some() {
-                        action.fill(C64::default());
+        super::parallel::parallel_tasks(
+            ctx,
+            &mut out,
+            &mut lanes,
+            |first, values, (action, written)| {
+                let action = action.as_mut_slice();
+                for (k, value) in values.iter_mut().enumerate() {
+                    let operator = &self.pool[first + k].operator;
+                    let restricted = support.is_some_and(|support| {
+                        operator.apply_support_into(basis, state, support, action, written)
+                    });
+                    if restricted {
+                        *value = 2. * amplitude::inner_wide_rows(hpsi, action, written).re;
+                        for &row in written.iter() {
+                            action[row] = C64::default();
+                        }
+                    } else {
+                        operator.apply_into(basis, state, action);
+                        *value = 2. * inner_wide(hpsi, action).re;
+                        if support.is_some() {
+                            action.fill(C64::default());
+                        }
                     }
                 }
-            }
-        });
+            },
+        );
         Ok(out)
     }
     pub fn sequence<'a>(
@@ -717,7 +988,9 @@ impl CachedProblem {
             ));
         }
         if options.continuation && options.hessian.is_none() {
-            return Err(invalid("a continued growth needs the Hessian it stopped with"));
+            return Err(invalid(
+                "a continued growth needs the Hessian it stopped with",
+            ));
         }
         if let Some(hessian) = &options.hessian {
             let n = sequence.map_or(0, <[usize]>::len);
@@ -736,8 +1009,10 @@ impl CachedProblem {
         // approximation; a growth step that re-optimizes all of them starts from the previous
         // step's, extended by the identity for the appended ones (the identity is the cold start
         // of either), instead of relearning the curvature from the identity.
-        let carries_curvature =
-            options.adapt && options.quenching && options.optimizer.method.carries_curvature();
+        let carries_curvature = options.carry_hessian
+            && options.adapt
+            && options.quenching
+            && options.optimizer.method.carries_curvature();
         let mut curvature: Option<Vec<f64>> = None;
         let max_parameters = if options.adapt {
             product(&[
@@ -778,7 +1053,8 @@ impl CachedProblem {
                 .expectation_at(self.register_reference())
                 .re
         } else {
-            self.evaluate(&[], &[], true)?.energy
+            self.probe_with_mode(&[], &[], true, options.sparse_kernels)?
+                .energy
         };
         let derivatives = !matches!(
             options.optimizer.method,
@@ -800,6 +1076,8 @@ impl CachedProblem {
         let mut stopped: Option<String> = None;
         let mut measured: Option<f64> = None;
         let mut pruned: Vec<(usize, String)> = Vec::new();
+        let mut reused_eval: Option<CapturedPoint> = None;
+        let mut screened_final = false;
         if !options.adapt {
             indices = (0..self.pool.len())
                 .filter(|&i| self.pool_screenable[i])
@@ -816,8 +1094,20 @@ impl CachedProblem {
             // optimizer's own iterate may be a trial step, the best is not.
             let mut best: Option<(Vec<f64>, f64)> = None;
             let mut evaluations = 0usize;
+            let capture: Option<CapturedScreen> = (execution.is_none()
+                && options.reuse_evaluations)
+                .then(|| std::rc::Rc::new(std::cell::RefCell::new(None)));
             let mut objective = |t: &[f64]| -> Result<optimizer::Probe<'_>> {
-                let v = probe_of(self, execution.as_deref_mut(), &indices, t, options.trotter, derivatives)?;
+                let v = probe_of(
+                    self,
+                    execution.as_deref_mut(),
+                    &indices,
+                    t,
+                    options.trotter,
+                    derivatives,
+                    capture.as_ref().cloned(),
+                    options.sparse_kernels,
+                )?;
                 if let Some(plan) = &options.checkpoint {
                     evaluations += 1;
                     if best.as_ref().is_none_or(|(_, e)| v.energy < *e) {
@@ -825,13 +1115,30 @@ impl CachedProblem {
                     }
                     if evaluations % plan.every == 0 {
                         let (x, e) = best.as_ref().expect("an evaluation was made");
-                        write_checkpoint(self, plan, &indices, x, options.trotter, *e, false, evaluations, options.optimizer.method.name(), None)?;
+                        write_checkpoint(
+                            self,
+                            plan,
+                            &indices,
+                            x,
+                            options.trotter,
+                            *e,
+                            false,
+                            evaluations,
+                            options.optimizer.method.name(),
+                            None,
+                        )?;
                     }
                 }
                 Ok(v)
             };
             let outcome = if options.quenching {
-                optimizer::minimize_interruptible_deferred_from(ctx, &parameters, &options.optimizer, None, &mut objective)?
+                optimizer::minimize_interruptible_deferred_from(
+                    ctx,
+                    &parameters,
+                    &options.optimizer,
+                    None,
+                    &mut objective,
+                )?
             } else {
                 sweep(ctx, &parameters, &options.optimizer, &mut objective)?
             };
@@ -842,20 +1149,44 @@ impl CachedProblem {
             message = outcome.message;
             measured = Some(outcome.energy);
             stopped = outcome.interrupted;
+            reused_eval = capture
+                .as_ref()
+                .and_then(|c| c.borrow_mut().take())
+                .filter(|p| p.parameters == parameters);
             final_gradient = f64::NAN;
             // A measured gradient is two device evaluations per rotation: only a gradient-based
             // optimizer, which already pays for them, reports one. A derivative-free shot-based
             // run (register-free) leaves it NaN rather than spending thousands of jobs on a
             // diagnostic; a simulated one is free and keeps it.
             if stopped.is_none() && (!self.is_register_free() || derivatives) {
-                let measured_gradient = probe_of(self, execution.as_deref_mut(), &indices, &parameters, options.trotter, true)
+                if let Some(point) = reused_eval.as_ref() {
+                    final_gradient = point.gradient.iter().fold(0f64, |a, g| a.max(g.abs()));
+                } else {
+                    let post_capture: Option<CapturedScreen> = (execution.is_none()
+                        && options.reuse_evaluations)
+                        .then(|| std::rc::Rc::new(std::cell::RefCell::new(None)));
+                    let measured_gradient = probe_of(
+                        self,
+                        execution.as_deref_mut(),
+                        &indices,
+                        &parameters,
+                        options.trotter,
+                        true,
+                        post_capture.as_ref().cloned(),
+                        options.sparse_kernels,
+                    )
                     .and_then(optimizer::Probe::into_gradient);
-                match measured_gradient {
-                    Ok(gradient) => {
-                        final_gradient = gradient.iter().fold(0f64, |a, g| a.max(g.abs()));
+                    match measured_gradient {
+                        Ok(gradient) => {
+                            final_gradient = gradient.iter().fold(0f64, |a, g| a.max(g.abs()));
+                            reused_eval = post_capture
+                                .as_ref()
+                                .and_then(|c| c.borrow_mut().take())
+                                .filter(|p| p.parameters == parameters);
+                        }
+                        Err(Error::Interrupted(m)) => stopped = Some(m),
+                        Err(e) => return Err(e),
                     }
-                    Err(Error::Interrupted(m)) => stopped = Some(m),
-                    Err(e) => return Err(e),
                 }
             }
         } else {
@@ -869,12 +1200,26 @@ impl CachedProblem {
                     curvature = options.hessian.clone().filter(|_| carries_curvature);
                 } else if !indices.is_empty() {
                     let warm = options.hessian.is_some();
+                    let seed_capture: Option<CapturedScreen> = (execution.is_none()
+                        && options.reuse_evaluations)
+                        .then(|| std::rc::Rc::new(std::cell::RefCell::new(None)));
                     let mut outcome = optimizer::minimize_deferred_from(
                         ctx,
                         &parameters,
                         &options.optimizer,
                         options.hessian.as_deref(),
-                        |t| probe_of(self, execution.as_deref_mut(), &indices, t, true, derivatives),
+                        |t| {
+                            probe_of(
+                                self,
+                                execution.as_deref_mut(),
+                                &indices,
+                                t,
+                                true,
+                                derivatives,
+                                seed_capture.as_ref().cloned(),
+                                options.sparse_kernels,
+                            )
+                        },
                     )?;
                     let kept = outcome.energy < reference;
                     if kept && carries_curvature {
@@ -892,7 +1237,12 @@ impl CachedProblem {
                     steps += outcome.steps;
                     history.extend(outcome.history);
                     parameters = outcome.parameters;
-                    if !kept {
+                    if kept {
+                        reused_eval = seed_capture
+                            .as_ref()
+                            .and_then(|c| c.borrow_mut().take())
+                            .filter(|p| p.parameters == parameters);
+                    } else {
                         indices.clear();
                         parameters.clear();
                     }
@@ -901,17 +1251,34 @@ impl CachedProblem {
             let mut delta = None;
             for growth in self.growth_steps(&indices)?..=options.max_growth {
                 // Release the objective closure before measured pool screening.
-                let evaluation = match execution.as_mut() {
-                    Some(device) => match device.evaluate(self, &indices, &parameters, false) {
-                        Err(Error::Interrupted(m)) if measured.is_some() => {
-                            stopped = Some(m);
-                            break;
+                let (energy, reused_state, reused_hpsi) = match execution.as_mut() {
+                    Some(device) => {
+                        reused_eval = None;
+                        match device.evaluate(self, &indices, &parameters, false) {
+                            Err(Error::Interrupted(m)) if measured.is_some() => {
+                                stopped = Some(m);
+                                break;
+                            }
+                            other => {
+                                let eval = other?;
+                                (eval.energy, Some(eval.state), None)
+                            }
                         }
-                        other => other?,
-                    },
-                    None => self.evaluate(&indices, &parameters, true)?,
+                    }
+                    None => {
+                        if let Some(point) = reused_eval.take() {
+                            (point.energy, Some(point.state), point.centered_hpsi)
+                        } else {
+                            let eval = self.evaluate_with_mode(
+                                &indices,
+                                &parameters,
+                                true,
+                                options.sparse_kernels,
+                            )?;
+                            (eval.energy, Some(eval.state), None)
+                        }
+                    }
                 };
-                let energy = evaluation.energy;
                 measured = Some(energy);
                 let mut selected = 0;
                 final_gradient = 0.;
@@ -923,7 +1290,15 @@ impl CachedProblem {
                     let signed = if self.is_register_free() {
                         self.reference_gradients()?
                     } else {
-                        self.pool_gradients(&evaluation.state, true)?
+                        let state = reused_state
+                            .as_ref()
+                            .expect("native screening holds a prepared state");
+                        match reused_hpsi.as_ref() {
+                            Some(hpsi) => {
+                                self.pool_gradients_with_centered_hpsi(state, hpsi.as_slice())?
+                            }
+                            None => self.pool_gradients(state, true)?,
+                        }
                     };
                     for (i, signed) in signed.into_iter().enumerate() {
                         let magnitude = signed.abs();
@@ -967,15 +1342,44 @@ impl CachedProblem {
                     .energy_tolerance
                     .is_none_or(|t| delta.is_some_and(|d: f64| d.abs() < t));
                 if final_gradient < 1e-12 || (gradient_ok && energy_ok) {
+                    screened_final = execution.is_none();
+                    if execution.is_none() && options.reuse_evaluations {
+                        if let Some(state) = reused_state {
+                            reused_eval = Some(CapturedPoint {
+                                parameters: parameters.clone(),
+                                energy,
+                                gradient: Vec::new(),
+                                state,
+                                centered_hpsi: reused_hpsi,
+                            });
+                        }
+                    }
                     success = true;
                     message = "pool gradients converged".into();
                     break;
                 }
                 if growth == options.max_growth {
+                    screened_final = execution.is_none();
+                    if execution.is_none() && options.reuse_evaluations {
+                        if let Some(state) = reused_state {
+                            reused_eval = Some(CapturedPoint {
+                                parameters: parameters.clone(),
+                                energy,
+                                gradient: Vec::new(),
+                                state,
+                                centered_hpsi: reused_hpsi,
+                            });
+                        }
+                    }
                     break;
                 }
                 let picks = if options.tetris {
-                    disjoint_selection(&self.pool, &self.pool_screenable, &gradients, self.n_qubits())
+                    disjoint_selection(
+                        &self.pool,
+                        &self.pool_screenable,
+                        &gradients,
+                        self.n_qubits(),
+                    )
                 } else {
                     vec![selected]
                 };
@@ -986,14 +1390,32 @@ impl CachedProblem {
                         .copied()
                         .filter(|&i| gradients[i] > 1e-12)
                         .collect();
-                    let grown = if members.len() >= 2 { members } else { vec![pick] };
+                    let grown = if members.len() >= 2 {
+                        members
+                    } else {
+                        vec![pick]
+                    };
                     for index in grown {
                         indices.push(index);
                         parameters.push(0.);
                     }
                 }
 
-                let objective = |t: &[f64]| probe_of(self, execution.as_deref_mut(), &indices, t, true, derivatives);
+                let step_capture: Option<CapturedScreen> = (execution.is_none()
+                    && options.reuse_evaluations)
+                    .then(|| std::rc::Rc::new(std::cell::RefCell::new(None)));
+                let objective = |t: &[f64]| {
+                    probe_of(
+                        self,
+                        execution.as_deref_mut(),
+                        &indices,
+                        t,
+                        true,
+                        derivatives,
+                        step_capture.as_ref().cloned(),
+                        options.sparse_kernels,
+                    )
+                };
                 let start_curvature = curvature
                     .as_deref()
                     .filter(|h| carries_curvature && h.len() == accepted * accepted)
@@ -1008,7 +1430,13 @@ impl CachedProblem {
                     )
                 } else {
                     // Only the parameters this step appended; the earlier ones stay at their optimum.
-                    minimize_block(ctx, &parameters, accepted..parameters.len(), &options.optimizer, objective)
+                    minimize_block(
+                        ctx,
+                        &parameters,
+                        accepted..parameters.len(),
+                        &options.optimizer,
+                        objective,
+                    )
                 };
                 let mut outcome = match optimized {
                     // Stopped before the grown ansatz was measured once:
@@ -1023,9 +1451,22 @@ impl CachedProblem {
                 };
                 let mut step_energy = outcome.energy;
                 parameters = std::mem::take(&mut outcome.parameters);
-                curvature = if carries_curvature { outcome.hessian.take() } else { None };
+                curvature = if carries_curvature {
+                    outcome.hessian.take()
+                } else {
+                    None
+                };
+                reused_eval = if outcome.interrupted.is_none() {
+                    step_capture
+                        .as_ref()
+                        .and_then(|c| c.borrow_mut().take())
+                        .filter(|p| p.parameters == parameters)
+                } else {
+                    None
+                };
                 if options.prune && outcome.interrupted.is_none() {
                     if let Some(at) = prune_candidate(&parameters) {
+                        reused_eval = None;
                         let (mut shorter, mut angles) = (indices.clone(), parameters.clone());
                         shorter.remove(at);
                         angles.remove(at);
@@ -1039,8 +1480,15 @@ impl CachedProblem {
                         // The energy of the shorter ansatz at the same angles: not re-optimized.
                         // A stop before it is measured keeps the unpruned ansatz and its energy.
                         let evaluated = match execution.as_mut() {
-                            Some(device) => device.evaluate(self, &shorter, &angles, false),
-                            None => self.evaluate(&shorter, &angles, true),
+                            Some(device) => device
+                                .evaluate(self, &shorter, &angles, false)
+                                .map(|eval| eval.energy),
+                            None if options.reuse_evaluations => self
+                                .probe_with_mode(&shorter, &angles, true, options.sparse_kernels)
+                                .map(|probe| probe.energy),
+                            None => self
+                                .evaluate_with_mode(&shorter, &angles, true, options.sparse_kernels)
+                                .map(|eval| eval.energy),
                         };
                         match evaluated {
                             Err(Error::Interrupted(m)) => {
@@ -1048,7 +1496,7 @@ impl CachedProblem {
                                 stopped = Some(m);
                                 break;
                             }
-                            other => step_energy = other?.energy,
+                            other => step_energy = other?,
                         }
                         pruned.push((iterations.len() + 1, self.pool[indices[at]].label.clone()));
                         indices = shorter;
@@ -1071,7 +1519,18 @@ impl CachedProblem {
                 history.extend(outcome.history);
                 if let Some(plan) = &options.checkpoint {
                     if iterations.len() % plan.every == 0 {
-                        write_checkpoint(self, plan, &indices, &parameters, true, step_energy, true, iterations.len(), options.optimizer.method.name(), curvature.as_deref())?;
+                        write_checkpoint(
+                            self,
+                            plan,
+                            &indices,
+                            &parameters,
+                            true,
+                            step_energy,
+                            true,
+                            iterations.len(),
+                            options.optimizer.method.name(),
+                            curvature.as_deref(),
+                        )?;
                     }
                 }
                 if let Some(observer) = observer.as_deref_mut() {
@@ -1095,26 +1554,51 @@ impl CachedProblem {
                     stopped = Some(m);
                     None
                 }
-                other => Some(other?),
+                other => {
+                    let eval = other?;
+                    Some((eval.energy, eval.state, None))
+                }
             },
-            (None, false) => Some(self.evaluate(&indices, &parameters, trotter)?),
+            (None, false) => {
+                if let Some(point) = reused_eval.take() {
+                    Some((point.energy, point.state, point.centered_hpsi))
+                } else {
+                    let eval = self.evaluate_with_mode(
+                        &indices,
+                        &parameters,
+                        trotter,
+                        options.sparse_kernels,
+                    )?;
+                    Some((eval.energy, eval.state, None))
+                }
+            }
         };
         // After a stop no circuit is submitted: the state comes from the
         // native simulator and the energy is the last one measured.
-        let (energy, state) = match final_evaluation {
-            Some(evaluation) => (evaluation.energy, evaluation.state),
+        let (energy, state, final_hpsi) = match final_evaluation {
+            Some(evaluation) => evaluation,
             None => (
                 measured.expect("a stop keeps a measured point"),
                 self.result_state(&indices, &parameters, trotter)?,
+                None,
             ),
         };
         if let Some(reason) = &stopped {
             success = false;
             message = format!("run budget exhausted: {reason}");
         }
-        if options.adapt && execution.is_none() {
+        if options.adapt
+            && execution.is_none()
+            && (!options.reuse_evaluations || !screened_final || stopped.is_some())
+        {
             final_gradient = 0.;
-            for (i, signed) in self.pool_gradients(&state, true)?.into_iter().enumerate() {
+            let signed = match final_hpsi.as_ref() {
+                Some(hpsi) if options.reuse_evaluations => {
+                    self.pool_gradients_with_centered_hpsi(&state, hpsi.as_slice())?
+                }
+                _ => self.pool_gradients(&state, true)?,
+            };
+            for (i, signed) in signed.into_iter().enumerate() {
                 if self.pool_screenable[i] {
                     final_gradient = final_gradient.max(signed.abs());
                 }
@@ -1166,7 +1650,7 @@ pub(super) fn extend_hessian(old: &[f64], m: usize, n: usize) -> Vec<f64> {
 }
 /// The INVERSE Hessian of `n` parameters without the one at `at`: the inverse of the reduced
 /// Hessian, `H_ij - H_ia H_aj / H_aa` (a Schur complement, not the sub-block).
-fn drop_parameter_of_inverse(old: &[f64], n: usize, at: usize) -> Vec<f64> {
+pub(super) fn drop_parameter_of_inverse(old: &[f64], n: usize, at: usize) -> Vec<f64> {
     let keep: Vec<usize> = (0..n).filter(|&i| i != at).collect();
     let pivot = old[at * n + at];
     keep.iter()
@@ -1181,17 +1665,49 @@ fn drop_parameter_of_inverse(old: &[f64], n: usize, at: usize) -> Vec<f64> {
         .collect()
 }
 /// The Hessian of `n` parameters without the one at `at`.
-fn drop_parameter(old: &[f64], n: usize, at: usize) -> Vec<f64> {
+pub(super) fn drop_parameter(old: &[f64], n: usize, at: usize) -> Vec<f64> {
     let keep: Vec<usize> = (0..n).filter(|&i| i != at).collect();
     keep.iter()
         .flat_map(|&i| keep.iter().map(move |&j| (i, j)))
         .map(|(i, j)| old[i * n + j])
         .collect()
 }
+/// Insert a new uncoupled parameter at index `at` into an `n x n` row-major curvature matrix,
+/// yielding an `(n + 1) x (n + 1)` matrix with `1.0` on the new diagonal entry.
+pub(super) fn insert_hessian(old: &[f64], n: usize, at: usize) -> Vec<f64> {
+    let m = n + 1;
+    let mut grown = vec![0.; m * m];
+    for i in 0..m {
+        if i == at {
+            grown[i * m + i] = 1.;
+            continue;
+        }
+        let oi = if i > at { i - 1 } else { i };
+        for j in 0..m {
+            if j == at {
+                continue;
+            }
+            let oj = if j > at { j - 1 } else { j };
+            grown[i * m + j] = old[oi * n + oj];
+        }
+    }
+    grown
+}
+/// Reset row and column `at` of an `n x n` row-major curvature matrix to the unit vector `e_at`,
+/// keeping the remaining `(n - 1) x (n - 1)` block positive definite when replacing an operator.
+pub(super) fn reset_hessian_parameter(old: &[f64], n: usize, at: usize) -> Vec<f64> {
+    let mut out = old.to_vec();
+    for k in 0..n {
+        out[at * n + k] = 0.;
+        out[k * n + at] = 0.;
+    }
+    out[at * n + at] = 1.;
+    out
+}
 
 #[allow(clippy::too_many_arguments)]
 fn write_checkpoint(
-    problem: &CachedProblem,
+    problem: &QuantumProblem,
     plan: &Checkpointing,
     indices: &[usize],
     parameters: &[f64],
@@ -1253,7 +1769,11 @@ fn disjoint_selection(
 ) -> Vec<usize> {
     let mut order: Vec<usize> = (0..pool.len()).filter(|&i| screenable[i]).collect();
     order.sort_by(|&a, &b| gradients[b].total_cmp(&gradients[a]));
-    let full = if n_qubits >= 64 { u64::MAX } else { (1u64 << n_qubits) - 1 };
+    let full = if n_qubits >= 64 {
+        u64::MAX
+    } else {
+        (1u64 << n_qubits) - 1
+    };
     let (mut chosen, mut covered) = (Vec::new(), 0u64);
     for i in order {
         if gradients[i] <= 1e-12 {
@@ -1280,7 +1800,11 @@ pub fn prune_candidate(parameters: &[f64]) -> Option<usize> {
         return None;
     }
     let recent = PRUNE_RECENT.min(n);
-    let threshold = PRUNE_FRACTION * parameters[n - recent..].iter().map(|t| t.abs()).sum::<f64>()
+    let threshold = PRUNE_FRACTION
+        * parameters[n - recent..]
+            .iter()
+            .map(|t| t.abs())
+            .sum::<f64>()
         / recent as f64;
     // The newest operator is never a candidate: it was just selected on the largest gradient.
     let (candidate, _) = parameters[..n - 1]
@@ -1296,21 +1820,29 @@ pub fn prune_candidate(parameters: &[f64]) -> Option<usize> {
 
 /// One objective evaluation of a solve: a circuit executor's measurement when there is one (its
 /// gradient is measured with the energy, as the executor decides, so it is ready), else the
-/// native evaluation with its gradient deferred ([`CachedProblem::probe`]).
+/// native evaluation with its gradient deferred ([`QuantumProblem::probe_with_mode`]).
+#[allow(clippy::too_many_arguments)]
 fn probe_of<'p>(
-    problem: &'p CachedProblem,
+    problem: &'p QuantumProblem,
     execution: Option<&mut (dyn Execution + '_)>,
     indices: &[usize],
     parameters: &[f64],
     trotter: bool,
     gradients: bool,
+    capture: Option<CapturedScreen>,
+    sparse_kernels: bool,
 ) -> Result<optimizer::Probe<'p>> {
     match execution {
         Some(device) => {
             let value = device.evaluate(problem, indices, parameters, gradients)?;
             Ok(optimizer::Probe::ready(value.energy, value.gradient))
         }
-        None => problem.probe(indices, parameters, trotter),
+        None => match capture {
+            Some(slot) => {
+                problem.probe_capturing(indices, parameters, trotter, slot, sparse_kernels)
+            }
+            None => problem.probe_with_mode(indices, parameters, trotter, sparse_kernels),
+        },
     }
 }
 
@@ -1325,19 +1857,20 @@ fn minimize_block<'p>(
 ) -> Result<optimizer::Outcome> {
     let mut point = full.to_vec();
     let start = full[free.clone()].to_vec();
-    let mut outcome = optimizer::minimize_interruptible_deferred_from(ctx, &start, options, None, |block| {
-        point[free.clone()].copy_from_slice(block);
-        let probe = objective(&point)?;
-        let free = free.clone();
-        let length = point.len();
-        Ok(probe.map_gradient(move |gradient| {
-            if gradient.len() == length {
-                gradient[free].to_vec()
-            } else {
-                gradient
-            }
-        }))
-    })?;
+    let mut outcome =
+        optimizer::minimize_interruptible_deferred_from(ctx, &start, options, None, |block| {
+            point[free.clone()].copy_from_slice(block);
+            let probe = objective(&point)?;
+            let free = free.clone();
+            let length = point.len();
+            Ok(probe.map_gradient(move |gradient| {
+                if gradient.len() == length {
+                    gradient[free].to_vec()
+                } else {
+                    gradient
+                }
+            }))
+        })?;
     let mut parameters = full.to_vec();
     parameters[free].copy_from_slice(&outcome.parameters);
     outcome.parameters = parameters;
@@ -1354,7 +1887,9 @@ fn sweep<'p>(
     mut objective: impl FnMut(&[f64]) -> Result<optimizer::Probe<'p>>,
 ) -> Result<optimizer::Outcome> {
     if initial.len() <= 1 {
-        return optimizer::minimize_interruptible_deferred_from(ctx, initial, options, None, objective);
+        return optimizer::minimize_interruptible_deferred_from(
+            ctx, initial, options, None, objective,
+        );
     }
     let mut parameters = initial.to_vec();
     let (mut history, mut steps, mut success) = (Vec::new(), 0, true);
@@ -1442,6 +1977,17 @@ pub struct SolveOptions {
     /// that point as the uninterrupted run did, without relaxing the sequence first (a relaxation
     /// would move it by roundoff and could reorder operators of equal gradient). Needs `hessian`.
     pub continuation: bool,
+    /// Enable sparse-state energy expectation and sparse tangent-vector adjoint gradients on large
+    /// registers (`true`, new default): avoids `O(D)` allocations on rejected trials and reduces
+    /// gradient complexity from `O(L D)` to `O(L^2 nnz)` while staying bit-identical within roundoff.
+    pub sparse_kernels: bool,
+    /// Reuse converged `(energy, gradient, state, centered_hpsi)` across VQE diagnostics and
+    /// ADAPT-VQE pool screening, and evaluate ADAPT pruning with energy-only `probe` (`true`,
+    /// new default). Set `false` to re-run full evaluations from scratch.
+    pub reuse_evaluations: bool,
+    /// Carry BFGS/SLSQP curvature estimates across ADAPT-VQE growth steps (`true`, default).
+    /// Set `false` to restart each growth step from the identity curvature estimate.
+    pub carry_hessian: bool,
 }
 impl Default for SolveOptions {
     fn default() -> Self {
@@ -1458,6 +2004,9 @@ impl Default for SolveOptions {
             optimizer: optimizer::Options::default(),
             hessian: None,
             continuation: false,
+            sparse_kernels: true,
+            reuse_evaluations: true,
+            carry_hessian: true,
         }
     }
 }
@@ -1574,10 +2123,16 @@ mod hessian_tests {
     fn dropping_a_parameter_from_an_inverse_gives_the_inverse_of_the_reduced_hessian() {
         // B = [[4, 1, 0.5], [1, 3, -0.4], [0.5, -0.4, 2]]; its inverse, then the inverse of B
         // without parameter 1, from the Schur complement.
-        let b = nalgebra::DMatrix::from_row_slice(3, 3, &[4., 1., 0.5, 1., 3., -0.4, 0.5, -0.4, 2.]);
+        let b =
+            nalgebra::DMatrix::from_row_slice(3, 3, &[4., 1., 0.5, 1., 3., -0.4, 0.5, -0.4, 2.]);
         let inverse = b.clone().try_inverse().unwrap();
-        let row_major: Vec<f64> = (0..3).flat_map(|i| (0..3).map(move |j| (i, j))).map(|ij| inverse[ij]).collect();
-        let reduced = nalgebra::DMatrix::from_row_slice(2, 2, &[4., 0.5, 0.5, 2.]).try_inverse().unwrap();
+        let row_major: Vec<f64> = (0..3)
+            .flat_map(|i| (0..3).map(move |j| (i, j)))
+            .map(|ij| inverse[ij])
+            .collect();
+        let reduced = nalgebra::DMatrix::from_row_slice(2, 2, &[4., 0.5, 0.5, 2.])
+            .try_inverse()
+            .unwrap();
         let dropped = drop_parameter_of_inverse(&row_major, 3, 1);
         for (k, value) in dropped.iter().enumerate() {
             assert!((value - reduced[(k / 2, k % 2)]).abs() < 1e-12);

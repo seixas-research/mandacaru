@@ -65,15 +65,25 @@ pub(super) fn occupied(
         // Occupations are told apart to the density's own accuracy, not to the stationarity
         // limit: a frontier tail of 1e-7 (water's 3 mHa gap at the default width) is an
         // occupation of its own, the empty orbitals do not join it, and the full ones stay at 1.
-        let resolution = if float32 { limit } else { OCCUPATION_RESOLUTION };
+        let resolution = if float32 {
+            limit
+        } else {
+            OCCUPATION_RESOLUTION
+        };
         let occupations = &state.occupations[if restricted { 0 } else { spin }];
-        let mut levels: Vec<f64> =
-            occupations.iter().copied().filter(|&o| o > resolution).collect();
+        let mut levels: Vec<f64> = occupations
+            .iter()
+            .copied()
+            .filter(|&o| o > resolution)
+            .collect();
         levels.sort_by(f64::total_cmp);
         levels.dedup_by(|a, b| (*a - *b).abs() <= resolution);
         let mut groups: Vec<(f64, Vec<usize>)> = levels.iter().map(|&o| (o, vec![])).collect();
         for (j, &value) in values.iter().enumerate() {
-            match groups.iter_mut().find(|(o, _)| (value - o).abs() <= resolution) {
+            match groups
+                .iter_mut()
+                .find(|(o, _)| (value - o).abs() <= resolution)
+            {
                 Some((_, members)) => members.push(j),
                 None if value.abs() <= resolution => {}
                 None => {

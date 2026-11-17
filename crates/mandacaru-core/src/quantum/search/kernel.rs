@@ -95,6 +95,28 @@ pub struct Actions {
     pub items: Vec<(Action, f64)>,
     _memory: Reservation,
 }
+/// Bounded reversible Metropolis–Hastings proposal kernel over operator sequences $C \in \mathcal{P}^L$
+/// with $0 \le L \le L_{\max}$.
+///
+/// Proposal probability $q(C' \mid C)$ sums over all edit actions (`Insert`, `Delete`, `Replace`)
+/// that map `source` $C$ to `target` $C'$, preserving exact detailed balance when paired with
+/// [`log_acceptance`].
+///
+/// # Examples
+///
+/// ```
+/// use mandacaru_core::{
+///     quantum::search::kernel::{self, Kernel},
+///     Context,
+/// };
+///
+/// let ctx = Context::new(Some(1), 16 << 20).unwrap();
+/// let kernel = Kernel::new(3, 4, [1.0, 1.0, 1.0]).unwrap();
+/// let probs = kernel::softmax(&[1.0, 0.2, 0.1], 0.1).unwrap();
+/// let rem = kernel::removal(&[0.8, 0.2], 0.1).unwrap();
+/// let log_q = kernel.log_q(&ctx, &[0, 1, 2], &[0, 2], &probs, &rem).unwrap();
+/// assert!(log_q.is_finite());
+/// ```
 pub struct Kernel {
     pub pool: usize,
     pub max_length: usize,
@@ -121,7 +143,11 @@ impl Kernel {
     /// the weights of the kinds that are possible there (insertion needs room, deletion a
     /// nonempty sequence, replacement a nonempty sequence and a second operator).
     fn masses(&self, length: usize) -> [f64; 3] {
-        let valid = [length < self.max_length, length > 0, length > 0 && self.pool > 1];
+        let valid = [
+            length < self.max_length,
+            length > 0,
+            length > 0 && self.pool > 1,
+        ];
         let normalization = self
             .weights
             .iter()
@@ -143,7 +169,9 @@ impl Kernel {
             || removal.iter().any(|p| !p.is_finite() || *p <= 0.)
             || (length > 0 && (removal.iter().sum::<f64>() - 1.).abs() > 1e-9)
         {
-            return Err(invalid("removal weights must be positive, normalized and one per operator"));
+            return Err(invalid(
+                "removal weights must be positive, normalized and one per operator",
+            ));
         }
         Ok(())
     }
@@ -293,7 +321,11 @@ impl Kernel {
     ) -> Result<f64> {
         let length = source.len();
         self.check_sequence(source)?;
-        let missing = |what: &str| invalid(&format!("the {what} weights of the source state were not computed"));
+        let missing = |what: &str| {
+            invalid(&format!(
+                "the {what} weights of the source state were not computed"
+            ))
+        };
         let masses = self.masses(length);
         let mut terms = Vec::new();
         if target.len() == length + 1 {
@@ -301,7 +333,11 @@ impl Kernel {
             self.check_probabilities(probabilities)?;
             for position in 0..=length {
                 if let Some(&operator) = target.get(position) {
-                    let action = Action { kind: Move::Insert, position, operator };
+                    let action = Action {
+                        kind: Move::Insert,
+                        position,
+                        operator,
+                    };
                     if masses[0] > 0. && operator < self.pool && action.matches(source, target) {
                         terms.push(masses[0] * probabilities[operator] / (length + 1) as f64);
                     }
@@ -311,7 +347,11 @@ impl Kernel {
             let removal = removal.ok_or_else(|| missing("removal"))?;
             self.check_removal(length, removal)?;
             for position in 0..length {
-                let action = Action { kind: Move::Delete, position, operator: 0 };
+                let action = Action {
+                    kind: Move::Delete,
+                    position,
+                    operator: 0,
+                };
                 if masses[1] > 0. && action.matches(source, target) {
                     terms.push(masses[1] * removal[position]);
                 }
@@ -323,8 +363,16 @@ impl Kernel {
             self.check_probabilities(probabilities)?;
             for (position, &current) in source.iter().enumerate() {
                 let operator = target[position];
-                let action = Action { kind: Move::Replace, position, operator };
-                if masses[2] > 0. && operator != current && operator < self.pool && action.matches(source, target) {
+                let action = Action {
+                    kind: Move::Replace,
+                    position,
+                    operator,
+                };
+                if masses[2] > 0.
+                    && operator != current
+                    && operator < self.pool
+                    && action.matches(source, target)
+                {
                     let remaining = probabilities
                         .iter()
                         .enumerate()
@@ -338,12 +386,15 @@ impl Kernel {
         Ok(terms.iter().sum::<f64>().ln())
     }
 }
-/// The position weights of a deletion or a replacement: `exp(-(|g_i| / max|g|) / T)` over the
-/// operators' importances `g` (uniform when every importance is zero), so the least important
-/// operator is the most likely to go.
+/// The position weights of a deletion or a replacement:
+/// $w_i \propto \exp\!\big(-(|g_i| / \max_j |g_j|) / \tau\big)$ over the operators' importances
+/// $g_i$ (uniform when every importance is zero), so the least important operator is the most
+/// likely to be removed or replaced.
 pub fn removal(importances: &[f64], temperature: f64) -> Result<Vec<f64>> {
     if !temperature.is_finite() || temperature <= 0. || importances.iter().any(|g| !g.is_finite()) {
-        return Err(invalid("removal weights need finite importances and a positive temperature"));
+        return Err(invalid(
+            "removal weights need finite importances and a positive temperature",
+        ));
     }
     if importances.is_empty() {
         return Ok(vec![]);
@@ -352,9 +403,14 @@ pub fn removal(importances: &[f64], temperature: f64) -> Result<Vec<f64>> {
     if scale == 0. {
         return Ok(vec![1. / importances.len() as f64; importances.len()]);
     }
-    let mut weights: Vec<_> = importances.iter().map(|g| (-(g.abs() / scale) / temperature).exp()).collect();
+    let mut weights: Vec<_> = importances
+        .iter()
+        .map(|g| (-(g.abs() / scale) / temperature).exp())
+        .collect();
     if weights.contains(&0.) {
-        return Err(invalid("proposal temperature loses representable reverse support"));
+        return Err(invalid(
+            "proposal temperature loses representable reverse support",
+        ));
     }
     let total = weights.iter().sum::<f64>();
     for w in &mut weights {
@@ -362,6 +418,9 @@ pub fn removal(importances: &[f64], temperature: f64) -> Result<Vec<f64>> {
     }
     Ok(weights)
 }
+/// Operator insertion proposal distribution:
+/// $p_\mu \propto \exp\!\big((|g_\mu| / \max_\nu |g_\nu| - 1) / \tau\big)$ (uniform when every
+/// pool gradient is zero).
 pub fn softmax(gradients: &[f64], temperature: f64) -> Result<Vec<f64>> {
     if !temperature.is_finite() || temperature <= 0. || gradients.iter().any(|g| !g.is_finite()) {
         return Err(invalid(
@@ -390,6 +449,10 @@ pub fn softmax(gradients: &[f64], temperature: f64) -> Result<Vec<f64>> {
     }
     Ok(weights)
 }
+/// Log Metropolis–Hastings acceptance ratio:
+/// $\ln \alpha(C \to C') = -(F(C') - F(C)) / T + \ln q(C \mid C') - \ln q(C' \mid C)$.
+/// Returns $-\infty$ when `proposed` is non-finite or `reverse` has zero support, and handles
+/// the zero-temperature greedy limit ($T = 0$).
 pub fn log_acceptance(
     temperature: f64,
     current: f64,

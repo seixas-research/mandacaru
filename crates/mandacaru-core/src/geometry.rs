@@ -106,7 +106,9 @@ fn modulo_one(x: f64) -> f64 {
 /// all three the unit cell, one the unit vector orthogonal to the other two (right-handed with
 /// them). Two missing vectors have no unique completion and are refused.
 pub fn complete_cell(cell: &Rows) -> Result<Rows> {
-    let missing: Vec<usize> = (0..3).filter(|&i| cell[i].iter().all(|&v| v == 0.)).collect();
+    let missing: Vec<usize> = (0..3)
+        .filter(|&i| cell[i].iter().all(|&v| v == 0.))
+        .collect();
     let mut out = *cell;
     match missing.len() {
         0 => {}
@@ -178,9 +180,16 @@ pub struct Repeated {
 /// The supercell of `repeats` copies along the three cell vectors: the atoms of the primitive
 /// cell in order, then shifted by `m0 a0 + m1 a1 + m2 a2` with `m0` the slowest index and `m2` the
 /// fastest, and the cell vectors multiplied by the counts.
-pub fn repeat_cell(cell: &Rows, positions: &[[f64; 3]], numbers: &[u8], repeats: [usize; 3]) -> Result<Repeated> {
+pub fn repeat_cell(
+    cell: &Rows,
+    positions: &[[f64; 3]],
+    numbers: &[u8],
+    repeats: [usize; 3],
+) -> Result<Repeated> {
     if repeats.iter().any(|&m| m == 0) || positions.len() != numbers.len() {
-        return Err(Error::Invalid("a supercell needs positive repeats and one number per atom".into()));
+        return Err(Error::Invalid(
+            "a supercell needs positive repeats and one number per atom".into(),
+        ));
     }
     for row in cell.iter().chain(positions) {
         finite(row, "supercell geometry")?;
@@ -201,7 +210,8 @@ pub fn repeat_cell(cell: &Rows, positions: &[[f64; 3]], numbers: &[u8], repeats:
                 });
                 for (i, p) in positions.iter().enumerate() {
                     out.numbers.push(numbers[i]);
-                    out.positions.push([p[0] + shift[0], p[1] + shift[1], p[2] + shift[2]]);
+                    out.positions
+                        .push([p[0] + shift[0], p[1] + shift[1], p[2] + shift[2]]);
                     out.source.push(i);
                 }
             }
@@ -218,14 +228,23 @@ pub fn repeat_cell(cell: &Rows, positions: &[[f64; 3]], numbers: &[u8], repeats:
 /// The vectors from each atom to every atom (periodic images included, not itself) closer than
 /// `cutoff`: for atom `i`, `r_j + S . cell - r_i` of every neighbor `j` and lattice shift `S`
 /// (nonzero only along periodic axes) with a length below `cutoff`, ordered by `j` then by `S`.
-pub fn neighbor_vectors(cell: &Rows, pbc: [bool; 3], positions: &[[f64; 3]], cutoff: f64) -> Result<Vec<Vec<[f64; 3]>>> {
+pub fn neighbor_vectors(
+    cell: &Rows,
+    pbc: [bool; 3],
+    positions: &[[f64; 3]],
+    cutoff: f64,
+) -> Result<Vec<Vec<[f64; 3]>>> {
     if !cutoff.is_finite() || cutoff <= 0. {
-        return Err(Error::Invalid("the neighbor cutoff must be positive and finite".into()));
+        return Err(Error::Invalid(
+            "the neighbor cutoff must be positive and finite".into(),
+        ));
     }
     let fractional = fractional_coordinates(cell, positions, pbc, false)?;
     let full = matrix(&complete_cell(cell)?);
     // The interplanar spacing along each axis bounds how many cells reach `cutoff`.
-    let inverse = full.try_inverse().ok_or_else(|| Error::Invalid("the cell is singular".into()))?;
+    let inverse = full
+        .try_inverse()
+        .ok_or_else(|| Error::Invalid("the cell is singular".into()))?;
     let reach: [f64; 3] = std::array::from_fn(|a| cutoff * inverse.column(a).norm());
     let mut out = Vec::with_capacity(positions.len());
     for i in 0..positions.len() {
@@ -234,7 +253,10 @@ pub fn neighbor_vectors(cell: &Rows, pbc: [bool; 3], positions: &[[f64; 3]], cut
             let delta: [f64; 3] = std::array::from_fn(|a| fractional[j][a] - fractional[i][a]);
             let range: [(i64, i64); 3] = std::array::from_fn(|a| {
                 if pbc[a] {
-                    ((-delta[a] - reach[a]).floor() as i64, (-delta[a] + reach[a]).ceil() as i64)
+                    (
+                        (-delta[a] - reach[a]).floor() as i64,
+                        (-delta[a] + reach[a]).ceil() as i64,
+                    )
                 } else {
                     (0, 0)
                 }

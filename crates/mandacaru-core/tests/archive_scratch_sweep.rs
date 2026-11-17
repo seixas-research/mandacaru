@@ -22,7 +22,10 @@ fn only_the_folders_of_dead_processes_are_swept() {
     };
     let stale = folder(format!("mandacaru-scratch-{dead}-0"));
     let own = folder(format!("mandacaru-scratch-{live}-7"));
-    let parent = folder(format!("mandacaru-scratch-{}-1", std::os::unix::process::parent_id()));
+    let parent = folder(format!(
+        "mandacaru-scratch-{}-1",
+        std::os::unix::process::parent_id()
+    ));
     let near_misses = [
         folder(format!("mandacaru-scratch-{dead}-")),
         folder(format!("mandacaru-scratch-{dead}-1x")),

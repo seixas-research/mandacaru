@@ -2,7 +2,7 @@
 //! the Rust setup for it, with the spin-orbit union projectors of the dataset.
 //!
 //! * `Spinor::load("si_ldafr")`: the snapshot the Python setup exported for the `lda-fr` Si cell
-//!   (`freeze_periodic_gradients.py`, whole 2x2x2 mesh, every point time-reversal invariant, so
+//!   (`periodic_freeze_snapshot.rs`, whole 2x2x2 mesh, every point time-reversal invariant, so
 //!   nothing is halved and the moment symmetrization is the identity), with the Richardson
 //!   oracle of the same discretized spinor free energy;
 //! * `Spinor::zero_soc_twin(case)`: a scalar frozen case rewritten as a time-reversal spinor

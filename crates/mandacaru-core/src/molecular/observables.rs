@@ -285,3 +285,88 @@ pub fn sample(
         electrons,
     })
 }
+
+/// A real field of a matrix over the raw atomic basis ([`sample_pairs`]).
+pub struct PairField {
+    pub values: Buffer<f64>,
+    /// `int f dV` and `int f^2 dV` of the sampled (smooth) field.
+    pub integral: f64,
+    pub norm: f64,
+    /// `int r f dV` of the sampled field about the coordinates' origin (Bohr).
+    pub moment: [f64; 3],
+    /// On PAW-LCAO, the one-center charge and dipole (about the origin) of the pair density that
+    /// the smooth field leaves out; zero on an all-electron basis.
+    pub augmentation_charge: f64,
+    pub augmentation_dipole: [f64; 3],
+}
+
+/// The field `f(r) = sum_ab chi_a(r) t_ab chi_b(r)` of the symmetric matrix `t` over the raw
+/// atomic basis `chi` (a transition density matrix, `excitations::Excitations`) on the isolated
+/// `grid`, with its integral, norm and first moments, and the PAW one-center charge and dipole
+/// (`multipoles::one_center_positions`) that the smooth field omits: the sum of the two is the
+/// all-electron pair density's.
+pub fn sample_pairs(
+    integrals: &MolecularIntegrals,
+    grid: &SpatialGrid,
+    t: &DMatrix<f64>,
+) -> Result<PairField> {
+    if grid.periodic {
+        return Err(invalid("molecular fields need an isolated grid"));
+    }
+    let m = integrals.m();
+    if t.shape() != (m, m) {
+        return Err(invalid("the pair matrix must span the atomic basis"));
+    }
+    let ctx: &Context = &integrals.context;
+    let g = grid.index.points();
+    let _work = ctx.reserve(product(&[m, 8, 2])?)?;
+    let mut values = ctx.allocate::<f64>(g)?;
+    let mut raw = vec![0.; m];
+    let mut moment = [0.; 3];
+    for k in 0..g {
+        let point = grid.point(k);
+        integrals.basis.evaluate_at(0, point, &mut raw);
+        let value: f64 = (0..m)
+            .map(|a| raw[a] * (0..m).map(|b| t[(a, b)] * raw[b]).sum::<f64>())
+            .sum();
+        if !value.is_finite() {
+            return Err(invalid("nonfinite molecular field"));
+        }
+        for (sum, x) in moment.iter_mut().zip(point) {
+            *sum += x * value;
+        }
+        values.as_mut_slice()[k] = value;
+    }
+    let dv = grid.index.dv();
+    let integral = values.as_slice().iter().sum::<f64>() * dv;
+    let norm = values.as_slice().iter().map(|v| v * v).sum::<f64>() * dv;
+    let moment = moment.map(|x| x * dv);
+    let trace = |a: &DMatrix<f64>| t.component_mul(a).sum();
+    let augmentation_charge = integrals
+        .corrections
+        .as_ref()
+        .map_or(0., |c| trace(&c.overlap));
+    let augmentation_dipole = match super::multipoles::one_center_positions(integrals, [0.; 3])? {
+        Some(blocks) => blocks.map(|b| trace(&b)),
+        None => [0.; 3],
+    };
+    crate::finite(
+        &[
+            integral,
+            norm,
+            moment[0],
+            moment[1],
+            moment[2],
+            augmentation_charge,
+        ],
+        "field integrals",
+    )?;
+    Ok(PairField {
+        values,
+        integral,
+        norm,
+        moment,
+        augmentation_charge,
+        augmentation_dipole,
+    })
+}

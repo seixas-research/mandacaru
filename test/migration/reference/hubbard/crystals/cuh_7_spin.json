@@ -1,364 +1,370 @@
 {
- "schema_version": 1,
- "representation": "periodic-paw-snapshot",
- "energy_unit": "Ha",
- "length_unit": "bohr",
- "grid": {
-  "shape": [
-   23,
-   23,
-   23
-  ],
-  "origin": [
-   -8.881784197001252e-16,
-   -8.881784197001252e-16,
-   -8.881784197001252e-16
-  ],
-  "step": [
-   0.5751340379295822,
-   0.0,
-   0.0,
-   0.0,
-   0.5751340379295822,
-   0.0,
-   0.0,
-   0.0,
-   0.5751340379295822
-  ]
- },
- "m": 11,
- "p": 26,
- "channels": 34,
- "channel_labels": [
-  [
-   0,
-   0,
-   0
-  ],
-  [
-   0,
-   1,
-   -1
-  ],
-  [
-   0,
-   1,
-   0
-  ],
-  [
-   0,
-   1,
-   1
-  ],
-  [
-   0,
-   2,
-   -2
-  ],
-  [
-   0,
-   2,
-   -1
-  ],
-  [
-   0,
-   2,
-   0
-  ],
-  [
-   0,
-   2,
-   1
-  ],
-  [
-   0,
-   2,
-   2
-  ],
-  [
-   0,
-   3,
-   -3
-  ],
-  [
-   0,
-   3,
-   -2
-  ],
-  [
-   0,
-   3,
-   -1
-  ],
-  [
-   0,
-   3,
-   0
-  ],
-  [
-   0,
-   3,
-   1
-  ],
-  [
-   0,
-   3,
-   2
-  ],
-  [
-   0,
-   3,
-   3
-  ],
-  [
-   0,
-   4,
-   -4
-  ],
-  [
-   0,
-   4,
-   -3
-  ],
-  [
-   0,
-   4,
-   -2
-  ],
-  [
-   0,
-   4,
-   -1
-  ],
-  [
-   0,
-   4,
-   0
-  ],
-  [
-   0,
-   4,
-   1
-  ],
-  [
-   0,
-   4,
-   2
-  ],
-  [
-   0,
-   4,
-   3
-  ],
-  [
-   0,
-   4,
-   4
-  ],
-  [
-   1,
-   0,
-   0
-  ],
-  [
-   1,
-   1,
-   -1
-  ],
-  [
-   1,
-   1,
-   0
-  ],
-  [
-   1,
-   1,
-   1
-  ],
-  [
-   1,
-   2,
-   -2
-  ],
-  [
-   1,
-   2,
-   -1
-  ],
-  [
-   1,
-   2,
-   0
-  ],
-  [
-   1,
-   2,
-   1
-  ],
-  [
-   1,
-   2,
-   2
-  ]
- ],
- "kpoints": [
-  {
-   "k": [
-    0.0,
-    0.0,
-    0.0
-   ],
-   "fractional": [
-    0.0,
-    0.0,
-    0.0
-   ],
-   "weight": 1.0,
-   "psi": "k0.psi",
-   "overlap": "k0.overlap",
-   "fixed": "k0.fixed",
-   "projections": "k0.projections"
-  }
- ],
- "blocks": "blocks",
- "core": "core",
- "initial": "initial",
- "initial_m": "initial_m",
- "initial_q": "initial_q",
- "kernel": "kernel",
- "xc_wave": "xc_wave",
- "phase": "phase",
- "kerker": "kerker",
- "ion": "ion",
- "hats": "hats",
- "u": "u",
- "uion": "uion",
- "linear": "linear",
- "eion": 91.5512720210984,
- "ion_constant": -126.71945833900895,
- "constant": -36.36868178985855,
- "reference": 0.03519762470333463,
- "electrons": 20.0,
- "spins": 2,
- "spinor": false,
- "time_reversal": false,
- "functional": "lda",
- "precision": "float64",
- "relativistic": true,
- "permutations": "permutations",
- "permutation_count": 0,
- "qsym": "qsym",
- "provenance": {
-  "mesh_size": [
-   1,
-   1,
-   1
-  ],
-  "mesh_gamma": true,
-  "family": "paw-lcao",
-  "dataset_sources": [
-   {
-    "symbol": "Cu",
-    "sha256": "5e6ff660a6b5fb1fd995285aaf2505af3dffaab27b3289a3332e1407d121f606",
-    "file": "Cu.parquet"
-   },
-   {
-    "symbol": "H",
-    "sha256": "298f409b108a2a1d120e4b918d3966a7b72de75942c1a0e7c88987ebfe22692f",
-    "file": "H.parquet"
-   }
-  ],
-  "geometry": {
-   "numbers": [
-    29,
-    1
-   ],
-   "positions_angstrom": [
+  "blocks": "blocks",
+  "channel_labels": [
     [
-     3.4999999999999996,
-     3.4999999999999996,
-     2.7699999999999996
+      0,
+      0,
+      0
     ],
     [
-     3.4999999999999996,
-     3.4999999999999996,
-     4.23
+      0,
+      1,
+      -1
+    ],
+    [
+      0,
+      1,
+      0
+    ],
+    [
+      0,
+      1,
+      1
+    ],
+    [
+      0,
+      2,
+      -2
+    ],
+    [
+      0,
+      2,
+      -1
+    ],
+    [
+      0,
+      2,
+      0
+    ],
+    [
+      0,
+      2,
+      1
+    ],
+    [
+      0,
+      2,
+      2
+    ],
+    [
+      0,
+      3,
+      -3
+    ],
+    [
+      0,
+      3,
+      -2
+    ],
+    [
+      0,
+      3,
+      -1
+    ],
+    [
+      0,
+      3,
+      0
+    ],
+    [
+      0,
+      3,
+      1
+    ],
+    [
+      0,
+      3,
+      2
+    ],
+    [
+      0,
+      3,
+      3
+    ],
+    [
+      0,
+      4,
+      -4
+    ],
+    [
+      0,
+      4,
+      -3
+    ],
+    [
+      0,
+      4,
+      -2
+    ],
+    [
+      0,
+      4,
+      -1
+    ],
+    [
+      0,
+      4,
+      0
+    ],
+    [
+      0,
+      4,
+      1
+    ],
+    [
+      0,
+      4,
+      2
+    ],
+    [
+      0,
+      4,
+      3
+    ],
+    [
+      0,
+      4,
+      4
+    ],
+    [
+      1,
+      0,
+      0
+    ],
+    [
+      1,
+      1,
+      -1
+    ],
+    [
+      1,
+      1,
+      0
+    ],
+    [
+      1,
+      1,
+      1
+    ],
+    [
+      1,
+      2,
+      -2
+    ],
+    [
+      1,
+      2,
+      -1
+    ],
+    [
+      1,
+      2,
+      0
+    ],
+    [
+      1,
+      2,
+      1
+    ],
+    [
+      1,
+      2,
+      2
     ]
-   ],
-   "cell_angstrom": [
-    [
-     6.999999999999999,
-     0.0,
-     0.0
+  ],
+  "channels": 34,
+  "constant": -39.01194693988885,
+  "core": "core",
+  "eion": 91.55127202109821,
+  "electrons": 20.0,
+  "energy_unit": "Ha",
+  "fixture": {
+    "case": "cuh_7_spin",
+    "generator": "crates/mandacaru-core/tests/periodic_freeze_hubbard.rs",
+    "h_angstrom": 0.3,
+    "initial_moments": [
+      1.0,
+      0.0
     ],
-    [
-     0.0,
-     6.999999999999999,
-     0.0
+    "note": "U = 0 in the file; the tests set U. Energies are Hartree, lengths Bohr.",
+    "size": "SZ",
+    "spin": true,
+    "symbols": [
+      "Cu",
+      "H"
     ],
-    [
-     0.0,
-     0.0,
-     6.999999999999999
-    ]
-   ],
-   "pbc": [
-    true,
-    true,
-    true
-   ]
+    "symmetry": false,
+    "width_ev": 0.01
   },
-  "setup_engine": "python-paw-adapter"
- },
- "hubbard": {
-  "form": "dudarev-fll",
-  "shells": [
-   {
-    "atom": 0,
-    "symbol": "Cu",
-    "l": 2,
-    "u": 0.0,
-    "j": 0.0,
-    "projectors": [
-     8,
-     9,
-     10,
-     11,
-     12,
-     13,
-     14,
-     15,
-     16,
-     17
+  "functional": "lda",
+  "grid": {
+    "origin": [
+      0.0,
+      0.0,
+      0.0
     ],
-    "weights": [
-     -0.7748235036998625,
-     0.42888122567425374
+    "shape": [
+      23,
+      23,
+      23
     ],
-    "projector_basis": "raw",
-    "seed": {
-     "n_electrons": 9.0,
-     "moment": 1.0
+    "step": [
+      0.5751340379295822,
+      0.0,
+      0.0,
+      0.0,
+      0.5751340379295822,
+      0.0,
+      0.0,
+      0.0,
+      0.5751340379295822
+    ]
+  },
+  "hats": "hats",
+  "hubbard": {
+    "form": "dudarev-fll",
+    "shells": [
+      {
+        "atom": 0,
+        "j": 0.0,
+        "l": 2,
+        "projector_basis": "raw",
+        "projectors": [
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17
+        ],
+        "seed": {
+          "moment": 1.0,
+          "n_electrons": 9.0
+        },
+        "symbol": "Cu",
+        "u": 0.0,
+        "weights": [
+          -0.7748225878184952,
+          0.42888112310896226
+        ]
+      }
+    ]
+  },
+  "initial": "initial",
+  "initial_m": "initial_m",
+  "initial_q": "initial_q",
+  "ion": "ion",
+  "ion_constant": -126.71945833900895,
+  "kerker": "kerker",
+  "kernel": "kernel",
+  "kpoints": [
+    {
+      "fixed": "k0.fixed",
+      "fractional": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "k": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "overlap": "k0.overlap",
+      "projections": "k0.projections",
+      "psi": "k0.psi",
+      "weight": 1.0
     }
-   }
-  ]
- },
- "fixture": {
-  "generator": "test/migration/export_hubbard_crystal.py",
-  "case": "cuh_7_spin",
-  "width_ev": 0.01,
-  "symmetry": false,
-  "spin": true,
-  "h_angstrom": 0.3,
-  "size": "SZ",
-  "symbols": [
-   "Cu",
-   "H"
   ],
-  "initial_moments": [
-   1.0,
-   0.0
-  ],
-  "note": "U = 0 in the file; the tests set U. Energies are Hartree, lengths Bohr."
- }
+  "length_unit": "bohr",
+  "linear": "linear",
+  "m": 11,
+  "p": 26,
+  "permutation_count": 0,
+  "permutations": "permutations",
+  "phase": "phase",
+  "precision": "float64",
+  "provenance": {
+    "date": "2026-11-16",
+    "family": "paw-lcao",
+    "generator": "crates/mandacaru-core/tests/periodic_freeze_hubbard.rs",
+    "geometry": {
+      "cell_angstrom": [
+        [
+          6.999999999999999,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          6.999999999999999,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          6.999999999999999
+        ]
+      ],
+      "numbers": [
+        29,
+        1
+      ],
+      "pbc": [
+        true,
+        true,
+        true
+      ],
+      "positions_angstrom": [
+        [
+          3.4999999999999996,
+          3.4999999999999996,
+          2.7699999999999996
+        ],
+        [
+          3.4999999999999996,
+          3.4999999999999996,
+          4.23
+        ]
+      ]
+    },
+    "library": [
+      {
+        "bytes": 1960446,
+        "content_sha256": "3b45c6e47851c83643c518236d59ecfd95b2f92a149c25efaef76ed1c2fd3ef5",
+        "file": "lda-sr/Cu.parquet",
+        "sha256": "a6633882cb63503821548bea9f4633d46f521dbb8f9ef4bf0fcb7e787e69cfa8",
+        "symbol": "Cu"
+      },
+      {
+        "bytes": 151562,
+        "content_sha256": "193f250d3412ffbd67520c939bc49cda4f0be40e73574a033e36f2a733f4adf1",
+        "file": "lda-sr/H.parquet",
+        "sha256": "730c4c02d4e037486da2fec5651469ed3206903e6a0da98df8138b11d9fd99a9",
+        "symbol": "H"
+      }
+    ],
+    "mesh_gamma": true,
+    "mesh_size": [
+      1,
+      1,
+      1
+    ],
+    "setup_engine": "rust-setup"
+  },
+  "qsym": "qsym",
+  "reference": 0.03519762470333464,
+  "relativistic": true,
+  "representation": "periodic-paw-snapshot",
+  "schema_version": 1,
+  "spinor": false,
+  "spins": 2,
+  "time_reversal": false,
+  "u": "u",
+  "uion": "uion",
+  "xc_wave": "xc_wave"
 }

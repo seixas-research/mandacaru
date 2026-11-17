@@ -31,7 +31,7 @@ fn shared_local_potential_keeps_one_accounted_spline() {
     let ctx = Context::new(Some(1), 64 << 20).unwrap();
     let r = [0.1, 0.2, 0.3, 0.4, 0.5];
     let v = [-2., -1.8, -1.5, -1.2, -1.];
-    let first = LocalPotential::new(&ctx, &r, &v, 1., 0.4).unwrap();
+    let first = LocalPotential::new(&ctx, &r, &v, 1., 0.4, vec![]).unwrap();
     let held = ctx.memory_used();
     assert!(held > 0);
     let second = first.clone();
@@ -124,6 +124,7 @@ fn potentials(ctx: &Context, shipped: &Shipped, n: usize) -> Vec<LocalPotential>
                 &shipped.v_local,
                 shipped.charge,
                 shipped.local_cutoff,
+                vec![],
             )
             .unwrap()
         })

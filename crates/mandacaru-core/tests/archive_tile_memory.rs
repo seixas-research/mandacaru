@@ -112,7 +112,8 @@ fn a_tile_read_from_disk_allocates_nothing_and_the_streamed_products_stay_in_the
     // more heap than the stack in memory.
     let mut costs = vec![];
     for source in [&resident, &archived] {
-        let (projector, _, _) = measure(|| ComplexProjector::streaming(&ctx, source, m, n).unwrap());
+        let (projector, _, _) =
+            measure(|| ComplexProjector::streaming(&ctx, source, m, n).unwrap());
         let mut projector = projector;
         let reserved = ctx.memory_used();
         let (_, growth, total) = measure(|| {
@@ -120,9 +121,16 @@ fn a_tile_read_from_disk_allocates_nothing_and_the_streamed_products_stay_in_the
                 std::hint::black_box(projector.project(&field).unwrap()[0]);
             }
         });
-        println!("project: archived={} growth={growth} total={total} reserved={reserved}", source.archived());
-        assert!(growth <= reserved, "the projection took {growth} of {reserved} reserved bytes");
-        let (density, dgrowth, _) = measure(|| hermitian_density_tiles(&ctx, source, &d, n).unwrap());
+        println!(
+            "project: archived={} growth={growth} total={total} reserved={reserved}",
+            source.archived()
+        );
+        assert!(
+            growth <= reserved,
+            "the projection took {growth} of {reserved} reserved bytes"
+        );
+        let (density, dgrowth, _) =
+            measure(|| hermitian_density_tiles(&ctx, source, &d, n).unwrap());
         let density_reserved = ctx.memory_peak();
         println!("density: archived={} growth={dgrowth}", source.archived());
         assert!(dgrowth <= density_reserved);
@@ -130,7 +138,9 @@ fn a_tile_read_from_disk_allocates_nothing_and_the_streamed_products_stay_in_the
         costs.push((growth, total, dgrowth));
     }
     assert!(
-        costs[1].0 <= costs[0].0 && costs[1].1 <= costs[0].1 && costs[1].2 <= costs[0].2 + m * TILE * 16,
+        costs[1].0 <= costs[0].0
+            && costs[1].1 <= costs[0].1
+            && costs[1].2 <= costs[0].2 + m * TILE * 16,
         "the stack on disk took more heap than the stack in memory: {costs:?}"
     );
     // What is held on disk is accounted as the descriptor-sized reservations only, and all of it

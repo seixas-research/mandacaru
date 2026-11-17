@@ -1,19 +1,19 @@
 //! Isolated PAW-LCAO integrals with exact valence one-center interactions.
 //! Dataset decoding and basis recipes are outside this numerical boundary.
 pub(super) mod data;
-mod response_terms;
 pub mod gradient;
 pub(super) mod hubbard;
 pub(super) mod onecenter;
+mod response_terms;
 mod screened;
-pub use screened::{Screened, SphereKernels, SpinTerms};
 use super::invalid;
+use crate::paw::pair_tables::{angular_rule, harmonic, potential, shape};
+use crate::paw::{local_split::radial_rule_panels, screened_atom::ScreenedAtom};
 use crate::{
     basis::{Basis, Orbital, Radial},
     math::{
         linalg::real_eigen,
         projection::PointAccumulator,
-        radial::gauss_legendre,
         spline::Cubic,
         storage::{Precision, Sample},
         SpatialGrid,
@@ -25,15 +25,17 @@ use crate::{
     product, Buffer, Context, Geometry, Result,
 };
 pub use data::Arrays;
-use crate::paw::screened_atom::ScreenedAtom;
 use data::{count, table, Species};
 use nalgebra::DMatrix;
-use crate::paw::pair_tables::{angular_rule, harmonic, potential, shape};
+pub use response_terms::{XcSphere, XcSpheres};
+pub use screened::{Screened, SphereKernels, SpinTerms};
 use std::{collections::BTreeMap, f64::consts::PI, sync::Arc};
 
 /// The quadrature rules `[radial, polar, azimuthal]` of the spheres around an atom, shared by
 /// the setup and its analytic gradient so that the gradient differentiates the rule in use.
 pub(crate) const PROJECTION: [usize; 3] = [64, 24, 48];
+/// The radial points are per panel: the sphere has a panel edge on every corner of the local
+/// potential ([`local_sphere`]).
 pub(crate) const LOCAL: [usize; 3] = [64, 32, 64];
 pub(crate) const ELECTROSTATIC: [usize; 3] = [50, 24, 48];
 pub(crate) const IONIC: [usize; 3] = [48, 24, 48];
@@ -48,34 +50,28 @@ fn long_range(charge: f64, sigma: f64, radius: f64) -> f64 {
         -charge * libm::erf(radius / (2f64.sqrt() * sigma)) / radius
     }
 }
-fn radial_rule(radius: f64, panel: f64, points: usize) -> Result<Vec<(f64, f64)>> {
-    let nodes = gauss_legendre(points)?;
-    let edges = if panel > 0. && panel < radius {
-        vec![0., panel, radius]
-    } else {
-        vec![0., radius]
-    };
-    Ok(edges
-        .windows(2)
-        .flat_map(|edge| {
-            nodes.iter().map(move |(x, w)| {
-                let h = 0.5 * (edge[1] - edge[0]);
-                let r = edge[0] + h * (x + 1.);
-                (r, h * w * r * r)
-            })
-        })
-        .collect())
-}
 fn sphere(
     radius: f64,
     panel: f64,
     radial: usize,
     polar: usize,
     azimuthal: usize,
+    visit: impl FnMut([f64; 3], f64, f64) -> Result<()>,
+) -> Result<()> {
+    sphere_panels(radius, &[panel], radial, polar, azimuthal, visit)
+}
+/// [`sphere`] with one radial panel per gap of `panels` ([`radial_rule_panels`]).
+fn sphere_panels(
+    radius: f64,
+    panels: &[f64],
+    radial: usize,
+    polar: usize,
+    azimuthal: usize,
     mut visit: impl FnMut([f64; 3], f64, f64) -> Result<()>,
 ) -> Result<()> {
     let angular = angular_rule(polar, azimuthal)?;
-    for (r, w) in radial_rule(radius, panel, radial)? {
+    let (radii, weights) = radial_rule_panels(radius, panels, radial)?;
+    for (r, w) in radii.into_iter().zip(weights) {
         for (u, v) in &angular {
             visit(u.map(|x| x * r), r, w * v)?;
         }
@@ -91,7 +87,10 @@ struct ProjectorSphere<'a> {
 
 /// The scalar PAW projectors of an atom as spheres: one per channel, of radius
 /// `max(channel radius, local radius)`, in channel order.
-fn scalar_spheres<'a>(species: &'a Species, terms: &onecenter::AtomTerms) -> Vec<ProjectorSphere<'a>> {
+fn scalar_spheres<'a>(
+    species: &'a Species,
+    terms: &onecenter::AtomTerms,
+) -> Vec<ProjectorSphere<'a>> {
     species
         .channels
         .iter()
@@ -143,7 +142,13 @@ fn projection(
     terms: &onecenter::AtomTerms,
     center: [f64; 3],
 ) -> Result<DMatrix<f64>> {
-    project_spheres(ctx, basis, &scalar_spheres(species, terms), terms.projectors.len(), center)
+    project_spheres(
+        ctx,
+        basis,
+        &scalar_spheres(species, terms),
+        terms.projectors.len(),
+        center,
+    )
 }
 
 /// `<chi_mu | p_b>` of every basis function and every projector of `spheres` about `center`
@@ -178,7 +183,14 @@ fn project_spheres(
             };
             let d = distance(center, orbital.center);
             if d <= max_radius + r_cut {
-                Some((i, if r_cut.is_finite() { r_cut * r_cut } else { f64::INFINITY }))
+                Some((
+                    i,
+                    if r_cut.is_finite() {
+                        r_cut * r_cut
+                    } else {
+                        f64::INFINITY
+                    },
+                ))
             } else {
                 None
             }
@@ -230,15 +242,23 @@ fn project_sphere_gradients(
                 }
                 _ => f64::INFINITY,
             };
-            (distance(center, orbital.center) <= max_radius + r_cut)
-                .then_some((i, if r_cut.is_finite() { r_cut * r_cut } else { f64::INFINITY }))
+            (distance(center, orbital.center) <= max_radius + r_cut).then_some((
+                i,
+                if r_cut.is_finite() {
+                    r_cut * r_cut
+                } else {
+                    f64::INFINITY
+                },
+            ))
         })
         .collect();
     projection_points(spheres, columns, |offset, target| {
         let point: [f64; 3] = std::array::from_fn(|i| center[i] + offset[i]);
         for &(i, support2) in &active {
             let orbital = &basis.orbitals[i];
-            let r2 = (0..3).map(|k| (point[k] - orbital.center[k]).powi(2)).sum::<f64>();
+            let r2 = (0..3)
+                .map(|k| (point[k] - orbital.center[k]).powi(2))
+                .sum::<f64>();
             if r2 > support2 {
                 continue;
             }
@@ -259,30 +279,50 @@ fn project_sphere_gradients(
 /// The spin-orbit projectors of one atom as spheres, with their labels in column order
 /// (`l` outer, then `m = -l..l`, then radial index): the layout `models::spin_orbit::channels`
 /// reads.
-fn spin_orbit_spheres(species: &Species, atom: usize) -> (Vec<ProjectorSphere<'_>>, Vec<crate::models::spin_orbit::Label>) {
+fn spin_orbit_spheres(
+    species: &Species,
+    atom: usize,
+) -> (
+    Vec<ProjectorSphere<'_>>,
+    Vec<crate::models::spin_orbit::Label>,
+) {
     let (mut spheres, mut labels) = (Vec::new(), Vec::new());
     for channel in &species.spin_orbit {
         let mut entries = Vec::new();
         for m in -(channel.l as i32)..=channel.l as i32 {
             for (index, radial) in channel.radials.iter().enumerate() {
                 entries.push((labels.len(), radial, channel.l, m));
-                labels.push(crate::models::spin_orbit::Label { atom, l: channel.l, m, index });
+                labels.push(crate::models::spin_orbit::Label {
+                    atom,
+                    l: channel.l,
+                    m,
+                    index,
+                });
             }
         }
-        spheres.push(ProjectorSphere { radius: channel.radius, entries });
+        spheres.push(ProjectorSphere {
+            radius: channel.radius,
+            entries,
+        });
     }
     (spheres, labels)
 }
 
-/// Radius of the sphere in which the short-range local potential of a species
-/// is integrated: the Gaussian-filtered compensation tail, the dataset's local
-/// radius or the radius past which its potential is its long-range tail.
-fn local_sphere_radius(species: &Species, sigma: f64) -> f64 {
+/// The sphere in which the short-range local potential of a species is integrated: its radius
+/// (the Gaussian-filtered compensation tail, the dataset's local radius or the radius past which
+/// its potential is its long-range tail) and the radii where its radial integrand has a corner
+/// whatever the width: the local radius, the start of the tail, the compensation radius, the
+/// projector radius of every channel and the radius of the partial core. A panel edge on each keeps the nodes from sliding across
+/// one as the width moves the outer radius (the energy would ripple in the grid spacing).
+fn local_sphere(species: &Species, sigma: f64) -> (f64, Vec<f64>) {
     let tail = (0..7701)
         .map(|k| 0.3 + 7.7 * k as f64 / 7700.)
         .rfind(|&r| (species.local(r) + species.charge / r).abs() > 1e-5)
         .map_or(0., |r| r + 0.01);
-    (6.5 * sigma).max(species.local_radius).max(tail)
+    let mut edges = vec![species.local_radius, tail, species.compensation_radius];
+    edges.extend(species.channels.iter().map(|channel| channel.radius));
+    edges.extend(species.nlcc_radius);
+    ((6.5 * sigma).max(species.local_radius).max(tail), edges)
 }
 struct GlobalMultipole {
     atom: usize,
@@ -341,7 +381,8 @@ impl Setup {
             let crate::basis::Radial::Tabulated(table) = &orbital.radial else {
                 return Err(invalid("a diffuse function is a tabulated radial shell"));
             };
-            let radial = crate::basis::pao::radial_norm(table.knots.as_slice(), table.values.as_slice());
+            let radial =
+                crate::basis::pao::radial_norm(table.knots.as_slice(), table.values.as_slice());
             let sampled: f64 = (0..points)
                 .map(|k| {
                     let v = orbital.evaluate(grid.point(k));
@@ -353,18 +394,29 @@ impl Setup {
         }
         let atoms: std::collections::BTreeSet<usize> = ratios.iter().map(|r| r.1).collect();
         let step = grid.step;
-        let rows_of_step: [[f64; 3]; 3] = std::array::from_fn(|i| std::array::from_fn(|j| step[(i, j)]));
+        let rows_of_step: [[f64; 3]; 3] =
+            std::array::from_fn(|i| std::array::from_fn(|j| step[(i, j)]));
         let mut rows = Vec::new();
         for atom in atoms {
-            let first = ratios.iter().find(|r| r.1 == atom).map(|r| r.0).unwrap_or(0);
+            let first = ratios
+                .iter()
+                .find(|r| r.1 == atom)
+                .map(|r| r.0)
+                .unwrap_or(0);
             let face = crate::basis::diffuse::face_distance(
                 grid.origin,
                 rows_of_step,
                 grid.index.shape(),
                 self.basis.orbitals[first].center,
             )?;
-            let smallest = ratios.iter().filter(|r| r.1 == atom).map(|r| r.2).fold(f64::INFINITY, f64::min);
-            let r_cut = cuts.get(atom).map_or(f64::NAN, |c| c.iter().copied().fold(f64::NAN, f64::max));
+            let smallest = ratios
+                .iter()
+                .filter(|r| r.1 == atom)
+                .map(|r| r.2)
+                .fold(f64::INFINITY, f64::min);
+            let r_cut = cuts
+                .get(atom)
+                .map_or(f64::NAN, |c| c.iter().copied().fold(f64::NAN, f64::max));
             rows.push((atom, r_cut, face, smallest));
         }
         let short = ratios.iter().filter(|r| r.2 < 1. - BOX_TOL).count();
@@ -373,7 +425,12 @@ impl Setup {
             .filter(|r| r.2 < 1. - BOX_TOL)
             .min_by(|a, b| a.2.total_cmp(&b.2))
             .copied();
-        Ok(DiffuseBox { ratios, rows, short, worst })
+        Ok(DiffuseBox {
+            ratios,
+            rows,
+            short,
+            worst,
+        })
     }
 }
 
@@ -394,20 +451,39 @@ impl Setup {
         use num_complex::Complex64 as C64;
         let (m, atoms) = (self.basis.orbitals.len(), self.atoms.len());
         if positions.len() != atoms || d_ao.shape() != (2 * m, 2 * m) {
-            return Err(invalid("one position per atom and a 2m x 2m AO-frame spinor density"));
+            return Err(invalid(
+                "one position per atom and a 2m x 2m AO-frame spinor density",
+            ));
         }
         let basis = self.basis_at(ctx, positions)?;
         let mut out = vec![[0.; 3]; atoms];
-        let (mut values, mut slopes, mut labels, mut owners, mut couplings) =
-            (Vec::new(), Vec::new(), Vec::new(), Vec::new(), BTreeMap::new());
+        let (mut values, mut slopes, mut labels, mut owners, mut couplings) = (
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            BTreeMap::new(),
+        );
         for (atom, &s) in self.atoms.iter().enumerate() {
             let species = &self.species[s];
             if species.spin_orbit.is_empty() {
                 continue;
             }
             let (spheres, own) = spin_orbit_spheres(species, atom);
-            values.push(project_spheres(ctx, &basis, &spheres, own.len(), positions[atom])?);
-            slopes.push(project_sphere_gradients(ctx, &basis, &spheres, own.len(), positions[atom])?);
+            values.push(project_spheres(
+                ctx,
+                &basis,
+                &spheres,
+                own.len(),
+                positions[atom],
+            )?);
+            slopes.push(project_sphere_gradients(
+                ctx,
+                &basis,
+                &spheres,
+                own.len(),
+                positions[atom],
+            )?);
             owners.extend(std::iter::repeat_n(atom, own.len()));
             labels.extend(own);
             for channel in &species.spin_orbit {
@@ -442,7 +518,8 @@ impl Setup {
                 let mut dc = vec![C64::new(0., 0.); m * count];
                 for mu in 0..m {
                     for p in 0..count {
-                        let sign = f64::from(u8::from(owners[p] == x)) - f64::from(u8::from(row_owner[mu] == x));
+                        let sign = f64::from(u8::from(owners[p] == x))
+                            - f64::from(u8::from(row_owner[mu] == x));
                         if sign != 0. {
                             dc[mu * count + p] = g[mu * count + p] * sign;
                         }
@@ -453,7 +530,13 @@ impl Setup {
                 }
                 let x_matrix = pair(
                     ctx,
-                    Projectors { left: &dc, right: &c, rows: m, columns: m, count },
+                    Projectors {
+                        left: &dc,
+                        right: &c,
+                        rows: m,
+                        columns: m,
+                        count,
+                    },
                     &found,
                     false,
                 )?;
@@ -502,7 +585,13 @@ impl Setup {
                 continue;
             }
             let (spheres, own) = spin_orbit_spheres(species, atom);
-            blocks.push(project_spheres(ctx, &basis, &spheres, own.len(), positions[atom])?);
+            blocks.push(project_spheres(
+                ctx,
+                &basis,
+                &spheres,
+                own.len(),
+                positions[atom],
+            )?);
             labels.extend(own);
             for channel in &species.spin_orbit {
                 couplings.insert((atom, channel.l), channel.coupling.clone());
@@ -517,7 +606,8 @@ impl Setup {
         for block in &blocks {
             for j in 0..block.ncols() {
                 for i in 0..m {
-                    c.as_mut_slice()[i * count + column + j] = num_complex::Complex64::new(block[(i, j)], 0.);
+                    c.as_mut_slice()[i * count + column + j] =
+                        num_complex::Complex64::new(block[(i, j)], 0.);
                 }
             }
             column += block.ncols();
@@ -525,7 +615,13 @@ impl Setup {
         let found = channels(ctx, &labels, &couplings, true)?;
         let h = pair(
             ctx,
-            Projectors { left: c.as_slice(), right: c.as_slice(), rows: m, columns: m, count },
+            Projectors {
+                left: c.as_slice(),
+                right: c.as_slice(),
+                rows: m,
+                columns: m,
+                count,
+            },
             &found,
             true,
         )?;
@@ -607,9 +703,14 @@ pub fn build(
     };
     // A molecule for spinor Kohn-Sham keeps its datasets' spin-orbit terms; every other one refuses
     // them (`Species::from_dataset`).
-    let allow_spin_orbit = metadata.get("spin_orbit").and_then(|v| v.as_bool()).unwrap_or(false);
+    let allow_spin_orbit = metadata
+        .get("spin_orbit")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let hubbard = match metadata.get("hubbard") {
-        Some(serde_json::Value::String(s)) => Some(crate::models::hubbard_request::Request::parse(s)?),
+        Some(serde_json::Value::String(s)) => {
+            Some(crate::models::hubbard_request::Request::parse(s)?)
+        }
         None | Some(serde_json::Value::Null) => None,
         Some(other) => {
             return Err(invalid(format!(
@@ -631,11 +732,18 @@ pub fn build(
                 let prefix = s["tables"]
                     .as_str()
                     .ok_or_else(|| invalid("a PAW record species needs its tables prefix"))?;
-                let names: Vec<String> =
-                    arrays.keys().filter(|k| k.starts_with(prefix)).cloned().collect();
+                let names: Vec<String> = arrays
+                    .keys()
+                    .filter(|k| k.starts_with(prefix))
+                    .cloned()
+                    .collect();
                 let columns = names
                     .into_iter()
-                    .filter_map(|k| arrays.remove(&k).map(|v| (k[prefix.len()..].to_string(), v)))
+                    .filter_map(|k| {
+                        arrays
+                            .remove(&k)
+                            .map(|v| (k[prefix.len()..].to_string(), v))
+                    })
                     .collect();
                 let ds = crate::paw::record::PawDataset::from_parts(ctx, text, columns)?;
                 Species::from_dataset(ctx, &ds, raw, allow_spin_orbit)
@@ -884,7 +992,7 @@ impl Setup {
             let mut phi = vec![0.; m];
             let mut weighted = vec![0.; m];
             let mut local = PointAccumulator::new(ctx, m, m)?;
-            let radius = local_sphere_radius(sp, sigma);
+            let (radius, edges) = local_sphere(sp, sigma);
             let active_orbitals: Vec<(usize, f64)> = basis
                 .orbitals
                 .iter()
@@ -898,34 +1006,48 @@ impl Setup {
                     };
                     let d = distance(pos, orbital.center);
                     if d <= radius + r_cut {
-                        Some((i, if r_cut.is_finite() { r_cut * r_cut } else { f64::INFINITY }))
+                        Some((
+                            i,
+                            if r_cut.is_finite() {
+                                r_cut * r_cut
+                            } else {
+                                f64::INFINITY
+                            },
+                        ))
                     } else {
                         None
                     }
                 })
                 .collect();
-            sphere(radius, sp.local_radius, LOCAL[0], LOCAL[1], LOCAL[2], |offset, r, weight| {
-                let g_r = sp.local(r) - long_range(sp.charge, sigma, r);
-                if g_r.abs() < 1e-15 {
-                    return Ok(());
-                }
-                let weight = weight * g_r;
-                let point = std::array::from_fn(|i| pos[i] + offset[i]);
-                phi.fill(0.);
-                for &(i, support2) in &active_orbitals {
-                    let orbital = &basis.orbitals[i];
-                    let r2 = (point[0] - orbital.center[0]).powi(2)
-                        + (point[1] - orbital.center[1]).powi(2)
-                        + (point[2] - orbital.center[2]).powi(2);
-                    if r2 <= support2 {
-                        phi[i] = orbital.evaluate(point);
+            sphere_panels(
+                radius,
+                &edges,
+                LOCAL[0],
+                LOCAL[1],
+                LOCAL[2],
+                |offset, r, weight| {
+                    let g_r = sp.local(r) - long_range(sp.charge, sigma, r);
+                    if g_r.abs() < 1e-15 {
+                        return Ok(());
                     }
-                }
-                for &(i, _) in &active_orbitals {
-                    weighted[i] = weight * phi[i];
-                }
-                local.push(&phi, &weighted)
-            })?;
+                    let weight = weight * g_r;
+                    let point = std::array::from_fn(|i| pos[i] + offset[i]);
+                    phi.fill(0.);
+                    for &(i, support2) in &active_orbitals {
+                        let orbital = &basis.orbitals[i];
+                        let r2 = (point[0] - orbital.center[0]).powi(2)
+                            + (point[1] - orbital.center[1]).powi(2)
+                            + (point[2] - orbital.center[2]).powi(2);
+                        if r2 <= support2 {
+                            phi[i] = orbital.evaluate(point);
+                        }
+                    }
+                    for &(i, _) in &active_orbitals {
+                        weighted[i] = weight * phi[i];
+                    }
+                    local.push(&phi, &weighted)
+                },
+            )?;
             local.finish()
         };
         let partials: Vec<Result<crate::Buffer<f64>>> = if atoms.len() <= 1 || ctx.width() <= 1 {
@@ -973,12 +1095,11 @@ impl Setup {
                 let field_slice = field.as_mut_slice();
                 if workers <= 1 {
                     for k in 0..g {
-                        let offset = std::array::from_fn(|i| {
-                            grid.point(k)[i] - ch_atom_pos[i]
-                        });
-                        field_slice[k] = potential(distance(offset, [0.; 3]), sp.compensation_radius, ch.l)
-                            * harmonic(ch.l, ch.m, offset)
-                            * dv;
+                        let offset = std::array::from_fn(|i| grid.point(k)[i] - ch_atom_pos[i]);
+                        field_slice[k] =
+                            potential(distance(offset, [0.; 3]), sp.compensation_radius, ch.l)
+                                * harmonic(ch.l, ch.m, offset)
+                                * dv;
                     }
                 } else {
                     let grid_ref = &grid;
@@ -992,8 +1113,11 @@ impl Setup {
                                         let offset = std::array::from_fn(|dim| {
                                             grid_ref.point(k)[dim] - ch_atom_pos[dim]
                                         });
-                                        *val = potential(distance(offset, [0.; 3]), sp.compensation_radius, ch.l)
-                                            * harmonic(ch.l, ch.m, offset)
+                                        *val = potential(
+                                            distance(offset, [0.; 3]),
+                                            sp.compensation_radius,
+                                            ch.l,
+                                        ) * harmonic(ch.l, ch.m, offset)
                                             * dv;
                                     }
                                 });
@@ -1009,8 +1133,9 @@ impl Setup {
                     for i in 0..m {
                         for j in 0..m {
                             for k in 0..g {
-                                ws[a][(i, j)] +=
-                                    field_slice[k] * stored[i * g + k].widen() * stored[j * g + k].widen();
+                                ws[a][(i, j)] += field_slice[k]
+                                    * stored[i * g + k].widen()
+                                    * stored[j * g + k].widen();
                             }
                         }
                     }
@@ -1035,7 +1160,8 @@ impl Setup {
                 |offset, r, weight| {
                     let point: [f64; 3] = std::array::from_fn(|i| pos[i] + offset[i]);
                     for (i, ci) in multipoles.iter().enumerate() {
-                        let delta = std::array::from_fn(|k| point[k] - geometry.positions()[ci.atom][k]);
+                        let delta =
+                            std::array::from_fn(|k| point[k] - geometry.positions()[ci.atom][k]);
                         potentials[i] = potential(
                             distance(delta, [0.; 3]),
                             species[atoms[ci.atom]].compensation_radius,
@@ -1076,14 +1202,18 @@ impl Setup {
             )?;
             Ok((electrostatic.finish()?, ionic))
         };
-        let partials: Vec<Result<(crate::Buffer<f64>, Vec<f64>)>> = if atoms.len() <= 1 || ctx.width() <= 1 {
+        let partials: Vec<Result<(crate::Buffer<f64>, Vec<f64>)>> = if atoms.len() <= 1
+            || ctx.width() <= 1
+        {
             (0..atoms.len()).map(&electrostatic_of).collect()
         } else {
             let electrostatic_of = &electrostatic_of;
             ctx.run(|| {
                 std::thread::scope(|scope| {
                     let handles: Vec<_> = (0..atoms.len())
-                        .map(|b| mandacaru_kernels::runtime::spawn(scope, move || electrostatic_of(b)))
+                        .map(|b| {
+                            mandacaru_kernels::runtime::spawn(scope, move || electrostatic_of(b))
+                        })
                         .collect();
                     handles.into_iter().map(|h| h.join().unwrap()).collect()
                 })
@@ -1135,7 +1265,9 @@ impl Setup {
         let hubbard = self
             .hubbard
             .as_ref()
-            .map(|request| hubbard::build(request, &species, &species_terms, &atoms, &geometry, &c, m))
+            .map(|request| {
+                hubbard::build(request, &species, &species_terms, &atoms, &geometry, &c, m)
+            })
             .transpose()?;
         let corrections = MolecularCorrections {
             dft: Some(PawKohnSham {
@@ -1149,11 +1281,23 @@ impl Setup {
                     let mut core = ctx.allocate::<f64>(g)?;
                     let shape = grid.index.shape();
                     let [_, ny, nz] = shape;
-                    let inv_step = grid.step.try_inverse().unwrap_or(nalgebra::Matrix3::identity());
+                    let inv_step = grid
+                        .step
+                        .try_inverse()
+                        .unwrap_or(nalgebra::Matrix3::identity());
                     let row_norms = [
-                        (inv_step[(0, 0)].powi(2) + inv_step[(0, 1)].powi(2) + inv_step[(0, 2)].powi(2)).sqrt(),
-                        (inv_step[(1, 0)].powi(2) + inv_step[(1, 1)].powi(2) + inv_step[(1, 2)].powi(2)).sqrt(),
-                        (inv_step[(2, 0)].powi(2) + inv_step[(2, 1)].powi(2) + inv_step[(2, 2)].powi(2)).sqrt(),
+                        (inv_step[(0, 0)].powi(2)
+                            + inv_step[(0, 1)].powi(2)
+                            + inv_step[(0, 2)].powi(2))
+                        .sqrt(),
+                        (inv_step[(1, 0)].powi(2)
+                            + inv_step[(1, 1)].powi(2)
+                            + inv_step[(1, 2)].powi(2))
+                        .sqrt(),
+                        (inv_step[(2, 0)].powi(2)
+                            + inv_step[(2, 1)].powi(2)
+                            + inv_step[(2, 2)].powi(2))
+                        .sqrt(),
                     ];
                     for (a, &s) in atoms.iter().enumerate() {
                         let radial = &species[s].xc_core;
@@ -1162,7 +1306,9 @@ impl Setup {
                             continue;
                         }
                         let center = geometry.positions()[a];
-                        let c_center = inv_step * (nalgebra::Vector3::from(center) - nalgebra::Vector3::from(grid.origin));
+                        let c_center = inv_step
+                            * (nalgebra::Vector3::from(center)
+                                - nalgebra::Vector3::from(grid.origin));
                         let mut min_idx = [0; 3];
                         let mut max_idx = [0; 3];
                         let mut inside = true;
@@ -1207,11 +1353,23 @@ impl Setup {
                     let mut tau = ctx.allocate::<f64>(g)?;
                     let shape = grid.index.shape();
                     let [_, ny, nz] = shape;
-                    let inv_step = grid.step.try_inverse().unwrap_or(nalgebra::Matrix3::identity());
+                    let inv_step = grid
+                        .step
+                        .try_inverse()
+                        .unwrap_or(nalgebra::Matrix3::identity());
                     let row_norms = [
-                        (inv_step[(0, 0)].powi(2) + inv_step[(0, 1)].powi(2) + inv_step[(0, 2)].powi(2)).sqrt(),
-                        (inv_step[(1, 0)].powi(2) + inv_step[(1, 1)].powi(2) + inv_step[(1, 2)].powi(2)).sqrt(),
-                        (inv_step[(2, 0)].powi(2) + inv_step[(2, 1)].powi(2) + inv_step[(2, 2)].powi(2)).sqrt(),
+                        (inv_step[(0, 0)].powi(2)
+                            + inv_step[(0, 1)].powi(2)
+                            + inv_step[(0, 2)].powi(2))
+                        .sqrt(),
+                        (inv_step[(1, 0)].powi(2)
+                            + inv_step[(1, 1)].powi(2)
+                            + inv_step[(1, 2)].powi(2))
+                        .sqrt(),
+                        (inv_step[(2, 0)].powi(2)
+                            + inv_step[(2, 1)].powi(2)
+                            + inv_step[(2, 2)].powi(2))
+                        .sqrt(),
                     ];
                     for (a, &s) in atoms.iter().enumerate() {
                         let radial = &species[s].xc_core_tau;
@@ -1220,7 +1378,9 @@ impl Setup {
                             continue;
                         }
                         let center = geometry.positions()[a];
-                        let c_center = inv_step * (nalgebra::Vector3::from(center) - nalgebra::Vector3::from(grid.origin));
+                        let c_center = inv_step
+                            * (nalgebra::Vector3::from(center)
+                                - nalgebra::Vector3::from(grid.origin));
                         let mut min_idx = [0; 3];
                         let mut max_idx = [0; 3];
                         let mut inside = true;

@@ -48,8 +48,7 @@ from .dataset import PseudoPotential
 
 #: Identifies a Mandacaru pseudopotential file.
 FORMAT_TAG = "mandacaru-pseudopotential"
-#: Schema version the Python view writes: version 3, with the core states (version 2 added the
-#: ``family`` field, which every readable file carries).
+#: The only schema version: 3, with the core states.
 FORMAT_VERSION = 3
 
 #: File formats understood by ``format=``.
