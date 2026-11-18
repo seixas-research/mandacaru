@@ -6,9 +6,7 @@
 use super::{error, paw_record, PyContext};
 use mandacaru_core::paw::{
     generate::{
-        build::{
-            build, build_at_library_stride, recalibrate, reionize, Error as BuildError, Format,
-        },
+        build::{build, build_at_library_stride, Error as BuildError, Format},
         recipe::{Cutoffs, Nlcc, Recipe},
         request::{resolve, Overrides},
         search::{search, Error as SearchError, Mode, Options, Searched},
@@ -307,102 +305,8 @@ fn paw_build<'py>(
 
 /// Derive the spin-orbit scale of the Dirac dataset file at `path` again from the engine's
 /// isolated atom and write the file back through the generator's release (`paw::generate::build::
-/// recalibrate`): `scales` (`l`, `factor`, `before`, `after`) and `gates`, as [`paw_build`] returns
-/// them; a refused file is returned as data (`kind` `"gate"` or `"reload"`) and left as it was.
-#[pyfunction]
-#[pyo3(signature = (context, path, *, stride = 1, check = false))]
-fn paw_recalibrate_spin_orbit<'py>(
-    context: PyRef<'_, PyContext>,
-    py: Python<'py>,
-    path: &str,
-    stride: usize,
-    check: bool,
-) -> PyResult<Bound<'py, PyDict>> {
-    let ctx = &context.inner;
-    let target = std::path::Path::new(path);
-    let done = py.detach(|| recalibrate(ctx, target, Format::Parquet, stride, check));
-    let out = PyDict::new(py);
-    match done {
-        Ok((released, scales)) => {
-            out.set_item("kind", "ok")?;
-            out.set_item("path", path)?;
-            let rows = pyo3::types::PyList::empty(py);
-            for s in &scales {
-                let row = PyDict::new(py);
-                row.set_item("l", s.l)?;
-                row.set_item("state", s.state)?;
-                row.set_item("factor", s.factor)?;
-                row.set_item("before", s.before)?;
-                row.set_item("after", s.after)?;
-                rows.append(row)?;
-            }
-            out.set_item("scales", rows)?;
-            out.set_item(
-                "gates",
-                crate::paw_validate::report_dict(py, &released.report)?,
-            )?;
-        }
-        Err(BuildError::Search(SearchError::Failed(failure)))
-        | Err(BuildError::Failed(failure)) => return Err(error(failure)),
-        Err(BuildError::Search(refusal)) => refusal_items(&out, &refusal)?,
-        Err(moved @ BuildError::Reload(_)) => {
-            out.set_item("kind", "reload")?;
-            out.set_item("refusal", moved.to_string())?;
-        }
-        Err(BuildError::Gates(report)) => {
-            out.set_item("kind", "gate")?;
-            out.set_item("refusal", report.refusal())?;
-            out.set_item("gates", crate::paw_validate::report_dict(py, &report)?)?;
-        }
-    }
-    Ok(out)
-}
-
-/// Make the ionic tail of the dataset file at `path` the bare Coulomb potential beyond the local
-/// radius and write the file back through the generator's release (`paw::generate::build::reionize`):
-/// `gates`, as [`paw_build`] returns them; a refused file is returned as data and left as it was.
-#[pyfunction]
-#[pyo3(signature = (context, path, *, stride = 1, check = false))]
-fn paw_reionize<'py>(
-    context: PyRef<'_, PyContext>,
-    py: Python<'py>,
-    path: &str,
-    stride: usize,
-    check: bool,
-) -> PyResult<Bound<'py, PyDict>> {
-    let ctx = &context.inner;
-    let target = std::path::Path::new(path);
-    let done = py.detach(|| reionize(ctx, target, Format::Parquet, stride, check));
-    let out = PyDict::new(py);
-    match done {
-        Ok(released) => {
-            out.set_item("kind", "ok")?;
-            out.set_item("path", path)?;
-            out.set_item(
-                "gates",
-                crate::paw_validate::report_dict(py, &released.report)?,
-            )?;
-        }
-        Err(BuildError::Search(SearchError::Failed(failure)))
-        | Err(BuildError::Failed(failure)) => return Err(error(failure)),
-        Err(BuildError::Search(refusal)) => refusal_items(&out, &refusal)?,
-        Err(moved @ BuildError::Reload(_)) => {
-            out.set_item("kind", "reload")?;
-            out.set_item("refusal", moved.to_string())?;
-        }
-        Err(BuildError::Gates(report)) => {
-            out.set_item("kind", "gate")?;
-            out.set_item("refusal", report.refusal())?;
-            out.set_item("gates", crate::paw_validate::report_dict(py, &report)?)?;
-        }
-    }
-    Ok(out)
-}
-
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(paw_generate, m)?)?;
-    m.add_function(wrap_pyfunction!(paw_reionize, m)?)?;
     m.add_function(wrap_pyfunction!(paw_build, m)?)?;
-    m.add_function(wrap_pyfunction!(paw_recalibrate_spin_orbit, m)?)?;
     Ok(())
 }

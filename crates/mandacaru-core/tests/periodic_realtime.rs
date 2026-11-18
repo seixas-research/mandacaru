@@ -1079,7 +1079,10 @@ fn a_hubbard_crystal_corrects_its_current_with_the_static_field_response() {
     let run = prepared.propagate(&sampler, &request).unwrap();
     let mut hartree = request.clone();
     hartree.kernel = Kernel::Hartree;
-    let refused = propagate(&sampler, &hartree).unwrap_err().to_string();
+    let hartree_run = propagate(&sampler, &hartree).unwrap();
+    let mut moved = Request::new([1., 0., 0.], 1e-3, 0.2, 20);
+    moved.formulation = Formulation::Moved;
+    let moved_run = propagate(&sampler, &moved).unwrap();
     // The same fixture without U: the static route against its own band sum.
     cell.hubbard = None;
     let plain = solve(&cell);
@@ -1107,11 +1110,12 @@ fn a_hubbard_crystal_corrects_its_current_with_the_static_field_response() {
     assert!(shell > 4., "the Zn 3d shell is occupied: {shell}");
     assert!((prepared.ground_energy - solved.state.energy).abs() < 1e-7);
     assert!(run.self_consistent && run.energy_drift < 1e-2);
+    assert!(hartree_run.self_consistent && hartree_run.energy_drift < 1e-2);
+    assert!(moved_run.energy_drift < 1e-2);
     // Off the inversion center U shifts the static response (vera: +2.1e-4), and without U the
     // static route is the band sum to the A^2 order of the symmetric pair.
     assert!(run.diamagnetic - run.band_sum > 1e-5);
     assert!((plain_static - plain_band).abs() < 1e-5);
-    assert!(refused.contains("hartree"), "{refused}");
 }
 
 #[test]

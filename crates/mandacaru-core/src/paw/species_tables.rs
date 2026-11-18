@@ -10,13 +10,15 @@
 //! (the one-center exchange is valence only, its smooth side carrying the grid's smooth core). The smooth wave inside the channel
 //! radius is the dataset's Bessel expansion, outside it the all-electron wave.
 use super::{
+    core_exchange::{FrozenCore, StoredShell},
     invalid,
     onecenter::Basis,
     pair_tables::{ChannelView, SpeciesView},
     record::PawDataset,
 };
-use crate::{kernels, product, Context, Result};
+use crate::{kernels, math::radial::integrate, product, Context, Result};
 use nalgebra::DMatrix;
+use std::f64::consts::PI;
 
 /// One channel: waves in the projector basis, `refs x grid` each.
 struct ChannelTables {
@@ -30,8 +32,10 @@ struct ChannelTables {
 /// The tables of one species, owned. [`SpeciesTables::view`] borrows them.
 pub struct SpeciesTables {
     knots: Vec<f64>,
+    core_density: Option<Vec<f64>>,
     /// The smooth core of the nonlinear core correction on `knots` (zeros without one).
     smooth_core: Vec<f64>,
+    frozen_core: Option<FrozenCore>,
     compensation_radius: f64,
     channels: Vec<ChannelTables>,
 }
@@ -140,9 +144,47 @@ impl SpeciesTables {
         } else {
             vec![0.; n]
         };
+        let core_slice = dataset.core_density.as_slice();
+        if core_slice.len() != n {
+            return Err(invalid("the core density does not match the radial grid"));
+        }
+        let core_charge = integrate(
+            r,
+            &r.iter()
+                .zip(core_slice)
+                .map(|(rk, nc)| 4. * PI * rk * rk * nc)
+                .collect::<Vec<_>>(),
+        )?;
+        let (core_density, frozen_core) = if core_charge > 1e-6 {
+            let stored: Vec<StoredShell<'_>> = dataset
+                .core_states
+                .as_deref()
+                .ok_or_else(|| {
+                    invalid(format!(
+                        "{}: the dataset carries no core states for screened core-valence exchange",
+                        dataset.symbol
+                    ))
+                })?
+                .iter()
+                .map(|s| StoredShell {
+                    n: s.n,
+                    l: s.l,
+                    occupation: s.occupation,
+                    orbital: s.orbital.as_slice(),
+                })
+                .collect();
+            let electrons = dataset.atomic_number as f64 - dataset.valence_charge;
+            let core = FrozenCore::from_states(&dataset.symbol, r, core_slice, electrons, &stored)
+                .map_err(invalid)?;
+            (Some(core_slice.to_vec()), Some(core))
+        } else {
+            (None, None)
+        };
         Ok(Self {
             knots: r.to_vec(),
+            core_density,
             smooth_core,
+            frozen_core,
             compensation_radius: dataset.compensation_radius,
             channels,
         })
@@ -152,7 +194,9 @@ impl SpeciesTables {
     pub fn view(&self) -> SpeciesView<'_> {
         SpeciesView {
             knots: &self.knots,
+            core_density: self.core_density.as_deref(),
             smooth_core: &self.smooth_core,
+            frozen_core: self.frozen_core.as_ref(),
             compensation_radius: self.compensation_radius,
             channels: self
                 .channels

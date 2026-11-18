@@ -27,6 +27,25 @@ pub struct Analysis {
     _memory: Reservation,
 }
 
+fn validate_gamma(gamma: &[C64], n: usize) -> Result<()> {
+    if n == 0 || gamma.len() != product(&[n, n])? {
+        return Err(invalid(
+            "active one-particle RDM has inconsistent dimensions",
+        ));
+    }
+    if gamma.iter().any(|v| !v.re.is_finite() || !v.im.is_finite()) {
+        return Err(invalid("one-particle RDM must be finite"));
+    }
+    for p in 0..n {
+        for q in 0..n {
+            if (gamma[p * n + q] - gamma[q * n + p].conj()).norm() > 1e-9 {
+                return Err(invalid("one-particle RDM must be Hermitian"));
+            }
+        }
+    }
+    Ok(())
+}
+
 pub fn analyze(
     integrals: &MolecularIntegrals,
     reference: &MeanField,
@@ -44,69 +63,64 @@ pub fn analyze(
         &reference.densities[0] + &reference.densities[1]
     };
     let density = if let Some(input) = active {
-        if reference.method == "ghf" {
-            return Err(invalid(
-                "spatial active densities cannot be applied to GHF spinors",
-            ));
-        }
         let a = input.active.len();
-        let n = a.checked_mul(2).ok_or(crate::Error::Overflow)?;
-        if a == 0 || input.gamma.len() != product(&[n, n])? {
-            return Err(invalid(
-                "active one-particle RDM has inconsistent dimensions",
-            ));
-        }
-        let mut seen = vec![false; m];
-        for &index in input.active.iter().chain(input.frozen) {
-            if index >= m || seen[index] {
+        if reference.method == "ghf" {
+            let n = 2 * m;
+            if a != n {
                 return Err(invalid(
-                    "active and frozen orbitals must be disjoint valid indices",
+                    "spinor one-particle RDM must span all 2m GHF spin orbitals",
                 ));
             }
-            seen[index] = true;
-        }
-        if input
-            .gamma
-            .iter()
-            .any(|v| !v.re.is_finite() || !v.im.is_finite())
-        {
-            return Err(invalid("one-particle RDM must be finite"));
-        }
-        for p in 0..n {
-            for q in 0..n {
-                if (input.gamma[p * n + q] - input.gamma[q * n + p].conj()).norm() > 1e-9 {
-                    return Err(invalid("one-particle RDM must be Hermitian"));
+            validate_gamma(input.gamma, n)?;
+            let mut mo = Matrix::zeros(n, n);
+            for (p, &i) in input.active.iter().enumerate() {
+                for (q, &j) in input.active.iter().enumerate() {
+                    mo[(i, j)] = input.gamma[q * n + p];
                 }
             }
-        }
-        let mut mo = Matrix::zeros(m, m);
-        for &i in input.frozen {
-            mo[(i, i)] = C64::new(2., 0.);
-        }
-        for (p, &i) in input.active.iter().enumerate() {
-            for (q, &j) in input.active.iter().enumerate() {
-                // The orbital density D_pq is <a_q^dagger a_p>.
-                mo[(i, j)] = input.gamma[q * n + p] + input.gamma[(a + q) * n + a + p];
-            }
-        }
-        let mo = if let Some(rotation) = input.rotation {
-            if rotation.shape() != (m, m)
-                || rotation
-                    .iter()
-                    .any(|c| !c.re.is_finite() || !c.im.is_finite())
-                || (rotation.adjoint() * rotation - Matrix::identity(m, m))
-                    .iter()
-                    .any(|c| c.norm() > 1e-8)
-            {
-                return Err(invalid(
-                    "orbital rotation must be a finite unitary matrix matching the source orbitals",
-                ));
-            }
-            rotation * mo * rotation.adjoint()
+            let spinor = &reference.model_orbitals * mo * reference.model_orbitals.adjoint();
+            Matrix::from_fn(m, m, |u, v| spinor[(u, v)] + spinor[(m + u, m + v)])
         } else {
-            mo
-        };
-        &reference.model_orbitals * mo * reference.model_orbitals.adjoint()
+            let n = a.checked_mul(2).ok_or(crate::Error::Overflow)?;
+            validate_gamma(input.gamma, n)?;
+            let mut seen = vec![false; m];
+            for &index in input.active.iter().chain(input.frozen) {
+                if index >= m || seen[index] {
+                    return Err(invalid(
+                        "active and frozen orbitals must be disjoint valid indices",
+                    ));
+                }
+                seen[index] = true;
+            }
+            let mut mo = Matrix::zeros(m, m);
+            for &i in input.frozen {
+                mo[(i, i)] = C64::new(2., 0.);
+            }
+            for (p, &i) in input.active.iter().enumerate() {
+                for (q, &j) in input.active.iter().enumerate() {
+                    // The orbital density D_pq is <a_q^dagger a_p>.
+                    mo[(i, j)] = input.gamma[q * n + p] + input.gamma[(a + q) * n + a + p];
+                }
+            }
+            let mo = if let Some(rotation) = input.rotation {
+                if rotation.shape() != (m, m)
+                    || rotation
+                        .iter()
+                        .any(|c| !c.re.is_finite() || !c.im.is_finite())
+                    || (rotation.adjoint() * rotation - Matrix::identity(m, m))
+                        .iter()
+                        .any(|c| c.norm() > 1e-8)
+                {
+                    return Err(invalid(
+                        "orbital rotation must be a finite unitary matrix matching the source orbitals",
+                    ));
+                }
+                rotation * mo * rotation.adjoint()
+            } else {
+                mo
+            };
+            &reference.model_orbitals * mo * reference.model_orbitals.adjoint()
+        }
     } else {
         reference_density.clone()
     };
@@ -369,4 +383,150 @@ pub fn sample_pairs(
         augmentation_charge,
         augmentation_dipole,
     })
+}
+
+/// Evaluate the real-space electron density on `grid` (isolated or periodic supercell).
+fn sample_density_for_charges(
+    integrals: &MolecularIntegrals,
+    state: &Analysis,
+    grid: &SpatialGrid,
+    native_grid: bool,
+) -> Result<Buffer<f64>> {
+    let ctx: &Context = &integrals.context;
+    let m = integrals.m();
+    let g = grid.index.points();
+    let _work = ctx.reserve(product(&[m, 24])?)?;
+    let mut values = ctx.allocate::<f64>(g)?;
+    let d_re = state.density.map(|z| z.re);
+    let mut phi = vec![0.; m];
+    if native_grid {
+        for k in 0..g {
+            for (p, slot) in phi.iter_mut().enumerate() {
+                *slot = integrals.orthonormal_samples.value(p * g + k);
+            }
+            let val: f64 = (0..m)
+                .map(|p| phi[p] * (0..m).map(|q| d_re[(p, q)] * phi[q]).sum::<f64>())
+                .sum();
+            values.as_mut_slice()[k] = val;
+        }
+        return Ok(values);
+    }
+    let mut raw = vec![0.; m];
+    let shifts: Vec<[f64; 3]> = if grid.periodic {
+        let shape = grid.index.shape();
+        let a = grid.step.column(0) * shape[0] as f64;
+        let b = grid.step.column(1) * shape[1] as f64;
+        let c = grid.step.column(2) * shape[2] as f64;
+        (-2..=2)
+            .flat_map(|i| (-2..=2).flat_map(move |j| (-2..=2).map(move |k| (i, j, k))))
+            .map(|(i, j, k)| (a * i as f64 + b * j as f64 + c * k as f64).into())
+            .collect()
+    } else {
+        vec![[0., 0., 0.]]
+    };
+    let mut acc = vec![0.; m];
+    for k in 0..g {
+        let point = grid.point(k);
+        raw.fill(0.);
+        for &shift in &shifts {
+            let shifted = [
+                point[0] + shift[0],
+                point[1] + shift[1],
+                point[2] + shift[2],
+            ];
+            integrals.basis.evaluate_at(0, shifted, &mut acc);
+            for (dst, &src) in raw.iter_mut().zip(&acc) {
+                *dst += src;
+            }
+        }
+        for (p, value) in phi.iter_mut().enumerate() {
+            *value = (0..m).map(|a| integrals.lowdin[(a, p)] * raw[a]).sum();
+        }
+        let val: f64 = (0..m)
+            .map(|p| phi[p] * (0..m).map(|q| d_re[(p, q)] * phi[q]).sum::<f64>())
+            .sum();
+        values.as_mut_slice()[k] = val;
+    }
+    Ok(values)
+}
+
+/// Partition electron density into atomic partial charges (`"bader"`, `"hirshfeld"`, or `"voronoi"`)
+/// for molecular or supercell DFT, Hartree-Fock, GHF, and variational quantum states.
+pub fn partial_charges(
+    integrals: &MolecularIntegrals,
+    reference: &MeanField,
+    active: Option<ActiveDensity<'_>>,
+    method: &str,
+    grid: Option<&SpatialGrid>,
+    interpolate: bool,
+) -> Result<crate::math::partial_charges::PartialCharges> {
+    let native_grid = grid.is_none();
+    let grid = grid.unwrap_or(&integrals.grid);
+    let analysis = analyze(integrals, reference, active)?;
+    let density = sample_density_for_charges(integrals, &analysis, grid, native_grid)?;
+    let positions = integrals.geometry.positions();
+    let numbers = integrals.geometry.numbers();
+    let n_atoms = positions.len();
+    let valence_charges: Vec<f64> = if let Some(corr) = &integrals.corrections {
+        corr.charges.clone()
+    } else {
+        numbers.iter().map(|&z| f64::from(z)).collect()
+    };
+    let d_re = analysis.density.map(|z| z.re);
+    let augmentation = if let (Some(setup), Some(projections)) = (
+        &integrals.paw_setup,
+        integrals
+            .corrections
+            .as_ref()
+            .and_then(|c| c.projections.as_deref()),
+    ) {
+        let d_raw = &integrals.lowdin * &d_re * &integrals.lowdin.transpose();
+        setup.atom_augmentation_charges(projections, &d_raw)
+    } else {
+        vec![0.; n_atoms]
+    };
+    let proatomic = if method.eq_ignore_ascii_case("hirshfeld") {
+        let r_grid: Vec<f64> = (0..=800).map(|i| 0.015 * i as f64).collect();
+        let mut radials = Vec::with_capacity(n_atoms);
+        for (atom, (&z, &qv)) in numbers.iter().zip(&valence_charges).enumerate() {
+            let mut seen_l: Vec<Vec<f64>> = Vec::new();
+            let mut shell_ls: Vec<usize> = Vec::new();
+            let mut last_key: Option<(usize, i32)> = None;
+            for orb in &integrals.basis.orbitals {
+                if orb.atom != atom {
+                    continue;
+                }
+                if last_key.is_none_or(|(pl, pm)| orb.l != pl || orb.m <= pm) {
+                    let vals: Vec<f64> = r_grid.iter().map(|&r| orb.radial_value(r)).collect();
+                    seen_l.push(vals);
+                    shell_ls.push(orb.l);
+                }
+                last_key = Some((orb.l, orb.m));
+            }
+            let shell_refs: Vec<(usize, &[f64], &[f64])> = shell_ls
+                .iter()
+                .zip(&seen_l)
+                .map(|(&l, vals)| (l, r_grid.as_slice(), vals.as_slice()))
+                .collect();
+            radials.push(crate::models::configuration::proatomic_radial_from_shells(
+                z,
+                qv,
+                &shell_refs,
+            ));
+        }
+        Some(radials)
+    } else {
+        None
+    };
+    crate::math::partial_charges::compute_partial_charges(
+        &integrals.context,
+        method,
+        grid,
+        density.as_slice(),
+        positions,
+        &valence_charges,
+        &augmentation,
+        proatomic.as_deref(),
+        interpolate,
+    )
 }

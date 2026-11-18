@@ -16,7 +16,6 @@ const TAIL_FLOOR: f64 = 1e-12;
 #[derive(Debug)]
 pub struct LocalPotential {
     spline: Cubic,
-    first: f64,
     last: f64,
     charge: f64,
 }
@@ -39,13 +38,12 @@ impl LocalPotential {
     /// ionic charge is `charge`: the callable a record builds, for a caller that holds the
     /// table without the record.
     pub fn from_table(ctx: &Context, r: &[f64], v: &[f64], charge: f64) -> Result<Self> {
-        let (first, last) = match (r.first(), r.last()) {
-            (Some(&a), Some(&b)) => (a, b),
+        let last = match r.last() {
+            Some(&b) => b,
             _ => return Err(crate::paw::invalid("the local potential needs a table")),
         };
         Ok(Self {
             spline: Cubic::new(ctx, ctx.copy_slice(r)?, ctx.copy_slice(v)?)?,
-            first,
             last,
             charge,
         })
@@ -54,20 +52,16 @@ impl LocalPotential {
     /// `v_local` at `radius` (Bohr).
     pub fn value(&self, radius: f64) -> f64 {
         if radius <= self.last {
-            self.spline.value_slope(radius.max(self.first)).0
+            self.spline.value_slope_regular(radius, 0).0
         } else {
             -self.charge / radius.max(TAIL_FLOOR)
         }
     }
 
-    /// `d v_local / dr` at `radius`: zero below the first point.
+    /// `d v_local / dr` at `radius`, with smooth $a + b r^2$ continuation below the first knot.
     pub fn slope(&self, radius: f64) -> f64 {
         if radius <= self.last {
-            if radius < self.first {
-                0.0
-            } else {
-                self.spline.value_slope(radius).1
-            }
+            self.spline.value_slope_regular(radius, 0).1
         } else {
             self.charge / radius.max(TAIL_FLOOR).powi(2)
         }

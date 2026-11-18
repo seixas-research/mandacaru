@@ -278,8 +278,8 @@ fn limits_to_dudarev() {
         {
             let u = 5.0;
             let j = 0.0;
-            let h_dud = Hubbard::with_form(u, j, Form::DudarevFll).unwrap();
-            let h_lie = Hubbard::with_form(u, j, Form::LiechtensteinFll).unwrap();
+            let h_dud = Hubbard::with_form(u, j, Form::Dudarev).unwrap();
+            let h_lie = Hubbard::with_form(u, j, Form::Liechtenstein).unwrap();
 
             let ev_up: Vec<f64> = (0..p).map(|k| 0.1 + 0.8 * k as f64 / p as f64).collect();
             let ev_dn: Vec<f64> = (0..p).map(|k| 0.9 - 0.7 * k as f64 / p as f64).collect();
@@ -313,8 +313,8 @@ fn limits_to_dudarev() {
         {
             let u = 6.0;
             let j = 1.2;
-            let h_dud = Hubbard::with_form(u, j, Form::DudarevFll).unwrap();
-            let h_lie = Hubbard::with_form(u, j, Form::LiechtensteinFll).unwrap();
+            let h_dud = Hubbard::with_form(u, j, Form::Dudarev).unwrap();
+            let h_lie = Hubbard::with_form(u, j, Form::Liechtenstein).unwrap();
 
             let x_up = 0.65;
             let x_dn = 0.35;
@@ -352,8 +352,8 @@ fn limits_to_dudarev() {
         {
             let u = 6.0;
             let j = 1.0;
-            let h_dud = Hubbard::with_form(u, j, Form::DudarevFll).unwrap();
-            let h_lie = Hubbard::with_form(u, j, Form::LiechtensteinFll).unwrap();
+            let h_dud = Hubbard::with_form(u, j, Form::Dudarev).unwrap();
+            let h_lie = Hubbard::with_form(u, j, Form::Liechtenstein).unwrap();
 
             let ev_up: Vec<f64> = (0..p).map(|k| 0.2 + 0.6 * k as f64 / p as f64).collect();
             let ev_dn: Vec<f64> = (0..p).map(|k| 0.8 - 0.5 * k as f64 / p as f64).collect();
@@ -377,7 +377,7 @@ fn potential_is_hermitian_and_derivative_of_energy() {
         let p = 2 * l + 1;
         let u = 5.5;
         let j = 0.9;
-        let h = Hubbard::with_form(u, j, Form::LiechtensteinFll).unwrap();
+        let h = Hubbard::with_form(u, j, Form::Liechtenstein).unwrap();
 
         let ev_up: Vec<f64> = (0..p).map(|k| 0.85 - 0.7 * k as f64 / p as f64).collect();
         let ev_dn: Vec<f64> = (0..p).map(|k| 0.15 + 0.6 * k as f64 / p as f64).collect();
@@ -488,7 +488,7 @@ fn so3_rotational_invariance() {
         let p = 2 * l + 1;
         let u = 6.0;
         let j = 1.0;
-        let h = Hubbard::with_form(u, j, Form::LiechtensteinFll).unwrap();
+        let h = Hubbard::with_form(u, j, Form::Liechtenstein).unwrap();
 
         let ev_up: Vec<f64> = (0..p).map(|k| 0.8 - 0.6 * k as f64 / p as f64).collect();
         let ev_dn: Vec<f64> = (0..p).map(|k| 0.2 + 0.5 * k as f64 / p as f64).collect();
@@ -560,7 +560,7 @@ fn restricted_equals_unrestricted_with_identical_channels() {
         let p = 2 * l + 1;
         let u = 5.0;
         let j = 0.8;
-        let h = Hubbard::with_form(u, j, Form::LiechtensteinFll).unwrap();
+        let h = Hubbard::with_form(u, j, Form::Liechtenstein).unwrap();
 
         let ev: Vec<f64> = (0..p).map(|k| 0.7 - 0.5 * k as f64 / p as f64).collect();
         let n_mat = hermitian(p, &ev, &mut rng);
@@ -622,7 +622,7 @@ fn hellmann_feynman_derivatives_in_u_and_j() {
         let p = 2 * l + 1;
         let u = 5.0;
         let j = 0.8;
-        let h = Hubbard::with_form(u, j, Form::LiechtensteinFll).unwrap();
+        let h = Hubbard::with_form(u, j, Form::Liechtenstein).unwrap();
 
         let ev_up: Vec<f64> = (0..p).map(|k| 0.85 - 0.6 * k as f64 / p as f64).collect();
         let ev_dn: Vec<f64> = (0..p).map(|k| 0.15 + 0.5 * k as f64 / p as f64).collect();
@@ -633,8 +633,8 @@ fn hellmann_feynman_derivatives_in_u_and_j() {
 
         // 1. dE/dU derivative check by finite difference
         let du = 1e-5;
-        let h_u_plus = Hubbard::with_form(u + du, j, Form::LiechtensteinFll).unwrap();
-        let h_u_minus = Hubbard::with_form(u - du, j, Form::LiechtensteinFll).unwrap();
+        let h_u_plus = Hubbard::with_form(u + du, j, Form::Liechtenstein).unwrap();
+        let h_u_minus = Hubbard::with_form(u - du, j, Form::Liechtenstein).unwrap();
         let e_u_plus = evaluate(&ctx, &h_u_plus, l, Spin::Unrestricted, &[&n_up, &n_dn])
             .unwrap()
             .energy;
@@ -650,8 +650,8 @@ fn hellmann_feynman_derivatives_in_u_and_j() {
 
         // 2. dE/dJ derivative check by finite difference
         let dj = 1e-5;
-        let h_j_plus = Hubbard::with_form(u, j + dj, Form::LiechtensteinFll).unwrap();
-        let h_j_minus = Hubbard::with_form(u, j - dj, Form::LiechtensteinFll).unwrap();
+        let h_j_plus = Hubbard::with_form(u, j + dj, Form::Liechtenstein).unwrap();
+        let h_j_minus = Hubbard::with_form(u, j - dj, Form::Liechtenstein).unwrap();
         let e_j_plus = evaluate(&ctx, &h_j_plus, l, Spin::Unrestricted, &[&n_up, &n_dn])
             .unwrap()
             .energy;
@@ -676,7 +676,7 @@ fn inert_and_active_behavior() {
     let n = flat(&hermitian(p, &ev, &mut rng));
 
     // U = 0, J = 0 is inert
-    let inert_h = Hubbard::with_form(0.0, 0.0, Form::LiechtensteinFll).unwrap();
+    let inert_h = Hubbard::with_form(0.0, 0.0, Form::Liechtenstein).unwrap();
     assert!(inert_h.is_inert());
     let eval_inert = evaluate(&ctx, &inert_h, 2, Spin::Restricted, &[&n]).unwrap();
     assert_eq!(eval_inert.energy, 0.0);
@@ -688,7 +688,7 @@ fn inert_and_active_behavior() {
         .all(|x| *x == C64::default()));
 
     // U = J != 0 is active for Liechtenstein (nonzero F2, F4)
-    let active_h = Hubbard::with_form(4.0, 4.0, Form::LiechtensteinFll).unwrap();
+    let active_h = Hubbard::with_form(4.0, 4.0, Form::Liechtenstein).unwrap();
     assert!(!active_h.is_inert());
     let eval_active = evaluate(&ctx, &active_h, 2, Spin::Restricted, &[&n]).unwrap();
     assert!(eval_active.energy.abs() > 1e-4);
@@ -707,7 +707,7 @@ fn refusals() {
     let n = flat(&hermitian(p, &ev, &mut rng));
 
     // l not 2 or 3 raises
-    let h = Hubbard::with_form(4.0, 1.0, Form::LiechtensteinFll).unwrap();
+    let h = Hubbard::with_form(4.0, 1.0, Form::Liechtenstein).unwrap();
     assert!(matches!(
         evaluate(&ctx, &h, 1, Spin::Restricted, &[&vec![C64::default(); 9]]),
         Err(Error::Invalid(m)) if m.contains("d or f shell")
@@ -715,19 +715,19 @@ fn refusals() {
 
     // Bad parameters
     assert!(matches!(
-        Hubbard::with_form(-1.0, 0.0, Form::LiechtensteinFll),
+        Hubbard::with_form(-1.0, 0.0, Form::Liechtenstein),
         Err(Error::Invalid(_))
     ));
     assert!(matches!(
-        Hubbard::with_form(1.0, -0.5, Form::LiechtensteinFll),
+        Hubbard::with_form(1.0, -0.5, Form::Liechtenstein),
         Err(Error::Invalid(_))
     ));
     assert!(matches!(
-        Hubbard::with_form(1.0, 2.0, Form::LiechtensteinFll),
+        Hubbard::with_form(1.0, 2.0, Form::Liechtenstein),
         Err(Error::Invalid(_))
     ));
     assert!(matches!(
-        Hubbard::with_form(f64::NAN, 0.0, Form::LiechtensteinFll),
+        Hubbard::with_form(f64::NAN, 0.0, Form::Liechtenstein),
         Err(Error::Invalid(_))
     ));
 
@@ -761,7 +761,7 @@ fn bit_identical_repeat_calls() {
     let n_up = flat(&hermitian(p, &ev_up, &mut rng));
     let n_dn = flat(&hermitian(p, &ev_dn, &mut rng));
 
-    let h = Hubbard::with_form(5.5, 1.2, Form::LiechtensteinFll).unwrap();
+    let h = Hubbard::with_form(5.5, 1.2, Form::Liechtenstein).unwrap();
 
     let a = evaluate(&ctx, &h, 2, Spin::Unrestricted, &[&n_up, &n_dn]).unwrap();
     let b = evaluate(&ctx, &h, 2, Spin::Unrestricted, &[&n_up, &n_dn]).unwrap();

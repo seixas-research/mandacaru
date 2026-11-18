@@ -136,12 +136,17 @@ fn paper_energy(coupling: &Coupling, u: f64, j: f64, ns: &[DMatrix<f64>]) -> f64
 
 fn shell_of(form: Form, l: usize, u: f64, j: f64) -> (MolecularHubbard, MolecularHubbardShell) {
     let p = 2 * l + 1;
+    let ratios = Ratios::default_for(l).unwrap_or(Ratios {
+        f4_f2: 0.625,
+        f6_f2: None,
+    });
     let shell = MolecularHubbardShell {
         atom: 0,
         symbol: "Cu".into(),
         l,
         u,
         j,
+        ratios,
         weights: vec![1.],
         q_ao: DMatrix::zeros(1, p),
         q: DMatrix::zeros(1, p),
@@ -165,7 +170,7 @@ fn the_liechtenstein_energy_of_real_harmonic_occupations_is_the_real_basis_energ
         let p = 2 * l + 1;
         let real = Coupling::new(&ctx, l, Basis::Real).unwrap();
         for (u, j) in [(0.7, 0.0), (0.7, 0.1), (0.4, 0.4)] {
-            let (hubbard, shell) = shell_of(Form::LiechtensteinFll, l, u, j);
+            let (hubbard, shell) = shell_of(Form::Liechtenstein, l, u, j);
             for channels in [1usize, 2] {
                 let ns: Vec<DMatrix<f64>> = (0..channels)
                     .map(|c| random_symmetric(&spectrum(p, 0.9 - 0.1 * c as f64), 7 + c as u64))
@@ -278,7 +283,7 @@ fn the_liechtenstein_shell_is_invariant_under_a_rotation_of_the_molecule() {
         let p = 2 * l + 1;
         let d = harmonic_rotation(l, &r);
         assert!((&d * d.transpose() - DMatrix::<f64>::identity(p, p)).amax() < 1e-12);
-        let (hubbard, shell) = shell_of(Form::LiechtensteinFll, l, 0.7, 0.1);
+        let (hubbard, shell) = shell_of(Form::Liechtenstein, l, 0.7, 0.1);
         let ns: Vec<DMatrix<f64>> = (0..2)
             .map(|c| random_symmetric(&spectrum(p, 0.9 - 0.1 * c as f64), 17 + c as u64))
             .collect();
@@ -303,7 +308,7 @@ fn the_dudarev_shell_is_evaluated_on_the_matrices_as_they_are() {
     let ctx = Context::new(Some(1), 1 << 30).unwrap();
     for l in [1usize, 2, 3] {
         let p = 2 * l + 1;
-        let (hubbard, shell) = shell_of(Form::DudarevFll, l, 0.7, 0.1);
+        let (hubbard, shell) = shell_of(Form::Dudarev, l, 0.7, 0.1);
         let ns = vec![
             random_symmetric(&spectrum(p, 0.9), 3),
             random_symmetric(&spectrum(p, 0.8), 4),
@@ -316,7 +321,7 @@ fn the_dudarev_shell_is_evaluated_on_the_matrices_as_they_are() {
         let refs: Vec<&[C64]> = lifted.iter().map(|v| v.as_slice()).collect();
         let direct = model::evaluate(
             &ctx,
-            &Hubbard::with_form(0.7, 0.1, Form::DudarevFll).unwrap(),
+            &Hubbard::with_form(0.7, 0.1, Form::Dudarev).unwrap(),
             l,
             Channels::Unrestricted,
             &refs,
@@ -426,8 +431,8 @@ fn the_energy_and_force_of_a_molecule_do_not_depend_on_its_axis_at_j_not_zero() 
     let axes = [[0., 0., 1.], [1., 0., 0.]];
     let diagonals = [[1., 1., 0.], [0., 1., 1.], [1., 0., 1.]];
     for (name, set) in [("axes", &axes[..]), ("face diagonals", &diagonals[..])] {
-        let dudarev = orientation_spread(&ctx, ("dudarev-fll", 20., 0.), set);
-        let liechtenstein = orientation_spread(&ctx, ("liechtenstein-fll", 20., 3.), set);
+        let dudarev = orientation_spread(&ctx, ("dudarev", 20., 0.), set);
+        let liechtenstein = orientation_spread(&ctx, ("liechtenstein", 20., 3.), set);
         println!(
             "{name}: energy spread, bond force spread, transverse (Ha, eV/A): \
              Dudarev {:.3e} {:.3e} {:.3e}, Liechtenstein {:.3e} {:.3e} {:.3e}",
@@ -535,7 +540,7 @@ fn the_liechtenstein_antisymmetric_kernel_is_the_second_difference_of_the_physic
     // singlet against triplet 1.1e-3 Ha, the oracle off by 23 to 100 percent).
     let ctx = Context::new(Some(2), 1 << 30).unwrap();
     let (integrals, electrons) =
-        copper_hydride(&ctx, Some(("liechtenstein-fll", 20., 3.)), [0., 0., 1.]);
+        copper_hydride(&ctx, Some(("liechtenstein", 20., 3.)), [0., 0., 1.]);
     let hubbard = integrals
         .corrections
         .as_ref()
@@ -665,4 +670,116 @@ fn the_liechtenstein_antisymmetric_kernel_is_the_second_difference_of_the_physic
         worst < 1e-9 * scale.max(1e-3),
         "CuH+: {worst:e} against a scale {scale:e}"
     );
+}
+
+#[test]
+fn spinor_molecule_dft_plus_u_scf_and_analytic_forces_match_finite_differences() {
+    use mandacaru_core::{paw::molecular::Arrays, Geometry, LengthUnit};
+    let ctx = Context::new(Some(2), 1 << 30).unwrap();
+    let root = std::path::PathBuf::from(
+        std::env::var_os("MANDACARU_PAW_PATH").expect("MANDACARU_PAW_PATH"),
+    );
+    let electrons = (dataset::read(&ctx, "lda-fr", "Cu").valence_charge
+        + dataset::read(&ctx, "lda-fr", "H").valence_charge)
+        .round() as usize;
+    let base_pos = [[7.0, 7.0, 5.62], [7.0, 7.0, 8.38]];
+    let file = |set: &str, e: &str| {
+        root.join(set)
+            .join(format!("{e}.parquet"))
+            .to_string_lossy()
+            .into_owned()
+    };
+
+    let build_spinor_cuh = |spec: &str| -> MolecularIntegrals {
+        let extra = vec![
+            ("spin_orbit", serde_json::json!(true)),
+            ("hubbard", serde_json::Value::String(spec.to_string())),
+        ];
+        molecule_with(
+            &ctx,
+            &[29, 1],
+            &base_pos,
+            14.,
+            0.4,
+            (
+                vec![
+                    serde_json::json!({ "file": file("lda-fr", "Cu") }),
+                    serde_json::json!({ "file": file("lda-fr", "H") }),
+                ],
+                vec![0, 1],
+                Arrays::new(),
+            ),
+            "raw",
+            &analytic_shells(&[0, 1, 2]),
+            &extra,
+        )
+    };
+
+    let displace = |base: &MolecularIntegrals, dz: f64| -> MolecularIntegrals {
+        let mut pos = base_pos;
+        pos[1][2] += dz;
+        let geom = Geometry::new(
+            base.geometry.numbers().to_vec(),
+            pos.to_vec(),
+            *base.geometry.cell(),
+            base.geometry.pbc(),
+            LengthUnit::Bohr,
+        )
+        .unwrap();
+        base.at_geometry(geom).unwrap()
+    };
+
+    for (label, spec) in [
+        (
+            "dudarev",
+            r#"{"Cu": {"l": "d", "U": 6.0, "J": 0.5, "form": "dudarev"}}"#,
+        ),
+        (
+            "liechtenstein-ratios",
+            r#"{"Cu": {"l": "d", "U": 6.0, "J": 0.9, "form": "liechtenstein", "f4_f2": 0.72}}"#,
+        ),
+    ] {
+        let integrals = build_spinor_cuh(spec);
+        let state = integrals
+            .spinor_kohn_sham("lda", electrons, &options())
+            .unwrap();
+        assert!(state.converged, "{label}: spinor SCF did not converge");
+        assert!(state.hubbard_energy.is_some());
+        let grad = integrals.spinor_gradient(&state).unwrap();
+        let hub_term = grad
+            .terms
+            .iter()
+            .find(|(name, _)| *name == "hubbard/projection")
+            .expect("spinor +U gradient must record hubbard/projection")
+            .1
+            .as_slice()[5];
+        assert!(
+            hub_term.abs() > 1e-6,
+            "{label}: +U force term too small ({hub_term:.3e})"
+        );
+        assert!(
+            grad.terms
+                .iter()
+                .any(|(name, _)| *name == "spin_orbit/projections"),
+            "{label}: spin-orbit gradient term must be active"
+        );
+
+        let h = 1e-3;
+        let total = |dz: f64| {
+            let moved = displace(&integrals, dz);
+            let st = moved
+                .spinor_kohn_sham("lda", electrons, &options())
+                .unwrap();
+            assert!(st.converged);
+            st.electronic_energy + moved.nuclear
+        };
+        let (e_plus, e_minus) = (total(h), total(-h));
+        let fd_grad = (e_plus - e_minus) / (2.0 * h);
+        let analytic_grad = grad.total.as_slice()[5];
+        let err = (analytic_grad - fd_grad).abs();
+        assert!(
+            err < 2e-5,
+            "{label}: spinor +U analytic dE/dR = {analytic_grad:.8e} vs FD {fd_grad:.8e} (diff {err:.3e})"
+        );
+    }
 }

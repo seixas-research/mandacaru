@@ -1,18 +1,19 @@
 //! Localized Bloch subspaces and their Fourier-interpolated Hamiltonians.
 use super::{
-    disentangle, invalid, localize,
+    disentangle, interpolation, invalid, localize_with_populations,
+    populations::{AtomPartition, PopulationMesh},
     sampling::{self, Augmentation, Frame, Trial},
-    Localized, Matrix, Options,
+    Localization as ObjectiveMode, Localized, Matrix, Options,
 };
 use crate::{
     math::linalg::eigen,
     periodic::{bloch_mesh::MeshIndex, Crystal, PeriodicResult},
     product,
     quantum::C64,
-    Buffer, Context, Reservation, Result,
+    Buffer, Context, Result,
 };
-use nalgebra::{DVector, Matrix3, Vector3};
-use std::{collections::BTreeMap, f64::consts::PI};
+use nalgebra::{DVector, Matrix3};
+use std::f64::consts::PI;
 
 pub struct Windows {
     pub outer: [f64; 2],
@@ -26,6 +27,9 @@ pub struct Channel {
     pub hamiltonian_bvk: Buffer<C64>,
     pub density_bvk: Buffer<C64>,
     pub hoppings: Hoppings,
+    pub positions_r: [Buffer<C64>; 3],
+    pub interpolation: interpolation::Model,
+    pub subspace_electrons: f64,
     pub size: [usize; 3],
     /// `[n * trials + m]`: `|<w_n0|g_m>|^2`, the weight of the trial orbital `m` (normalized,
     /// smooth part of the states, no one-center term) in the home-cell function `n`. The trial
@@ -47,6 +51,8 @@ pub struct Localization<'a> {
     pub reciprocal: Matrix3<f64>,
     /// Refuse a subspace with a Chern number ([`super::chern_guard`]) before localizing it.
     pub chern_guard: bool,
+    /// Atom partition + `(S_k, S_k^{-1/2})` metrics per mesh point when using `Populations`.
+    pub populations: Option<(&'a AtomPartition, &'a [(Matrix, Matrix)])>,
 }
 
 /// Rectangular polar factor, with explicit rank validation. Singular trials
@@ -81,6 +87,7 @@ pub fn localize_channel(
         windows,
         reciprocal,
         chern_guard,
+        populations,
     } = settings;
     let ctx = &c.context;
     let mesh = sampling::overlap_mesh(c, &frames, size, augmentation)?;
@@ -171,7 +178,44 @@ pub fn localize_channel(
         super::chern_guard(&index, &along)?;
     }
     let centers = trials.iter().map(|t| t.center).collect::<Vec<_>>();
-    let localized = localize(ctx, &mesh, &initial, Some(&centers), options)?;
+    let pop_mesh = match options.localization {
+        ObjectiveMode::Spread => None,
+        ObjectiveMode::Populations { scheme, exponent } => {
+            let (partition, metrics) = populations.ok_or_else(|| {
+                invalid("Pipek-Mezey localization requires AO overlaps and atom partition")
+            })?;
+            let coeffs: Vec<&Matrix> = frames.iter().map(|f| &f.coefficients).collect();
+            let metric_refs: Vec<(&Matrix, &Matrix)> =
+                metrics.iter().map(|(s, lowdin)| (s, lowdin)).collect();
+            Some(PopulationMesh::new(
+                size,
+                frames[0].components,
+                &coeffs,
+                &metric_refs,
+                partition.clone(),
+                scheme,
+                exponent,
+            )?)
+        }
+    };
+    let localized = localize_with_populations(
+        ctx,
+        &mesh,
+        pop_mesh.as_ref(),
+        &initial,
+        Some(&centers),
+        options,
+    )?;
+    let nb = mesh.vectors.as_slice().len();
+    let mesh_vectors = mesh.vectors.as_slice().to_vec();
+    let mesh_weights = mesh.weights.as_slice().to_vec();
+    let _rot_work = ctx.reserve(product(&[frames.len(), nb, functions, functions, 16])?)?;
+    let mut rotated_links = Vec::with_capacity(frames.len() * nb);
+    for k in 0..frames.len() {
+        for b in 0..nb {
+            rotated_links.push(mesh.rotated(ctx, &localized.gauge, k, b)?);
+        }
+    }
     drop(mesh);
     // <w_n0|g_m> = (1/N) sum_k (U_k^+ A_k)_nm, A_k the projections of the Bloch states on the
     // Bloch sums of the trials (both normalized).
@@ -220,13 +264,32 @@ pub fn localize_channel(
     }
     let hamiltonian_bvk = fourier_blocks(ctx, size, functions, hk.as_slice())?;
     let density_bvk = fourier_blocks(ctx, size, functions, rho.as_slice())?;
-    let hoppings = nearest_hoppings(
+    let subspace_electrons: f64 = (0..functions)
+        .map(|i| density_bvk.as_slice()[i * functions + i].re)
+        .sum();
+    let cell = sampling::lattice(&c.grid);
+    let replica =
+        interpolation::ReplicaTable::build(cell, size, localized.spread.centers.as_slice())?;
+    let h_r = replica.scatter(ctx, hamiltonian_bvk.as_slice())?;
+    let hoppings = Hoppings {
+        vectors: ctx.copy_slice(&replica.vectors)?,
+        values: replica.pack(ctx, &h_r)?,
+        functions,
+    };
+    let interp = interpolation::Model::from_rotated_links(
         ctx,
-        sampling::lattice(&c.grid),
-        size,
+        &replica,
+        &mesh_vectors,
+        &mesh_weights,
+        &rotated_links,
         localized.spread.centers.as_slice(),
-        hamiltonian_bvk.as_slice(),
+        h_r,
     )?;
+    let positions_r = [
+        replica.pack(ctx, &interp.a_r[0])?,
+        replica.pack(ctx, &interp.a_r[1])?,
+        replica.pack(ctx, &interp.a_r[2])?,
+    ];
     Ok(Channel {
         frames,
         localized,
@@ -235,6 +298,9 @@ pub fn localize_channel(
         hamiltonian_bvk,
         density_bvk,
         hoppings,
+        positions_r,
+        interpolation: interp,
+        subspace_electrons,
         size,
         trial_weights,
     })
@@ -280,9 +346,7 @@ pub fn fourier_blocks(
 }
 
 /// Every pair chooses all equally near BvK replicas; the tied contributions
-/// share a weight. Bounds from the inverse supercell prove the search finite
-/// for a general skew lattice rather than assuming the nearest image lies in
-/// the adjacent 27 cells.
+/// share a weight ([`interpolation::ReplicaTable`]).
 pub fn nearest_hoppings(
     ctx: &Context,
     cell: Matrix3<f64>,
@@ -290,111 +354,12 @@ pub fn nearest_hoppings(
     centers: &[[f64; 3]],
     blocks: &[C64],
 ) -> Result<Hoppings> {
-    let functions = centers.len();
-    let n = product(&size)?;
-    if size.contains(&0)
-        || functions == 0
-        || centers
-            .iter()
-            .flatten()
-            .chain(cell.iter())
-            .any(|v| !v.is_finite())
-        || blocks.len() != product(&[n, functions, functions])?
-    {
-        return Err(invalid("invalid Wannier hopping geometry or blocks"));
-    }
-    let supercell = cell * Matrix3::from_diagonal(&Vector3::from(size.map(|v| v as f64)));
-    let inverse = supercell
-        .try_inverse()
-        .ok_or_else(|| invalid("singular Wannier hopping cell"))?;
-    let mut table: BTreeMap<[i32; 3], (Matrix, Reservation)> = BTreeMap::new();
-    for r in 0..n {
-        let vector = [
-            r / (size[1] * size[2]),
-            (r / size[2]) % size[1],
-            r % size[2],
-        ];
-        for i in 0..functions {
-            for j in 0..functions {
-                let displacement = cell * Vector3::from(vector.map(|v| v as f64))
-                    + Vector3::from(centers[j])
-                    - Vector3::from(centers[i]);
-                let fractional = inverse * displacement;
-                let first = fractional.map(|v| -v.round());
-                let mut best = (displacement + supercell * first).norm_squared();
-                let radius = best.sqrt() + 1e-8;
-                let bounds: [(i32, i32); 3] = std::array::from_fn(|a| {
-                    let extent = inverse.row(a).norm() * radius;
-                    (
-                        (-fractional[a] - extent).ceil() as i32,
-                        (-fractional[a] + extent).floor() as i32,
-                    )
-                });
-                let count = bounds
-                    .iter()
-                    .map(|(lo, hi)| (i64::from(*hi) - i64::from(*lo) + 1).max(0) as usize)
-                    .collect::<Vec<_>>();
-                if product(&count)? > 1_000_000 {
-                    return Err(invalid(
-                        "Wannier nearest-replica search exceeds its geometric work bound",
-                    ));
-                }
-                let mut chosen = vec![];
-                for x in bounds[0].0..=bounds[0].1 {
-                    for y in bounds[1].0..=bounds[1].1 {
-                        for z in bounds[2].0..=bounds[2].1 {
-                            let distance = (displacement
-                                + supercell * Vector3::new(x as f64, y as f64, z as f64))
-                            .norm_squared();
-                            if distance < best - 1e-8 {
-                                best = distance;
-                                chosen.clear();
-                            }
-                            if (distance - best).abs() < 1e-8 {
-                                chosen.push([x, y, z]);
-                            }
-                        }
-                    }
-                }
-                if chosen.is_empty() {
-                    return Err(invalid("Wannier replica search found no image"));
-                }
-                let weight = 1. / chosen.len() as f64;
-                for image in chosen {
-                    let mut vector_out = [0; 3];
-                    for a in 0..3 {
-                        vector_out[a] =
-                            i32::try_from(vector[a] as i64 + image[a] as i64 * size[a] as i64)
-                                .map_err(|_| crate::Error::Overflow)?;
-                    }
-                    if let std::collections::btree_map::Entry::Vacant(entry) =
-                        table.entry(vector_out)
-                    {
-                        entry.insert((
-                            Matrix::zeros(functions, functions),
-                            ctx.reserve(product(&[functions, functions, 16])?)?,
-                        ));
-                    }
-                    table.get_mut(&vector_out).unwrap().0[(i, j)] +=
-                        blocks[(r * functions + i) * functions + j] * weight;
-                }
-            }
-        }
-    }
-    let mut vectors = ctx.allocate::<[i32; 3]>(table.len())?;
-    let mut values = ctx.allocate::<C64>(product(&[table.len(), functions, functions])?)?;
-    for (r, (vector, (matrix, _))) in table.into_iter().enumerate() {
-        vectors.as_mut_slice()[r] = vector;
-        for i in 0..functions {
-            for j in 0..functions {
-                values.as_mut_slice()[(r * functions + i) * functions + j] = matrix[(i, j)];
-            }
-        }
-    }
+    let replica = interpolation::ReplicaTable::build(cell, size, centers)?;
+    let h_r = replica.scatter(ctx, blocks)?;
     Ok(Hoppings {
-        vectors,
-        values,
-        functions,
+        vectors: ctx.copy_slice(&replica.vectors)?,
+        values: replica.pack(ctx, &h_r)?,
+        functions: replica.functions,
     })
 }
 impl Hoppings {

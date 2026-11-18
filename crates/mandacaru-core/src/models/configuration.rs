@@ -185,3 +185,119 @@ pub fn split_configuration(
     }
     out
 }
+
+/// Build a neutral spherically symmetric proatomic radial density $\rho^0_A(r)$ for Hirshfeld
+/// partitioning from an atom's unique radial basis shells `(l, r, R(r))`, normalized so
+/// $\int_0^\infty 4\pi r^2 \rho^0_A(r)\,dr = \text{valence\_charge}$.
+pub fn proatomic_radial_from_shells(
+    atomic_number: u8,
+    valence_charge: f64,
+    shells: &[(usize, &[f64], &[f64])],
+) -> crate::math::partial_charges::ProatomicRadial {
+    use std::f64::consts::PI;
+    let fallback_scale = match atomic_number {
+        1..=2 => 0.45,
+        3..=10 => 0.65,
+        11..=18 => 0.90,
+        _ => 1.05,
+    };
+    let empty = crate::math::partial_charges::ProatomicRadial {
+        r: Vec::new(),
+        density: Vec::new(),
+        valence_charge,
+        fallback_scale,
+    };
+    if shells.is_empty() || valence_charge <= 0. {
+        return empty;
+    }
+    let Ok(config) = ground_state(atomic_number) else {
+        return empty;
+    };
+    let core_target = (atomic_number as f64 - valence_charge).max(0.);
+    // Keep valence (and semicore if present in valence_charge) occupations matching `valence_charge`.
+    let mut valence_shells: Vec<(usize, f64)> = Vec::new();
+    let mut dropped = 0.;
+    for &(_n, l, occ) in &config {
+        if dropped + occ <= core_target + 1e-6 {
+            dropped += occ;
+        } else {
+            let take = (occ - (core_target - dropped).max(0.)).max(0.);
+            dropped = core_target;
+            if take > 0. {
+                valence_shells.push((l, take));
+            }
+        }
+    }
+    if valence_shells.is_empty() {
+        valence_shells.push((0, valence_charge));
+    }
+    // Pair each valence shell `(l, occ)` with the first unused radial table of that `l` (or
+    // closest radial shell available) and sum spherical densities on the first table's radial grid.
+    let grid_r = shells[0].1;
+    if grid_r.len() < 2 {
+        return empty;
+    }
+    let integrate_r2 = |r: &[f64], f: &[f64]| -> f64 {
+        (0..r.len() - 1)
+            .map(|i| {
+                0.5 * (r[i + 1] - r[i]) * (f[i] * r[i] * r[i] + f[i + 1] * r[i + 1] * r[i + 1])
+            })
+            .sum::<f64>()
+    };
+    let sample_linear = |src_r: &[f64], src_v: &[f64], x: f64| -> f64 {
+        if src_r.is_empty() || x > src_r[src_r.len() - 1] {
+            return 0.;
+        }
+        if x <= src_r[0] {
+            return src_v[0];
+        }
+        let idx = src_r.partition_point(|&rk| rk <= x);
+        let i0 = idx.saturating_sub(1).min(src_r.len() - 2);
+        let span = src_r[i0 + 1] - src_r[i0];
+        let t = if span > 0. {
+            (x - src_r[i0]) / span
+        } else {
+            0.
+        };
+        (1. - t) * src_v[i0] + t * src_v[i0 + 1]
+    };
+    let mut used = vec![false; shells.len()];
+    let mut rho = vec![0.; grid_r.len()];
+    let mut matched = 0.;
+    for (l, occ) in valence_shells {
+        if let Some(pos) = shells
+            .iter()
+            .enumerate()
+            .position(|(i, s)| !used[i] && s.0 == l && s.1.len() >= 2 && s.1.len() == s.2.len())
+        {
+            used[pos] = true;
+            let (_, sr, sv) = shells[pos];
+            let sq: Vec<f64> = sv.iter().map(|&v| v * v).collect();
+            let norm = integrate_r2(sr, &sq);
+            if norm > 1e-12 {
+                let factor = occ / (4. * PI * norm);
+                for (k, &rk) in grid_r.iter().enumerate() {
+                    let v = sample_linear(sr, sv, rk);
+                    rho[k] += factor * v * v;
+                }
+                matched += occ;
+            }
+        }
+    }
+    if matched <= 0. {
+        return empty;
+    }
+    let integral = 4. * PI * integrate_r2(grid_r, &rho);
+    if integral > 1e-12 {
+        let scale = valence_charge / integral;
+        for v in &mut rho {
+            *v *= scale;
+        }
+    }
+    crate::math::partial_charges::ProatomicRadial {
+        r: grid_r.to_vec(),
+        density: rho,
+        valence_charge,
+        fallback_scale,
+    }
+}

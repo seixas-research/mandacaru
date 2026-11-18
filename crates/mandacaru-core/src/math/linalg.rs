@@ -45,10 +45,9 @@ pub fn davidson(
     max_subspace_iter: usize,
 ) -> Result<(Vec<f64>, Matrix)> {
     let n = matrix.nrows();
-    if n <= 2 || initial.is_none() {
+    let Some(init) = initial.filter(|_| n > 2) else {
         return eigen(matrix.clone());
-    }
-    let init = initial.unwrap();
+    };
     if init.nrows() != n || init.ncols() != n {
         return eigen(matrix.clone());
     }

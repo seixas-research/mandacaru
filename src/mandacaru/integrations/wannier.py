@@ -9,9 +9,31 @@ from .. import _native
 from ..units import from_hartree, to_angstrom, to_bohr, to_hartree
 
 
-def _trials(guess, atoms):
-    centers = to_bohr(atoms.positions)
+def _atoms_for_wannier(calculation):
+    if calculation.atoms is not None:
+        return calculation.atoms
+    if calculation._load_crystal is None:
+        raise RuntimeError("periodic Wannier guesses by symbol/bonds require ASE Atoms")
+    from pathlib import Path
+    from ase import Atoms
+
+    payload = json.loads(Path(calculation._load_crystal).read_text(encoding="utf-8"))
+    grid = payload["grid"]
+    sites = payload.get("sites")
+    if not sites or "centers" not in sites or "datasets" not in sites:
+        raise RuntimeError("loaded crystal snapshot lacks 'sites' geometry for Wannier guesses")
+    shape = np.asarray(grid["shape"], dtype=float)
+    step = np.asarray(grid["step"], dtype=float).reshape(3, 3)
+    cell_ang = np.asarray(to_angstrom((step * shape[None, :]).T), dtype=float)
+    positions_ang = np.asarray(to_angstrom(np.asarray(sites["centers"], dtype=float)), dtype=float)
+    symbols = [entry.get("symbol") or Path(entry["file"]).stem for entry in sites["datasets"]]
+    return Atoms(symbols=symbols, positions=positions_ang, cell=cell_ang, pbc=True)
+
+
+def _trials(guess, calculation):
     if isinstance(guess, str) and guess in ("bonds", "sp3"):
+        atoms = _atoms_for_wannier(calculation)
+        centers = to_bohr(atoms.positions)
         # The neighbors within 6 Angstrom of every atom, periodic images included, are the engine's.
         neighbors = _native.neighbor_vectors(
             np.ascontiguousarray(atoms.cell.array, dtype=float), [bool(p) for p in atoms.pbc],
@@ -23,6 +45,8 @@ def _trials(guess, atoms):
             for i, (atom, center) in enumerate(zip(atoms, centers))
         ]
     if isinstance(guess, dict):
+        atoms = _atoms_for_wannier(calculation)
+        centers = to_bohr(atoms.positions)
         records = []
         for selector, names in guess.items():
             names = [names] if isinstance(names, str) else list(names)
@@ -44,15 +68,26 @@ def _trials(guess, atoms):
                  label=f"center{i}") for i, center in enumerate(centers)]
 
 
+def _mesh_size(kpts, fallback):
+    if kpts is None:
+        if fallback is None:
+            raise ValueError("give kpts when constructing Wannier functions from a loaded snapshot")
+        mesh = fallback
+    else:
+        mesh = kpts
+    size = mesh["size"] if isinstance(mesh, dict) else mesh
+    return [int(n) for n in size]
+
+
 def calculate(calculation, n_functions, *, guess, windows, bands, kpts,
-              max_iterations, tolerance, step):
+              max_iterations, tolerance, step, localization="spread",
+              populations="mulliken", exponent=2):
     if calculation.result is None or calculation.result.periodic is None:
         raise RuntimeError("run periodic DFT before constructing Wannier functions")
-    atoms = calculation.atoms
-    mesh = calculation._kpts_spec if kpts is None else kpts
-    size = mesh["size"] if isinstance(mesh, dict) else mesh
-    spec = dict(size=[int(n) for n in size], bands=bands,
-                n_functions=n_functions, trials=_trials(guess, atoms))
+    spec = dict(size=_mesh_size(kpts, calculation._kpts_spec), bands=bands,
+                n_functions=n_functions, trials=_trials(guess, calculation),
+                localization=str(localization), populations=str(populations),
+                exponent=int(exponent))
     if windows is not None:
         if not isinstance(windows, dict) or "outer" not in windows:
             raise ValueError("Wannier windows specify an outer energy pair and an optional frozen pair in eV")
@@ -114,12 +149,23 @@ class DownfoldedProblem:
         return self._native.spins == 2
 
     @property
+    def spinor(self) -> bool:
+        return bool(self._native.spinor)
+
+    @property
     def functions(self) -> tuple:
         return tuple((n, tuple(R)) for n, R in self._native.functions)
 
     @property
     def n_spatial_orbitals(self) -> int:
-        return self._native.n_spatial_orbitals
+        n = int(self._native.n_spatial_orbitals)
+        if self.spinor:
+            if n % 2 != 0:
+                raise ValueError(
+                    f"spinor fragment has {n} spin-orbitals, which is not a whole number of spatial pairs"
+                )
+            return n // 2
+        return n
 
     @property
     def num_particles(self) -> tuple:
@@ -185,9 +231,12 @@ class DownfoldedProblem:
 
     def fermion_hamiltonian(self, basis: str = "wannier"):
         """The spin-orbital :class:`~mandacaru.core.mapping.Fermion` Hamiltonian (Hartree, no
-        constant) in ``basis`` (:meth:`integrals`), written from the spatial integrals."""
+        constant) in ``basis`` (:meth:`integrals`), written from the spatial (or spin-orbital for
+        spinor crystals) integrals."""
         from ..core.mapping import Fermion
 
+        if self.spinor:
+            return Fermion.from_integrals(*self.integrals(basis))
         return Fermion.from_spatial_integrals(*self.integrals(basis))
 
     def as_quantum_problem(self) -> dict:
@@ -259,9 +308,48 @@ class WannierResult:
     def hamiltonian_R(self):
         return from_hartree(self._snapshot["hamiltonian_R"], "eV")
 
-    def interpolate(self, kpoints):
-        return from_hartree(self._native.interpolate(np.ascontiguousarray(kpoints, dtype=float),
-                                                     spin=self._spin), "eV")
+    @property
+    def positions_R(self):
+        """Wannier position operator ``A(R) = <0 | r | R>`` of shape ``(3, n_R, n_W, n_W)`` in Angstrom."""
+        return _native.to_user_units(self._snapshot["positions_R"], "length")
+
+    @property
+    def position_asymmetry(self):
+        """Frobenius norm of the pre-Hermitization position mismatch ``A(R) - A(-R)^H`` in Angstrom."""
+        return float(to_angstrom(self._snapshot["position_asymmetry"]))
+
+    @property
+    def localization(self):
+        return str(self._snapshot["localization"])
+
+    @property
+    def populations(self):
+        value = self._snapshot["populations"]
+        return None if value is None else str(value)
+
+    @property
+    def exponent(self):
+        value = self._snapshot["exponent"]
+        return None if value is None else int(value)
+
+    def interpolate(self, kpoints, *, eigenvectors=False):
+        raw = self._native.interpolate(
+            np.ascontiguousarray(kpoints, dtype=float),
+            spin=self._spin, eigenvectors=bool(eigenvectors))
+        if eigenvectors:
+            energies, vectors = raw
+            return from_hartree(energies, "eV"), vectors
+        return from_hartree(raw, "eV")
+
+    def band_structure(self, path=None, npoints=100):
+        """Wannier-interpolated band structure along ``path`` (eV), as an ASE ``BandStructure``."""
+        return _band_structure(
+            self._snapshot["cell_bohr"], self._snapshot["fermi_ha"], path, npoints,
+            lambda kpts: self.interpolate(kpts)[None, :, :])
+
+    def anomalous_hall(self, kpts=None, *, refine=True):
+        """Anomalous Hall conductivity by Wannier interpolation (:class:`~mandacaru.analysis.berry.AnomalousHall`)."""
+        return _anomalous_hall(self._native, _mesh_size(kpts, self._snapshot["size"]), refine)
 
     def downfold(self, functions=None, num_particles=None, **options):
         """The many-body problem of a fragment of these functions (:class:`DownfoldedProblem`).
@@ -278,6 +366,27 @@ class WannierResult:
         if self._native.n_spins != 1:
             raise ValueError("downfold the spin-polarized result, not one of its spin channels")
         return _downfold(self._native, functions, num_particles, self.n_functions, options)
+
+
+def _band_structure(cell_bohr, fermi_ha, path, npoints, eval_energies):
+    from ase.dft.kpoints import BandPath
+    from ase.spectrum.band_structure import BandStructure
+    from . import kspace as _kspace
+
+    cell = np.ascontiguousarray(to_angstrom(cell_bohr), dtype=float)
+    text, points = _kspace.path_arguments(path)
+    raw = _native.ase_band_path(cell, [True, True, True], int(npoints), text, points)
+    bandpath = BandPath(cell, kpts=raw["kpoints"], special_points=raw["special_points"],
+                        path=raw["path"])
+    return BandStructure(bandpath, energies=eval_energies(bandpath.kpts),
+                         reference=from_hartree(float(fermi_ha), "eV"))
+
+
+def _anomalous_hall(native, size, refine):
+    from ..analysis.berry import AnomalousHall
+
+    return AnomalousHall.from_native(
+        native.anomalous_hall(size, refine=bool(refine)), stacklevel=3)
 
 
 def _downfold(native, functions, num_particles, n_functions, options):
@@ -309,8 +418,33 @@ class SpinWannierResult:
     def converged(self):
         return self.up.converged and self.down.converged
 
-    def interpolate(self, kpoints):
+    @property
+    def localization(self):
+        return self.up.localization
+
+    @property
+    def populations(self):
+        return self.up.populations
+
+    @property
+    def exponent(self):
+        return self.up.exponent
+
+    def interpolate(self, kpoints, *, eigenvectors=False):
+        if eigenvectors:
+            e_up, v_up = self.up.interpolate(kpoints, eigenvectors=True)
+            e_dn, v_dn = self.down.interpolate(kpoints, eigenvectors=True)
+            return np.stack([e_up, e_dn]), np.stack([v_up, v_dn])
         return np.stack([self.up.interpolate(kpoints), self.down.interpolate(kpoints)])
+
+    def band_structure(self, path=None, npoints=100):
+        """Wannier-interpolated spin-polarized band structure along ``path`` (eV), as an ASE ``BandStructure``."""
+        snap = self.up._snapshot
+        return _band_structure(snap["cell_bohr"], snap["fermi_ha"], path, npoints, self.interpolate)
+
+    def anomalous_hall(self, kpts=None, *, refine=True):
+        """Anomalous Hall conductivity by Wannier interpolation (:class:`~mandacaru.analysis.berry.AnomalousHall`)."""
+        return _anomalous_hall(self._native, _mesh_size(kpts, self.up._snapshot["size"]), refine)
 
     def downfold(self, functions=None, num_particles=None, **options):
         """The many-body problem of a fragment of these functions, one set per spin channel

@@ -57,10 +57,17 @@ use super::{
             collinear_xc_energy, density, diagonalize_with_exchange, energy, exchange_correlation,
             hamiltonian, local_potential, sym_field,
         },
+        spinor::{
+            diagonalize_with_exchange as spinor_diagonalize, hamiltonian as spinor_hamiltonian,
+            lowdin_block,
+        },
         wannier::sampling::Frame,
         Crystal, KPoint, PeriodicResult,
     },
-    momentum::{basis_momenta, check_inversion_closed, one_center_momentum, transitions},
+    momentum::{
+        basis_momenta_with_hubbard, check_inversion_closed, hubbard_operator, one_center_momentum,
+        transitions,
+    },
 };
 use crate::{
     math::{
@@ -343,13 +350,13 @@ fn unit(direction: [f64; 3]) -> Result<[f64; 3]> {
 /// The refusals of the module documentation that a crystal decides by itself.
 fn check_crystal(crystal: &Crystal, setup: &PeriodicSetup) -> Result<()> {
     let unsupported = |what: &str| Err(Error::Unsupported(what.into()));
-    if crystal.spinor {
+    let definition = crate::models::functional(&crystal.functional)?;
+    if crystal.spinor && definition.requires_tau {
         return unsupported(
-            "real-time propagation of a spinor crystal is not implemented (the noncollinear \
-             kernel, T8)",
+            "real-time propagation of a spinor meta-GGA crystal is not offered (noncollinear \
+             current tau is not implemented)",
         );
     }
-    let definition = crate::models::functional(&crystal.functional)?;
     if definition.screened_exchange.is_some() {
         return unsupported(
             "real-time propagation of a hybrid crystal is not offered (one hybrid iteration per \
@@ -494,8 +501,8 @@ fn basis_densities(c: &Crystal, densities: &[Matrix]) -> Result<Vec<StoredMatrix
         .iter()
         .enumerate()
         .map(|(idx, d)| {
-            let lowdin = &c.points[idx % nk].lowdin;
-            StoredMatrix::new(&c.context, lowdin * d * lowdin.adjoint(), false)
+            let lowdin = lowdin_block(&c.points[idx % nk], c.m, c.spinor);
+            StoredMatrix::new(&c.context, &lowdin * d * lowdin.adjoint(), false)
         })
         .collect()
 }
@@ -917,11 +924,12 @@ impl<'a> CrystalMap<'a> {
         }
         let (v, w) = (potential.local.as_slice(), potential.moments.as_slice());
         let kinetic = potential.kinetic.as_ref().map(|t| t.as_slice());
-        // DFT+U on the complex Hermitian shell occupations of this density (their Im part is
-        // what a current-carrying shell responds with), never symmetrized on the whole mesh.
+        // DFT+U on the unsymmetrized complex Hermitian shell occupations of the full propagation
+        // mesh (their Im part is what a current-carrying shell responds with), including moved
+        // meshes at k + A that break k -> -k.
         let hubbard = match c.hubbard.as_ref().filter(|h| h.is_active()) {
             Some(spec) => {
-                let n = spec.occupations(c, &matrices)?;
+                let n = spec.raw_occupations(c, &matrices)?;
                 Some((spec.operators(c, &n)?, spec.energy(c, &n)?))
             }
             None => None,
@@ -935,28 +943,42 @@ impl<'a> CrystalMap<'a> {
             |ws, idx| {
                 let (s, k) = (idx / nk, idx % nk);
                 let point = &c.points[k];
-                // A meta-GGA's tau operator joins F^j on the shared gradients.
-                let shared = meta.is_some();
-                let h = hamiltonian(
-                    c,
-                    point,
-                    &v[s * n..(s + 1) * n],
-                    w,
-                    kinetic.filter(|_| !shared).map(|t| &t[s * n..(s + 1) * n]),
-                    operators.map(|o| &o[s]),
-                    None,
-                    ws.as_mut(),
-                )?;
-                let h = match kinetic.filter(|_| shared) {
-                    Some(t) => {
-                        let weights = current_weights.as_ref().map(|w| w[s].as_slice());
-                        let operator =
-                            meta_operator(c, k, &t[s * n..(s + 1) * n], weights, gradients)?;
-                        h + (&operator + operator.adjoint()) * C64::new(0.5, 0.)
-                    }
-                    None => h,
+                let h = if c.spinor {
+                    let h = spinor_hamiltonian(
+                        c,
+                        point,
+                        v,
+                        w,
+                        None,
+                        operators.map(|o| &o[0]),
+                        None,
+                    )?;
+                    let lowdin = lowdin_block(point, c.m, true);
+                    lowdin.adjoint() * h * lowdin
+                } else {
+                    // A meta-GGA's tau operator joins F^j on the shared gradients.
+                    let shared = meta.is_some();
+                    let h = hamiltonian(
+                        c,
+                        point,
+                        &v[s * n..(s + 1) * n],
+                        w,
+                        kinetic.filter(|_| !shared).map(|t| &t[s * n..(s + 1) * n]),
+                        operators.map(|o| &o[s]),
+                        None,
+                        ws.as_mut(),
+                    )?;
+                    let h = match kinetic.filter(|_| shared) {
+                        Some(t) => {
+                            let weights = current_weights.as_ref().map(|w| w[s].as_slice());
+                            let operator =
+                                meta_operator(c, k, &t[s * n..(s + 1) * n], weights, gradients)?;
+                            h + (&operator + operator.adjoint()) * C64::new(0.5, 0.)
+                        }
+                        None => h,
+                    };
+                    point.lowdin.adjoint() * h * &point.lowdin
                 };
-                let h = point.lowdin.adjoint() * h * &point.lowdin;
                 Ok((&h + h.adjoint()) * C64::new(0.5, 0.))
             },
         )?;
@@ -991,7 +1013,7 @@ impl<'a> CrystalMap<'a> {
             let k = idx % nk;
             let weight = self.crystal.points[k].weight;
             for (axis, value) in out.iter_mut().enumerate() {
-                *value += weight * (d * &self.momenta[k][axis]).trace().re;
+                *value += weight * (d * &self.momenta[idx][axis]).trace().re;
             }
         }
         out
@@ -1019,7 +1041,7 @@ impl<'a> CrystalMap<'a> {
         energy += (0..3).map(|axis| a[axis] * paramagnetic[axis]).sum::<f64>()
             + 0.5 * squared * self.crystal.electrons;
         for (idx, h) in matrices.iter_mut().enumerate() {
-            let p = &self.momenta[idx % nk];
+            let p = &self.momenta[idx];
             for axis in 0..3 {
                 if a[axis] != 0. {
                     *h += &p[axis] * C64::new(a[axis], 0.);
@@ -1094,27 +1116,6 @@ pub fn prepare(sampler: &Sampler<'_>, request: &Request) -> Result<Prepared> {
         Some(size) => size,
         None => scf_mesh(sampler.setup)?,
     };
-    if sampler
-        .crystal
-        .hubbard
-        .as_ref()
-        .is_some_and(|h| h.is_active())
-    {
-        if request.formulation == Formulation::Moved {
-            return Err(Error::Unsupported(
-                "formulation='moved' with DFT+U is not offered: its mesh at k + A is not closed \
-                 under -k, which the shell occupations' completion needs"
-                    .into(),
-            ));
-        }
-        if request.kernel == Kernel::Hartree {
-            return Err(Error::Unsupported(
-                "kernel='hartree' with DFT+U is not offered (the +U term is not frozen with the \
-                 exchange-correlation potential); use kernel='adiabatic' or 'independent'"
-                    .into(),
-            ));
-        }
-    }
     let meta = crate::models::functional(&sampler.crystal.functional)?.requires_tau;
     if meta && request.formulation == Formulation::Moved {
         return Err(Error::Unsupported(
@@ -1175,14 +1176,19 @@ fn prepare_moved(
     let one_center = one_center_momentum(ctx, &setup)?;
     let grid_mesh = Mesh::new(ctx, &setup.grid)?;
     let mut momentum_residual = fixed.momentum_residual;
-    let mut momenta = Vec::with_capacity(nk);
-    for point in &c.points {
-        let basis = basis_momenta(ctx, &setup, &grid_mesh, point, &one_center)?;
-        momentum_residual = momentum_residual.max(basis.residual);
-        momenta.push(basis.matrices.map(|p| {
-            let p = point.lowdin.adjoint() * p * &point.lowdin;
-            (&p + p.adjoint()) * C64::new(0.5, 0.)
-        }));
+    let mut momenta = Vec::with_capacity(c.spins * nk);
+    for s in 0..c.spins {
+        let hub = hubbard_operator(sampler.crystal, state, s).map(|(op, _)| op);
+        for point in &c.points {
+            let basis =
+                basis_momenta_with_hubbard(ctx, &setup, &grid_mesh, point, &one_center, c.spinor, hub)?;
+            momentum_residual = momentum_residual.max(basis.residual);
+            let lowdin = lowdin_block(point, c.m, c.spinor);
+            momenta.push(basis.matrices.map(|p| {
+                let p = lowdin.adjoint() * p * &lowdin;
+                (&p + p.adjoint()) * C64::new(0.5, 0.)
+            }));
+        }
     }
     drop(grid_mesh);
     let mut channels = Vec::with_capacity(fixed.channels.len());
@@ -1197,7 +1203,18 @@ fn prepare_moved(
             // <psi_m(k)| exp(-i A . r) |psi_n(k + A)>, so the transferred band v has the amplitude
             // conj(M_vn) on psi_n(k + A).
             let overlap = sampler.overlap(&here, &there, a)?;
-            let frame = point.lowdin.adjoint() * &point.overlap * &there.coefficients;
+            let loewdin_overlap = point.lowdin.adjoint() * &point.overlap;
+            let frame = if c.spinor {
+                let m = c.m;
+                let mut big = Matrix::zeros(2 * m, bands.len());
+                big.view_mut((0, 0), (m, bands.len()))
+                    .copy_from(&(&loewdin_overlap * there.coefficients.rows(0, m)));
+                big.view_mut((m, 0), (m, bands.len()))
+                    .copy_from(&(&loewdin_overlap * there.coefficients.rows(m, m)));
+                big
+            } else {
+                loewdin_overlap * &there.coefficients
+            };
             let amplitudes = Matrix::from_fn(bands.len(), o, |n, v| overlap[(v, n)].conj());
             let moved = &frame * amplitudes;
             let gram = moved.adjoint() * &moved;
@@ -1224,7 +1241,7 @@ fn prepare_moved(
             let ground = frame.columns(0, o);
             let density = ground * ground.adjoint() * C64::new(degeneracy, 0.);
             for (axis, value) in offset.iter_mut().enumerate() {
-                *value += point.weight * (&density * &momenta[k][axis]).trace().re;
+                *value += point.weight * (&density * &momenta[s * nk + k][axis]).trace().re;
             }
         }
     }
@@ -1270,26 +1287,31 @@ fn prepare_on(
     let (setup, c) = whole_mesh(ctx, sampler.setup, size)?;
     let nk = c.points.len();
     let n = c.grid.index.points();
-    let m = c.m;
+    let bands = c.bands();
     let tasks = product(&[c.spins, nk])?;
     let degeneracy = c.degeneracy();
-    if occupied.iter().any(|&o| o == 0 || o >= m) {
+    if occupied.iter().any(|&o| o == 0 || o >= bands) {
         return Err(invalid(
             "every spin channel of the crystal needs occupied and empty bands",
         ));
     }
-    // The momentum of the Bloch basis, in the Loewdin frame of each k-point.
+    // The momentum of the Bloch basis, in the Loewdin frame of each (spin, k) channel.
     let one_center = one_center_momentum(ctx, &setup)?;
     let grid_mesh = Mesh::new(ctx, &setup.grid)?;
     let mut momentum_residual = 0f64;
-    let mut momenta = Vec::with_capacity(nk);
-    for point in &c.points {
-        let basis = basis_momenta(ctx, &setup, &grid_mesh, point, &one_center)?;
-        momentum_residual = momentum_residual.max(basis.residual);
-        momenta.push(basis.matrices.map(|p| {
-            let p = point.lowdin.adjoint() * p * &point.lowdin;
-            (&p + p.adjoint()) * C64::new(0.5, 0.)
-        }));
+    let mut momenta = Vec::with_capacity(tasks);
+    for s in 0..c.spins {
+        let hub = hubbard_operator(scf, state, s).map(|(op, _)| op);
+        for point in &c.points {
+            let basis =
+                basis_momenta_with_hubbard(ctx, &setup, &grid_mesh, point, &one_center, c.spinor, hub)?;
+            momentum_residual = momentum_residual.max(basis.residual);
+            let lowdin = lowdin_block(point, c.m, c.spinor);
+            momenta.push(basis.matrices.map(|p| {
+                let p = lowdin.adjoint() * p * &lowdin;
+                (&p + p.adjoint()) * C64::new(0.5, 0.)
+            }));
+        }
     }
     drop(grid_mesh);
     // The SCF's converged potential at every point of the whole mesh.
@@ -1297,18 +1319,29 @@ fn prepare_on(
     let mut densities = Vec::with_capacity(tasks);
     for s in 0..c.spins {
         for point in &c.points {
-            let (_, _, y) = diagonalize_with_exchange(
-                &c,
-                point,
-                &potential[s * n..(s + 1) * n],
-                state.moment_potential.as_slice(),
-                state
-                    .kinetic_potential
-                    .as_ref()
-                    .map(|v| &v.as_slice()[s * n..(s + 1) * n]),
-                state.hubbard.as_ref().map(|h| &h.operators[s]),
-                None,
-            )?;
+            let (_, _, y) = if c.spinor {
+                spinor_diagonalize(
+                    &c,
+                    point,
+                    potential,
+                    state.moment_potential.as_slice(),
+                    state.hubbard.as_ref().map(|h| &h.operators[0]),
+                    None,
+                )?
+            } else {
+                diagonalize_with_exchange(
+                    &c,
+                    point,
+                    &potential[s * n..(s + 1) * n],
+                    state.moment_potential.as_slice(),
+                    state
+                        .kinetic_potential
+                        .as_ref()
+                        .map(|v| &v.as_slice()[s * n..(s + 1) * n]),
+                    state.hubbard.as_ref().map(|h| &h.operators[s]),
+                    None,
+                )?
+            };
             let occ = y.columns(0, occupied[s]);
             densities.push(occ * occ.adjoint() * C64::new(degeneracy, 0.));
         }
@@ -1331,7 +1364,7 @@ fn prepare_on(
                     idx % nk
                 )));
             }
-            width = width.max(levels[m - 1] - levels[0]);
+            width = width.max(levels[levels.len() - 1] - levels[0]);
             let occ = vectors.columns(0, o).into_owned();
             let start = &occ * occ.adjoint() * C64::new(degeneracy, 0.);
             stationarity = stationarity.max(
@@ -1526,7 +1559,7 @@ impl Prepared {
         let channel = self.crystal.hubbard.as_ref().is_some_and(|h| h.is_active())
             || crate::models::functional(&self.crystal.functional)?.requires_tau;
         let ramp = channel
-            && request.kernel == Kernel::Adiabatic
+            && matches!(request.kernel, Kernel::Adiabatic | Kernel::Hartree)
             && self.formulation == Formulation::Fixed;
         if let Some(given) = request.statics {
             return self.trace(sampler, request, Some(given));
@@ -1593,13 +1626,27 @@ impl Prepared {
     }
 
     fn check_densities(&self, densities: &[Matrix]) -> Result<()> {
-        let m = self.crystal.m;
+        let m = self.crystal.bands();
         if densities.len() != self.channels.len() || densities.iter().any(|d| d.shape() != (m, m)) {
             return Err(invalid(format!(
-                "one m x m density matrix per (spin, k) channel is needed ({} of {m} x {m})",
+                "one {m} x {m} density matrix per (spin, k) channel is needed ({} of {m} x {m})",
                 self.channels.len()
             )));
         }
+        Ok(())
+    }
+
+    fn attach_hartree_frozen(&self, map: &mut CrystalMap<'_>) -> Result<()> {
+        let c = &self.crystal;
+        let densities: Vec<Matrix> = self.channels.iter().map(Channel::density).collect();
+        let (rho0, _) = density(c, &basis_densities(c, &densities)?)?;
+        let xc0 = exchange_correlation(c, &mut map.fft, rho0.as_slice(), None)?;
+        let e0 = if c.spinor || !matches!(c.functional.as_str(), "lda" | "pbe") {
+            xc0.energy
+        } else {
+            collinear_xc_energy(c, &mut map.fft, rho0.as_slice(), c.spins)?
+        };
+        map.frozen_xc = Some((xc0.potential, e0, rho0));
         Ok(())
     }
 
@@ -1622,8 +1669,13 @@ impl Prepared {
             ));
         }
         let mut statics = request.clone();
-        statics.kernel = Kernel::Adiabatic;
+        if statics.kernel == Kernel::Independent {
+            statics.kernel = Kernel::Adiabatic;
+        }
         let mut map = CrystalMap::new(&self.crystal, &self.momenta, &statics, self.direction)?;
+        if statics.kernel == Kernel::Hartree {
+            self.attach_hartree_frozen(&mut map)?;
+        }
         let nk = self.crystal.points.len();
         let lowest = |focks: &[Matrix], a: f64| -> Result<Vec<Matrix>> {
             focks
@@ -1632,7 +1684,7 @@ impl Prepared {
                 .map(|(idx, f)| {
                     let mut h = f.clone();
                     for axis in 0..3 {
-                        h += &self.momenta[idx % nk][axis] * C64::new(a * self.direction[axis], 0.);
+                        h += &self.momenta[idx][axis] * C64::new(a * self.direction[axis], 0.);
                     }
                     let (_, vectors) = eigen((&h + h.adjoint()) * C64::new(0.5, 0.))?;
                     let channel = &self.channels[idx];
@@ -1651,7 +1703,7 @@ impl Prepared {
                     .enumerate()
                     .map(|(idx, d)| {
                         self.crystal.points[idx % nk].weight
-                            * (d * &self.momenta[idx % nk][axis]).trace().re
+                            * (d * &self.momenta[idx][axis]).trace().re
                     })
                     .sum()
             })
@@ -1773,13 +1825,7 @@ impl Prepared {
         let mut map = CrystalMap::new(c, &self.momenta, request, direction)?;
         match request.kernel {
             Kernel::Independent => map.frozen = Some(self.ground.clone()),
-            Kernel::Hartree => {
-                let densities: Vec<Matrix> = self.channels.iter().map(Channel::density).collect();
-                let (rho0, _) = density(c, &basis_densities(c, &densities)?)?;
-                let xc0 = exchange_correlation(c, &mut map.fft, rho0.as_slice(), None)?;
-                let e0 = collinear_xc_energy(c, &mut map.fft, rho0.as_slice(), c.spins)?;
-                map.frozen_xc = Some((xc0.potential, e0, rho0));
-            }
+            Kernel::Hartree => self.attach_hartree_frozen(&mut map)?,
             Kernel::Adiabatic => {}
         }
         // The field adds A . P_o to the width the stability bound reads.

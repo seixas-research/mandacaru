@@ -72,9 +72,9 @@ def build(driver, geometry):
         spin_orbit=any(species[symbol].has_spin_orbit for symbol in unique),
         **({"hubbard": driver._hubbard_u} if getattr(driver, "_hubbard_u", None) is not None else {}),
     )
-    # A spin-orbit dataset keeps its spin-orbit term for spinor Kohn-Sham only.
-    if metadata["spin_orbit"] and driver.method != "dft":
-        raise NotImplementedError("a molecule with a spin-orbit dataset needs method='dft' (spinor Kohn-Sham)")
+    # Spin-collinear Hartree-Fock cannot carry spin-orbit coupling; GHF, DFT, and quantum solvers can.
+    if metadata["spin_orbit"] and driver.method in ("rhf", "uhf"):
+        raise NotImplementedError("spin-collinear Hartree-Fock on a spin-orbit dataset needs method='ghf', a variational solver, or 'dft'")
     for index, symbol in enumerate(unique):
         payload, record = record_of(species[symbol])
         metadata["species"].append(dict(record=payload, tables=f"s{index}."))

@@ -160,8 +160,31 @@ pub(super) fn response_with_shared(
     gradients: Option<&RealSamples>,
     screened: Option<&Screening>,
 ) -> Result<(Vec<Matrix>, Fields, f64, f64)> {
+    response_shared_with_hubbard(integrals, d, name, gradients, screened, true)
+}
+
+/// [`response_with_shared`] without evaluating the collinear `+U` correction (for
+/// `spinor_dft::spinor_parts`, which evaluates the full `2p x 2p` spinor Hubbard term itself).
+pub(super) fn response_without_hubbard(
+    integrals: &MolecularIntegrals,
+    d: &[Matrix],
+    name: &str,
+    gradients: Option<&RealSamples>,
+    screened: Option<&Screening>,
+) -> Result<(Vec<Matrix>, Fields, f64, f64)> {
+    response_shared_with_hubbard(integrals, d, name, gradients, screened, false)
+}
+
+fn response_shared_with_hubbard(
+    integrals: &MolecularIntegrals,
+    d: &[Matrix],
+    name: &str,
+    gradients: Option<&RealSamples>,
+    screened: Option<&Screening>,
+    include_hubbard: bool,
+) -> Result<(Vec<Matrix>, Fields, f64, f64)> {
     let mut poisson = Poisson::isolated(&integrals.context, &integrals.grid)?;
-    let evaluation = evaluate_with(
+    let evaluation = evaluate_with_options(
         integrals,
         &integrals.kohn_sham_core(),
         d,
@@ -173,6 +196,7 @@ pub(super) fn response_with_shared(
         None,
         false,
         None,
+        include_hubbard,
     )?;
     let fields = evaluation
         .fields
@@ -604,14 +628,57 @@ fn evaluate_with(
     screened: Option<&Screening>,
     retain: bool,
     scratch: Option<(&mut [C64], &mut [C64])>,
+    complex_density: bool,
+    field: Option<[f64; 3]>,
+) -> Result<Evaluation> {
+    evaluate_with_options(
+        integrals,
+        h,
+        d,
+        name,
+        poisson,
+        orbital_gradients,
+        screened,
+        retain,
+        scratch,
+        complex_density,
+        field,
+        true,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn evaluate_with_options(
+    integrals: &MolecularIntegrals,
+    h: &Matrix,
+    d: &[Matrix],
+    name: &str,
+    poisson: &mut Poisson,
+    orbital_gradients: Option<&RealSamples>,
+    screened: Option<&Screening>,
+    retain: bool,
+    scratch: Option<(&mut [C64], &mut [C64])>,
     // The real-time path reads Im D: +U on the complex occupations and, for a meta-GGA, the
     // paramagnetic current of the gauge-invariant kinetic density; the SCF and the response keep
     // the real path bit for bit.
     complex_density: bool,
     // The velocity gauge's uniform vector potential, which a meta-GGA's kinetic fields carry.
     field: Option<[f64; 3]>,
+    include_hubbard: bool,
 ) -> Result<Evaluation> {
     let ctx = &integrals.context;
+    if include_hubbard
+        && integrals
+            .corrections
+            .as_ref()
+            .is_some_and(|c| c.hubbard.is_some())
+    {
+        let precision = match integrals.precision() {
+            crate::math::storage::Precision::Float64 => "float64",
+            crate::math::storage::Precision::Float32 => "float32",
+        };
+        crate::models::hubbard_request::check_scope(name, precision)?;
+    }
     let m = integrals.m();
     let n = integrals.grid.index.points();
     let dv = integrals.grid.index.dv();
@@ -914,10 +981,14 @@ fn evaluate_with(
         }
         _ => None,
     };
-    let hubbard = integrals
-        .corrections
-        .as_ref()
-        .and_then(|c| c.hubbard.as_ref());
+    let hubbard = if include_hubbard {
+        integrals
+            .corrections
+            .as_ref()
+            .and_then(|c| c.hubbard.as_ref())
+    } else {
+        None
+    };
     let hubbard_eval = match hubbard {
         Some(hubbard) if !complex_density => Some(hubbard.evaluate(ctx, d)?),
         _ => None,
@@ -1024,20 +1095,18 @@ impl MolecularIntegrals {
         let Some((omega, fraction)) = crate::models::functional(name)?.screened_exchange else {
             return Ok(None);
         };
-        // A hybrid's exact exchange includes the valence's exchange with the frozen core. The
-        // screened one-center terms carry none of their own and the Hartree-Fock operator
-        // `paw::core_exchange` is bare, not screened, so a hybrid keeps the rule it has always had:
-        // an empty core or a single closed 1s shell (not measured for a core of several shells).
-        if self
+        if let Some(c) = self
             .corrections
             .as_ref()
-            .is_some_and(|c| !c.hybrid_core_supported)
+            .filter(|c| !c.hybrid_core_supported)
         {
+            let reason = c
+                .core_refusal
+                .as_deref()
+                .unwrap_or("missing or open frozen-core states");
             return Err(invalid(format!(
-                "{name} takes {fraction} of exact exchange, and its screened core-valence exchange \
-                 is available for an empty core or a single closed 1s shell only: a hybrid \
-                 functional of this molecule is not available; a semilocal functional runs on \
-                 every element"
+                "{name} takes {fraction} of exact exchange, which requires closed frozen-core \
+                 states ({reason}); a semilocal functional runs on every element"
             )));
         }
         let (ctx, m) = (&self.context, self.m());
@@ -1103,6 +1172,17 @@ impl MolecularIntegrals {
     /// hybrid's exact exchange and its PAW spheres' terms are included.
     pub fn kohn_sham_energy(&self, functional: &str, d: &[Matrix]) -> Result<f64> {
         let definition = crate::models::functional(functional)?;
+        if self
+            .corrections
+            .as_ref()
+            .is_some_and(|c| c.hubbard.is_some())
+        {
+            let precision = match self.precision() {
+                crate::math::storage::Precision::Float64 => "float64",
+                crate::math::storage::Precision::Float32 => "float32",
+            };
+            crate::models::hubbard_request::check_scope(functional, precision)?;
+        }
         let m = self.m();
         if d.is_empty() || d.len() > 2 || d.iter().any(|d| d.shape() != (m, m)) {
             return Err(invalid("Kohn-Sham energy needs one or two spin densities"));
@@ -1314,8 +1394,110 @@ impl MolecularIntegrals {
         smearing: &str,
         width: f64,
     ) -> Result<MeanField> {
-        let scheme = crate::periodic::spectrum::Smearing::parse(smearing)?;
-        if scheme != crate::periodic::spectrum::Smearing::FermiDirac {
+        self.collinear_kohn_sham_solve(
+            functional,
+            particles,
+            unrestricted,
+            options,
+            smearing,
+            width,
+            None,
+            None,
+        )
+    }
+
+    /// Evaluates the orthonormal-frame Kohn-Sham Fock matrices and total energy for densities `d`.
+    pub(crate) fn kohn_sham_fock(
+        &self,
+        functional: &str,
+        d: &[Matrix],
+    ) -> Result<(Vec<Matrix>, f64)> {
+        let m = self.m();
+        if d.is_empty() || d.len() > 2 || d.iter().any(|d| d.shape() != (m, m)) {
+            return Err(invalid("Kohn-Sham Fock needs one or two spin densities"));
+        }
+        let ctx = &self.context;
+        let definition = crate::models::functional(functional)?;
+        let screened = self.screening(functional)?;
+        let mut poisson = Poisson::isolated(ctx, &self.grid)?;
+        let gradients = if definition.requires_tau {
+            Some(orbital_gradients(self)?)
+        } else {
+            None
+        };
+        let value = evaluate(
+            self,
+            &self.kohn_sham_core(),
+            d,
+            functional,
+            &mut poisson,
+            gradients.as_ref(),
+            screened.as_ref(),
+        )?;
+        Ok((value.f, value.energy))
+    }
+
+    /// Restarts a converged collinear Kohn-Sham calculation from `ground_state` with optional
+    /// per-spin one-body potential shifts `shifts` (`alpha` additions in the orthonormal frame,
+    /// Hartree), keeping the electron count and Fermi-Dirac width fixed (`MP-6`).
+    pub fn kohn_sham_from(
+        &self,
+        functional: &str,
+        ground_state: &MeanField,
+        shifts: Option<&[Matrix]>,
+        width: Option<f64>,
+        options: &ScfOptions,
+    ) -> Result<MeanField> {
+        if self.paw_setup.as_ref().is_some_and(|s| s.has_spin_orbit()) {
+            return Err(crate::Error::Unsupported(
+                "a molecule with spin-orbit datasets uses spinor_kohn_sham_shifted".into(),
+            ));
+        }
+        if ground_state.method == "ghf" {
+            return Err(invalid(
+                "kohn_sham_from expects a collinear reference (use spinor_kohn_sham_shifted for spinors)",
+            ));
+        }
+        if !ground_state.converged {
+            return Err(invalid("kohn_sham_from needs a converged starting state"));
+        }
+        let unrestricted = ground_state.method == "uhf";
+        let channels = if unrestricted { 2 } else { 1 };
+        let m = self.m();
+        if let Some(s) = shifts {
+            if s.len() != channels || s.iter().any(|mat| mat.shape() != (m, m)) {
+                return Err(invalid("shift operators must match spin channels and AO size"));
+            }
+        }
+        let w = width
+            .or(ground_state.smearing_width)
+            .unwrap_or(occupation::DEFAULT_WIDTH);
+        self.collinear_kohn_sham_solve(
+            functional,
+            ground_state.particles,
+            unrestricted,
+            options,
+            "fermi-dirac",
+            w,
+            Some((ground_state.coefficients.clone(), ground_state.energies.clone())),
+            shifts,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn collinear_kohn_sham_solve(
+        &self,
+        functional: &str,
+        particles: [usize; 2],
+        unrestricted: bool,
+        options: &ScfOptions,
+        smearing: &str,
+        width: f64,
+        warm_start: Option<(Vec<Matrix>, Vec<Vec<f64>>)>,
+        shifts: Option<&[Matrix]>,
+    ) -> Result<MeanField> {
+        let scheme = crate::math::smearing::Smearing::parse(smearing)?;
+        if scheme != crate::math::smearing::Smearing::FermiDirac {
             return Err(crate::Error::Unsupported(format!(
                 "a molecule takes Fermi-Dirac occupations only, not {} smearing",
                 scheme.name()
@@ -1330,6 +1512,17 @@ impl MolecularIntegrals {
             ));
         }
         let definition = crate::models::functional(functional)?;
+        if self
+            .corrections
+            .as_ref()
+            .is_some_and(|c| c.hubbard.is_some())
+        {
+            let precision = match self.precision() {
+                crate::math::storage::Precision::Float64 => "float64",
+                crate::math::storage::Precision::Float32 => "float32",
+            };
+            crate::models::hubbard_request::check_scope(functional, precision)?;
+        }
         self.context.run(|| {
             let m = self.m();
             let ctx = &self.context;
@@ -1356,21 +1549,21 @@ impl MolecularIntegrals {
                     .ok_or(crate::Error::Overflow)?,
             )?;
             let h = self.kohn_sham_core();
-            let (core_levels, core) = crate::math::linalg::eigen(h.clone())?;
             let channels = if unrestricted { 2 } else { 1 };
-            // Each start with the levels of its orbitals, from which its first occupations are
-            // filled.
-            let mut starts: Vec<(Vec<Matrix>, Vec<Vec<f64>>)> = vec![(
-                vec![core.clone(); channels],
-                vec![core_levels.clone(); channels],
-            )];
+            let mut starts: Vec<(Vec<Matrix>, Vec<Vec<f64>>)> = match warm_start {
+                Some(pair) => vec![pair],
+                None => {
+                    let (core_levels, core) = crate::math::linalg::eigen(h.clone())?;
+                    vec![(vec![core; channels], vec![core_levels; channels])]
+                }
+            };
             let occupations = if unrestricted {
                 particles.to_vec()
             } else {
                 vec![particles[0]]
             };
             let mut poisson = Poisson::isolated(ctx, &self.grid)?;
-            if options.guesses >= 2 {
+            if shifts.is_none() && starts.len() == 1 && options.guesses >= 2 {
                 let d = starts[0]
                     .0
                     .iter()
@@ -1400,12 +1593,14 @@ impl MolecularIntegrals {
                 let levels = solved.iter().map(|(e, _)| e.clone()).collect();
                 starts.push((solved.into_iter().map(|(_, c)| c).collect(), levels));
             }
-            if unrestricted
+            if shifts.is_none()
+                && unrestricted
                 && options.guesses >= 3
                 && particles[0] == particles[1]
                 && particles[0] > 0
                 && particles[0] < m
             {
+                let (_, core) = crate::math::linalg::eigen(h.clone())?;
                 let i = particles[0] - 1;
                 let a = particles[0];
                 let mut pair = vec![core.clone(), core.clone()];
@@ -1464,7 +1659,7 @@ impl MolecularIntegrals {
                         }),
                         options,
                         |d: &[Matrix]| {
-                            let value = evaluate_scratch(
+                            let mut value = evaluate_scratch(
                                 self,
                                 &h,
                                 d,
@@ -1477,10 +1672,17 @@ impl MolecularIntegrals {
                                     hartree_scratch.as_mut_slice(),
                                 )),
                             )?;
+                            if let Some(sh) = shifts {
+                                let degen = if unrestricted { 1. } else { 2. };
+                                for (s, (f_s, d_s)) in value.f.iter_mut().zip(d).enumerate() {
+                                    *f_s += &sh[s];
+                                    value.energy += degen * (d_s * &sh[s]).trace().re;
+                                }
+                            }
                             Ok((value.f, value.energy))
                         },
                     )?;
-                    let value = evaluate(
+                    let mut value = evaluate(
                         self,
                         &h,
                         &run.densities,
@@ -1489,6 +1691,13 @@ impl MolecularIntegrals {
                         orbital_gradients.as_ref(),
                         screened.as_ref(),
                     )?;
+                    if let Some(sh) = shifts {
+                        let degen = if unrestricted { 1. } else { 2. };
+                        for (s, (f_s, d_s)) in value.f.iter_mut().zip(&run.densities).enumerate() {
+                            *f_s += &sh[s];
+                            value.energy += degen * (d_s * &sh[s]).trace().re;
+                        }
+                    }
                     // The aufbau test: a level holding more than a lower one (unshifted Fock), which
                     // Fermi-Dirac occupations never do; a level shift can hold such a state. It is
                     // kept, labeled, and a candidate that passes is preferred.

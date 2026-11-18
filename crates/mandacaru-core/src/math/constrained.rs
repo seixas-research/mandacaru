@@ -42,7 +42,9 @@ pub fn minimum(
     let mut padded = M::zeros(size, columns);
     padded.rows_mut(0, rows).copy_from(a);
     let svd = padded.svd(true, true);
-    let (u, vt, sigma) = (svd.u.unwrap(), svd.v_t.unwrap(), svd.singular_values);
+    let (Some(u), Some(vt), sigma) = (svd.u, svd.v_t, svd.singular_values) else {
+        return Err(invalid("SVD of linear constraint matrix failed"));
+    };
     let top = sigma.max();
     if top == 0. && b.iter().any(|v| v.abs() > 1e-12) {
         return Err(invalid("inconsistent zero constraint"));

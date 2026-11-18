@@ -106,9 +106,24 @@ pub fn rows(ds: &PawDataset, measured: &Measured, recorded: bool) -> Vec<Row> {
         },
     ));
 
-    // G3: scattering phases, worst over the channels.
+    // G3: scattering phases, worst over the channels (j-branch checks gate bound-occupied shells;
+    // empty scattering channels follow the box wall and remain informational in Diagnostics).
     let scalar: Vec<_> = d.phases.iter().filter(|(k, _)| k.kappa.is_none()).collect();
-    let branches: Vec<_> = d.phases.iter().filter(|(k, _)| k.kappa.is_some()).collect();
+    let branches: Vec<_> = d
+        .phases
+        .iter()
+        .filter(|(k, _)| {
+            k.kappa.is_some()
+                && ds.channels.get(&(k.l as u32)).is_some_and(|ch| {
+                    ch.occupation > 0.0
+                        && ch
+                            .reference_energies
+                            .data()
+                            .first()
+                            .is_some_and(|&e| e < 0.0)
+                })
+        })
+        .collect();
     for (label, set) in [("", scalar), ("j-branch ", branches)] {
         if set.is_empty() && !label.is_empty() {
             continue;

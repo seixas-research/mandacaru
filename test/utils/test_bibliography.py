@@ -214,7 +214,7 @@ class TestEveryRegisteredChoiceIsCitable:
         assert set(_EIGENSOLVER_KEYS) == {"direct", "davidson", "rmm-diis",
                                           "mixed"}
         assert set(_EXXDIV_KEYS) == set(_EXXDIV_TREATMENTS)
-        assert set(_HUBBARD_KEYS) == {"dudarev-fll", "liechtenstein-fll",
+        assert set(_HUBBARD_KEYS) == {"dudarev", "liechtenstein",
                                       "linear-response"}
 
     def test_every_key_in_every_table_exists(self):
@@ -473,9 +473,9 @@ class TestWhatTheCodeImplementsIsCited:
         assert "Mermin1965" in citation_keys(smearing="fermi-dirac")
 
     def test_the_hubbard_forms_and_their_response_cite_their_papers(self):
-        assert "Dudarev1998" in citation_keys(hubbard="dudarev-fll")
-        assert "Liechtenstein1995" in citation_keys(hubbard="liechtenstein-fll")
-        both = citation_keys(hubbard=("dudarev-fll", "linear-response"))
+        assert "Dudarev1998" in citation_keys(hubbard="dudarev")
+        assert "Liechtenstein1995" in citation_keys(hubbard="liechtenstein")
+        both = citation_keys(hubbard=("dudarev", "linear-response"))
         assert {"Dudarev1998", "Cococcioni2005"} <= set(both)
         assert not {"Dudarev1998", "Liechtenstein1995"} & set(citation_keys())
 
@@ -516,6 +516,14 @@ class TestWhatTheCodeImplementsIsCited:
         assert "GoogleQuantumAI2025" not in citation_keys(
             analysis="time-evolution")
         assert {"Kuhn1960", "Doi1991"} <= set(citation_keys(analysis="isosurface"))
+        assert {"KingSmith1993", "Resta1994", "Gonze1997"} <= set(
+            citation_keys(analysis="born-charges"))
+        assert {"KingSmith1993", "Vanderbilt2000", "Gonze1997"} <= set(
+            citation_keys(analysis="piezoelectric"))
+        assert {"Marzari1997", "Marzari2012", "Pipek1989", "Jonsson2017"} <= set(
+            citation_keys(analysis="wannier-populations"))
+        assert {"Marzari1997", "Marzari2012", "Wang2006"} <= set(
+            citation_keys(analysis="wannier-interpolation"))
 
     def test_the_records_fixed_by_the_audit(self):
         helgaker = bib.REFERENCES["Helgaker1989"]

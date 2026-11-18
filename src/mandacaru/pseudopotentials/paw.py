@@ -186,6 +186,8 @@ class PAWDataset(PseudoPotential):
     #: The frozen core's subshells (``n``, ``l``, ``occupation``, ``energy``, ``table`` and the
     #: radial ``orbital``); empty for a species without a core.
     core_states: list = field(default_factory=list)
+    #: Generator provenance metadata (``None`` for files written before provenance existed).
+    provenance: dict | None = None
 
     def projector_radius(self, l: int) -> float:
         """Radius beyond which channel ``l``'s projectors vanish and the
@@ -196,8 +198,7 @@ class PAWDataset(PseudoPotential):
         if radii is None:
             from .record import record_of
 
-            radii = self._projector_radii = _native.paw_projector_radii(
-                context(), *record_of(self))
+            radii = self._projector_radii = _native.paw_projector_radii(context(), *record_of(self))
         return float(radii[int(l)])
 
     @property

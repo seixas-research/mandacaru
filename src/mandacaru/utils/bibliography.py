@@ -414,8 +414,19 @@ _ALGORITHMS = [
   pages   = {147--151},
   year    = {2000},
   doi     = {10.1016/S0022-3697(99)00273-5}
-}""", "the proper piezoelectric tensor (piezoelectric_tensor)",
-         verified=True, topics=("polarization", "piezoelectric")),
+}""", "the proper piezoelectric tensor (get_piezoelectric_tensor)",
+         verified=False, topics=("polarization", "piezoelectric")),
+    _ref("Gonze1997", """
+@article{Gonze1997,
+  author  = {Gonze, Xavier and Lee, Changyol},
+  title   = {Dynamical matrices, Born effective charges, dielectric permittivity tensors, and interatomic force constants from density-functional perturbation theory},
+  journal = {Phys. Rev. B},
+  volume  = {55},
+  pages   = {10355--10368},
+  year    = {1997},
+  doi     = {10.1103/PhysRevB.55.10355}
+}""", "Born effective charges, force constants and relaxed-ion internal-strain response (get_born_effective_charges, get_piezoelectric_tensor)",
+         verified=False, topics=("polarization", "born charges")),
     _ref("Souza2002", """
 @article{Souza2002,
   author  = {Souza, Ivo and {\\'I}{\\~n}iguez, Jorge and Vanderbilt, David},
@@ -477,6 +488,69 @@ _ALGORITHMS = [
   doi     = {10.1103/PhysRevB.65.035109}
 }""", "the disentanglement of entangled bands (wannier with windows)",
          verified=True, topics=("wannier",)),
+    _ref("Pipek1989", """
+@article{Pipek1989,
+  author  = {Pipek, J{\\'a}nos and Mezey, Paul G.},
+  title   = {A fast intrinsic localization procedure applicable for {\\it ab initio}
+             and semiempirical linear combination of atomic orbital wave functions},
+  journal = {J. Chem. Phys.},
+  volume  = {90},
+  pages   = {4916--4926},
+  year    = {1989},
+  doi     = {10.1063/1.456588}
+}""", "intrinsic atomic-population localization (Pipek-Mezey)",
+         verified=False, topics=("wannier",)),
+    _ref("Jonsson2017", """
+@article{Jonsson2017,
+  author  = {J{\\'o}nsson, Elvar {\\"O}. and Lehtola, Susi and Puska, Martti and
+             J{\\'o}nsson, Hannes},
+  title   = {Theory and application of generalized {P}ipek--{M}ezey {W}annier
+             functions},
+  journal = {J. Chem. Theory Comput.},
+  volume  = {13},
+  pages   = {460--474},
+  year    = {2017},
+  doi     = {10.1021/acs.jctc.6b00809}
+}""", "periodic generalized Pipek-Mezey Wannier functions "
+         "(wannier localization='populations')",
+         verified=False, topics=("wannier",)),
+    _ref("Wang2006", """
+@article{Wang2006,
+  author  = {Wang, Xinjie and Yates, Jonathan R. and Souza, Ivo and
+             Vanderbilt, David},
+  title   = {{{\\it Ab initio}} calculation of the anomalous {H}all
+             conductivity by {W}annier interpolation},
+  journal = {Phys. Rev. B},
+  volume  = {74},
+  pages   = {195118},
+  year    = {2006},
+  doi     = {10.1103/PhysRevB.74.195118}
+}""", "Wannier-interpolated anomalous Hall conductivity and band-sum Berry curvature",
+         verified=False, topics=("wannier", "topology")),
+    _ref("Thouless1984", """
+@article{Thouless1984,
+  author  = {Thouless, D. J.},
+  title   = {{W}annier functions for magnetic sub-bands},
+  journal = {J. Phys. C: Solid State Phys.},
+  volume  = {17},
+  pages   = {L325--L327},
+  year    = {1984},
+  doi     = {10.1088/0022-3719/17/12/003}
+}""", "topological obstruction to exponentially localized Wannier functions "
+         "in Chern bands",
+         verified=False, topics=("wannier", "topology")),
+    _ref("Brouder2007", """
+@article{Brouder2007,
+  author  = {Brouder, Christian and Panati, Gianluca and Calandra, Matteo and
+             Mourougane, Christophe and Marzari, Nicola},
+  title   = {Exponential localization of {W}annier functions in insulators},
+  journal = {Phys. Rev. Lett.},
+  volume  = {98},
+  pages   = {046402},
+  year    = {2007},
+  doi     = {10.1103/PhysRevLett.98.046402}
+}""", "Chern obstruction for exponentially localized Wannier functions in 2D and 3D",
+         verified=False, topics=("wannier", "topology")),
     _ref("Aryasetiawan2004", """
 @article{Aryasetiawan2004,
   author  = {Aryasetiawan, F. and Imada, M. and Georges, A. and Kotliar, G.

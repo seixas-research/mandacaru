@@ -37,12 +37,6 @@ def check_geometry(calculation, geometry):
             f"method={calculation.method!r} has no periodic form: use vqe, adapt-vqe, vasqa, "
             "valsqa, subspace-vasqa or subspace-valsqa for a crystal"
         )
-    if calculation._crystal_orbitals == "k-space":
-        raise NotImplementedError(
-            "crystal_orbitals='k-space' (Bloch orbitals with momentum-conserving excitations) "
-            "is not implemented yet: pass crystal_orbitals='real-space' to solve the supercell "
-            "in its real orbitals"
-        )
     _check_supercell_options(calculation)
     spec = calculation._kpts_spec
     if not (spec.get("gamma") or all(n % 2 == 1 for n in spec.get("size", (1, 1, 1)))):
@@ -58,6 +52,16 @@ def check_geometry(calculation, geometry):
                 "periodic: use 1 there"
             )
     return size
+
+
+def kspace_model(calculation, reference):
+    """Build the crystal-momentum Bloch model for ``crystal_orbitals='k-space'``, or return ``None``."""
+    if calculation._crystal_orbitals != "k-space" or calculation._supplied_model is not None or calculation._load_hamiltonian is not None:
+        return None
+    spec = None if calculation._active_spec is None else json.dumps(calculation._active_spec)
+    with calculation._stage("Bloch k-space orbital transformation"):
+        reference._model, mesh, orbital_k = calculation.native_reference.bloch_model(spec, representation=calculation._two_body_representation, truncation=calculation._two_body_truncation_ha)
+    return mesh, orbital_k
 
 
 def paw_supercell_integrals(calculation, geometry, size):
@@ -116,8 +120,7 @@ def check_derivatives(calculation, properties):
             raise NotImplementedError(
                 "crystal forces need the state vector (HAO differences its energies, PAW-LCAO "
                 "differentiates it); a circuit run (shots, a device, execute_circuits) has none")
-        if calculation._basis_spec is not None and calculation.method in (
-                "vasqa", "valsqa", "subspace-vasqa", "subspace-valsqa") and calculation._constructor_options.get("seed") is None:
+        if calculation._basis_spec is not None and calculation.capabilities.solver == "search" and calculation._constructor_options.get("seed") is None:
             raise ValueError(
                 "crystal forces of an architecture search difference energies of separate "
                 "searches: pass seed= so every displaced search runs the same chain"

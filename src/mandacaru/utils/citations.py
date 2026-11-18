@@ -115,8 +115,8 @@ _SMEARING_KEYS = {
 #: Hubbard correction (``hubbard_u=``): its ``form`` and the linear-response
 #: determination of U (``hubbard_response``).
 _HUBBARD_KEYS = {
-    "dudarev-fll": ("Dudarev1998",),
-    "liechtenstein-fll": ("Liechtenstein1995",),
+    "dudarev": ("Dudarev1998",),
+    "liechtenstein": ("Liechtenstein1995",),
     "linear-response": ("Cococcioni2005",),
 }
 
@@ -153,12 +153,16 @@ _ANALYSIS_KEYS = {
     "quantum-echoes": _TIME_EVOLUTION_KEYS + ("GoogleQuantumAI2025",),
     "nested-otoc": _TIME_EVOLUTION_KEYS + ("GoogleQuantumAI2025",),
     "wannier": ("Marzari1997", "Marzari2012"),
+    "wannier-populations": ("Marzari1997", "Marzari2012", "Pipek1989", "Jonsson2017"),
+    "wannier-interpolation": ("Marzari1997", "Marzari2012", "Wang2006"),
     # The downfolded many-body problem of Wannier functions: the truncated Coulomb interaction of
     # the fragment, and, with a screening, the constrained random-phase approximation in its
     # projector-weighted form.
     "downfold": ("Spencer2008",),
     "downfold-screening": ("Aryasetiawan2004", "Sasioglu2011", "Spencer2008"),
     "polarization": ("KingSmith1993", "Resta1994"),
+    "born-charges": ("KingSmith1993", "Resta1994", "Gonze1997"),
+    "piezoelectric": ("KingSmith1993", "Vanderbilt2000", "Gonze1997"),
     "berry-phase": ("Berry1984", "KingSmith1993", "Yu2011"),
     "berry-curvature": ("Fukui2005", "Xiao2010"),
     "z2": ("Fu2007", "Soluyanov2011a", "Soluyanov2011b", "Yu2011"),
@@ -345,15 +349,19 @@ def citation_keys(*, method=None, ansatz=None, pool=None, mapping=None,
     ``xc`` and ``vdw`` name the functional and the dispersion correction (``xc``
     as the calculator resolves it, ``"pbe+rvv10"`` included), ``smearing`` the
     occupation broadening of a crystal, ``hubbard`` the Hubbard form or forms
-    (``"dudarev-fll"``, ``"liechtenstein-fll"``) and ``"linear-response"`` when
+    (``"dudarev"``, ``"liechtenstein"``) and ``"linear-response"`` when
     U was determined, ``eigensolver`` and ``exxdiv_treatment`` the crystal
     eigensolver and the exact-exchange divergence treatment, ``device`` the
     simulated device (``"AER_mps"`` is a matrix-product-state simulation) and
     ``trotter`` the product-of-exponentials form of the ansatz.  ``analysis``
     names what a script computed afterwards: ``"tetrahedron-dos"``,
     ``"spectral-function"``, ``"band-path"``, ``"irreducible-zone"``, ``"time-evolution"``, ``"quantum-echoes"``,
-    ``"nested-otoc"``, ``"wannier"``, ``"downfold"`` (a Wannier fragment's many-body
-    problem), ``"downfold-screening"`` (the same with ``screening=``), ``"polarization"``,
+    ``"nested-otoc"``, ``"wannier"``, ``"wannier-populations"`` (Pipek-Mezey
+    atomic-population localization), ``"wannier-interpolation"``
+    (Wannier-interpolated anomalous Hall conductivity), ``"downfold"`` (a
+    Wannier fragment's many-body
+    problem), ``"downfold-screening"`` (the same with ``screening=``),
+    ``"polarization"``, ``"born-charges"``, ``"piezoelectric"``,
     ``"berry-phase"``, ``"berry-curvature"`` (with the Chern number), ``"z2"`` (the Z2 invariant,
     ``get_z2_invariant`` and the Wannier-center flow), ``"anomalous-hall"``,
     ``"excited-states"`` (``get_excitations``) or ``"isosurface"``.

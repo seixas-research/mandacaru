@@ -54,10 +54,6 @@ pub const FORMAT_TAG: &str = "mandacaru-pseudopotential";
 pub const FORMAT_VERSION: u64 = 3;
 /// The most core states a record may declare: every `(n, l)` with `n <= 7` and `l < n`.
 pub const MAX_CORE_STATES: usize = 28;
-/// The radial exchange-correlation schemes a record's core states may name as the one its
-/// reference atom was solved with (`PawDataset::core_scheme`): the legacy `AtomSolver` of the
-/// first library and the production `Variational` (`models::xc_scheme`).
-pub const CORE_SCHEMES: [&str; 2] = ["atom-solver", "variational"];
 /// The first bytes of what [`PawDataset::content_sha256`] hashes: a new content encoding gets a
 /// new tag.
 pub const CONTENT_TAG: &str = "mandacaru-paw-content/1\n";
@@ -216,6 +212,19 @@ pub struct CoreState {
     pub orbital: Buffer<f64>,
 }
 
+/// Generator provenance metadata carried in newly built format-3 records (`None` in files
+/// written before provenance existed). Excluded from [`PawDataset::content_sha256`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct Provenance {
+    pub generator: String,
+    pub version: String,
+    pub xc_scheme: String,
+    pub rc_factor: f64,
+    pub local_factor: f64,
+    pub n_bessel: u32,
+    pub search: Option<String>,
+}
+
 /// A PAW dataset: scalars, the radial tables and the per-channel matrices.
 ///
 /// Every field is public so a consumer reads what it needs without a copy. A record comes from
@@ -257,14 +266,12 @@ pub struct PawDataset {
     /// The occupied core subshells of the reference atom, in the order the core density is
     /// summed. Every file carries them; a record without them cannot be written.
     pub core_states: Option<Vec<CoreState>>,
-    /// The radial exchange-correlation scheme the core states were solved with, one of
-    /// [`CORE_SCHEMES`], when the record says. Bookkeeping like `core_states`: not part of the
-    /// content digest.
-    pub core_scheme: Option<String>,
     /// The keys the file did not carry and a default filled in (a file written
     /// before they existed): `"semicore_subshells"` and
     /// `"channels.<l>.occupations"`. Empty for a file with the full schema.
     pub defaults_applied: Vec<String>,
+    /// Generator provenance metadata (`None` for records built before provenance existed).
+    pub provenance: Option<Provenance>,
     pub(crate) _small: Reservation,
 }
 

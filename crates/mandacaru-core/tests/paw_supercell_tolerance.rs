@@ -77,7 +77,7 @@ fn run(
     }
 }
 
-fn silicon(basis: &str, mesh: [usize; 3]) -> Arc<mandacaru_core::periodic::setup::PeriodicSetup> {
+fn silicon(basis: &str, _mesh: [usize; 3]) -> Arc<mandacaru_core::periodic::setup::PeriodicSetup> {
     let ctx = Context::new(Some(2), 3 << 30).unwrap();
     let cell: Primitive = silicon_cell();
     Arc::new(cells_with_basis(

@@ -23,8 +23,15 @@
 //! operator (a subshell that is not closed, states that do not hold the core's electrons or do
 //! not reproduce the stored core density). The operator enters the one-center coupling in the raw
 //! projector basis as `V^-1 X V^-T`.
-use super::{invalid, onecenter_radial::three_j_squared, pair_tables::coulomb};
-use crate::{math::radial::integrate, Result};
+use super::{
+    invalid,
+    onecenter_radial::{long_range_radial_kernel, three_j_squared},
+    pair_tables::coulomb,
+};
+use crate::{
+    math::{radial::integrate, spline::simpson_weights},
+    Context, Result,
+};
 use nalgebra::DMatrix;
 use std::f64::consts::PI;
 
@@ -46,17 +53,50 @@ pub struct CoreShell<'a> {
 
 /// `X_ij` of the partial waves `waves` (on `r`, in the layout the species stores them) of the
 /// channel `l`, over the first `extent` points of the grid (the core's support).
-pub fn core_valence_exchange(
+pub fn core_valence_exchange<W: AsRef<[f64]>>(
     r: &[f64],
     l: usize,
-    waves: &[Vec<f64>],
+    waves: &[W],
     core: &[CoreShell<'_>],
     extent: usize,
+) -> Result<DMatrix<f64>> {
+    compute_core_valence_exchange(r, l, waves, core, extent, None)
+}
+
+/// Screened `erfc(omega R)/R` core-valence exchange `X_ij^SR(omega)` of the channel `l` over the
+/// first `extent` points of `r` (bare [`core_valence_exchange`] when `omega == 0`).
+pub fn screened_core_valence_exchange<W: AsRef<[f64]>>(
+    ctx: &Context,
+    r: &[f64],
+    l: usize,
+    waves: &[W],
+    core: &[CoreShell<'_>],
+    extent: usize,
+    omega: f64,
+) -> Result<DMatrix<f64>> {
+    if !omega.is_finite() || omega < 0. {
+        return Err(invalid("omega must be finite and nonnegative"));
+    }
+    if omega == 0. {
+        return compute_core_valence_exchange(r, l, waves, core, extent, None);
+    }
+    compute_core_valence_exchange(r, l, waves, core, extent, Some((ctx, omega)))
+}
+
+fn compute_core_valence_exchange<W: AsRef<[f64]>>(
+    r: &[f64],
+    l: usize,
+    waves: &[W],
+    core: &[CoreShell<'_>],
+    extent: usize,
+    screening: Option<(&Context, f64)>,
 ) -> Result<DMatrix<f64>> {
     if extent < 4 || extent > r.len() {
         return Err(invalid("invalid core radial extent"));
     }
-    if waves.iter().any(|w| w.len() < extent) || core.iter().any(|c| c.radial.len() < extent) {
+    if waves.iter().any(|w| w.as_ref().len() < extent)
+        || core.iter().any(|c| c.radial.len() < extent)
+    {
         return Err(invalid(
             "a wave or a core orbital is shorter than the core's extent",
         ));
@@ -72,9 +112,31 @@ pub fn core_valence_exchange(
                 shell.l, shell.occupation
             )));
         }
+    }
+    let lr = if let Some((ctx, omega)) = screening {
+        let mut levels: Vec<usize> = core
+            .iter()
+            .flat_map(|s| l.abs_diff(s.l)..=l + s.l)
+            .collect();
+        levels.sort_unstable();
+        levels.dedup();
+        let kernels = long_range_radial_kernel(ctx, r, r, &levels, omega, None)?;
+        let weights: Vec<f64> = simpson_weights(r)?
+            .into_iter()
+            .zip(r)
+            .map(|(w, &rk)| w * rk * rk)
+            .collect();
+        Some((levels, kernels, weights))
+    } else {
+        None
+    };
+    for shell in core {
         let pairs: Vec<Vec<f64>> = waves
             .iter()
-            .map(|w| (0..extent).map(|k| w[k] * shell.radial[k]).collect())
+            .map(|w| {
+                let w = w.as_ref();
+                (0..extent).map(|k| w[k] * shell.radial[k]).collect()
+            })
             .collect();
         for big_l in l.abs_diff(shell.l)..=l + shell.l {
             let angular = three_j_squared(l, big_l, shell.l)?;
@@ -82,12 +144,51 @@ pub fn core_valence_exchange(
                 continue;
             }
             let factor = -0.5 * shell.occupation * angular;
+            let contracted = if let Some((levels, kernels, weights)) = &lr {
+                let idx = levels
+                    .binary_search(&big_l)
+                    .map_err(|_| invalid("missing screened multipole kernel level"))?;
+                let kernel = &kernels[idx];
+                let rows: Vec<Vec<f64>> = pairs
+                    .iter()
+                    .map(|pair| {
+                        let weighted: Vec<f64> =
+                            pair.iter().zip(weights).map(|(p, w)| p * w).collect();
+                        (0..extent)
+                            .map(|row| {
+                                weights[row]
+                                    * kernel[row * extent..(row + 1) * extent]
+                                        .iter()
+                                        .zip(&weighted)
+                                        .map(|(k, v)| k * v)
+                                        .sum::<f64>()
+                            })
+                            .collect()
+                    })
+                    .collect();
+                Some(rows)
+            } else {
+                None
+            };
             for i in 0..refs {
-                for j in 0..refs {
-                    out[(i, j)] += factor
-                        * 0.5
+                for j in i..refs {
+                    let bare = 0.5
                         * (coulomb(r, &pairs[i], &pairs[j], big_l)
                             + coulomb(r, &pairs[j], &pairs[i], big_l));
+                    let long = match &contracted {
+                        Some(rows) => {
+                            let dot = |a: &[f64], b: &[f64]| -> f64 {
+                                a.iter().zip(b).map(|(x, y)| x * y).sum()
+                            };
+                            0.5 * (dot(&pairs[i], &rows[j]) + dot(&pairs[j], &rows[i]))
+                        }
+                        None => 0.,
+                    };
+                    let val = factor * (bare - long);
+                    out[(i, j)] += val;
+                    if j != i {
+                        out[(j, i)] += val;
+                    }
                 }
             }
         }
@@ -197,18 +298,37 @@ impl FrozenCore {
         Ok(Self { shells, extent })
     }
 
-    /// The core-valence exchange `X` of the partial waves `waves` (on the record's grid) of the
-    /// channel `l` ([`core_valence_exchange`]).
-    pub fn exchange(&self, r: &[f64], l: usize, waves: &[Vec<f64>]) -> Result<DMatrix<f64>> {
-        let shells: Vec<CoreShell<'_>> = self
-            .shells
+    fn core_shells(&self) -> Vec<CoreShell<'_>> {
+        self.shells
             .iter()
             .map(|(l, occupation, radial)| CoreShell {
                 l: *l,
                 occupation: *occupation,
                 radial,
             })
-            .collect();
-        core_valence_exchange(r, l, waves, &shells, self.extent)
+            .collect()
+    }
+
+    /// The core-valence exchange `X` of the partial waves `waves` (on the record's grid) of the
+    /// channel `l` ([`core_valence_exchange`]).
+    pub fn exchange<W: AsRef<[f64]>>(
+        &self,
+        r: &[f64],
+        l: usize,
+        waves: &[W],
+    ) -> Result<DMatrix<f64>> {
+        core_valence_exchange(r, l, waves, &self.core_shells(), self.extent)
+    }
+
+    /// Screened short-range `erfc(omega R)/R` core-valence exchange `X^SR(omega)` of `waves`.
+    pub fn screened_exchange<W: AsRef<[f64]>>(
+        &self,
+        ctx: &Context,
+        r: &[f64],
+        l: usize,
+        waves: &[W],
+        omega: f64,
+    ) -> Result<DMatrix<f64>> {
+        screened_core_valence_exchange(ctx, r, l, waves, &self.core_shells(), self.extent, omega)
     }
 }

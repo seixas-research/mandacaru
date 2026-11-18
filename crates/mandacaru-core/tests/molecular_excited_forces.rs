@@ -1186,8 +1186,8 @@ fn the_hartree_fock_excited_state_gradients_of_h3_follow_their_energies() {
 }
 
 /// The two +U forms on copper's 3d shell (eV).
-const DUDAREV: (&str, f64, f64) = ("dudarev-fll", 20., 0.);
-const LIECHTENSTEIN: (&str, f64, f64) = ("liechtenstein-fll", 20., 3.);
+const DUDAREV: (&str, f64, f64) = ("dudarev", 20., 0.);
+const LIECHTENSTEIN: (&str, f64, f64) = ("liechtenstein", 20., 3.);
 
 /// A bent, unequal H-Cu-H anion from the `lda-sr` library (`$MANDACARU_PAW_PATH`; a missing
 /// library FAILS) with a +U shell on copper's 3d (a real occupation near 10), and its occupied

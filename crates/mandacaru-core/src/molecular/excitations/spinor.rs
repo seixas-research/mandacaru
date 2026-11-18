@@ -147,12 +147,12 @@ pub(super) fn project(modes: &[Vec<f64>], x: &mut [f64]) {
 impl<'a> Spinor<'a> {
     /// The operator of `reference`, a converged spinor Kohn-Sham state of `integrals`.
     pub fn new(integrals: &'a MolecularIntegrals, reference: &MeanField) -> Result<Self> {
-        let unsupported = |what: &str| Err(crate::Error::Unsupported(what.into()));
         super::response::check_common(integrals, reference)?;
         let name = reference.functional.as_deref().ok_or_else(|| {
             invalid("two-component Hartree-Fock (method='ghf') has no response yet")
         })?;
         let definition = crate::models::functional(name)?;
+        let unsupported = |what: &str| Err(crate::Error::Unsupported(what.into()));
         if definition.requires_tau
             || definition.screened_exchange.is_some()
             || definition.nonlocal_b.is_some()
@@ -365,6 +365,9 @@ impl<'a> Spinor<'a> {
                 pairs += b.map(|y| C64::new(y * weight, 0.));
             }
             noncollinear::assemble_into(&mut fock, &[pairs], m);
+        }
+        if let Some(hub) = integrals.corrections.as_ref().and_then(|c| c.hubbard.as_ref()) {
+            fock += hub.spinor_linear(ctx, x)?;
         }
         Ok((fock, xc))
     }

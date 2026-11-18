@@ -35,25 +35,29 @@ options and hands the dataset and the basis recipe to it.
 
 | | |
 | --- | --- |
-| Methods | `rhf`, `uhf`, `dft` (`lda`, `pbe`, `r2scan` and the screened hybrid `hse06`), and the variational methods through an RHF or UHF reference |
-| Frozen-core exchange (Hartree–Fock, variational) | an empty core or any core of closed subshells whose states the dataset stores (1s 2s 2p for Si and Cu, a closed 1s for Na); a screened hybrid (`hse06`) only for an empty core or a single closed 1s shell |
+| Methods | `rhf`, `uhf`, `ghf`, `dft` (`lda`, `pbe`, `r2scan` and the screened hybrid `hse06`), and the variational methods (`vqe`, `adapt-vqe`, `vasqa`, `valsqa`) |
+| Frozen-core exchange (Hartree–Fock, screened hybrids, variational) | an empty core or any core of closed subshells whose `core_states` the dataset stores (`1s 2s 2p` for Si and Cu, closed `1s` for Li/Na) |
 | Forces | RHF, UHF and Kohn–Sham, `hse06` included ([Forces](forces_relaxation.md)) |
-| Spin-orbit datasets | a molecule on `lda-fr` or `pbe-fr` with `method="dft"` runs spinor (noncollinear, generalized) Kohn–Sham with the PAW spin-orbit projector term, for `lda`, `pbe`, `pbe+rvv10`, `r2scan` and `hse06`, with analytic forces; the reference state is a `ghf`-shaped spinor state carrying the functional (one set of 2m spinors) |
+| Spin-orbit datasets | a molecule on `lda-fr` or `pbe-fr` runs spinor Kohn–Sham with `method="dft"` (supporting `lda`, `pbe`, `pbe+rvv10`, `r2scan`, `hse06`, and analytic forces) or spinor variational methods (`ghf`, `vqe`, `adapt-vqe`, `vasqa`, `valsqa`) via a spinor `ghf` reference |
 | Geometry | molecules; a crystal reads its own datasets through the periodic setup |
 
 The following raise, or are not yet available ([open items](#not-yet-available)):
-a Hartree–Fock frozen core with a partially filled subshell (`ValueError`, naming the element); any method other than `dft` on a
-molecule with a spin-orbit dataset (`NotImplementedError`: "a molecule with a
-spin-orbit dataset needs method='dft' (spinor Kohn-Sham)"), and DFT+U there;
+a Hartree–Fock or screened-hybrid (`hse06`) frozen core with a partially filled
+subshell or missing/inconsistent `core_states` (`ValueError`, naming the element);
+`rhf`, `uhf`, or DFT+U on a molecule with a spin-orbit dataset (`NotImplementedError`);
 molecular stress; `precision="float32"` forces of the quantum methods (the
-Hartree–Fock and Kohn–Sham forces take `float32`, see [Forces](forces_relaxation.md));
-the GHF-to-quantum handoff.
+Hartree–Fock and Kohn–Sham forces take `float32`, see [Forces](forces_relaxation.md)).
 
-The two families of one-center terms differ by method. Kohn–Sham keeps the
-dataset's frozen one-center Hartree and exchange–correlation terms. Hartree–Fock
-and the variational methods carry the exact one-center Coulomb tensor, the frozen
-core's exchange and signed compensation factors inside each augmentation sphere,
-so their electron–electron interaction is exact there.
+The two families of one-center terms differ by method (see
+[the PAW-LCAO formulation note](../development/paw_formulation.md) for equations
+and audits). **Kohn–Sham** uses the Blöchl frozen-augmentation scheme linearized
+around the reference atom's density matrix $D^0$ (`ks_difference` plus
+full nonlinear compensation multipoles), while **Hartree–Fock and variational
+quantum methods** evaluate the exact one-center Coulomb tensor $\Delta W$ and
+exact core–valence exchange from `core_states` inside each augmentation sphere
+(keeping the one-center XC offset frozen at $D^0$). When `nlcc` is active, the
+grid XC terms evaluate on $\tilde{n} + \tilde{n}_c$ (`smooth_core`) to match
+the one-center subtraction.
 
 (paw-lcao-options)=
 ## Options
@@ -179,9 +183,10 @@ Mandacaru(method="rhf", basis={"name": "PAW-LCAO", "size": "DZP"},
 Running a Kohn–Sham functional on the other functional's set works but warns
 about the mismatch. `paw_dataset=` with a basis that reads no
 library is refused. A missing folder or an unset variable raises
-`LibraryPathError`, naming the `mandacaru-paw --set` command that fixes it. The
-spin-orbit sets serve two-component (spinor) Kohn–Sham: a crystal, or a molecule
-with `method="dft"`; any other method on a molecule raises (above).
+`LibraryPathError`, naming the `mandacaru-paw --set` command that fixes it. The spin-orbit sets serve two-component (spinor) calculations: Kohn–Sham on a
+crystal or molecule (`method="dft"`), as well as molecular `ghf` and variational
+quantum methods (`vqe`, `adapt-vqe`, `vasqa`, `valsqa`); `rhf` and `uhf` on a
+molecule raise (above).
 
 ### Dataset files
 
@@ -227,16 +232,21 @@ duplicated state, and more core electrons than the nuclear charge.
 
 The development tool `mandacaru-build` (`mandacaru.pseudopotentials.build_cli`, not an
 installed console command; generating a dataset is otherwise outside this manual)
-generates, writes, reads back and checks a dataset inside the native engine. The record
-never crosses into Python on its way to the file.
+generates, writes, reads back and checks a dataset inside the native engine
+using the format-3 **Variational** radial XC scheme (`models::spherical`).
+Unitary builds fix zero norm deficit (`norm_deficit = 0 (unitary)`, which is
+also the `UPAW-LCAO` convention), and in `mode="refuse"` or `"enforce"` any
+search that cannot clear ghost, node, or phase gates raises `GhostStateError`
+rather than emitting a defective record. Records never cross into Python on
+their way to the file.
 
-Hartree–Fock reads the core states: the exchange of the frozen core with the valence
-orbitals comes from the stored states, for an empty core or a core of closed subshells
-(1s 2s 2p for Si and Cu). A partially filled core subshell, and states that do not
-reproduce the stored core density, leave Hartree–Fock without a core exchange, and it
-refuses by name; the screened hybrid refuses any core beyond an empty one or a single
-closed 1s shell. Kohn–Sham never reads the core states
-([native cutover](../development/native_cutover.md)).
+Hartree–Fock and screened hybrids (`hse06`) read the core states: the exchange
+of the frozen core with the valence orbitals comes from the stored states, for
+an empty core or any core of closed subshells (`1s 2s 2p` for Si and Cu). A
+partially filled core subshell, or states that do not reproduce the stored core
+density to `1e-7`, leave Hartree–Fock and screened hybrids without a valid core
+operator and raise `ValueError` naming the element. Semilocal Kohn–Sham never
+reads `core_states` ([native cutover](../development/native_cutover.md)).
 
 ## Why the family is the basis
 

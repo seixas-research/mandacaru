@@ -29,11 +29,12 @@ use std::f64::consts::PI;
 /// projectors of every cell.
 pub struct Functions {
     pub ids: Vec<usize>,
-    /// `values[i]`: the supercell grid values (C order) of function `ids[i]`.
+    /// `values[i]`: the supercell grid values (C order), `[comp * cell.points() + pt]`.
     pub values: Vec<Buffer<C64>>,
-    /// `coefficients[i][t * p + j]`: `<p_{j, T_t}|w_{ids[i]}>`.
+    /// `coefficients[i][((comp * cells) + t) * p + j]`: `<p_{j, T_t}|w_{ids[i], comp}>`.
     pub coefficients: Vec<Buffer<C64>>,
     pub projectors: usize,
+    pub components: usize,
 }
 
 /// The home source of every supercell index along each axis for the function moved by `shift`
@@ -49,20 +50,24 @@ pub fn axis_sources(cell: &Cell, shift: [i64; 3]) -> [Vec<usize>; 3] {
     })
 }
 
-/// The projector coefficients of the function `ids[at]` moved by `shift`, `[t * p + j]`.
+/// The projector coefficients of the function `ids[at]` moved by `shift`, `[((comp * cells) + t) * p + j]`.
 pub fn shifted_coefficients(
     functions: &Functions,
     cell: &Cell,
     at: usize,
     shift: [i64; 3],
 ) -> Vec<C64> {
-    let p = functions.projectors;
-    let mut out = vec![C64::default(); cell.cells * p];
-    for t in 0..cell.cells {
-        let v = cell.cell_vector(t);
-        let source = cell.cell_of(std::array::from_fn(|a| v[a] - shift[a]));
-        out[t * p..(t + 1) * p]
-            .copy_from_slice(&functions.coefficients[at].as_slice()[source * p..(source + 1) * p]);
+    let (p, components) = (functions.projectors, functions.components);
+    let mut out = vec![C64::default(); components * cell.cells * p];
+    let src = functions.coefficients[at].as_slice();
+    for comp in 0..components {
+        let comp_offset = comp * cell.cells * p;
+        for t in 0..cell.cells {
+            let v = cell.cell_vector(t);
+            let source = cell.cell_of(std::array::from_fn(|a| v[a] - shift[a]));
+            out[comp_offset + t * p..comp_offset + (t + 1) * p]
+                .copy_from_slice(&src[comp_offset + source * p..comp_offset + (source + 1) * p]);
+        }
     }
     out
 }
@@ -81,23 +86,17 @@ pub fn supercell_functions(
             "a fragment names a Wannier function that does not exist",
         ));
     }
-    if crystal.spinor {
-        return Err(crate::Error::Unsupported(
-            "Wannier downfolding of a spinor crystal is not available: the two-component \
-             functions have no spin-resolved fragment model"
-                .into(),
-        ));
-    }
     if channel.frames.len() != cell.cells || channel.localized.gauge.len() != cell.cells {
         return Err(invalid("the channel does not fill the supercell's mesh"));
     }
+    let expected_components = if crystal.spinor { 2 } else { 1 };
     let bands = channel.localized.gauge[0].nrows();
     let sources = channel
         .frames
         .iter()
         .zip(&channel.localized.gauge)
         .map(|(frame, gauge)| {
-            if frame.components != 1 || gauge.nrows() != bands {
+            if frame.components != expected_components || gauge.nrows() != bands {
                 return Err(invalid(
                     "the frames of a channel must share their band space",
                 ));
@@ -107,6 +106,7 @@ pub fn supercell_functions(
                 samples: &frame.samples,
                 projections: &frame.projections,
                 gauge,
+                components: frame.components,
             })
         })
         .collect::<Result<Vec<_>>>()?;
@@ -121,6 +121,7 @@ pub struct Source<'a> {
     pub samples: &'a crate::math::storage::ComplexSamples,
     pub projections: &'a Matrix,
     pub gauge: &'a Matrix,
+    pub components: usize,
 }
 
 /// The supercell functions `w_n(r + T) = (1/N) sum_k e^{ik.T} sum_m U_mn(k) psi_mk(r)` of the
@@ -134,21 +135,28 @@ pub fn bloch_functions(
 ) -> Result<Functions> {
     let ctx = &crystal.context;
     let functions = sources.first().map_or(0, |s| s.gauge.ncols());
-    if sources.len() != cell.cells || ids.is_empty() || ids.iter().any(|n| *n >= functions) {
+    let components = sources.first().map_or(1, |s| s.components);
+    if sources.len() != cell.cells
+        || ids.is_empty()
+        || !(1..=2).contains(&components)
+        || sources.iter().any(|s| s.components != components)
+        || ids.iter().any(|n| *n >= functions)
+    {
         return Err(invalid(
             "supercell functions need one source per mesh point and existing gauge columns",
         ));
     }
     let n = crystal.grid.index.points();
     let p = crystal.p;
+    let cell_points = cell.points();
     let bands = sources[0].gauge.nrows();
     let mut values = ids
         .iter()
-        .map(|_| ctx.allocate::<C64>(product(&[cell.cells, n])?))
+        .map(|_| ctx.allocate::<C64>(product(&[components, cell.cells, n])?))
         .collect::<Result<Vec<_>>>()?;
     let mut coefficients = ids
         .iter()
-        .map(|_| ctx.allocate::<C64>(product(&[cell.cells, p])?))
+        .map(|_| ctx.allocate::<C64>(product(&[components, cell.cells, p])?))
         .collect::<Result<Vec<_>>>()?;
     let _work = ctx.reserve(product(&[ids.len() + 2, n, 16])?)?;
     let local: Vec<[usize; 3]> = (0..n)
@@ -163,51 +171,57 @@ pub fn bloch_functions(
         let gauge: &Matrix = source.gauge;
         if gauge.nrows() != bands
             || gauge.ncols() != functions
-            || source.projections.nrows() != bands
+            || source.projections.nrows() != components * bands
             || source.projections.ncols() != p
         {
             return Err(invalid(
                 "the sources of supercell functions must share their band space",
             ));
         }
-        for row in phi.iter_mut() {
-            row.fill(C64::default());
-        }
-        for m in 0..bands {
-            let sample = source.samples.read_range(ctx, m * n, n)?;
-            for (i, id) in ids.iter().enumerate() {
-                let u = gauge[(m, *id)];
-                if u.norm_sqr() == 0. {
-                    continue;
-                }
-                for (to, from) in phi[i].iter_mut().zip(sample.iter()) {
-                    *to += u * from;
-                }
+        for comp in 0..components {
+            for row in phi.iter_mut() {
+                row.fill(C64::default());
             }
-        }
-        // <p_j|w> of this k: conj(<psi_m|p_j>) U_mn
-        for (i, id) in ids.iter().enumerate() {
-            let mut a = vec![C64::default(); p];
             for m in 0..bands {
-                let u = gauge[(m, *id)];
-                for (j, slot) in a.iter_mut().enumerate() {
-                    *slot += u * source.projections[(m, j)].conj();
+                let sample = source.samples.read_range(ctx, (comp * bands + m) * n, n)?;
+                for (i, id) in ids.iter().enumerate() {
+                    let u = gauge[(m, *id)];
+                    if u.norm_sqr() == 0. {
+                        continue;
+                    }
+                    for (to, from) in phi[i].iter_mut().zip(sample.iter()) {
+                        *to += u * from;
+                    }
                 }
             }
-            for (t, vector) in cells.iter().enumerate() {
-                let angle = 2.
-                    * PI
-                    * (0..3)
-                        .map(|a| source.fractional[a] * vector[a] as f64)
-                        .sum::<f64>();
-                let phase = C64::from_polar(1. / cell.cells as f64, angle);
-                for (j, value) in a.iter().enumerate() {
-                    coefficients[i].as_mut_slice()[t * p + j] += phase * value;
+            let proj_base = comp * bands;
+            let coeff_offset = comp * cell.cells * p;
+            let val_offset = comp * cell_points;
+            // <p_j|w> of this k: conj(<psi_m|p_j>) U_mn
+            for (i, id) in ids.iter().enumerate() {
+                let mut a = vec![C64::default(); p];
+                for m in 0..bands {
+                    let u = gauge[(m, *id)];
+                    for (j, slot) in a.iter_mut().enumerate() {
+                        *slot += u * source.projections[(proj_base + m, j)].conj();
+                    }
                 }
-                let target = values[i].as_mut_slice();
-                let t3 = [vector[0] as usize, vector[1] as usize, vector[2] as usize];
-                for (j, value) in phi[i].iter().enumerate() {
-                    target[cell.point_of(t3, local[j])] += phase * value;
+                for (t, vector) in cells.iter().enumerate() {
+                    let angle = 2.
+                        * PI
+                        * (0..3)
+                            .map(|a| source.fractional[a] * vector[a] as f64)
+                            .sum::<f64>();
+                    let phase = C64::from_polar(1. / cell.cells as f64, angle);
+                    for (j, value) in a.iter().enumerate() {
+                        coefficients[i].as_mut_slice()[coeff_offset + t * p + j] += phase * value;
+                    }
+                    let target =
+                        &mut values[i].as_mut_slice()[val_offset..val_offset + cell_points];
+                    let t3 = [vector[0] as usize, vector[1] as usize, vector[2] as usize];
+                    for (j, value) in phi[i].iter().enumerate() {
+                        target[cell.point_of(t3, local[j])] += phase * value;
+                    }
                 }
             }
         }
@@ -217,5 +231,6 @@ pub fn bloch_functions(
         values,
         coefficients,
         projectors: p,
+        components,
     })
 }

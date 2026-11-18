@@ -38,6 +38,9 @@ pub struct Operations {
     pub rotations: Vec<[i32; 9]>,
     pub translations: Vec<[f64; 3]>,
     pub atom_maps: Vec<Vec<usize>>,
+    /// For a magnetic spinor crystal: whether each operation carries time reversal `T`.
+    /// `None` for nonmagnetic, collinear, or legacy snapshots without magnetic classification.
+    pub anti_unitary: Option<Vec<bool>>,
 }
 
 impl Operations {
@@ -47,7 +50,8 @@ impl Operations {
             .checked_add(
                 std::mem::size_of::<[i32; 9]>()
                     + std::mem::size_of::<[f64; 3]>()
-                    + std::mem::size_of::<Vec<usize>>(),
+                    + std::mem::size_of::<Vec<usize>>()
+                    + std::mem::size_of::<bool>(),
             )
             .ok_or(Error::Overflow)?;
         product(&[n, each])
@@ -57,10 +61,29 @@ impl Operations {
         let rows = |key: &str| list(&value[key], "the symmetry operations");
         // Sized exactly, so the description keeps what `Operations::bytes` reserved.
         let n = rows("rotations")?.len();
+        let anti_unitary = if value["anti_unitary"].is_null() {
+            None
+        } else {
+            let flags = list(&value["anti_unitary"], "the magnetic anti-unitary flags")?;
+            if flags.len() != n {
+                return Err(invalid(format!(
+                    "the symmetry operations list {n} rotations and {} anti_unitary flags",
+                    flags.len()
+                )));
+            }
+            let mut out_flags = Vec::with_capacity(n);
+            for flag in flags {
+                out_flags.push(flag.as_bool().ok_or_else(|| {
+                    invalid("the setup block: an anti_unitary entry must be a boolean")
+                })?);
+            }
+            Some(out_flags)
+        };
         let mut out = Operations {
             rotations: Vec::with_capacity(n),
             translations: Vec::with_capacity(n),
             atom_maps: Vec::with_capacity(n),
+            anti_unitary,
         };
         for w in rows("rotations")? {
             let w = list(w, "a rotation")?;
@@ -96,8 +119,15 @@ impl Operations {
     }
 
     fn to_json(&self) -> Value {
-        serde_json::json!({"rotations": self.rotations, "translations": self.translations,
-                           "atom_maps": self.atom_maps})
+        let mut out = serde_json::json!({
+            "rotations": self.rotations,
+            "translations": self.translations,
+            "atom_maps": self.atom_maps,
+        });
+        if let Some(flags) = &self.anti_unitary {
+            out["anti_unitary"] = serde_json::json!(flags);
+        }
+        out
     }
 }
 

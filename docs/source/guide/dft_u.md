@@ -30,7 +30,7 @@ atoms.calc = Mandacaru(
     basis={"name": "PAW-LCAO", "size": "SZ"},
     kpts={"size": (2, 2, 2), "gamma": True},
     spin=True,
-    hubbard_u={"Ni": {"l": "d", "U": 6.0, "J": 0.0, "form": "dudarev-fll"}},
+    hubbard_u={"Ni": {"l": "d", "U": 6.0, "J": 0.0, "form": "dudarev"}},
 )
 ```
 
@@ -39,9 +39,9 @@ atoms.calc = Mandacaru(
 * `"U"`: on-site Coulomb interaction parameter in eV (finite, $\ge 0$).
 * `"J"`: on-site Hund's exchange coupling parameter in eV (finite, $\ge 0$; defaults to 0.0).
 * `"form"`: functional formulation:
-  * `"dudarev-fll"`: simplified rotationally invariant Dudarev functional with fully localized limit (FLL) double counting (default).
-  * `"liechtenstein-fll"`: rotationally invariant Slater integral formulation with separate $U$ and $J$.
-* Optional Slater ratio parameters (Liechtenstein form): `"f4_f2"` ($F^4/F^2$) and `"f6_f2"` ($F^6/F^2$).
+  * `"dudarev"`: simplified rotationally invariant Dudarev functional with fully localized limit (FLL) double counting (default).
+  * `"liechtenstein"`: rotationally invariant Slater integral formulation with separate $U$ and $J$.
+* Optional Slater ratio parameters (`"form": "liechtenstein"` only): `"f4_f2"` ($F^4/F^2$) and `"f6_f2"` ($F^6/F^2$, $f$ shells only).
 
 Each atom of a listed element receives the correction on that shell; an element may carry
 one shell. Specifying no `hubbard_u` runs plain DFT, and passing $U = 0$ reproduces plain DFT
@@ -65,8 +65,9 @@ the shell projections of the moving atom, with the response of the orbitals in t
 grid for both forms and for a spin-polarized state (`result.force_details` lists the term as
 `hubbard/projection`). A request the molecule cannot carry raises when the calculation starts:
 an element the molecule does not contain, or a shell the dataset lacks, is an error and never
-runs as plain DFT. A molecule on a fully relativistic dataset (`lda-fr`, `pbe-fr`) runs spinor
-Kohn–Sham, which has no +U: `hubbard_u` raises `NotImplementedError`. A converged +U molecule also
+runs as plain DFT. A molecule on a fully relativistic dataset (`lda-fr`, `pbe-fr`) or with
+noncollinear moments runs spinor Kohn–Sham with DFT+U (`dudarev` and `liechtenstein`) and
+carries the spinor +U force term. A converged collinear +U molecule also
 takes `calc.get_excitations(...)`: the +U energy is quadratic in the shell occupations, so its
 response kernel is exact ([r2SCAN and DFT+U](#excited-states-meta-u)).
 
@@ -125,7 +126,7 @@ Mandacaru implements multiple DFT+U formalisms on the native engine:
 
 ### 1. Dudarev simplified rotationally invariant functional (FLL)
 
-The Dudarev formulation (`form="dudarev-fll"`) is parameterized by a single effective
+The Dudarev formulation (`form="dudarev"`) is parameterized by a single effective
 interaction:
 
 $$
@@ -165,7 +166,7 @@ $$
 
 ### 2. Liechtenstein form: rotationally invariant with Slater integrals
 
-The Liechtenstein formulation (`form="liechtenstein-fll"`) accounts for the full angular
+The Liechtenstein formulation (`form="liechtenstein"`) accounts for the full angular
 structure of the screened Coulomb interaction via Slater integrals $F^k$, distinguishing the
 direct Coulomb repulsion $U = F^0$ from the exchange parameter $J$:
 
@@ -202,12 +203,9 @@ $F^4/F^2 = 5/8 \approx 0.625$. For $f$ shells ($p = 7$), $J = \frac{2}{45}F^2 + 
 with hydrogenic defaults $F^4/F^2 = 451/675$ and $F^6/F^2 = 1001/2025$. These ratios can be
 overridden via the optional keys `"f4_f2"` and `"f6_f2"`.
 
-### 3. Noncollinear spinor Dudarev functional
+### 3. Noncollinear spinor DFT+U functional
 
-The functional of this section is the model for two-component spinor calculations
-(`models/hubbard_spinor.rs`); it is not yet part of any SCF, so a spinor calculation with
-`hubbard_u` raises `NotImplementedError` ([the refusal matrix](#dft-u-refusals)). For two-component
-spinors with spin-orbit coupling, the occupation matrix is a
+For two-component spinors with spin-orbit coupling or noncollinear moments, the occupation matrix is a
 full $2p \times 2p$ complex Hermitian matrix over spin and orbital indices:
 
 $$
@@ -262,7 +260,7 @@ In Mandacaru, this response can be invoked on a converged calculator via:
 
 ```python
 resp = calc.hubbard_response(alphas=(0.05, 0.1))
-hubbard_u_dict = resp.hubbard_u(form="dudarev-fll")
+hubbard_u_dict = resp.hubbard_u(form="dudarev")
 ```
 
 The resulting parameters can then be supplied directly into subsequent SCF runs.
@@ -403,7 +401,7 @@ $$
 and the strain derivative is the same contraction with $dC/d\varepsilon_{ab} = \sum_R e^{-i\mathbf{k}\cdot\mathbf{R}}\, G^a_R\, d_R^b$.
 The term enters the projection terms of the engines, which the group average of a reduced mesh already symmetrizes. On three Ni atoms
 around a threefold axis ($U = 3$ eV, 14 eV/Å radial forces) the reduced mesh agrees with the whole mesh to
-$1.4\times10^{-10}$ eV/Å in the forces and $5\times10^{-11}$ eV/Å$^3$ in the stress. A DFT+U hybrid or spinor crystal raises
+$1.4\times10^{-10}$ eV/Å in the forces and $5\times10^{-11}$ eV/Å$^3$ in the stress. A DFT+U hybrid crystal raises
 `NotImplementedError` before any SCF; there is no finite-difference fallback.
 
 (dft-u-retry)=
@@ -462,12 +460,12 @@ Every unsupported combination raises an explicit error; none silently runs a dif
 | `hubbard_response` on a reduced $k$-mesh | Runs when every `hubbard_u` atom is fixed by every kept operation; raises `ValueError` ("... fixed by every kept operation ... use symmetry=False") when an operation moves one. |
 | Periodic crystal with `xc="hse06"` (screened hybrid) | Raises `NotImplementedError` ("DFT+U is implemented for semilocal functionals only"). |
 | Single precision (`precision="float32"`) | Raises `ValueError` ("precision='float64'"). |
-| Periodic crystal on a fully relativistic / spin-orbit dataset (`lda-fr`, `pbe-fr`) | Raises `NotImplementedError` ("scalar-relativistic datasets only"). A molecule on such a dataset runs spinor Kohn–Sham without DFT+U; spinor molecular DFT+U is not implemented. |
-| Isolated molecule (`pbc=False`) | **Supported** for `method="dft"` on a PAW-LCAO basis ([Molecules](#dft-u-molecules)); its analytic forces include the +U term. |
+| Periodic crystal or isolated molecule on a fully relativistic / spin-orbit dataset (`lda-fr`, `pbe-fr`) or noncollinear moments | **Supported** for both `dudarev` and `liechtenstein` forms (SCF, analytic forces, and crystal stress across `lda`, `pbe`, `pbe+rvv10`, `r2scan`, and `r2scan+rvv10`). |
+| Isolated molecule (`pbc=False`) | **Supported** for `method="dft"` on a PAW-LCAO basis ([Molecules](#dft-u-molecules)), both collinear and spinor; its analytic forces include the +U term. |
 | Basis without PAW datasets (`HAO`, Gaussian STO-3G) | Raises `ValueError` ("hubbard_u needs a PAW-LCAO or UPAW-LCAO basis"). |
 | Element not in system, or channel absent from dataset | Raises `ValueError` naming element and shell. |
 | Shell with no occupied reference wave (e.g. Ba 5d, Au 5f in `lda-sr`) | Raises `ValueError` naming the element and channel. |
-| Crystal forces or stress with `hubbard_u` | **Supported** for a collinear semilocal crystal ([Forces and stresses](#dft-u-forces)). A DFT+U hybrid or spinor crystal raises `NotImplementedError` ("crystal forces are not available for a DFT+U hybrid crystal"). |
+| Crystal forces or stress with `hubbard_u` | **Supported** for collinear and spinor semilocal crystals ([Forces and stresses](#dft-u-forces)). A DFT+U hybrid crystal raises `NotImplementedError` ("crystal forces are not available for a DFT+U hybrid crystal"). |
 
 ## Example: NiO type-II antiferromagnet
 

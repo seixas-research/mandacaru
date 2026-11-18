@@ -239,5 +239,93 @@ pub fn bands_of_points(
         out.eigenvalues.extend(eigenvalues);
         out.projections.extend(projections);
     }
-    Ok(out)
+    Ok(OffMeshBands {
+        eigenvalues: out.eigenvalues,
+        projections: out.projections,
+    })
+}
+
+/// Partition periodic crystal smooth electron density plus PAW on-site augmentation charges into
+/// atomic partial charges (`"bader"`, `"hirshfeld"`, or `"voronoi"`).
+pub fn partial_charges(
+    c: &Crystal,
+    result: &PeriodicResult,
+    method: &str,
+    numbers: &[u8],
+    positions: Option<&[[f64; 3]]>,
+    valence_charges: Option<&[f64]>,
+    interpolate: bool,
+) -> Result<crate::math::partial_charges::PartialCharges> {
+    use std::f64::consts::PI;
+    let centers: Vec<[f64; 3]> = match (positions, &c.description) {
+        (Some(pos), _) => pos.to_vec(),
+        (None, Some(desc)) => desc.centers.clone(),
+        (None, None) => {
+            return Err(invalid(
+                "periodic partial charges need atomic positions or a setup description",
+            ))
+        }
+    };
+    let n_atoms = centers.len();
+    if numbers.len() != n_atoms {
+        return Err(invalid("atomic numbers count must match atomic positions"));
+    }
+    let valences: Vec<f64> = match valence_charges {
+        Some(q) => {
+            if q.len() != n_atoms {
+                return Err(invalid("valence charges count must match atomic positions"));
+            }
+            q.to_vec()
+        }
+        None => numbers.iter().map(|&z| f64::from(z)).collect(),
+    };
+    let n = c.grid.index.points();
+    let rho_slice = result.density.as_slice();
+    let total_rho: Vec<f64> = if c.spinor || c.spins == 1 {
+        rho_slice[..n].to_vec()
+    } else {
+        (0..n).map(|k| rho_slice[k] + rho_slice[n + k]).collect()
+    };
+    let mut augmentation = vec![0.; n_atoms];
+    if let Some(desc) = &c.description {
+        let sqrt_4pi = (4. * PI).sqrt();
+        for (idx, &(atom, l, m)) in desc.channels.iter().enumerate() {
+            if l == 0 && m == 0 && atom < n_atoms && idx < result.moments.as_slice().len() {
+                augmentation[atom] += sqrt_4pi * result.moments.as_slice()[idx].re;
+            }
+        }
+    }
+    let proatomic = if method.eq_ignore_ascii_case("hirshfeld") {
+        let mut radials = Vec::with_capacity(n_atoms);
+        for (atom, (&z, &qv)) in numbers.iter().zip(&valences).enumerate() {
+            let mut shells = Vec::new();
+            if let Some(desc) = &c.description {
+                let mut seen_tables = Vec::new();
+                for (&fa, &ft) in desc.function_atom.iter().zip(&desc.function_table) {
+                    if fa == atom && !seen_tables.contains(&ft) {
+                        seen_tables.push(ft);
+                        let t = &desc.tables[ft];
+                        shells.push((t.l, t.r.as_slice(), t.values.as_slice()));
+                    }
+                }
+            }
+            radials.push(crate::models::configuration::proatomic_radial_from_shells(
+                z, qv, &shells,
+            ));
+        }
+        Some(radials)
+    } else {
+        None
+    };
+    crate::math::partial_charges::compute_partial_charges(
+        &c.context,
+        method,
+        &c.grid,
+        &total_rho,
+        &centers,
+        &valences,
+        &augmentation,
+        proatomic.as_deref(),
+        interpolate,
+    )
 }

@@ -628,3 +628,235 @@ fn the_library_cores_are_all_accepted_or_refused_by_name() {
     }
     assert!(refused.is_empty());
 }
+
+#[test]
+fn screened_core_valence_exchange_matches_analytic_limit_and_monotonically_screens() {
+    use mandacaru_core::paw::core_exchange::screened_core_valence_exchange;
+    let ctx = Context::new(Some(1), 512 << 20).unwrap();
+
+    // Normalized radial product of two s-Gaussians:
+    // R_c(r) * R_v(r) = sqrt(4*pi) * (a/pi)^(3/2) exp(-a r^2), with q_c = 2, l_c = 0, l = 0, L = 0:
+    // X = -(2/2) * 1 * 4*pi * (2/sqrt(pi)) * (sqrt(a/2) - sqrt(1/(2/a + 1/omega^2))).
+    let r: Vec<f64> = (0..600).map(|i| 6.0 * i as f64 / 599.0).collect();
+    let a = 1.6;
+    let gaussian_pair = r
+        .iter()
+        .map(|&x| (-0.5 * a * x * x).exp())
+        .collect::<Vec<_>>();
+    // Normalize so int_0^inf R_c(r) R_v(r) r^2 dr = 1 (s-harmonic norm factor 1/sqrt(4 pi) * sqrt(4 pi) = 1 -> radial norm 4 a^(3/2) / sqrt(pi)).
+    let norm = (4.0 * a.powf(1.5) / PI.sqrt()).sqrt();
+    let shell_r: Vec<f64> = gaussian_pair.iter().map(|v| norm * v).collect();
+    let wave: Vec<f64> = gaussian_pair.iter().map(|v| norm * v).collect();
+    let core = [CoreShell {
+        l: 0,
+        occupation: 2.0,
+        radial: &shell_r,
+    }];
+    let waves = vec![wave];
+    let bare = core_valence_exchange(&r, 0, &waves, &core, r.len()).unwrap()[(0, 0)];
+    let zero_omega =
+        screened_core_valence_exchange(&ctx, &r, 0, &waves, &core, r.len(), 0.0).unwrap()[(0, 0)];
+    assert!((bare - zero_omega).abs() < 1e-14);
+
+    let tiny_omega = 1e-6;
+    let tiny = screened_core_valence_exchange(&ctx, &r, 0, &waves, &core, r.len(), tiny_omega)
+        .unwrap()[(0, 0)];
+    let exact_tiny_long =
+        -(2.0 / PI.sqrt()) * (1.0 / (2.0 / a + 1.0 / (tiny_omega * tiny_omega))).sqrt();
+    assert!(((tiny - bare) - (-exact_tiny_long)).abs() < 1e-8);
+
+    let omega = 0.11;
+    let hse =
+        screened_core_valence_exchange(&ctx, &r, 0, &waves, &core, r.len(), omega).unwrap()[(0, 0)];
+    let exact_bare = -(2.0 / PI.sqrt()) * (0.5 * a).sqrt();
+    let exact_long = -(2.0 / PI.sqrt()) * (1.0 / (2.0 / a + 1.0 / (omega * omega))).sqrt();
+    let exact_short = exact_bare - exact_long;
+    assert!((bare - exact_bare).abs() < 5e-5, "{bare} vs {exact_bare}");
+    assert!((hse - exact_short).abs() < 5e-5, "{hse} vs {exact_short}");
+
+    // Multi-shell library core (Si & Cu in pbe-sr): symmetric and monotonically screened with omega.
+    let root = PathBuf::from(std::env::var_os("MANDACARU_PAW_PATH").expect("MANDACARU_PAW_PATH"));
+    for symbol in ["O", "Si", "Cu"] {
+        let data = PawDataset::read(&ctx, &root.join(format!("pbe-sr/{symbol}.parquet"))).unwrap();
+        let electrons = data.atomic_number as f64 - data.valence_charge;
+        let frozen = FrozenCore::from_states(
+            &data.symbol,
+            data.r.as_slice(),
+            data.core_density.as_slice(),
+            electrons,
+            &stored(&data),
+        )
+        .unwrap();
+        for (&l, channel) in &data.channels {
+            let waves: Vec<Vec<f64>> = channel
+                .ae_waves
+                .iter()
+                .map(|w| w.as_slice().to_vec())
+                .collect();
+            let bare_mat = frozen
+                .exchange(data.r.as_slice(), l as usize, &waves)
+                .unwrap();
+            let tiny_mat = frozen
+                .screened_exchange(&ctx, data.r.as_slice(), l as usize, &waves, 1e-6)
+                .unwrap();
+            let hse_mat = frozen
+                .screened_exchange(&ctx, data.r.as_slice(), l as usize, &waves, 0.11)
+                .unwrap();
+            let short_mat = frozen
+                .screened_exchange(&ctx, data.r.as_slice(), l as usize, &waves, 1.5)
+                .unwrap();
+            assert!((&bare_mat - &tiny_mat).norm() < 1e-4);
+            assert!((&hse_mat - hse_mat.transpose()).norm() < 1e-13);
+            assert!(hse_mat.norm() < bare_mat.norm());
+            assert!(short_mat.norm() < hse_mat.norm());
+        }
+    }
+}
+
+#[test]
+fn screened_atom_wires_screened_core_valence_exchange_for_multi_shell_cores() {
+    use mandacaru_core::paw::{
+        onecenter::Basis, pair_tables::layout, screened_atom::screened,
+        species_tables::SpeciesTables,
+    };
+    let ctx = Context::new(Some(2), 1 << 30).unwrap();
+    let root = PathBuf::from(std::env::var_os("MANDACARU_PAW_PATH").expect("MANDACARU_PAW_PATH"));
+    for symbol in ["H", "O", "Si", "Zn"] {
+        let data = PawDataset::read(&ctx, &root.join(format!("pbe-sr/{symbol}.parquet"))).unwrap();
+        for basis in [Basis::Dual, Basis::Raw] {
+            let tables = SpeciesTables::from_record(&ctx, &data, basis).unwrap();
+            let view = tables.view();
+            let projectors = layout(&view);
+            let hse = screened(&ctx, &view, &projectors, 0.11).unwrap();
+            let tiny = screened(&ctx, &view, &projectors, 1e-6).unwrap();
+            if symbol == "H" {
+                assert!(hse.core_exchange.amax() == 0.);
+                continue;
+            }
+            assert!(
+                hse.core_exchange.amax() > 1e-2,
+                "{symbol} should carry non-zero X_cv^SR"
+            );
+            assert!(
+                (&hse.core_exchange - hse.core_exchange.transpose()).amax() < 1e-13,
+                "{symbol} {basis:?}: X_cv^SR is symmetric"
+            );
+            // Core-valence exchange lowers diagonal matrix elements (stored <= 0).
+            for (i, p) in projectors.iter().enumerate() {
+                if i == 0 || p.m == 0 {
+                    assert!(hse.core_exchange[(i, i)] <= 0.);
+                }
+            }
+            // As omega -> 0, ScreenedAtom::core_exchange matches FrozenCore::exchange.
+            let core = view.frozen_core.unwrap();
+            for (ch_idx, ch) in view.channels.iter().enumerate() {
+                let bare = core.exchange(view.knots, ch.l, &ch.ae).unwrap();
+                let indices: Vec<usize> = projectors
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, p)| p.channel == ch_idx && p.m == 0)
+                    .map(|(i, _)| i)
+                    .collect();
+                let block = DMatrix::from_fn(indices.len(), indices.len(), |r, c| {
+                    tiny.core_exchange[(indices[r], indices[c])]
+                });
+                assert!(
+                    (&bare - &block).norm() < 1e-4,
+                    "{symbol} {basis:?} l={}: {bare} vs {block}",
+                    ch.l
+                );
+            }
+            // Polarization with AE core density respects the potential-is-derivative identity.
+            let mut d0 = DMatrix::zeros(projectors.len(), projectors.len());
+            for (a, pa) in projectors.iter().enumerate() {
+                for (b, pb) in projectors.iter().enumerate() {
+                    if pa.channel == pb.channel && pa.m == pb.m {
+                        d0[(a, b)] = view.channels[pa.channel].reference[(pa.radial, pb.radial)];
+                    }
+                }
+            }
+            let p_closed = hse.polarization.evaluate(&ctx, &d0, &d0).unwrap();
+            assert!(
+                p_closed.energy.abs() < 1e-13,
+                "{symbol} closed polarization"
+            );
+            let p_open = hse
+                .polarization
+                .evaluate(&ctx, &(&d0 * 1.2), &(&d0 * 0.8))
+                .unwrap();
+            let p_sum = hse.polarization.evaluate(&ctx, &d0, &d0).unwrap();
+            let p_up = hse
+                .polarization
+                .evaluate(&ctx, &(&d0 * 1.2), &(&d0 * 1.2))
+                .unwrap();
+            let p_dn = hse
+                .polarization
+                .evaluate(&ctx, &(&d0 * 0.8), &(&d0 * 0.8))
+                .unwrap();
+            let expected = 0.5 * (p_up.unpolarized + p_dn.unpolarized) - p_sum.unpolarized;
+            assert!(
+                (p_open.energy - expected).abs() < 1e-12 * (1. + expected.abs()),
+                "{symbol} {basis:?} polarization spin scaling: {} vs {expected}",
+                p_open.energy
+            );
+        }
+    }
+}
+
+#[test]
+fn multi_shell_molecule_hse06_force_matches_finite_difference() {
+    let ctx = Context::new(Some(2), 1 << 30).unwrap();
+    let root = PathBuf::from(std::env::var_os("MANDACARU_PAW_PATH").expect("MANDACARU_PAW_PATH"));
+    let si = PawDataset::read(&ctx, &root.join("pbe-sr/Si.parquet")).unwrap();
+    let h = PawDataset::read(&ctx, &root.join("pbe-sr/H.parquet")).unwrap();
+    // SiH2 at coarse grid (0.45 Bohr): multi-shell 1s2s2p core in HSE06 SCF + analytic force.
+    let z0 = 1.9;
+    let build = |z_h: f64| {
+        let mut arrays = mandacaru_core::paw::molecular::Arrays::new();
+        let species = vec![
+            paw_molecular_support::dataset::species(&ctx, &mut arrays, &si),
+            paw_molecular_support::dataset::species(&ctx, &mut arrays, &h),
+        ];
+        paw_molecular_support::molecule(
+            &ctx,
+            &[14, 1, 1],
+            &[[0.0, 0.0, 0.0], [2.1, 0.0, z_h], [-2.1, 0.0, -z0]],
+            10.0,
+            0.45,
+            (species, vec![0, 1, 1], arrays),
+            "raw",
+            &paw_molecular_support::analytic_shells(&[0, 1]),
+        )
+    };
+    let base = build(z0);
+    assert!(
+        base.corrections.as_ref().unwrap().hybrid_core_supported,
+        "Si multi-shell core must be supported for screened hybrids"
+    );
+    let opts = mandacaru_core::molecular::ScfOptions {
+        tolerance: 1e-10,
+        max_iterations: 200,
+        ..Default::default()
+    };
+    let state = base.kohn_sham("hse06", [3, 3], false, &opts).unwrap();
+    assert!(state.converged, "SiH2 HSE06 did not converge");
+    let grad = base.gradient(&state).unwrap();
+    let analytic = grad.total.as_slice()[3 * 1 + 2]; // z-component of atom 1
+    let step = 1e-3;
+    let total_energy = |z: f64| {
+        let m = build(z);
+        m.kohn_sham("hse06", [3, 3], false, &opts)
+            .unwrap()
+            .free_energy()
+            + m.nuclear
+    };
+    let fd = (total_energy(z0 + step) - total_energy(z0 - step)) / (2. * step);
+    println!(
+        "SiH2 HSE06 z-force: analytic {analytic:+.8}, FD {fd:+.8}, diff {:.2e}",
+        (analytic - fd).abs()
+    );
+    assert!(
+        (analytic - fd).abs() < 2e-5,
+        "analytic {analytic} vs FD {fd}"
+    );
+}

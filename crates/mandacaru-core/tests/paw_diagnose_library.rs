@@ -119,13 +119,13 @@ fn refused(set: &str, element: &str, stage: &str, cause: impl std::fmt::Display)
     }
 }
 
-/// The scheme the sweep diagnoses against: the atom-solver one the files were made with, unless
-/// `MANDACARU_DIAGNOSE_SCHEME=variational` asks for the production one.
+/// The scheme the sweep diagnoses against: the production variational one the format-3 library
+/// was made with, unless `MANDACARU_DIAGNOSE_SCHEME=legacy` asks for the legacy atom-solver.
 fn scheme() -> (&'static str, &'static dyn XcSource) {
     match std::env::var("MANDACARU_DIAGNOSE_SCHEME").as_deref() {
-        Ok("variational") => ("variational", &Variational),
-        Ok("legacy") | Err(_) => ("atom-solver (legacy)", &AtomSolver),
-        Ok(other) => panic!("MANDACARU_DIAGNOSE_SCHEME is legacy or variational, not {other:?}"),
+        Ok("variational") | Err(_) => ("variational", &Variational),
+        Ok("legacy") => ("atom-solver (legacy)", &AtomSolver),
+        Ok(other) => panic!("MANDACARU_DIAGNOSE_SCHEME is variational or legacy, not {other:?}"),
     }
 }
 

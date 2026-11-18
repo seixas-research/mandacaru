@@ -212,17 +212,24 @@ pub struct RealTime {
 fn check_reference(integrals: &MolecularIntegrals, reference: &MeanField) -> Result<()> {
     let unsupported = |what: String| Err(Error::Unsupported(what));
     if reference.method == "ghf" {
-        if reference.functional.is_some() {
-            return unsupported(
-                "real-time propagation of spinor Kohn-Sham (a spin-orbit dataset) is not \
-                 implemented yet; a scalar-relativistic dataset runs restricted Kohn-Sham"
-                    .into(),
-            );
+        let Some(name) = reference.functional.as_deref() else {
+            return Err(invalid(
+                "real-time propagation needs an rhf, uhf or dft reference; method='ghf' without \
+                 a functional is not supported",
+            ));
+        };
+        let definition = crate::models::functional(name)?;
+        if definition.requires_tau
+            || definition.screened_exchange.is_some()
+            || definition.nonlocal_b.is_some()
+            || !matches!(name, "lda" | "pbe")
+        {
+            return unsupported(format!(
+                "spinor real-time propagation supports 'lda' and 'pbe' functionals (with or without \
+                 hubbard_u), not xc='{name}'"
+            ));
         }
-        return Err(invalid(
-            "real-time propagation needs an rhf, uhf or dft reference; method='ghf' gives a \
-             two-component state it does not take",
-        ));
+        return Ok(());
     }
     if integrals.grid.periodic || integrals.supercell.is_some() {
         return Err(invalid(
@@ -301,14 +308,30 @@ pub fn fock_matrices(
 ) -> Result<(Vec<Matrix>, f64)> {
     check_reference(integrals, reference)?;
     let m = integrals.m();
-    if densities.is_empty() || densities.len() > 2 || densities.iter().any(|d| d.shape() != (m, m))
+    let spinor = reference.method == "ghf";
+    let expected_dim = if spinor { 2 * m } else { m };
+    let valid_len = if spinor {
+        densities.len() == 1
+    } else {
+        matches!(densities.len(), 1 | 2)
+    };
+    if !valid_len
+        || densities.iter().any(|d| d.shape() != (expected_dim, expected_dim))
     {
         return Err(invalid(
-            "fock_matrices needs one or two m x m density matrices",
+            "fock_matrices density matrices do not match reference dimensions",
         ));
     }
     integrals.context.run(|| {
-        let mut map = fock::MolecularMap::new(integrals, reference.functional.as_deref())?;
+        let mut map = if spinor {
+            let name = reference
+                .functional
+                .as_deref()
+                .expect("spinor checked to carry functional");
+            fock::MolecularMap::new_spinor(integrals, name)?
+        } else {
+            fock::MolecularMap::new(integrals, reference.functional.as_deref())?
+        };
         map.set_potential(field);
         map.bare(densities)
     })
@@ -326,13 +349,34 @@ pub fn momentum(
 ) -> Result<[f64; 3]> {
     check_reference(integrals, reference)?;
     let m = integrals.m();
-    if densities.is_empty() || densities.len() > 2 || densities.iter().any(|d| d.shape() != (m, m))
+    let spinor = reference.method == "ghf";
+    let expected_dim = if spinor { 2 * m } else { m };
+    let valid_len = if spinor {
+        densities.len() == 1
+    } else {
+        matches!(densities.len(), 1 | 2)
+    };
+    if !valid_len
+        || densities.iter().any(|d| d.shape() != (expected_dim, expected_dim))
     {
-        return Err(invalid("momentum needs one or two m x m density matrices"));
+        return Err(invalid("momentum density matrices do not match reference dimensions"));
     }
     integrals.context.run(|| {
-        let gradients = multipoles::gradient_integrals(integrals)?;
-        let mut map = fock::MolecularMap::new(integrals, reference.functional.as_deref())?;
+        let raw_gradients = multipoles::gradient_integrals(integrals)?;
+        let gradients: [DMatrix<f64>; 3] = if spinor {
+            std::array::from_fn(|k| block2(m, &raw_gradients[k]))
+        } else {
+            raw_gradients
+        };
+        let mut map = if spinor {
+            let name = reference
+                .functional
+                .as_deref()
+                .expect("spinor checked to carry functional");
+            fock::MolecularMap::new_spinor(integrals, name)?
+        } else {
+            fock::MolecularMap::new(integrals, reference.functional.as_deref())?
+        };
         map.set_potential(field);
         map.bare(densities)?;
         Ok(kinetic_momentum(
@@ -340,24 +384,25 @@ pub fn momentum(
             densities,
             field.unwrap_or([0.; 3]),
             &map.xc_current,
+            spinor,
             |_| 1.,
         ))
     })
 }
 
 /// `sum_s sign_s (g tr[D_s (P + A)] + dE_xc / dA_s)` with `P = -i <a|grad|b>` from the gradient
-/// integrals (`Re tr[D P_k] = sum_ab Im D_ab G_k,ba`), `g` 2 for one restricted channel (whose
-/// exchange-correlation current is both spins'), `A` the vector potential `field` and `xc` the
-/// per-spin `dE_xc / dA` of the state's build.
+/// integrals (`Re tr[D P_k] = sum_ab Im D_ab G_k,ba`), `g` 2 for one restricted channel (1 for
+/// spin-polarized or spinor), `A` the vector potential `field` and `xc` the per-spin `dE_xc / dA`.
 fn kinetic_momentum(
     gradients: &[DMatrix<f64>; 3],
     states: &[Matrix],
     field: [f64; 3],
     xc: &[[f64; 3]; 2],
+    spinor: bool,
     sign: impl Fn(usize) -> f64,
 ) -> [f64; 3] {
     let m = gradients[0].nrows();
-    let degeneracy = if states.len() == 1 { 2. } else { 1. };
+    let degeneracy = if !spinor && states.len() == 1 { 2. } else { 1. };
     std::array::from_fn(|k| {
         let orbital: f64 = states
             .iter()
@@ -396,14 +441,30 @@ pub fn propagate(
         ));
     }
     let m = integrals.m();
+    let spinor = reference.method == "ghf";
     let unrestricted = reference.method == "uhf";
-    if !unrestricted && reference.particles[0] != reference.particles[1] {
+    if spinor && request.kick == Kick::Spin {
+        return Err(invalid(
+            "a spin kick splits collinear alpha/beta channels; a spinor reference takes kick='density'",
+        ));
+    }
+    if spinor && request.gauge == Gauge::Velocity {
+        // Note: on a spinor molecule, [V_SO, r] is zero only on-site for exact spherical shells;
+        // length gauge is recommended when spin_orbit coupling is large. We allow velocity with
+        // kinetic P on both spin blocks consistently with molecular PAW.
+    }
+    if !spinor && !unrestricted && reference.particles[0] != reference.particles[1] {
         return Err(invalid(
             "a restricted reference must be a closed shell; an open shell runs unrestricted",
         ));
     }
-    if reference.densities.len() != if unrestricted { 2 } else { 1 }
-        || reference.densities.iter().any(|d| d.shape() != (m, m))
+    let expected_dm_dim = if spinor { 2 * m } else { m };
+    let expected_channels = if unrestricted { 2 } else { 1 };
+    if reference.densities.len() != expected_channels
+        || reference
+            .densities
+            .iter()
+            .any(|d| d.shape() != (expected_dm_dim, expected_dm_dim))
     {
         return Err(invalid(
             "the reference density matrices do not match its method",
@@ -411,7 +472,14 @@ pub fn propagate(
     }
     integrals
         .context
-        .run(|| run(integrals, reference, request, direction, unrestricted))
+        .run(|| run(integrals, reference, request, direction, unrestricted, spinor))
+}
+
+fn block2(m: usize, mat: &DMatrix<f64>) -> DMatrix<f64> {
+    let mut out = DMatrix::<f64>::zeros(2 * m, 2 * m);
+    out.view_mut((0, 0), (m, m)).copy_from(mat);
+    out.view_mut((m, m), (m, m)).copy_from(mat);
+    out
 }
 
 fn run(
@@ -420,12 +488,22 @@ fn run(
     request: &Request,
     direction: [f64; 3],
     unrestricted: bool,
+    spinor: bool,
 ) -> Result<RealTime> {
     let ctx = &integrals.context;
     let m = integrals.m();
-    let mut map = fock::MolecularMap::new(integrals, reference.functional.as_deref())?;
+    let state_m = if spinor { 2 * m } else { m };
+    let mut map = if spinor {
+        let name = reference
+            .functional
+            .as_deref()
+            .expect("spinor checked to carry functional");
+        fock::MolecularMap::new_spinor(integrals, name)?
+    } else {
+        fock::MolecularMap::new(integrals, reference.functional.as_deref())?
+    };
     // A spin kick of a closed shell propagates two equal channels.
-    let expand = !unrestricted && request.kick == Kick::Spin;
+    let expand = !spinor && !unrestricted && request.kick == Kick::Spin;
     let densities: Vec<Matrix> = if expand {
         vec![
             reference.densities[0].clone(),
@@ -441,8 +519,12 @@ fn run(
     let mut levels = Vec::with_capacity(densities.len());
     let mut width = 0f64;
     for (s, (fock, density)) in focks.iter().zip(&densities).enumerate() {
-        let o = reference.particles[if unrestricted { s } else { 0 }];
-        if o > m {
+        let o = if spinor {
+            reference.particles[0] + reference.particles[1]
+        } else {
+            reference.particles[if unrestricted { s } else { 0 }]
+        };
+        if o > state_m {
             return Err(invalid("a spin channel holds more electrons than orbitals"));
         }
         let (energies, vectors) =
@@ -458,7 +540,7 @@ fn run(
                  from the lowest eigenvectors of its Fock matrix by {stationarity:.2e} (above 1e-6)"
             )));
         }
-        width = width.max(energies[m - 1] - energies[0]);
+        width = width.max(energies[state_m - 1] - energies[0]);
         channels.push(Channel {
             orbitals: occupied,
             occupations: vec![1.; o],
@@ -475,9 +557,14 @@ fn run(
             request.scheme.name()
         )));
     }
-    let positions = multipoles::position_integrals(integrals, [0.; 3])?;
+    let raw_positions = multipoles::position_integrals(integrals, [0.; 3])?;
+    let positions: [DMatrix<f64>; 3] = if spinor {
+        std::array::from_fn(|k| block2(m, &raw_positions[k]))
+    } else {
+        raw_positions
+    };
     let along = |matrices: &[DMatrix<f64>; 3]| -> Matrix {
-        DMatrix::from_fn(m, m, |a, b| {
+        DMatrix::from_fn(state_m, state_m, |a, b| {
             C64::new(
                 (0..3)
                     .map(|k| direction[k] * matrices[k][(a, b)])
@@ -488,7 +575,12 @@ fn run(
     };
     let x = along(&positions);
     let aliased_weight = aliased(&levels, &x, request.time_step);
-    let gradients = multipoles::gradient_integrals(integrals)?;
+    let raw_gradients = multipoles::gradient_integrals(integrals)?;
+    let gradients: [DMatrix<f64>; 3] = if spinor {
+        std::array::from_fn(|k| block2(m, &raw_gradients[k]))
+    } else {
+        raw_gradients
+    };
     match request.gauge {
         Gauge::Length => {
             for (s, channel) in channels.iter_mut().enumerate() {
@@ -518,7 +610,11 @@ fn run(
             1.
         }
     };
-    let degeneracy = if densities.len() == 1 { 2. } else { 1. };
+    let degeneracy = if !spinor && densities.len() == 1 {
+        2.
+    } else {
+        1.
+    };
     let dipole_of = |states: &[Matrix]| -> [f64; 3] {
         let mut out = [0.; 3];
         for (k, value) in out.iter_mut().enumerate() {
@@ -528,8 +624,8 @@ fn run(
                     .enumerate()
                     .map(|(s, d)| {
                         spin_sign(s)
-                            * (0..m)
-                                .flat_map(|a| (0..m).map(move |b| (a, b)))
+                            * (0..state_m)
+                                .flat_map(|a| (0..state_m).map(move |b| (a, b)))
                                 .map(|(a, b)| d[(a, b)].re * positions[k][(b, a)])
                                 .sum::<f64>()
                     })
@@ -549,6 +645,7 @@ fn run(
             &propagator.densities(),
             field,
             &propagator.map().xc_current,
+            spinor,
             spin_sign,
         )
     };

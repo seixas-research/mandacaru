@@ -384,6 +384,7 @@ pub(super) fn frozen_contraction(
         orbitals,
         stationarity: 0.,
         exact_exchange: false,
+        hubbard: true,
     };
     integrals.contract_frozen(frozen, setup)
 }

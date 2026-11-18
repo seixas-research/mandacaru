@@ -32,7 +32,7 @@ pub fn qwc(ctx: &Context, labels: &[String], weights: Option<&[f64]>) -> Result<
     let mut order: Vec<_> = (0..labels.len()).collect();
     order.sort_by(|&i, &j| {
         weights
-            .map(|w| w[j].partial_cmp(&w[i]).unwrap())
+            .map(|w| w[j].total_cmp(&w[i]))
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| labels[i].cmp(&labels[j]))
     });
@@ -54,11 +54,16 @@ pub fn qwc(ctx: &Context, labels: &[String], weights: Option<&[f64]>) -> Result<
             bases.push((label.to_vec(), vec![i]));
         }
     }
+    let groups = bases
+        .into_iter()
+        .map(|(b, m)| {
+            String::from_utf8(b)
+                .map(|s| (s, m))
+                .map_err(|_| invalid("non-utf8 Pauli label"))
+        })
+        .collect::<Result<Vec<_>>>()?;
     Ok(Groups {
-        groups: bases
-            .into_iter()
-            .map(|(b, m)| (String::from_utf8(b).unwrap(), m))
-            .collect(),
+        groups,
         _memory: memory,
     })
 }
@@ -243,7 +248,9 @@ pub fn compile(
             for pair in active.windows(2) {
                 push("cx", pair[0].0, Some(pair[1].0), None);
             }
-            push("rz", active.last().unwrap().0, None, Some(-2. * angle));
+            if let Some(&(rz_q, _)) = active.last() {
+                push("rz", rz_q, None, Some(-2. * angle));
+            }
             for pair in active.windows(2).rev() {
                 push("cx", pair[0].0, Some(pair[1].0), None);
             }

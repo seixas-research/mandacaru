@@ -22,6 +22,9 @@ pub struct XcField {
 
 /// A radial exchange-correlation scheme.
 pub trait XcSource {
+    /// Short identifier of this radial scheme, stored in format-3 provenance.
+    fn name(&self) -> &'static str;
+
     fn evaluate(
         &self,
         ctx: &Context,
@@ -36,6 +39,10 @@ pub trait XcSource {
 pub struct Variational;
 
 impl XcSource for Variational {
+    fn name(&self) -> &'static str {
+        "variational"
+    }
+
     fn evaluate(
         &self,
         ctx: &Context,
@@ -57,6 +64,10 @@ impl XcSource for Variational {
 pub struct AtomSolver;
 
 impl XcSource for AtomSolver {
+    fn name(&self) -> &'static str {
+        "atom-solver"
+    }
+
     fn evaluate(
         &self,
         ctx: &Context,

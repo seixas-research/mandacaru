@@ -611,19 +611,23 @@ impl Orbital {
         };
         let (radial, dr) = match &self.radial {
             Radial::Tabulated(table) => {
-                let (v, d) = tabulated(table, self.l, r);
-                let safe = r.max(1e-15);
-                if self.l == 1 && r <= CENTER {
-                    // On the center a p function is the linear `lim(R / r) r Y_1m`, so its gradient
-                    // is that limit times the solid harmonic's (`R(0) = 0` and the floor radius
-                    // would zero it or lose digits to the spline's cancellation); the radial
-                    // slope is not used there.
-                    (p_slope_at_center(table), 0.)
+                let knots = table.knots.as_slice();
+                if r > knots[knots.len() - 1] {
+                    (0., 0.)
+                } else if r < knots[0] && knots[0] > 0. {
+                    let (y0, y0p) = table.value_slope(knots[0]);
+                    crate::math::spline::Cubic::small_r_factor(y0, y0p, self.l, knots[0], r)
                 } else {
-                    (
-                        v / safe.powi(self.l as i32),
-                        (d - self.l as f64 * v / safe) / safe.powi(self.l as i32),
-                    )
+                    let (v, d) = table.value_slope(r);
+                    let safe = r.max(1e-15);
+                    if self.l == 1 && r <= CENTER {
+                        (p_slope_at_center(table), 0.)
+                    } else {
+                        (
+                            v / safe.powi(self.l as i32),
+                            (d - self.l as f64 * v / safe) / safe.powi(self.l as i32),
+                        )
+                    }
                 }
             }
             Radial::Numerical(table) => {
@@ -693,23 +697,30 @@ impl Orbital {
         match &self.radial {
             Radial::Tabulated(table) => {
                 let knots = table.knots.as_slice();
-                let mut kinetic =
-                    0.5 * table.values.as_slice()[0].powi(2) * knots[0] * (self.l + 1) as f64;
-                for nodes in knots.windows(2) {
-                    let half = 0.5 * (nodes[1] - nodes[0]);
-                    for (x, w) in [
-                        (-0.8611363115940526, 0.3478548451374538),
-                        (-0.3399810435848563, 0.6521451548625461),
-                        (0.3399810435848563, 0.6521451548625461),
-                        (0.8611363115940526, 0.3478548451374538),
-                    ] {
-                        let r = nodes[0] + half * (x + 1.);
-                        let (v, d) = table.value_slope(r);
+                let mut kinetic = 0.;
+                let quad = [
+                    (-0.8611363115940526, 0.3478548451374538),
+                    (-0.3399810435848563, 0.6521451548625461),
+                    (0.3399810435848563, 0.6521451548625461),
+                    (0.8611363115940526, 0.3478548451374538),
+                ];
+                let mut integrate_interval = |a: f64, b: f64| {
+                    let half = 0.5 * (b - a);
+                    if half <= 0. {
+                        return;
+                    }
+                    for &(x, w) in &quad {
+                        let r = a + half * (x + 1.);
+                        let (v, d) = tabulated(table, self.l, r);
                         kinetic += 0.5
                             * half
                             * w
                             * ((v + r * d).powi(2) + (self.l * (self.l + 1)) as f64 * v * v);
                     }
+                };
+                integrate_interval(0., knots[0]);
+                for nodes in knots.windows(2) {
+                    integrate_interval(nodes[0], nodes[1]);
                 }
                 kinetic
             }
@@ -791,12 +802,14 @@ impl Orbital {
 /// own) must take the same gradient as one exactly on it.
 const CENTER: f64 = 1e-12;
 
-/// `lim R(r) / r` of a p table at its center: the slope of the spline on a first node at the
-/// center, the linear continuation below a first node off it.
+/// `lim R(r) / r` of a p table at its center: the spline's slope on a first node at the
+/// center, or the $r (a + b r^2)$ regular continuation coefficient `(3 y_0 - r_0 y'_0) / (2 r_0)`
+/// below a first node off it.
 fn p_slope_at_center(table: &crate::math::spline::Cubic) -> f64 {
     let knots = table.knots.as_slice();
     if knots[0] > 0. {
-        table.values.as_slice()[0] / knots[0]
+        let (y0, y0p) = table.value_slope(knots[0]);
+        0.5 * (3. * y0 - knots[0] * y0p) / knots[0]
     } else {
         table.value_slope(0.).1
     }
@@ -807,16 +820,5 @@ fn tabulated(table: &crate::math::spline::Cubic, l: usize, r: f64) -> (f64, f64)
     if r > knots[knots.len() - 1] {
         return (0., 0.);
     }
-    if r < knots[0] && knots[0] > 0. {
-        let value = table.values.as_slice()[0] * (r / knots[0]).powi(l as i32);
-        return (
-            value,
-            if l == 0 || r == 0. {
-                0.
-            } else {
-                l as f64 * value / r
-            },
-        );
-    }
-    table.value_slope(r)
+    table.value_slope_regular(r, l)
 }

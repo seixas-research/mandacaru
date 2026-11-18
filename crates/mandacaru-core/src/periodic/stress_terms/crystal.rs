@@ -66,9 +66,6 @@ pub fn refuse(c: &Crystal) -> Result<()> {
         if c.screened_exchange()?.is_some() {
             return no("a DFT+U hybrid crystal");
         }
-        if c.spinor {
-            return no("a DFT+U spinor crystal");
-        }
     }
     if c.spins != 1 && c.spins != 2 {
         return no("a crystal with more than two spin channels");
@@ -279,12 +276,16 @@ pub fn crystal_strain_reusing<'a>(
         q: frozen.q.clone(),
         hubbard: frozen.hubbard.clone(),
     };
-    let mut strain = StrainSetup::new(ctx, inputs, layout, operators)?.with_point_group(
-        crystal
-            .description
-            .as_ref()
-            .and_then(|d| d.point_group.clone()),
-    )?;
+    let sum_z: f64 = inputs.sites.atoms.iter().map(|a| a.charge).sum();
+    let net_charge = sum_z - crystal.electrons;
+    let mut strain = StrainSetup::new(ctx, inputs, layout, operators)?
+        .with_net_charge(net_charge)
+        .with_point_group(
+            crystal
+                .description
+                .as_ref()
+                .and_then(|d| d.point_group.clone()),
+        )?;
     if let Some(cache) = reuse.projections {
         strain = strain.with_projections(cache);
     }

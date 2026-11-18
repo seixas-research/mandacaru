@@ -172,12 +172,7 @@ pub fn crystal_real_time<'py>(
 ) -> PyResult<Bound<'py, PyDict>> {
     crystal::check_options(kick, gauge).map_err(error)?;
     let single = directions(direction)?;
-    let setup = result.setup.as_deref().ok_or_else(|| {
-        pyo3::exceptions::PyNotImplementedError::new_err(
-            "real-time propagation of a crystal rebuilds its whole k mesh, which only the native \
-             periodic setup makes; a crystal loaded from a snapshot has none",
-        )
-    })?;
+    let setup = result.resolve_setup(py)?;
     let mut request = crystal::Request::from_user_units(
         single.unwrap_or([1., 0., 0.]),
         strength,
@@ -196,7 +191,7 @@ pub fn crystal_real_time<'py>(
     let (state, periodic) = (&*result.inner, &*result.crystal);
     let runs = py
         .detach(|| {
-            let sampler = Sampler::new(periodic, state, setup)?;
+            let sampler = Sampler::new(periodic, state, &setup)?;
             match single {
                 Some(_) => Ok(vec![crystal::propagate(&sampler, &request)?]),
                 None => crystal::propagate_axes(&sampler, &request),
@@ -443,21 +438,16 @@ pub fn crystal_dielectric_function<'py>(
     if let Some(c) = cutoff {
         request.cutoff = from_user(c, Quantity::Wavenumber, atomic_units);
     }
-    let setup = result.setup.as_deref().ok_or_else(|| {
-        pyo3::exceptions::PyNotImplementedError::new_err(
-            "the dielectric function of a crystal samples its whole k mesh, which only the native \
-             periodic setup makes; a crystal loaded from a snapshot has none",
-        )
-    })?;
+    let setup = result.resolve_setup(py)?;
     let (state, periodic) = (&*result.inner, &*result.crystal);
     let started = std::time::Instant::now();
     let out = py
         .detach(|| {
             let size = match kpts {
                 Some(size) => size,
-                None => crystal::scf_mesh(setup)?,
+                None => crystal::scf_mesh(&setup)?,
             };
-            let sampler = Sampler::new(periodic, state, setup)?;
+            let sampler = Sampler::new(periodic, state, &setup)?;
             let mesh = MeshIndex::new(size, [0.; 3])?;
             // `bands=None`: the smallest window holding every transition up to the highest
             // requested energy and the independent-particle `eps(0)` to `STATIC_TOLERANCE`.
@@ -670,21 +660,16 @@ pub fn crystal_excitations<'py>(
     if let Some(c) = cutoff {
         request.cutoff = from_user(c, Quantity::Wavenumber, atomic_units);
     }
-    let setup = result.setup.as_deref().ok_or_else(|| {
-        pyo3::exceptions::PyNotImplementedError::new_err(
-            "the excitons of a crystal sample its whole k mesh, which only the native periodic \
-             setup makes; a crystal loaded from a snapshot has none",
-        )
-    })?;
+    let setup = result.resolve_setup(py)?;
     let (state, periodic) = (&*result.inner, &*result.crystal);
     let started = std::time::Instant::now();
     let (op, excitons) = py
         .detach(|| {
             let size = match kpts {
                 Some(size) => size,
-                None => crystal::scf_mesh(setup)?,
+                None => crystal::scf_mesh(&setup)?,
             };
-            let sampler = Sampler::new(periodic, state, setup)?;
+            let sampler = Sampler::new(periodic, state, &setup)?;
             let op = bse::operator(&sampler, &MeshIndex::new(size, [0.; 3])?, &request)?;
             let excitons = op.lowest(num_states, tolerance, max_iterations)?;
             Ok::<_, mandacaru_core::Error>((op, excitons))
@@ -693,50 +678,20 @@ pub fn crystal_excitations<'py>(
     let roots = excitons.energies.len();
     let nk = op.mesh.iter().product::<usize>();
     let user = |values: &[f64]| to_user(values, Quantity::Energy, atomic_units, 1).map_err(error);
-    let binding: Vec<f64> = excitons.energies.iter().map(|e| op.onset - e).collect();
-    let dipoles = op.dipoles_of(&excitons);
-    // The area of each line in Im epsilon: 4 pi^2 s |o^a|^2 (Hartree).
-    let areas: Vec<f64> = dipoles
-        .iter()
-        .flat_map(|o| o.map(|v| 4. * std::f64::consts::PI.powi(2) * op.scale * v.norm_sqr()))
-        .collect();
-    // The resonant amplitudes, normalized (in the coupling form `X^dagger X = 1 + Y^dagger Y`).
-    let column = |l: usize| excitons.vectors.column(l).normalize();
-    let participation: Vec<f64> = (0..roots)
-        .map(|l| 1. / column(l).iter().map(|x| x.norm_sqr().powi(2)).sum::<f64>())
-        .collect();
-    let mut kpoint_weights = vec![0.; roots * nk];
-    let mut dominant = Vec::with_capacity(roots);
-    let mut dominant_channels = Vec::with_capacity(roots);
-    for l in 0..roots {
-        let a = column(l);
-        for (t, transition) in op.transitions.iter().enumerate() {
-            kpoint_weights[l * nk + transition.k] += a[t].norm_sqr();
-        }
-        let (t, weight) = a
-            .iter()
-            .enumerate()
-            .map(|(t, x)| (t, x.norm_sqr()))
-            .fold((0, -1.), |best, x| if x.1 > best.1 { x } else { best });
-        let transition = op.transitions[t];
-        dominant.push((
-            transition.k,
-            transition.valence,
-            transition.conduction,
-            weight,
-        ));
-        dominant_channels.push(transition.channel);
-    }
+    let summary = op.analyze(&excitons);
     let flat = |rows: &[[f64; 3]; 3]| rows.iter().flatten().copied().collect::<Vec<f64>>();
     let dict = PyDict::new(py);
     dict.set_item("energies", array(py, &[roots], user(&excitons.energies)?)?)?;
-    dict.set_item("binding", array(py, &[roots], user(&binding)?)?)?;
+    dict.set_item("binding", array(py, &[roots], user(&summary.binding)?)?)?;
     dict.set_item("onset", user(&[op.onset])?[0])?;
-    dict.set_item("weights", array(py, &[roots, 3], user(&areas)?)?)?;
-    dict.set_item("participation", array(py, &[roots], participation.clone())?)?;
-    dict.set_item("kpoint_weights", array(py, &[roots, nk], kpoint_weights)?)?;
-    dict.set_item("dominant", dominant)?;
-    dict.set_item("dominant_channels", dominant_channels)?;
+    dict.set_item("weights", array(py, &[roots, 3], user(&summary.areas)?)?)?;
+    dict.set_item("participation", array(py, &[roots], summary.participation)?)?;
+    dict.set_item(
+        "kpoint_weights",
+        array(py, &[roots, nk], summary.kpoint_weights)?,
+    )?;
+    dict.set_item("dominant", summary.dominant)?;
+    dict.set_item("dominant_channels", summary.dominant_channels)?;
     dict.set_item("spin", spin.name())?;
     dict.set_item("kernel", kernel.name())?;
     dict.set_item("approximation", approximation)?;
@@ -792,7 +747,7 @@ pub fn crystal_excitations<'py>(
         (format!("scissor_{unit}"), list(&[op.scissor])?),
         (format!("onset_{unit}"), list(&[op.onset])?),
         (format!("energies_{unit}"), list(&excitons.energies)?),
-        (format!("binding_{unit}"), list(&binding)?),
+        (format!("binding_{unit}"), list(&summary.binding)?),
         (
             "static_dielectric_diagonal".into(),
             format!(

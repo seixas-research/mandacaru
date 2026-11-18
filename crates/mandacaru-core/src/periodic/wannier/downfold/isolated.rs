@@ -118,38 +118,46 @@ pub(in crate::periodic) fn padded(
     }
     let n = modes.len();
     let p = crystal.p;
+    let components = functions.components;
     let mut values = (0..n)
-        .map(|_| ctx.allocate::<C64>(big.points()))
+        .map(|_| ctx.allocate::<C64>(product(&[components, big.points()])?))
         .collect::<Result<Vec<_>>>()?;
     let mut coefficients = (0..n)
-        .map(|_| ctx.allocate::<C64>(product(&[big.cells, p])?))
+        .map(|_| ctx.allocate::<C64>(product(&[components, big.cells, p])?))
         .collect::<Result<Vec<_>>>()?;
+    let small_points = cell.points();
+    let big_points = big.points();
     for (i, mode) in modes.iter().enumerate() {
         let source = axis_sources(cell, mode.cell);
-        let home = functions.values[mode.at].as_slice();
         let small = cell.total;
-        let out = values[i].as_mut_slice();
-        for x0 in 0..big.total[0] {
-            for x1 in 0..big.total[1] {
-                for x2 in 0..big.total[2] {
-                    let at = (x0 * big.total[1] + x1) * big.total[2] + x2;
-                    if mask[at] == 0. {
-                        continue;
+        let shifted = shifted_coefficients(functions, cell, mode.at, mode.cell);
+        for comp in 0..components {
+            let home = &functions.values[mode.at].as_slice()
+                [comp * small_points..(comp + 1) * small_points];
+            let out = &mut values[i].as_mut_slice()[comp * big_points..(comp + 1) * big_points];
+            for x0 in 0..big.total[0] {
+                for x1 in 0..big.total[1] {
+                    for x2 in 0..big.total[2] {
+                        let at = (x0 * big.total[1] + x1) * big.total[2] + x2;
+                        if mask[at] == 0. {
+                            continue;
+                        }
+                        let s = (source[0][x0 % small[0]] * small[1] + source[1][x1 % small[1]])
+                            * small[2]
+                            + source[2][x2 % small[2]];
+                        out[at] = home[s] * mask[at];
                     }
-                    let s = (source[0][x0 % small[0]] * small[1] + source[1][x1 % small[1]])
-                        * small[2]
-                        + source[2][x2 % small[2]];
-                    out[at] = home[s] * mask[at];
                 }
             }
-        }
-        let shifted = shifted_coefficients(functions, cell, mode.at, mode.cell);
-        for t in 0..big.cells {
-            let v = big.cell_vector(t);
-            let wrapped = cell.cell_of(v);
-            for j in 0..p {
-                coefficients[i].as_mut_slice()[t * p + j] =
-                    shifted[wrapped * p + j] * column_mask[t * p + j];
+            let src_coeff = &shifted[comp * cell.cells * p..(comp + 1) * cell.cells * p];
+            let dst_coeff = &mut coefficients[i].as_mut_slice()
+                [comp * big.cells * p..(comp + 1) * big.cells * p];
+            for t in 0..big.cells {
+                let v = big.cell_vector(t);
+                let wrapped = cell.cell_of(v);
+                for j in 0..p {
+                    dst_coeff[t * p + j] = src_coeff[wrapped * p + j] * column_mask[t * p + j];
+                }
             }
         }
     }
@@ -158,6 +166,7 @@ pub(in crate::periodic) fn padded(
         values,
         coefficients,
         projectors: p,
+        components,
     };
     let identity = (0..n).map(|at| Mode { at, cell: [0; 3] }).collect();
     Ok((big, padded, identity))

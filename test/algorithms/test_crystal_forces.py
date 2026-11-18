@@ -397,3 +397,32 @@ def test_aluminum_stress_equals_the_reconverged_strain_difference(monkeypatch):
     assert abs(stress[:3].mean() + isotropic) > 100 * gate                 # the control: the wrong sign bites
     assert abs(stress[5] - xy) < gate
     assert abs(stress[5] + xy) > 100 * gate
+
+
+def test_magnetic_spinor_meta_gga_snapshot_forces_and_stress():
+    """Magnetic spinor meta-GGA (r2scan) stores 4 Pauli kinetic_density channels in the snapshot
+    and produces valid forces and stress."""
+    atoms = Atoms(
+        "HH",
+        cell=[5.2] * 3,
+        pbc=True,
+        positions=[[2.0, 2.1, 2.0], [2.4, 2.0, 3.2]],
+        magmoms=[1.0, 1.0],
+    )
+    atoms.calc = Mandacaru(
+        method="dft",
+        xc="r2scan",
+        basis={**BASIS, "paw_dataset": "pbe-fr"},
+        grid_spacing=0.45,
+        kpts={"size": (1, 1, 1), "gamma": True},
+        symmetry=False,
+        smearing=SMEARING,
+        trace=False,
+        periodic_scf_options={"max_iterations": 80, "tolerance": 1e-8, "density_tolerance": 1e-7, "mixing": 0.25},
+    )
+    forces = atoms.get_forces()
+    stress = atoms.get_stress()
+    assert forces.shape == (2, 3) and np.all(np.isfinite(forces))
+    assert stress.shape == (6,) and np.all(np.isfinite(stress))
+    tau = atoms.calc.result._raw["kinetic_density"]
+    assert tau.ndim == 2 and tau.shape[0] == 4

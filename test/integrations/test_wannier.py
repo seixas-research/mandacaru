@@ -20,8 +20,8 @@ pytestmark = pytest.mark.filterwarnings("ignore:the fragment spans")
 
 
 @pytest.fixture(scope="module")
-def chain():
-    """H2 (1.4 Bohr bond) along a periodic chain axis; two H 1s functions on a 3-cell mesh."""
+def chain_calc():
+    """Converged H2 chain DFT calculator shared across Wannier integration tests."""
     atoms = Atoms("H2", positions=[[2.3 * BOHR, 4.0 * BOHR, 4.0 * BOHR],
                                    [3.7 * BOHR, 4.0 * BOHR, 4.0 * BOHR]],
                   cell=CELL, pbc=True)
@@ -29,7 +29,14 @@ def chain():
                            grid_spacing=0.4 * BOHR, kpts={"size": (1, 1, 1), "gamma": True},
                            parallelization={"threads": 2})
     atoms.get_potential_energy()
-    wannier = atoms.calc.wannier(2, guess=atoms.positions, kpts={"size": (3, 1, 1), "gamma": True})
+    return atoms.calc
+
+
+@pytest.fixture(scope="module")
+def chain(chain_calc):
+    """H2 (1.4 Bohr bond) along a periodic chain axis; two H 1s functions on a 3-cell mesh."""
+    wannier = chain_calc.wannier(2, guess=chain_calc.atoms.positions,
+                                 kpts={"size": (3, 1, 1), "gamma": True})
     assert wannier.converged
     return wannier
 
@@ -142,3 +149,119 @@ def test_unavailable_choices_raise_by_name(chain):
         chain.downfold([5])
     with pytest.raises(ValueError, match="each function once"):
         chain.downfold([0, 0])
+
+
+def test_pipek_mezey_localization_and_option_validation(chain_calc):
+    kpts = {"size": (3, 1, 1), "gamma": True}
+    for scheme in ("mulliken", "lowdin"):
+        for exponent in (2, 4):
+            wannier = chain_calc.wannier(
+                2,
+                guess=chain_calc.atoms.positions,
+                kpts=kpts,
+                localization="populations",
+                populations=scheme,
+                exponent=exponent,
+                max_iterations=400,
+                tolerance=1e-9,
+            )
+            assert wannier.converged
+            assert wannier.localization == "populations"
+            assert wannier.populations == scheme
+            assert wannier.exponent == exponent
+            assert np.isfinite(wannier.centers).all()
+
+    with pytest.raises(ValueError, match="localization"):
+        chain_calc.wannier(2, guess=chain_calc.atoms.positions, kpts=kpts, localization="boys")
+    with pytest.raises(ValueError, match="population"):
+        chain_calc.wannier(2, guess=chain_calc.atoms.positions, kpts=kpts,
+                           localization="populations", populations="bader")
+    with pytest.raises(ValueError, match="exponent"):
+        chain_calc.wannier(2, guess=chain_calc.atoms.positions, kpts=kpts,
+                           localization="populations", exponent=3)
+
+
+def test_wannier_interpolation_positions_band_structure_and_tr_ahc(chain):
+    from mandacaru.analysis.berry import AnomalousHall
+
+    assert chain.localization == "spread"
+    assert chain.populations is None and chain.exponent is None
+    vecs = chain.lattice_vectors
+    pos = chain.positions_R
+    assert pos.shape == (3, len(vecs), chain.n_functions, chain.n_functions)
+    assert chain.position_asymmetry >= 0.0 and np.isfinite(chain.position_asymmetry)
+    index = {tuple(int(x) for x in r): idx for idx, r in enumerate(vecs)}
+    for idx, r in enumerate(vecs):
+        neg = tuple(-int(x) for x in r)
+        if neg in index:
+            j = index[neg]
+            for alpha in range(3):
+                np.testing.assert_allclose(pos[alpha, idx], pos[alpha, j].conj().T, atol=1e-12)
+
+    energies = chain.interpolate(chain.kpoints)
+    e_vec, vectors = chain.interpolate(chain.kpoints, eigenvectors=True)
+    np.testing.assert_allclose(e_vec, energies, atol=1e-12)
+    assert vectors.shape == (len(chain.kpoints), chain.n_functions, chain.n_functions)
+    for u in vectors:
+        np.testing.assert_allclose(u.conj().T @ u, np.eye(chain.n_functions), atol=1e-12)
+
+    bs = chain.band_structure(path=[("G", [0.0, 0.0, 0.0]), ("X", [0.5, 0.0, 0.0])], npoints=7)
+    assert bs.energies.shape == (1, 7, chain.n_functions)
+    assert np.isfinite(bs.energies).all()
+
+    ahc = chain.anomalous_hall(kpts={"size": (4, 2, 2)}, refine=True)
+    assert isinstance(ahc, AnomalousHall)
+    assert ahc.method == "wannier"
+    np.testing.assert_allclose(ahc.sigma, 0.0, atol=1e-10)
+
+
+def test_snapshot_loaded_crystal_supports_wannier_and_crpa_downfold(chain, tmp_path):
+    snapshot_path = tmp_path / "h2_chain.json"
+    atoms = Atoms("H2", positions=[[2.3 * BOHR, 4.0 * BOHR, 4.0 * BOHR],
+                                   [3.7 * BOHR, 4.0 * BOHR, 4.0 * BOHR]],
+                  cell=CELL, pbc=True)
+    atoms.calc = Mandacaru(method="dft", xc="lda", basis={"name": "PAW-LCAO", "size": "SZ"},
+                           grid_spacing=0.4 * BOHR, kpts={"size": (1, 1, 1), "gamma": True},
+                           save_crystal=snapshot_path, trace=False,
+                           parallelization={"threads": 2})
+    atoms.get_potential_energy()
+
+    loaded = Mandacaru(method="dft", load_crystal=snapshot_path, trace=False,
+                       parallelization={"threads": 2})
+    loaded.run()
+    # Both explicit coordinate guesses and dict orbital guesses (reconstructed from snapshot) work.
+    w_loaded = loaded.wannier(2, guess={"H": "s"}, kpts={"size": (3, 1, 1), "gamma": True})
+    assert w_loaded.converged
+    m_loaded = w_loaded.downfold([0], screening="crpa", screening_cutoff=2.0)
+    m_direct = chain.downfold([0], screening="crpa", screening_cutoff=2.0)
+    assert abs(m_loaded.dielectric_head - m_direct.dielectric_head) < 1e-8
+    np.testing.assert_allclose(m_loaded.two_body, m_direct.two_body, atol=1e-8)
+
+
+def test_spinor_wannier_downfold_and_quantum_problem():
+    atoms = Atoms("H2", positions=[[2.3 * BOHR, 4.0 * BOHR, 4.0 * BOHR],
+                                   [3.7 * BOHR, 4.0 * BOHR, 4.0 * BOHR]],
+                  cell=CELL, pbc=True)
+    atoms.calc = Mandacaru(method="dft", xc="lda",
+                           basis={"name": "PAW-LCAO", "size": "SZ", "paw_dataset": "lda-fr"},
+                           grid_spacing=0.4 * BOHR,
+                           kpts={"size": (1, 1, 1), "gamma": True}, trace=False,
+                           parallelization={"threads": 2})
+    atoms.get_potential_energy()
+    w = atoms.calc.wannier(4, guess=atoms.positions, kpts={"size": (2, 1, 1), "gamma": True})
+    assert w.converged
+    model = w.downfold(screening="crpa", screening_cutoff=2.0)
+    assert model.spinor
+    assert model.n_spatial_orbitals == 2
+    assert model.two_body.shape == (4, 4, 4, 4)
+    gamma, g = model.density_matrix, model.two_body
+    fock = model.one_body.copy()
+    for p, q, r, s in itertools.product(range(4), repeat=4):
+        fock[p, q] += gamma[r, s] * (g[p, r, q, s] - g[p, r, s, q])
+    np.testing.assert_allclose(fock, model.kohn_sham, atol=1e-10)
+    problem = model.as_quantum_problem()
+    assert problem["n_spatial_orbitals"] == 2
+    assert model.fermion_hamiltonian("natural").to_matrix(4).shape == (16, 16)
+    result = Mandacaru(method="adapt-vqe", mapping="jordan_wigner", **problem,
+                       max_iterations=2, trace=False).run()
+    assert np.isfinite(result.optimal_energy)

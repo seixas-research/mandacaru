@@ -4,8 +4,8 @@
 
 mod paw_generate_support;
 
-use mandacaru_core::models::xc_scheme::{AtomSolver, Variational};
-use mandacaru_core::paw::generate::reference::{solve_reference, solve_reference_with};
+use mandacaru_core::models::xc_scheme::Variational;
+use mandacaru_core::paw::generate::reference::solve_reference;
 use mandacaru_core::paw::generate::{generate, generate_with_atom};
 use mandacaru_core::paw::record::PawDataset;
 use mandacaru_core::{Context, Error};
@@ -197,13 +197,13 @@ fn an_explicit_core_radius_changes_only_what_reads_the_core() {
     use mandacaru_core::paw::generate::recipe::{Nlcc, Recipe};
     let ctx = context();
     let base = Recipe::for_dataset("O", "lda", Treatment::Scalar).unwrap();
-    let atom = solve_reference_with(&ctx, &base, &AtomSolver).unwrap();
-    let default = generate_with_atom(&ctx, &base, &atom, &AtomSolver)
+    let atom = solve_reference(&ctx, &base).unwrap();
+    let default = generate_with_atom(&ctx, &base, &atom, &Variational)
         .unwrap()
         .dataset;
     let mut recipe = base.clone();
     recipe.nlcc = Nlcc::Radius(0.9);
-    let explicit = generate_with_atom(&ctx, &recipe, &atom, &AtomSolver)
+    let explicit = generate_with_atom(&ctx, &recipe, &atom, &Variational)
         .unwrap()
         .dataset;
     assert!(explicit.nlcc.applied);

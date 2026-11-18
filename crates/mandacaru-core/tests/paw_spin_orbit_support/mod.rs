@@ -6,9 +6,9 @@ pub mod items;
 
 use mandacaru_core::models::atom::Atom;
 use mandacaru_core::models::relativity::Treatment;
-use mandacaru_core::models::xc_scheme::AtomSolver;
+use mandacaru_core::models::xc_scheme::Variational;
 use mandacaru_core::paw::generate::recipe::Recipe;
-use mandacaru_core::paw::generate::reference::solve_reference_with;
+use mandacaru_core::paw::generate::reference::solve_reference;
 use mandacaru_core::paw::generate::search::{plan, radii_of, search_with_atom, Mode, Options};
 use mandacaru_core::paw::generate::{generate_with_atom, Generated};
 use mandacaru_core::Context;
@@ -41,13 +41,13 @@ pub fn recipe_of(name: &str) -> Recipe {
 /// (pbe-fr Si does).
 pub fn open(ctx: &Context, name: &str) -> Case {
     let first = recipe_of(name);
-    let atom = solve_reference_with(ctx, &first, &AtomSolver).unwrap();
+    let atom = solve_reference(ctx, &first).unwrap();
     let options = Options::new(&first, Mode::Repair);
-    let searched = search_with_atom(ctx, &first, &options, &atom, &AtomSolver).unwrap();
+    let searched = search_with_atom(ctx, &first, &options, &atom, &Variational).unwrap();
     let recipe = match searched.index {
         0 => first,
         selected => {
-            let built = generate_with_atom(ctx, &first, &atom, &AtomSolver).unwrap();
+            let built = generate_with_atom(ctx, &first, &atom, &Variational).unwrap();
             let attempts = plan(&first, &radii_of(&built.dataset));
             attempts[selected - 1].recipe.clone()
         }
@@ -56,9 +56,9 @@ pub fn open(ctx: &Context, name: &str) -> Case {
 }
 
 impl Case {
-    /// The dataset through the atom-solver radial scheme.
+    /// The dataset through the production variational radial scheme.
     pub fn generate(&self, ctx: &Context) -> Generated {
-        generate_with_atom(ctx, &self.recipe, &self.atom, &AtomSolver).unwrap()
+        generate_with_atom(ctx, &self.recipe, &self.atom, &Variational).unwrap()
     }
 }
 

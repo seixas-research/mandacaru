@@ -4,7 +4,10 @@
 use super::{
     algebra::Generator,
     amplitude::Amplitude,
-    pools::{self, label_conserves_momentum, CrystalMomentum},
+    pools::{
+        self, label_conserves_momentum, label_conserves_point_symmetry, CrystalMomentum,
+        CrystalPointSymmetry,
+    },
     properties::{self, Rdms, SpatialRdms},
     solver::QuantumProblem,
     tapering::Taper,
@@ -61,19 +64,16 @@ impl QuantumProblem {
         Ok(dropped)
     }
 
-    /// Construct a derived problem with its operator pool restricted to crystal-momentum
-    /// conserving generators (`Bloch-*` domain extension for all variational solvers and subspace
-    /// methods).
-    pub fn with_momentum(&self, momentum: &CrystalMomentum) -> Result<Self> {
+    fn clone_for_symmetry(&self, what: &str) -> Result<Self> {
         if self.taper.is_some() {
-            return Err(invalid(
-                "apply momentum pool filtering before Z2 tapering the register",
-            ));
+            return Err(invalid(&format!(
+                "apply {what} before Z2 tapering the register"
+            )));
         }
         if self.hva.is_some() {
-            return Err(invalid(
-                "momentum pool restriction applies to excitation/Pauli pools, not HVA",
-            ));
+            return Err(invalid(&format!(
+                "{what} applies to excitation/Pauli pools, not HVA (restrict crystal symmetry before calling use_hva)"
+            )));
         }
         let ctx = &self.context;
         let encoding = Encoding::new(
@@ -81,6 +81,14 @@ impl QuantumProblem {
             self.encoding.modes,
             self.encoding.particles,
         )?;
+        let m_half = self.encoding.modes / 2;
+        let is_spinor_total = self.basis.as_ref().is_some_and(|b| {
+            b.len() < (1usize << b.n)
+                && b.indices.as_slice().iter().any(|&enc| {
+                    let occ = self.encoding.decode(enc);
+                    (occ >> m_half).count_ones() as usize != self.encoding.particles[0]
+                })
+        });
         let sector = self
             .basis
             .as_ref()
@@ -94,6 +102,15 @@ impl QuantumProblem {
                     number_conserving: !self.conserved.is_empty(),
                 },
                 false,
+                false,
+            )?
+        } else if is_spinor_total {
+            Self::spinor_in(
+                ctx,
+                encoding,
+                self.hamiltonian.copy_into(ctx)?,
+                super::Space::Sector,
+                self.dense.is_some(),
                 false,
             )?
         } else {
@@ -118,83 +135,96 @@ impl QuantumProblem {
         out.growth_members = self.growth_members.clone();
         out.pool_name = self.pool_name.clone();
         out.precision = self.precision;
+        out.momentum = self.momentum.clone();
+        out.point_symmetry = self.point_symmetry.clone();
         out._pool_metadata = ctx.reserve(product(&[out.pool.len(), 256])?)?;
-        out.restrict_momentum(momentum)?;
+        if self.sparse.is_some() {
+            out.sparse = Some(super::sparse::SparseMatrix::new(
+                &out.context,
+                out.register("a sparse Hamiltonian matrix")?,
+                &out.hamiltonian,
+            )?);
+        }
         Ok(out)
     }
 
-    /// Filter the problem's operator pool to generators conserving crystal momentum `momentum`,
-    /// decoupling periodic Bloch symmetry once so VQE, ADAPT-VQE, VASQA, VALSQA, and all subspace
-    /// variants automatically search/screen only momentum-allowed excitations.
-    pub fn restrict_momentum(
+    fn filter_pool_by_charge<T: Clone>(
         &mut self,
-        momentum: &CrystalMomentum,
+        what: &str,
+        orbital_count: usize,
+        label_check: impl Fn(&str) -> Option<bool>,
+        charge_of_occ: impl Fn(u64) -> T,
+        same_charge: impl Fn(&T, &T) -> bool,
     ) -> Result<Vec<(usize, String)>> {
-        if self.hva.is_some() {
-            return Err(invalid(
-                "momentum pool restriction applies to excitation/Pauli pools, not HVA",
-            ));
+        if self.encoding.modes % 2 != 0
+            || (self.encoding.modes / 2 != orbital_count && self.encoding.modes != orbital_count)
+        {
+            return Err(invalid(&format!(
+                "{what} orbital count must match the problem's spatial or spin orbitals"
+            )));
         }
-        if self.encoding.modes % 2 != 0 || self.encoding.modes / 2 != momentum.orbital_k.len() {
-            return Err(invalid(
-                "crystal momentum orbital count must match the problem's spatial orbitals",
-            ));
-        }
-        let m = momentum.orbital_k.len();
-        let basis_k: Option<Vec<[i64; 3]>> = if self.taper.is_none() {
+        let basis_charges: Option<Vec<T>> = if self.taper.is_none() {
             self.basis.as_ref().map(|b| {
                 b.indices
                     .as_slice()
                     .iter()
-                    .map(|&enc| {
-                        let occ = self.encoding.decode(enc);
-                        let mut sum = [0i64; 3];
-                        for bit in 0..self.encoding.modes {
-                            if (occ >> (self.encoding.modes - 1 - bit)) & 1 != 0 {
-                                let k = momentum.orbital_k[bit % m];
-                                for (s, &v) in sum.iter_mut().zip(&k) {
-                                    *s += v;
-                                }
-                            }
-                        }
-                        sum
-                    })
+                    .map(|&enc| charge_of_occ(self.encoding.decode(enc)))
                     .collect()
             })
         } else {
             None
         };
+        if self.hva.is_some() {
+            if let Some((basis, charges)) = self.basis.as_ref().zip(basis_charges.as_ref()) {
+                let mut scratch = Vec::new();
+                for generator in &self.pool {
+                    let ok = charges.iter().enumerate().all(|(row, ch_in)| {
+                        generator.operator.apply_sparse_state_into(
+                            basis,
+                            &[(row, C64::new(1., 0.))],
+                            &mut scratch,
+                        );
+                        scratch
+                            .iter()
+                            .filter(|&&(_, amp)| amp.norm() > 1e-12)
+                            .all(|&(out_row, _)| same_charge(ch_in, &charges[out_row]))
+                    });
+                    if !ok {
+                        return Err(invalid(&format!(
+                            "HVA generator {} does not conserve {what}",
+                            generator.label
+                        )));
+                    }
+                }
+            }
+            return Ok(Vec::new());
+        }
         let ctx = self.context.clone();
         let keep_flags: Vec<bool> = {
-            let basis_ref = self.basis.as_ref().zip(basis_k.as_ref());
+            let basis_ref = self.basis.as_ref().zip(basis_charges.as_ref());
+            let mut scratch = Vec::new();
             self.pool
                 .iter()
-                .map(
-                    |generator| match label_conserves_momentum(&generator.label, momentum) {
-                        Some(flag) => flag,
-                        None => {
-                            if let Some((basis, k_rows)) = basis_ref {
-                                k_rows.iter().enumerate().all(|(row, &k_in)| {
-                                    generator
-                                        .operator
-                                        .apply_sparse_state(basis, &[(row, C64::new(1., 0.))])
-                                        .into_iter()
-                                        .filter(|&(_, amp)| amp.norm() > 1e-12)
-                                        .all(|(out_row, _)| {
-                                            let k_out = k_rows[out_row];
-                                            (0..3).all(|a| {
-                                                (k_out[a] - k_in[a])
-                                                    .rem_euclid(momentum.mesh[a] as i64)
-                                                    == 0
-                                            })
-                                        })
-                                })
-                            } else {
-                                false
-                            }
+                .map(|generator| match label_check(&generator.label) {
+                    Some(flag) => flag,
+                    None => {
+                        if let Some((basis, charges)) = basis_ref {
+                            charges.iter().enumerate().all(|(row, ch_in)| {
+                                generator.operator.apply_sparse_state_into(
+                                    basis,
+                                    &[(row, C64::new(1., 0.))],
+                                    &mut scratch,
+                                );
+                                scratch
+                                    .iter()
+                                    .filter(|&&(_, amp)| amp.norm() > 1e-12)
+                                    .all(|&(out_row, _)| same_charge(ch_in, &charges[out_row]))
+                            })
+                        } else {
+                            false
                         }
-                    },
-                )
+                    }
+                })
                 .collect()
         };
         let mut idx = 0usize;
@@ -207,6 +237,108 @@ impl QuantumProblem {
                 Ok(None)
             }
         })
+    }
+
+    /// Construct a derived problem with its operator pool restricted to crystal-momentum
+    /// conserving generators (`Bloch-*` domain extension for all variational solvers and subspace
+    /// methods).
+    pub fn with_momentum(&self, momentum: &CrystalMomentum) -> Result<Self> {
+        let mut out = self.clone_for_symmetry("momentum pool filtering")?;
+        out.restrict_momentum(momentum)?;
+        Ok(out)
+    }
+
+    /// Construct a derived problem restricted to generators conserving Abelian crystal
+    /// point-/space-group characters `symmetry`.
+    pub fn with_point_symmetry(&self, symmetry: &CrystalPointSymmetry) -> Result<Self> {
+        let mut out = self.clone_for_symmetry("crystal point-symmetry pool filtering")?;
+        out.restrict_point_symmetry(symmetry)?;
+        Ok(out)
+    }
+
+    /// Construct a derived problem restricted by optional `CrystalMomentum` and/or
+    /// `CrystalPointSymmetry`.
+    pub fn with_crystal_symmetry(
+        &self,
+        momentum: Option<&CrystalMomentum>,
+        symmetry: Option<&CrystalPointSymmetry>,
+    ) -> Result<Self> {
+        let mut out = self.clone_for_symmetry("crystal symmetry pool filtering")?;
+        if let Some(m) = momentum {
+            out.restrict_momentum(m)?;
+        }
+        if let Some(s) = symmetry {
+            out.restrict_point_symmetry(s)?;
+        }
+        Ok(out)
+    }
+
+    /// Construct a Z2-tapered copy of this problem (after all pool / crystal-symmetry filters).
+    pub fn with_taper(&self) -> Result<Self> {
+        let had_sparse = self.sparse.is_some();
+        let mut out = self.clone_for_symmetry("Z2 tapering")?;
+        out.sparse = None;
+        out.taper()?;
+        if had_sparse {
+            out.sparse = Some(super::sparse::SparseMatrix::new(
+                &out.context,
+                out.register("a sparse Hamiltonian matrix")?,
+                &out.hamiltonian,
+            )?);
+        }
+        Ok(out)
+    }
+
+    /// Filter the problem's operator pool to generators conserving crystal momentum `momentum`,
+    /// decoupling periodic Bloch symmetry once so VQE, ADAPT-VQE, VASQA, VALSQA, and all subspace
+    /// variants automatically search/screen only momentum-allowed excitations.
+    pub fn restrict_momentum(
+        &mut self,
+        momentum: &CrystalMomentum,
+    ) -> Result<Vec<(usize, String)>> {
+        let m = momentum.orbital_k.len();
+        let modes = self.encoding.modes;
+        let dropped = self.filter_pool_by_charge(
+            "crystal momentum",
+            m,
+            |label| label_conserves_momentum(label, momentum),
+            |occ| {
+                let mut sum = [0i64; 3];
+                for bit in 0..modes {
+                    if (occ >> (modes - 1 - bit)) & 1 != 0 {
+                        let k = momentum.orbital_k[bit % m];
+                        for (s, &v) in sum.iter_mut().zip(&k) {
+                            *s += v;
+                        }
+                    }
+                }
+                sum
+            },
+            |k_in, k_out| {
+                (0..3).all(|a| (k_out[a] - k_in[a]).rem_euclid(momentum.mesh[a] as i64) == 0)
+            },
+        )?;
+        self.momentum = Some(momentum.clone());
+        Ok(dropped)
+    }
+
+    /// Filter the problem's operator pool to generators conserving Abelian crystal
+    /// point-/space-group characters `symmetry`.
+    pub fn restrict_point_symmetry(
+        &mut self,
+        symmetry: &CrystalPointSymmetry,
+    ) -> Result<Vec<(usize, String)>> {
+        let m = symmetry.n_orbitals();
+        let modes = self.encoding.modes;
+        let dropped = self.filter_pool_by_charge(
+            "crystal point symmetry",
+            m,
+            |label| label_conserves_point_symmetry(label, symmetry),
+            |occ| symmetry.occupation_characters(modes, occ),
+            |c_in, c_out| c_in.iter().zip(c_out).all(|(a, b)| (b - a).norm() <= 1e-4),
+        )?;
+        self.point_symmetry = Some(symmetry.clone());
+        Ok(dropped)
     }
 
     /// Remove the Z2 symmetries of the encoded Hamiltonian from the register, in the sector of the

@@ -110,6 +110,12 @@ pub struct Document {
     pub(crate) payload: Value,
     _memory: Reservation,
 }
+fn array_field<'a>(value: &'a Value, key: &str) -> Result<&'a Vec<Value>> {
+    value[key]
+        .as_array()
+        .ok_or_else(|| invalid(format!("checkpoint field '{key}' must be a JSON array")))
+}
+
 impl Document {
     pub fn payload(&self) -> &Value {
         &self.payload
@@ -495,11 +501,11 @@ impl Document {
             let basis = Basis::register(ctx, n).map_err(too_wide)?;
             let mut initial = ctx.allocate::<A>(basis.len()).map_err(too_wide)?;
             let mut index = 0;
-            for q in p["reference_qubits"].as_array().unwrap() {
+            for q in array_field(p, "reference_qubits")? {
                 index |= 1usize << (n - 1 - integer(q, "reference qubit")?);
             }
             initial.as_mut_slice()[index] = A::narrow(C64::new(1., 0.));
-            let operators = p["operators"].as_array().unwrap();
+            let operators = array_field(p, "operators")?;
             let _memory = ctx.reserve(product(&[operators.len(), 64])?)?;
             let generators: Vec<_> = operators
                 .iter()
@@ -552,7 +558,7 @@ impl Document {
             return Err(invalid("checkpoint Hamiltonian differs from problem"));
         }
         let mut reference = 0u64;
-        for q in p["reference_qubits"].as_array().unwrap() {
+        for q in array_field(p, "reference_qubits")? {
             reference |= 1u64 << (n - 1 - integer(q, "reference qubit")?);
         }
         if reference != problem.register_reference() {
@@ -574,7 +580,7 @@ impl Document {
     fn sequence(&self, problem: &QuantumProblem) -> Result<(Vec<usize>, Vec<f64>)> {
         let ctx = &problem.context;
         let n = problem.n_qubits();
-        let operators = self.payload["operators"].as_array().unwrap();
+        let operators = array_field(&self.payload, "operators")?;
         let _memory = ctx.reserve(product(&[operators.len(), 32])?)?;
         let mut indices = Vec::new();
         let mut parameters = Vec::new();
@@ -711,7 +717,7 @@ impl Document {
         if p["method"] != if options.adapt { "adapt-vqe" } else { "vqe" } {
             return Err(invalid("checkpoint method differs from solver"));
         }
-        let operators = p["operators"].as_array().unwrap();
+        let operators = array_field(p, "operators")?;
         if let Some(hva) = &problem.hva {
             let indices: Vec<usize> =
                 serde_json::from_value(p["metadata"]["hva"]["indices"].clone())

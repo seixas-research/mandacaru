@@ -270,7 +270,7 @@ fn the_table_has_one_shell_per_atom_of_the_element_in_projector_order() {
         &layout,
     )
     .unwrap();
-    assert_eq!(spec.form, Form::DudarevFll);
+    assert_eq!(spec.form, Form::Dudarev);
     // Atom 1 is listed first, so it is the first shell.
     let atoms: Vec<_> = spec.shells.iter().map(|s| s.atom).collect();
     assert_eq!(atoms, [1, 0]);
@@ -348,7 +348,7 @@ fn the_table_round_trips_through_the_snapshot_text() {
     .unwrap()
     .expect("the table parses");
     assert_eq!(back, spec);
-    assert_eq!(back.form, Form::DudarevFll);
+    assert_eq!(back.form, Form::Dudarev);
 }
 
 #[test]
@@ -390,12 +390,29 @@ fn what_the_crystal_cannot_give_is_refused_naming_the_option_and_the_element() {
         spin_orbit,
     };
     let ni = request(r#"{"Ni": {"l": "d", "U": 3.0}}"#);
-    match build(&ctx, &ni, &layout(true)) {
-        Err(Error::Unsupported(m)) => {
-            assert!(m.contains("hubbard_u") && m.contains("spin-orbit"), "{m}")
-        }
-        other => panic!("{other:?}"),
-    }
+    assert!(build(&ctx, &ni, &layout(true)).is_ok());
+    let ni_liech =
+        request(r#"{"Ni": {"l": "d", "U": 3.0, "J": 0.5, "form": "liechtenstein", "f4_f2": 0.7}}"#);
+    let spec_liech = build(&ctx, &ni_liech, &layout(true)).unwrap();
+    assert_eq!(
+        spec_liech.shells[0].ratios,
+        mandacaru_core::models::hubbard_slater::Ratios::new(2, Some(0.7), None).unwrap()
+    );
+    let spec_back = Spec::parse(
+        &spec_liech.to_json(),
+        projectors.len(),
+        1,
+        true,
+        mandacaru_core::math::storage::Precision::Float64,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(spec_back.shells[0].ratios, spec_liech.shells[0].ratios);
+    check_loaded(&ni_liech, Some(&spec_back)).unwrap();
+    let other_ratio = request(
+        r#"{"Ni": {"l": "d", "U": 3.0, "J": 0.5, "form": "liechtenstein", "f4_f2": 0.65}}"#,
+    );
+    assert!(check_loaded(&other_ratio, Some(&spec_back)).is_err());
     let absent = invalid(
         build(
             &ctx,
@@ -574,10 +591,9 @@ fn the_geometry_check_refuses_from_the_elements_and_their_datasets_alone() {
     let sets = [Dataset::of("Ni", &ni), Dataset::of("O", &ni)];
     let d = request(r#"{"Ni": {"l": "d", "U": 3.0}}"#);
     check_datasets(&d, false, &sets).unwrap();
-    assert!(matches!(
-        check_datasets(&d, true, &sets),
-        Err(Error::Unsupported(m)) if m.contains("spin-orbit")
-    ));
+    check_datasets(&d, true, &sets).unwrap();
+    let d_liech = request(r#"{"Ni": {"l": "d", "U": 3.0, "J": 0.5, "form": "liechtenstein"}}"#);
+    check_datasets(&d_liech, true, &sets).unwrap();
     let absent = invalid(
         check_datasets(&request(r#"{"Cu": {"l": "d", "U": 1.0}}"#), false, &sets).unwrap_err(),
     );

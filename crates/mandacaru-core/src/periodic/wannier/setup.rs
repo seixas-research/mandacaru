@@ -3,13 +3,15 @@
 //! spin channel and its result. Everything numerical is native; the request carries only what
 //! the user chose, never geometry the setup already owns.
 use super::{
-    invalid,
+    interpolation, invalid,
     model::{self, Channel, Windows},
+    populations::{AtomPartition, PopulationScheme},
     sampling::{self, Trial},
-    Options,
+    Localization, Matrix, Options,
 };
 use crate::{
     periodic::{
+        berry::hall::Hall,
         bloch_mesh::{check_isolated, MeshIndex, Sampler},
         setup::PeriodicSetup,
         Crystal, PeriodicResult,
@@ -28,6 +30,7 @@ pub struct Wannier {
     pub bands: Vec<usize>,
     pub trials: Vec<Trial>,
     pub channels: Vec<Channel>,
+    pub localization: Localization,
     /// The periodic setup the crystal was built from, which makes states at any k-point (the
     /// mesh frames, and the long-wavelength limit of the screening).
     pub setup: Arc<PeriodicSetup>,
@@ -35,7 +38,16 @@ pub struct Wannier {
 }
 
 /// The keys a Wannier request may carry; any other key raises (the geometry is the setup's).
-const REQUEST_KEYS: [&str; 5] = ["size", "trials", "n_functions", "windows", "bands"];
+const REQUEST_KEYS: [&str; 8] = [
+    "size",
+    "trials",
+    "n_functions",
+    "windows",
+    "bands",
+    "localization",
+    "populations",
+    "exponent",
+];
 fn real(value: &Value) -> Result<f64> {
     value
         .as_f64()
@@ -363,24 +375,73 @@ impl Wannier {
                 "Wannier bands must be unique valid indices spanning the trial space",
             ));
         }
+        let scheme_str = raw["populations"].as_str().unwrap_or("mulliken");
+        if !raw["populations"].is_null() && raw["populations"].as_str().is_none() {
+            return Err(invalid("populations scheme must be a string"));
+        }
+        let scheme = PopulationScheme::parse(scheme_str)?;
+        let exponent = if raw["exponent"].is_null() {
+            2usize
+        } else {
+            integer(&raw["exponent"])?
+        };
+        if ![2, 4].contains(&exponent) {
+            return Err(invalid(format!(
+                "Pipek-Mezey exponent must be 2 or 4; got {exponent}"
+            )));
+        }
+        let loc_mode = match raw["localization"].as_str() {
+            None if raw["localization"].is_null() => options.localization,
+            Some("spread") => Localization::Spread,
+            Some("populations") => Localization::Populations { scheme, exponent },
+            Some(other) => {
+                return Err(invalid(format!(
+                    "Wannier localization must be 'spread' or 'populations'; got {other:?}"
+                )));
+            }
+            None => return Err(invalid("Wannier localization must be a string")),
+        };
+        let channel_options = Options {
+            localization: loc_mode,
+            ..*options
+        };
+
         let sampler = Sampler::new(&crystal, &state, &setup)?;
         let mut sorted = bands.clone();
         sorted.sort_unstable();
         let isolated = windows.is_none();
-        let frames = sampler.frames(&mesh, &vec![bands.clone(); crystal.spins], |s, frame| {
-            if isolated {
-                // A windowless group must be a smooth subspace: one that touches an outside band
-                // localizes without an error into a gauge that is not smooth.
-                check_isolated(
-                    frame,
-                    s,
-                    &sorted,
-                    "so its Wannier functions are not defined without disentanglement: give \
+        let need_overlap = matches!(loc_mode, Localization::Populations { .. });
+        let mut frames: Vec<Vec<_>> = (0..crystal.spins).map(|_| Vec::new()).collect();
+        let mut ao_metrics: Vec<(Matrix, Matrix)> = Vec::new();
+        sampler.visit_points(
+            &mesh,
+            &vec![bands.clone(); crystal.spins],
+            |s, frame, kp| {
+                if isolated {
+                    // A windowless group must be a smooth subspace: one that touches an outside band
+                    // localizes without an error into a gauge that is not smooth.
+                    check_isolated(
+                        &frame,
+                        s,
+                        &sorted,
+                        "so its Wannier functions are not defined without disentanglement: give \
                      windows= (an outer and a frozen energy window)",
-                )?;
-            }
-            Ok(())
-        })?;
+                    )?;
+                }
+                if need_overlap && s == 0 {
+                    ao_metrics.push((kp.overlap.clone(), kp.lowdin.clone()));
+                }
+                frames[s].push(frame);
+                Ok(())
+            },
+        )?;
+        let partition = if need_overlap {
+            Some(AtomPartition::from_setup(&setup)?)
+        } else {
+            None
+        };
+        let pop_arg = partition.as_ref().map(|p| (p, ao_metrics.as_slice()));
+
         // Only a Hamiltonian without time-reversal symmetry (a spinor crystal with a moment) can
         // give a subspace a Chern number; every collinear or time-reversal-invariant channel has
         // C = 0 by symmetry.
@@ -399,8 +460,9 @@ impl Wannier {
                         windows: windows.as_ref(),
                         reciprocal: sampler.reciprocal,
                         chern_guard: guard,
+                        populations: pop_arg,
                     },
-                    options,
+                    &channel_options,
                 )
             })
             .collect::<Result<Vec<_>>>()?;
@@ -412,8 +474,34 @@ impl Wannier {
             bands,
             trials,
             channels,
+            localization: loc_mode,
             setup,
             _memory: memory,
         })
+    }
+
+    /// Interpolate the anomalous Hall conductivity onto `size` via Wannier interpolation (`W4`).
+    pub fn anomalous_hall(&self, size: [usize; 3], refine: bool) -> Result<Hall> {
+        let models: Vec<&interpolation::Model> =
+            self.channels.iter().map(|c| &c.interpolation).collect();
+        let total_subspace_e: f64 = self.channels.iter().map(|c| c.subspace_electrons).sum();
+        let target_electrons = if self.bands.first() == Some(&0)
+            && (total_subspace_e - self.crystal.electrons).abs() < 1e-2
+        {
+            self.crystal.electrons
+        } else {
+            total_subspace_e
+        };
+        interpolation::anomalous_hall(
+            &self.crystal.context,
+            &models,
+            size,
+            target_electrons,
+            self.state.fermi,
+            self.state.options.smearing,
+            self.state.options.width,
+            self.crystal.degeneracy(),
+            refine,
+        )
     }
 }

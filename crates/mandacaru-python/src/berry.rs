@@ -1,21 +1,14 @@
 //! Berry-phase bindings of a converged crystal: owned arrays out, Python detached for the work.
 //! No numerics here; `mandacaru_core::periodic::berry` computes every value (atomic units).
 use super::{array, error, periodic::PyPeriodicResult};
-use mandacaru_core::periodic::{
-    berry::{curvature, flow, hall, parity, polarization, strings, Bands},
-    bloch_mesh::Sampler,
-    setup::PeriodicSetup,
+use mandacaru_core::{
+    periodic::{
+        berry::{curvature, flow, hall, parity, perturbation, polarization, strings, Bands},
+        bloch_mesh::Sampler,
+    },
+    units::{from_user, Quantity},
 };
-use pyo3::{exceptions::PyNotImplementedError, prelude::*, types::PyDict};
-
-fn setup(result: &PyPeriodicResult) -> PyResult<&PeriodicSetup> {
-    result.setup.as_deref().ok_or_else(|| {
-        PyNotImplementedError::new_err(
-            "Berry phases need states off the SCF mesh, which only the native periodic setup \
-             makes; a crystal loaded from a snapshot has none",
-        )
-    })
-}
+use pyo3::{prelude::*, types::PyDict};
 
 fn bands(range: Option<(usize, usize)>) -> Bands {
     range.map_or(Bands::Occupied, |(lo, hi)| Bands::Range(lo, hi))
@@ -28,11 +21,11 @@ pub(crate) fn berry_phase<'py>(
     size: [usize; 3],
     range: Option<(usize, usize)>,
 ) -> PyResult<Bound<'py, PyDict>> {
-    let setup = setup(result)?;
+    let setup = result.resolve_setup(py)?;
     let (crystal, state) = (&*result.crystal, &*result.inner);
     let set = py
         .detach(|| {
-            let sampler = Sampler::new(crystal, state, setup)?;
+            let sampler = Sampler::new(crystal, state, &setup)?;
             strings::berry_phase(&sampler, direction, size, bands(range))
         })
         .map_err(error)?;
@@ -91,12 +84,12 @@ pub(crate) fn berry_curvature<'py>(
     offset: f64,
     range: Option<(usize, usize)>,
 ) -> PyResult<Bound<'py, PyDict>> {
-    let setup = setup(result)?;
+    let setup = result.resolve_setup(py)?;
     let (crystal, state) = (&*result.crystal, &*result.inner);
     let [a, b] = mandacaru_core::periodic::berry::plane_axes(normal).map_err(error)?;
     let plane = py
         .detach(|| {
-            let sampler = Sampler::new(crystal, state, setup)?;
+            let sampler = Sampler::new(crystal, state, &setup)?;
             curvature::berry_curvature(&sampler, normal, [size[a], size[b]], offset, bands(range))
         })
         .map_err(error)?;
@@ -145,11 +138,11 @@ pub(crate) fn polarization<'py>(
     py: Python<'py>,
     size: [usize; 3],
 ) -> PyResult<Bound<'py, PyDict>> {
-    let setup = setup(result)?;
+    let setup = result.resolve_setup(py)?;
     let (crystal, state) = (&*result.crystal, &*result.inner);
     let p = py
         .detach(|| {
-            let sampler = Sampler::new(crystal, state, setup)?;
+            let sampler = Sampler::new(crystal, state, &setup)?;
             polarization::polarization(&sampler, size)
         })
         .map_err(error)?;
@@ -192,15 +185,24 @@ pub(crate) fn anomalous_hall<'py>(
     py: Python<'py>,
     size: [usize; 3],
 ) -> PyResult<Bound<'py, PyDict>> {
-    let setup = setup(result)?;
+    let setup = result.resolve_setup(py)?;
     let (crystal, state) = (&*result.crystal, &*result.inner);
     let h = py
         .detach(|| {
-            let sampler = Sampler::new(crystal, state, setup)?;
+            let sampler = Sampler::new(crystal, state, &setup)?;
             hall::anomalous_hall(&sampler, size)
         })
         .map_err(error)?;
+    hall_dict(py, &h, "direct")
+}
+
+pub(crate) fn hall_dict<'py>(
+    py: Python<'py>,
+    h: &mandacaru_core::periodic::berry::hall::Hall,
+    method: &str,
+) -> PyResult<Bound<'py, PyDict>> {
     let out = PyDict::new(py);
+    out.set_item("method", method)?;
     out.set_item("size", h.size.to_vec())?;
     out.set_item("chern", h.chern.iter().cloned().collect::<Vec<_>>())?;
     out.set_item("total", h.total.to_vec())?;
@@ -279,11 +281,11 @@ pub(crate) fn wannier_flow<'py>(
     offset: f64,
     range: Option<(usize, usize)>,
 ) -> PyResult<Bound<'py, PyDict>> {
-    let setup = setup(result)?;
+    let setup = result.resolve_setup(py)?;
     let (crystal, state) = (&*result.crystal, &*result.inner);
     let plane = py
         .detach(|| {
-            let sampler = Sampler::new(crystal, state, setup)?;
+            let sampler = Sampler::new(crystal, state, &setup)?;
             flow::plane_flow(&sampler, normal, direction, size, offset, bands(range))
         })
         .map_err(error)?;
@@ -296,7 +298,7 @@ pub(crate) fn z2_invariant<'py>(
     size: [usize; 3],
     method: &str,
 ) -> PyResult<Bound<'py, PyDict>> {
-    let setup = setup(result)?;
+    let setup = result.resolve_setup(py)?;
     let (crystal, state) = (&*result.crystal, &*result.inner);
     let out = PyDict::new(py);
     out.set_item("size", size.to_vec())?;
@@ -305,7 +307,7 @@ pub(crate) fn z2_invariant<'py>(
         "flow" => {
             let found = py
                 .detach(|| {
-                    let sampler = Sampler::new(crystal, state, setup)?;
+                    let sampler = Sampler::new(crystal, state, &setup)?;
                     flow::indices(&sampler, size)
                 })
                 .map_err(error)?;
@@ -326,7 +328,7 @@ pub(crate) fn z2_invariant<'py>(
         "parity" => {
             let found = py
                 .detach(|| {
-                    let sampler = Sampler::new(crystal, state, setup)?;
+                    let sampler = Sampler::new(crystal, state, &setup)?;
                     parity::parity(&sampler)
                 })
                 .map_err(error)?;
@@ -374,5 +376,192 @@ pub(crate) fn z2_invariant<'py>(
             )))
         }
     }
+    Ok(out)
+}
+
+fn born_charges_dict<'py>(
+    py: Python<'py>,
+    z: &perturbation::BornCharges,
+) -> PyResult<Bound<'py, PyDict>> {
+    let atoms = z.charges.len();
+    let channels = z.channels.len();
+    let out = PyDict::new(py);
+    out.set_item(
+        "charges",
+        array(
+            py,
+            &[atoms, 3, 3],
+            z.charges.iter().flatten().flatten().copied().collect(),
+        )?,
+    )?;
+    out.set_item(
+        "channels",
+        array(
+            py,
+            &[channels, atoms, 3, 3],
+            z.channels
+                .iter()
+                .flatten()
+                .flatten()
+                .flatten()
+                .copied()
+                .collect(),
+        )?,
+    )?;
+    out.set_item("asr_residual", z.sum_rule.residual)?;
+    out.set_item(
+        "asr_mean",
+        array(
+            py,
+            &[3, 3],
+            z.sum_rule.mean.iter().flatten().copied().collect(),
+        )?,
+    )?;
+    out.set_item(
+        "warnings",
+        z.sum_rule.warning.iter().cloned().collect::<Vec<_>>(),
+    )?;
+    out.set_item(
+        "corrected",
+        z.corrected
+            .as_ref()
+            .map(|c| {
+                array(
+                    py,
+                    &[atoms, 3, 3],
+                    c.iter().flatten().flatten().copied().collect(),
+                )
+            })
+            .transpose()?,
+    )?;
+    out.set_item(
+        "steps",
+        array(
+            py,
+            &[atoms, 3, 3],
+            z.steps.iter().flatten().flatten().copied().collect(),
+        )?,
+    )?;
+    out.set_item("delta", z.delta)?;
+    out.set_item("iterations", z.iterations.clone())?;
+    Ok(out)
+}
+
+pub(crate) fn born_charges<'py>(
+    result: &PyPeriodicResult,
+    py: Python<'py>,
+    size: [usize; 3],
+    displacement: f64,
+    richardson: bool,
+    impose_rule: bool,
+    atomic_units: bool,
+) -> PyResult<Bound<'py, PyDict>> {
+    let setup = result.resolve_setup(py)?;
+    let delta = from_user(displacement, Quantity::Length, atomic_units);
+    let (ctx, crystal, state) = (&result.crystal.context, &*result.crystal, &*result.inner);
+    let z = py
+        .detach(|| {
+            let sampler = Sampler::new(crystal, state, &setup)?;
+            let perturber = perturbation::SetupPerturber { setup: &setup };
+            perturbation::born_effective_charges(
+                ctx,
+                &sampler,
+                &perturber,
+                size,
+                delta,
+                richardson,
+                impose_rule,
+            )
+        })
+        .map_err(error)?;
+    born_charges_dict(py, &z)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn piezoelectric<'py>(
+    result: &PyPeriodicResult,
+    py: Python<'py>,
+    size: [usize; 3],
+    strain: f64,
+    displacement: f64,
+    richardson: bool,
+    impose_rule: bool,
+    relaxed_ions: bool,
+    atomic_units: bool,
+    dispersion_xc: Option<String>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let setup = result.resolve_setup(py)?;
+    let disp_bohr = from_user(displacement, Quantity::Length, atomic_units);
+    let (ctx, crystal, state) = (&result.crystal.context, &*result.crystal, &*result.inner);
+    let p = py
+        .detach(|| {
+            let sampler = Sampler::new(crystal, state, &setup)?;
+            let perturber = perturbation::SetupPerturber { setup: &setup };
+            perturbation::piezoelectric_tensor(
+                ctx,
+                &sampler,
+                &perturber,
+                size,
+                strain,
+                disp_bohr,
+                richardson,
+                impose_rule,
+                relaxed_ions,
+                true,
+                dispersion_xc.as_deref(),
+            )
+        })
+        .map_err(error)?;
+    let out = PyDict::new(py);
+    out.set_item(
+        "tensor",
+        array(py, &[3, 6], p.tensor.iter().flatten().copied().collect())?,
+    )?;
+    out.set_item(
+        "clamped",
+        array(py, &[3, 6], p.clamped.iter().flatten().copied().collect())?,
+    )?;
+    out.set_item(
+        "relaxed",
+        p.relaxed
+            .map(|r| array(py, &[3, 6], r.iter().flatten().copied().collect()))
+            .transpose()?,
+    )?;
+    out.set_item(
+        "born_charges",
+        p.born_charges
+            .as_ref()
+            .map(|z| born_charges_dict(py, z))
+            .transpose()?,
+    )?;
+    out.set_item(
+        "internal_strain",
+        p.internal_strain
+            .as_ref()
+            .map(|g| array(py, &[g.len(), 6], g.iter().flatten().copied().collect()))
+            .transpose()?,
+    )?;
+    out.set_item(
+        "force_constants",
+        p.force_constants
+            .as_ref()
+            .map(|k| {
+                let dim = k.len();
+                array(py, &[dim, dim], k.iter().flatten().copied().collect())
+            })
+            .transpose()?,
+    )?;
+    out.set_item(
+        "acoustic_eigenvalues",
+        p.acoustic_eigenvalues
+            .map(|e| array(py, &[3], e.to_vec()))
+            .transpose()?,
+    )?;
+    out.set_item(
+        "steps",
+        array(py, &[6, 3], p.steps.iter().flatten().copied().collect())?,
+    )?;
+    out.set_item("delta", p.delta)?;
+    out.set_item("iterations", p.iterations)?;
     Ok(out)
 }

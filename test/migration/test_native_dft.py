@@ -281,10 +281,9 @@ def test_dft_force_failures_and_budget_lifetimes_are_explicit():
     with pytest.raises(MemoryError):
         tiny.solve_atom(1)
     assert tiny.memory_used_bytes == 0
-    # "vqe" left this list: variational molecular forces are now supported
-    # (specifications.CAPABILITIES["vqe"].forces); subspace-vqe has none.
+    # Analytic subspace variational forces are supported untapered; tapered subspace-vqe still refuses.
     for options in ({"method": "ghf"}, {"method": "rhf", "kinetic": "fd"},
-                    {"method": "subspace-vqe"}):
+                    {"method": "subspace-vqe", "taper": True}):
         atoms = h2()
         atoms.calc = Mandacaru( grid_spacing=.35, trace=False, **options)
         with pytest.raises(NotImplementedError):

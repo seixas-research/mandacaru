@@ -8,9 +8,8 @@
 use mandacaru_core::{
     math::{radial::gauss_legendre, spline::simpson},
     paw::{
-        multipole::{shape_function, shape_potential},
+        multipole::{shape_at, shape_function, shape_potential, shape_potential_at},
         onecenter_radial::{long_range_radial_kernel, long_range_shape_potential, radial_coulomb},
-        pair_tables::{potential, shape},
     },
     Context,
 };
@@ -102,7 +101,7 @@ fn the_compensation_shape_and_its_potentials_agree_with_the_radial_kernels() {
         // The two implementations of the shape and of its bare potential agree.
         for (k, &s_k) in s.iter().enumerate() {
             assert!(
-                (shape(s_k, rc, l) - g[k]).abs() < 1e-12 * (1. + g[k].abs()),
+                (shape_at(s_k, rc, l) - g[k]).abs() < 1e-12 * (1. + g[k].abs()),
                 "shape L {l}"
             );
         }
@@ -128,14 +127,14 @@ fn the_compensation_shape_and_its_potentials_agree_with_the_radial_kernels() {
                     }
                     for (x, w) in &nodes {
                         let s = lo + 0.5 * (hi - lo) * (x + 1.);
-                        let weight = 0.5 * (hi - lo) * w * s * s * shape(s, rc, l);
+                        let weight = 0.5 * (hi - lo) * w * s * s * shape_at(s, rc, l);
                         let (small, large) = (r_i.min(s), r_i.max(s));
                         total += small.powi(l as i32) / large.powi(l as i32 + 1) * weight;
                     }
                 }
                 scale * total
             };
-            let analytic = potential(r_i, rc, l);
+            let analytic = shape_potential_at(r_i, rc, l);
             let erf_part: f64 = scale
                 * (0..s.len())
                     .map(|j| kernel[i * s.len() + j] * weight[j])

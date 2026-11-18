@@ -28,23 +28,23 @@ pub const MAX_L: usize = 3;
 /// Anti-Hermitian part tolerated in `n`, relative to `max(1, max |n_ij|)`.
 pub const HERMITIAN_TOLERANCE: f64 = 1e-10;
 
-/// Variant of the functional. Only the simplified fully-localized-limit form
-/// and the rotationally invariant Liechtenstein form exist; others (around-mean-field)
-/// get a variant here.
+/// Variant of the functional. Only the simplified fully-localized-limit form (`"dudarev"`)
+/// and the rotationally invariant Liechtenstein form (`"liechtenstein"`) exist; others
+/// (around-mean-field) get a variant here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Form {
-    DudarevFll,
-    LiechtensteinFll,
+    Dudarev,
+    Liechtenstein,
 }
 
 impl Form {
     /// Every form the engine implements, in the order messages list them.
-    pub const ALL: [Form; 2] = [Form::DudarevFll, Form::LiechtensteinFll];
+    pub const ALL: [Form; 2] = [Form::Dudarev, Form::Liechtenstein];
     /// The name the option and the crystal snapshot write.
     pub fn name(self) -> &'static str {
         match self {
-            Self::DudarevFll => "dudarev-fll",
-            Self::LiechtensteinFll => "liechtenstein-fll",
+            Self::Dudarev => "dudarev",
+            Self::Liechtenstein => "liechtenstein",
         }
     }
     /// The form named `name`; raises, listing the implemented ones, for any other.
@@ -135,9 +135,9 @@ impl Hubbard {
         Ok(Self { u, j, form })
     }
 
-    /// `U >= 0`, `J >= 0`, `J <= U` (so `U_eff >= 0`), all finite. Defaults to `Form::DudarevFll`.
+    /// `U >= 0`, `J >= 0`, `J <= U` (so `U_eff >= 0`), all finite. Defaults to `Form::Dudarev`.
     pub fn new(u: f64, j: f64) -> Result<Self> {
-        Self::with_form(u, j, Form::DudarevFll)
+        Self::with_form(u, j, Form::Dudarev)
     }
 
     /// Dudarev's single parameter.
@@ -148,8 +148,8 @@ impl Hubbard {
     /// True when the correction is exactly the identity (no energy, no operator).
     pub fn is_inert(&self) -> bool {
         match self.form {
-            Form::DudarevFll => self.u_eff() == 0.,
-            Form::LiechtensteinFll => self.u == 0. && self.j == 0.,
+            Form::Dudarev => self.u_eff() == 0.,
+            Form::Liechtenstein => self.u == 0. && self.j == 0.,
         }
     }
 }
@@ -267,8 +267,8 @@ pub fn evaluate(
     channels: &[&[C64]],
 ) -> Result<Evaluation> {
     match h.form {
-        Form::DudarevFll => evaluate_dudarev(ctx, h, l, spin, channels),
-        Form::LiechtensteinFll => super::hubbard_liechtenstein::evaluate(ctx, h, l, spin, channels),
+        Form::Dudarev => evaluate_dudarev(ctx, h, l, spin, channels),
+        Form::Liechtenstein => super::hubbard_liechtenstein::evaluate(ctx, h, l, spin, channels),
     }
 }
 

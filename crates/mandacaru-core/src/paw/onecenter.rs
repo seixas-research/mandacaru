@@ -6,9 +6,9 @@ use super::{
     checks::interpolate_linear,
     invalid,
     multipole::{gaunt, gaunt_grid, multipole_range, shape_function},
-    onecenter_radial::{long_range_radial_kernel, radial_coulomb},
+    onecenter_radial::{long_range_radial_kernel, radial_coulomb_weighted},
 };
-use crate::{math::spline::simpson, product, Context, Error, Result};
+use crate::{math::spline::simpson_weights, product, Context, Error, Result};
 use nalgebra::DMatrix;
 use num_complex::Complex64;
 use std::{collections::HashMap, f64::consts::PI};
@@ -275,15 +275,14 @@ pub fn one_center_tensor(
     }
     levels.sort_unstable();
     levels.dedup();
+    let simpson_w = simpson_weights(r)?;
     let long_range = if omega > 0. {
         let kernels = long_range_radial_kernel(ctx, r, r, &levels, omega, None)?;
-        let weights = (0..points)
-            .map(|i| {
-                let mut unit = vec![0.; points];
-                unit[i] = 1.;
-                simpson(r, &unit).map(|w| w * r[i] * r[i])
-            })
-            .collect::<Result<Vec<_>>>()?;
+        let weights = r
+            .iter()
+            .zip(&simpson_w)
+            .map(|(r, w)| w * r * r)
+            .collect::<Vec<_>>();
         Some((kernels, weights))
     } else {
         None
@@ -354,17 +353,9 @@ pub fn one_center_tensor(
                                     .map(|i| ps_p[p.index][i] * ps_q[q.index][i])
                                     .collect::<Vec<_>>();
                                 let power = (l + 2) as i32;
-                                let moment = simpson(
-                                    r,
-                                    &(0..points)
-                                        .map(|i| ae[i] * r[i].powi(power))
-                                        .collect::<Vec<_>>(),
-                                )? - simpson(
-                                    r,
-                                    &(0..points)
-                                        .map(|i| ps[i] * r[i].powi(power))
-                                        .collect::<Vec<_>>(),
-                                )?;
+                                let moment: f64 = (0..points)
+                                    .map(|i| simpson_w[i] * (ae[i] - ps[i]) * r[i].powi(power))
+                                    .sum();
                                 let shape = shape_function(r, r_g, l)?;
                                 let compensated = (0..points)
                                     .map(|i| ps[i] + moment * shape[i])
@@ -373,8 +364,9 @@ pub fn one_center_tensor(
                             }
                             let (ae_ab, ps_ab) = &pair_cache[&pair_key(a, b, l)];
                             let (ae_cd, ps_cd) = &pair_cache[&pair_key(c, d, l)];
-                            let mut value = radial_coulomb(r, ae_ab, ae_cd, l)?
-                                - radial_coulomb(r, ps_ab, ps_cd, l)?;
+                            let mut value =
+                                radial_coulomb_weighted(r, ae_ab, ae_cd, l, &simpson_w)?
+                                    - radial_coulomb_weighted(r, ps_ab, ps_cd, l, &simpson_w)?;
                             if let Some((kernels, weights)) = &long_range {
                                 let kernel = &kernels[levels.binary_search(&l).unwrap()];
                                 let form = |left: &[f64], right: &[f64]| -> f64 {

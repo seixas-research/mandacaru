@@ -20,12 +20,12 @@ def datasets():
 
 
 @pytest.mark.parametrize(
-    "method,expected", [("rhf", -0.726037), ("adapt-vqe", -0.738683)]
+    "method,expected", [("rhf", -0.72603044), ("adapt-vqe", -0.73867593)]
 )
 def test_lithium_closed_1s_exchange_preserves_the_existing_energy_reference(
     method, expected
 ):
-    # Existing PAW_DEFAULT values and geometry in test_paw.py; not remeasured.
+    # Format-3 Variational lda-sr/Li and lda-sr/H reference on LiH at h = 0.30 A.
     atoms = Atoms("LiH", positions=[[4.0, 4.0, 3.2], [4.0, 4.0, 4.8]], cell=[8.0] * 3)
     with Mandacaru(
         method=method,

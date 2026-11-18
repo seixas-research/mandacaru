@@ -38,51 +38,31 @@ DEFAULT_TWO_BODY_TOLERANCE_EV = 1e-8
 NOISE_INTOLERANT = ("SLSQP", "BFGS", "L-BFGS", "CG")
 STABLE_METHODS = tuple(METHODS)
 
-_SEARCH_METHODS = ("vasqa", "valsqa", "subspace-vasqa", "subspace-valsqa")
+_SEARCH_METHODS = tuple(name for name, cap in METHODS.items() if cap.solver == "search")
 #: Options that act only for some methods, and the methods they act for. A value
 #: other than the default on any other method raises: nothing is silently ignored.
 #: ``spin``/``unrestricted`` also suit ``uhf``, which is unrestricted by definition.
 #: ``mapping`` and ``active_space`` are not listed: the classical methods use them
 #: to export their Hamiltonian as a quantum problem.
 _METHOD_SCOPED_OPTIONS = {
-    **dict.fromkeys(
-        (
-            "seed",
-            "min_length",
-            "max_length",
-            "move_weights",
-            "temperature",
-            "length_penalty",
-            "warm_start",
-            "replace_start",
-            "proposal_temperature",
-            "proposal",
-            "replicas",
-            "replica_spacing",
-        ),
-        _SEARCH_METHODS,
-    ),
-    **dict.fromkeys(
-        (
-            "xc",
-            "vdw",
-            "smearing",
-            "periodic_scf_options",
-            "eigensolver",
-            "hubbard_u",
-            "exxdiv_treatment",
-            "gygi_baldereschi",
-        ),
-        ("dft",),
-    ),
+    **dict.fromkeys((
+        "seed", "min_length", "max_length", "move_weights", "temperature", "length_penalty",
+        "warm_start", "replace_start", "proposal_temperature", "proposal", "replicas",
+        "replica_spacing", "early_reject", "screen_hamiltonian_terms", "strip_zero_operators",
+        "carry_hessian",
+    ), _SEARCH_METHODS),
+    **dict.fromkeys((
+        "xc", "vdw", "smearing", "periodic_scf_options", "eigensolver", "hubbard_u",
+        "exxdiv_treatment", "gygi_baldereschi",
+    ), ("dft",)),
     "excited_state": ("dft", "rhf", "uhf"),
-    "taper": ("vqe", "adapt-vqe", "subspace-vqe", "subspace-adapt-vqe"),
-    "measurement_scheme": ("vqe", "adapt-vqe"),
-    "quenching": ("vqe", "adapt-vqe"),
-    "checkpoint_every": ("vqe", "adapt-vqe"),
-    **dict.fromkeys(("tetris", "prune"), ("adapt-vqe",)),
-    "kpts": ("dft", "vqe", "adapt-vqe", "vasqa", "valsqa", "subspace-vasqa", "subspace-valsqa"),
-    "crystal_orbitals": ("vqe", "adapt-vqe", "vasqa", "valsqa", "subspace-vasqa", "subspace-valsqa"),
+    "taper": tuple(name for name, cap in METHODS.items() if cap.solver in ("vqe", "adapt")),
+    "measurement_scheme": tuple(name for name, cap in METHODS.items() if cap.objective == "single" and cap.solver in ("vqe", "adapt")),
+    "quenching": tuple(name for name, cap in METHODS.items() if cap.objective == "single" and cap.solver in ("vqe", "adapt")),
+    "checkpoint_every": tuple(name for name, cap in METHODS.items() if cap.objective == "single" and cap.solver in ("vqe", "adapt")),
+    **dict.fromkeys(("tetris", "prune"), tuple(name for name, cap in METHODS.items() if cap.objective == "single" and cap.solver == "adapt")),
+    "kpts": tuple(name for name, cap in METHODS.items() if cap.periodic),
+    "crystal_orbitals": tuple(name for name, cap in METHODS.items() if cap.quantum and cap.periodic),
     **dict.fromkeys(("spin", "unrestricted"), ("dft", "uhf")),
     "pool": tuple(name for name, capability in METHODS.items() if capability.quantum),
 }
@@ -183,6 +163,94 @@ def _refuse_exchange_divergence_without_hybrid(treatment, functional, periodic):
             f"exxdiv_treatment={treatment!r} applies to a hybrid functional "
             f"(xc='hse06'), not to xc={functional!r}"
         )
+
+
+def _normalize_vdw_xc(xc, vdw):
+    """Validate and canonicalize `(xc, vdw)` calculation options."""
+    if xc is not None and not isinstance(xc, str):
+        raise TypeError(f"xc must be a string or None, not {type(xc).__name__}")
+    vdw_norm = None
+    if vdw is not None:
+        if not isinstance(vdw, (str, bool)):
+            raise TypeError("vdw must be a string, boolean, or None")
+        if isinstance(vdw, bool):
+            vdw_norm = "rvv10" if vdw else None
+        else:
+            vdw_norm = vdw.strip().lower()
+        if vdw_norm == "rvv10":
+            base_xc = "pbe" if xc is None else xc.strip().lower()
+            if not base_xc.endswith("+rvv10"):
+                if base_xc not in ("pbe", "r2scan"):
+                    raise ValueError(
+                        f"vdw='rvv10' can only be combined with 'pbe' or 'r2scan', not {xc!r}")
+                xc = f"{base_xc}+rvv10"
+        elif vdw_norm == "ts":
+            if ("lda" if xc is None else xc.strip().lower()).endswith("+rvv10"):
+                raise ValueError("cannot combine vdw='ts' with an rvv10 functional")
+        elif vdw_norm is not None:
+            raise ValueError(
+                f"unknown vdw choice {vdw!r}; supported vdw options are 'rvv10' and 'ts'")
+    elif xc is not None and xc.strip().lower().endswith("+rvv10"):
+        vdw_norm = "rvv10"
+    if xc is not None and xc not in FUNCTIONALS:
+        raise ValueError(f"expected a canonical XC name in {FUNCTIONALS}")
+    return xc, vdw_norm
+
+
+def _parse_two_body(two_body):
+    """Parse `(representation, trunc_ev, trunc_ha, tolerance_ev, cholesky_tol)` from `two_body`."""
+    tolerance_ev, two_body_rep, trunc_ev, trunc_ha = DEFAULT_TWO_BODY_TOLERANCE_EV, "dense", None, None
+    if two_body is not None:
+        spec = {"method": two_body} if isinstance(two_body, str) else dict(two_body)
+        if set(spec) - {"method", "tolerance", "representation", "truncation"} or spec.get("method", "cholesky") not in TWO_BODY_METHODS:
+            raise ValueError(
+                "two_body accepts Cholesky factors with their tolerance, and a "
+                "representation ('dense' or 'double-factorized') with its truncation")
+        trunc_ev = spec.get("truncation")
+        if trunc_ev is not None and (isinstance(trunc_ev, bool) or not isinstance(trunc_ev, (int, float))):
+            raise ValueError("two_body truncation must be an energy in eV")
+        trunc_ha = None if trunc_ev is None else _native.energy_to_hartree(float(trunc_ev), "eV")
+        two_body_rep = _native.two_body_representation(spec.get("representation", "dense"), trunc_ha)
+        trunc_ev = None if trunc_ev is None else float(trunc_ev)
+        tolerance_ev = spec.get("tolerance", tolerance_ev)
+        if isinstance(tolerance_ev, bool) or not isinstance(tolerance_ev, (int, float)) or not np.isfinite(tolerance_ev) or tolerance_ev <= 0:
+            raise ValueError("two_body tolerance must be a finite positive energy in eV")
+    return two_body_rep, trunc_ev, trunc_ha, float(tolerance_ev), _native.energy_to_hartree(float(tolerance_ev), "eV")
+
+
+def _resolve_optimizer(optimizer, precision, capabilities, execute_circuits, shots, convergence, method):
+    """Build and validate native optimizer configuration."""
+    keys = {"method", "maxiter", "maxfev", "tol", "track_best"}
+    if isinstance(optimizer, str):
+        requested = {"method": optimizer}
+    elif hasattr(optimizer, "method") and not isinstance(optimizer, dict):
+        raw = {"method": optimizer.method, "maxiter": optimizer.maxiter, "tol": optimizer.tol,
+               **getattr(optimizer, "options", {})}
+        requested = {k: v for k, v in raw.items() if k in keys and v is not None}
+    else:
+        requested = dict(optimizer or {})
+    float32_state = precision == "float32" and capabilities.quantum and not execute_circuits
+    if shots > 0 and requested.get("method", "SPSA") == "SPSA":
+        defaults = {"method": "SPSA", "maxiter": 100, "tol": None, "track_best": False}
+    else:
+        defaults = {"method": "SLSQP", "maxiter": 2000,
+                    "tol": _native.FLOAT32_ENERGY_FLOOR_HA if float32_state else 1e-12}
+    config = {**defaults, **requested}
+    if config["method"] not in _native.OPTIMIZERS:
+        raise ValueError(f"expected a native optimizer in {tuple(_native.OPTIMIZERS)}")
+    unknown = sorted(set(config) - keys)
+    if unknown:
+        raise ValueError(f"unknown optimizer option(s) {unknown}; optimizer options are method, maxiter, maxfev, tol and track_best")
+    if shots > 0 and config["method"] in NOISE_INTOLERANT:
+        raise ValueError(
+            f"optimizer {config['method']!r} differences the energy at tiny steps, which turns "
+            "shot noise into gradient noise; with shots > 0 use 'SPSA' (the default) or 'COBYLA'")
+    if set(convergence) - {"gradient", "energy"}:
+        raise ValueError("convergence options are gradient and energy")
+    if float32_state:
+        _check_float32_floors(
+            config["method"], config.get("tol"), convergence, adapt=method.endswith("adapt-vqe"))
+    return config
 
 
 def _check_float32_floors(method, tolerance, convergence, *, adapt):
@@ -288,7 +356,8 @@ class Mandacaru(ASEProperties, Calculator):
     ``length_penalty``, ``warm_start``, ``replace_start``,
     ``screen_insertions``, ``proposal_temperature``, ``proposal``,
     ``proposal_model``, ``record``, ``seed``, ``replicas``,
-    ``replica_spacing``); handover between geometries
+    ``replica_spacing``, ``early_reject``, ``screen_hamiltonian_terms``,
+    ``strip_zero_operators``, ``carry_hessian``); handover between geometries
     (``transfer``, ``transfer_threshold``, ``transfer_steps``,
     ``update_between_geometries``); circuits and hardware
     (``execute_circuits``, ``backend_provider``, ``device``, ``shots``,
@@ -946,6 +1015,24 @@ class Mandacaru(ASEProperties, Calculator):
         Ratio of the temperatures of adjacent replicas, at least 1
         (``ValueError``). A value other than the default needs ``replicas > 1``
         (``ValueError``). Setting it for any other method raises ``ValueError``.
+    early_reject : bool, default False
+        Skip reverse proposal weight/screening evaluation on Metropolis
+        proposals already rejected against the transition bound, preserving
+        exact detailed balance on stochastic search methods. Ignored outside
+        search methods.
+    screen_hamiltonian_terms : int, optional
+        Optional cap on the largest-magnitude Hamiltonian Pauli terms used when
+        screening candidate pool gradients for operator proposals (``None``
+        uses the full Hamiltonian). Exact energies remain in use for
+        relaxation and acceptance. Ignored outside search methods.
+    strip_zero_operators : bool, default False
+        Remove near-zero parameters (``|theta| <= 1e-14``) from the final/best
+        circuits after stochastic search completes. Ignored outside search
+        methods.
+    carry_hessian : bool, default False
+        Carry BFGS inverse Hessian curvature across accepted insertion steps in
+        stochastic search chains rather than restarting from the identity.
+        Ignored outside search methods.
     kinetic : {"spectral", "fd"}, default "spectral"
         How the kinetic energy is discretized on the grid: the spectral
         (FFT) Laplacian or finite differences. Anything else raises
@@ -1057,9 +1144,9 @@ class Mandacaru(ASEProperties, Calculator):
         ``method="dft"`` calculation: ``{"Ni": {"l": "d", "U": 6.0, "J": 0.0}}``
         names, per element, the correlated shell (``"d"`` or ``"f"``) and its
         ``U`` and ``J`` in eV (``J`` defaults to 0; ``U_eff = U - J``) and, optionally, the
-        functional ``"form"``: ``"dudarev-fll"`` (the default, simplified rotationally
-        invariant form of Dudarev et al.) or ``"liechtenstein-fll"`` (separate ``U`` and
-        ``J`` through Slater integrals). The
+        functional ``"form"``: ``"dudarev"`` (the default, simplified rotationally
+        invariant form of Dudarev et al.) or ``"liechtenstein"`` (separate ``U`` and
+        ``J`` through Slater integrals, with optional ``"f4_f2"`` and ``"f6_f2"`` ratios). The
         occupation matrix of the shell is the PAW partial-wave projection, so a
         filled shell has an occupation below 1 (Ni 3d 0.95). Refused with
         ``ValueError``: a malformed mapping, an unknown element, a shell other
@@ -1075,14 +1162,13 @@ class Mandacaru(ASEProperties, Calculator):
         moment pattern, as without ``hubbard_u``); ``hubbard_response`` on such a mesh needs every
         ``hubbard_u`` atom fixed by every kept operation and raises
         ``ValueError`` naming ``symmetry=False`` otherwise.
-        ``NotImplementedError``: a screened hybrid functional and a spin-orbit
-        dataset. Other methods raise ``ValueError``. The refusals that need
-        the geometry (element, dataset, spin-orbit) are raised by the
-        constructor when ``atoms`` is given and at the first calculation
-        otherwise, always before any SCF (a molecule's are always raised at the first
-        calculation, ``ValueError`` for an element or shell it lacks and
-        ``NotImplementedError`` for a spin-orbit dataset; its analytic forces include
-        the +U term). With
+        ``NotImplementedError``: a screened hybrid functional. Other methods
+        raise ``ValueError``. The refusals that need the geometry (element, dataset)
+        are raised by the constructor when ``atoms`` is given and at the first
+        calculation otherwise, always before any SCF (a molecule's are always raised
+        at the first calculation, ``ValueError`` for an element or shell it lacks;
+        both collinear and spin-orbit datasets are supported for DFT+U and their
+        analytic forces include the +U term). With
         ``load_crystal`` the file owns the correction: leave the option out, or
         give the file's own values (a different mapping raises ``ValueError``
         at the first calculation, when the file is read). The result carries
@@ -1233,9 +1319,8 @@ class Mandacaru(ASEProperties, Calculator):
         proposal="gradient",
         proposal_model=None,
         record=None,
-        seed=None,
-        replicas=1,
-        replica_spacing=2.0,
+        seed=None, replicas=1, replica_spacing=2.0,
+        early_reject=False, screen_hamiltonian_terms=None, strip_zero_operators=False, carry_hessian=False,
         kinetic="spectral",
         two_body=None,
         paw_dataset=None,
@@ -1256,42 +1341,48 @@ class Mandacaru(ASEProperties, Calculator):
         super().__init__()
         # Every constructor option: the finite-difference forces of a crystal rebuild the same
         # calculation at displaced geometries (integrations/bloch.py::finite_difference_forces).
-        self._constructor_options = {
+        opts = {
             name: value for name, value in locals().items() if name not in ("self", "__class__")
         }
+        self._constructor_options = opts
         self._method, self._capabilities = resolve_method(method)
-        _refuse_inapplicable(method, locals())
+        _refuse_inapplicable(method, opts)
+        self._init_execution_controls(opts)
+        xc_norm, vdw_norm = _normalize_vdw_xc(xc, vdw)
+        self._init_ansatz_controls(opts)
+        self._init_resources_and_basis(opts, xc_norm, vdw_norm)
+        self._init_solver_controls(opts)
+        self._init_runtime_and_periodic(opts)
+
+    def _init_execution_controls(self, opts):
+        precision, gradient = opts["precision"], opts["gradient"]
         if precision not in ("float32", "float64"):
             raise ValueError("precision must be 'float32' or 'float64'")
         self._precision = precision
         if gradient != "analytic":
             raise ValueError("the native state-vector solver uses analytic gradients")
-        for name, flag in (("quenching", quenching), ("tetris", tetris), ("prune", prune)):
-            if type(flag) is not bool:
-                raise TypeError(f"{name} must be True or False")
-        self._quenching = quenching
-        self._tetris = tetris
-        self._prune = prune
-        if profile is not None and type(profile) is not bool:
+        self._quenching, self._tetris, self._prune = opts["quenching"], opts["tetris"], opts["prune"]
+        for key in (
+            "quenching", "tetris", "prune", "spin", "unrestricted", "trotter",
+            "include_singles", "sparse", "atomic_units", "trace", "symmetry",
+        ):
+            if type(opts[key]) is not bool:
+                raise TypeError("boolean calculation controls require booleans")
+        if opts["profile"] is not None and type(opts["profile"]) is not bool:
             raise TypeError("profile must be True, False or None")
+        execute_circuits = opts["execute_circuits"]
         if execute_circuits is not None and type(execute_circuits) is not bool:
             raise TypeError("execute_circuits must be a boolean or None")
+        backend_provider, device, shots = opts["backend_provider"], opts["device"], opts["shots"]
         if not self._capabilities.quantum:
-            requested = [
-                name
-                for name, given in (
-                    ("shots", shots > 0),
-                    ("execute_circuits", execute_circuits is True),
-                    ("backend_provider", backend_provider is not None),
-                    ("device", device != "AER_simulator"),
-                    ("backend_options", backend_options is not None),
-                    ("measurement_budget", measurement_budget is not None),
-                )
-                if given
-            ]
+            requested = [name for name, given in (
+                ("shots", shots > 0), ("execute_circuits", execute_circuits is True),
+                ("backend_provider", backend_provider is not None), ("device", device != "AER_simulator"),
+                ("backend_options", opts["backend_options"] is not None), ("measurement_budget", opts["measurement_budget"] is not None),
+            ) if given]
             if requested:
                 raise ValueError(
-                    f"{', '.join(requested)} apply to quantum methods: method={method!r} "
+                    f"{', '.join(requested)} apply to quantum methods: method={opts['method']!r} "
                     "is a classical mean-field calculation with no quantum state to measure"
                 )
         if execute_circuits is None:
@@ -1305,15 +1396,11 @@ class Mandacaru(ASEProperties, Calculator):
             )
         self._execute_circuits = execute_circuits or shots > 0 or device != "AER_simulator"
         if precision == "float32" and self._capabilities.quantum:
-            supplied = [
-                name
-                for name, given in (
-                    ("hamiltonian", hamiltonian is not None),
-                    ("load_hamiltonian", load_hamiltonian is not None),
-                    ("native_model", native_model is not None),
-                )
-                if given
-            ]
+            supplied = [name for name, given in (
+                ("hamiltonian", opts["hamiltonian"] is not None),
+                ("load_hamiltonian", opts["load_hamiltonian"] is not None),
+                ("native_model", opts["native_model"] is not None),
+            ) if given]
             if supplied and self._execute_circuits:
                 raise ValueError(
                     f"precision='float32' acts on the sampled orbitals and the state "
@@ -1321,49 +1408,18 @@ class Mandacaru(ASEProperties, Calculator):
                     "hardware device or execute_circuits=True) builds neither, so it "
                     "has nothing to store in float32: use precision='float64'"
                 )
-        self._device = device
-        self._shots = shots
+        self._device, self._shots = device, shots
         from .integrations.transfer import configure as configure_transfer
 
-        configure_transfer(self, transfer=transfer, transfer_threshold=transfer_threshold,
-                           transfer_steps=transfer_steps, update_between_geometries=update_between_geometries,
-                           resume=resume)
-        self._profile = profile
-        if xc is not None:
-            if not isinstance(xc, str):
-                raise TypeError(f"xc must be a string or None, not {type(xc).__name__}")
+        configure_transfer(
+            self, transfer=opts["transfer"], transfer_threshold=opts["transfer_threshold"],
+            transfer_steps=opts["transfer_steps"],
+            update_between_geometries=opts["update_between_geometries"], resume=opts["resume"],
+        )
+        self._profile = opts["profile"]
 
-        vdw_norm = None
-        if vdw is not None:
-            if not isinstance(vdw, (str, bool)):
-                raise TypeError("vdw must be a string, boolean, or None")
-            if isinstance(vdw, bool):
-                vdw_norm = "rvv10" if vdw else None
-            else:
-                vdw_norm = vdw.strip().lower()
-
-            if vdw_norm is not None:
-                if vdw_norm in ("rvv10", "ts"):
-                    if vdw_norm == "rvv10":
-                        base_xc = "pbe" if xc is None else xc.strip().lower()
-                        if not base_xc.endswith("+rvv10"):
-                            if base_xc in ("pbe", "r2scan"):
-                                xc = f"{base_xc}+rvv10"
-                            else:
-                                raise ValueError(
-                                    f"vdw='rvv10' can only be combined with 'pbe' or 'r2scan', not {xc!r}"
-                                )
-                    elif vdw_norm == "ts":
-                        base_xc = "lda" if xc is None else xc.strip().lower()
-                        if base_xc.endswith("+rvv10"):
-                            raise ValueError("cannot combine vdw='ts' with an rvv10 functional")
-                else:
-                    raise ValueError(f"unknown vdw choice {vdw!r}; supported vdw options are 'rvv10' and 'ts'")
-        elif xc is not None and xc.strip().lower().endswith("+rvv10"):
-            vdw_norm = "rvv10"
-
-        if xc is not None and xc not in FUNCTIONALS:
-            raise ValueError(f"expected a canonical XC name in {FUNCTIONALS}")
+    def _init_ansatz_controls(self, opts):
+        mapping, pool, ansatz = opts["mapping"], opts["pool"], opts["ansatz"]
         if mapping is not None and mapping not in MAPPINGS:
             raise ValueError(f"expected a canonical mapping in {MAPPINGS}")
         if pool is None:
@@ -1377,16 +1433,9 @@ class Mandacaru(ASEProperties, Calculator):
             raise ValueError("native variational ansätze are uccsd and hva")
         self._hva = None
         if ansatz_spec["name"] == "hva":
-            if method != "vqe" or pool != "fermionic":
+            if opts["method"] != "vqe" or pool != "fermionic":
                 raise ValueError("HVA uses fixed VQE Hamiltonian groups")
-            if set(ansatz_spec) - {
-                "name",
-                "layers",
-                "evolution",
-                "order",
-                "steps",
-                "seed_angle",
-            }:
+            if set(ansatz_spec) - {"name", "layers", "evolution", "order", "steps", "seed_angle"}:
                 raise ValueError("unknown HVA option")
             self._hva = {k: v for k, v in ansatz_spec.items() if k != "name"}
             if self._hva.get("layers", 2) == 1:
@@ -1401,30 +1450,21 @@ class Mandacaru(ASEProperties, Calculator):
         elif len(ansatz_spec) != 1:
             raise ValueError("uccsd accepts only its name")
         self._pool = pool
-        if sector is not None and type(sector) is not bool:
-            raise TypeError(
-                "sector must be True, False or None for automatic selection"
-            )
+        if opts["sector"] is not None and type(opts["sector"]) is not bool:
+            raise TypeError("sector must be True, False or None for automatic selection")
+        project_translation = opts["project_translation"]
         if type(project_translation) is not bool and project_translation != "auto":
             raise ValueError("project_translation must be True, False or 'auto'")
         self._project_translation = project_translation
+
+    def _init_resources_and_basis(self, opts, xc, vdw_norm):
+        grid_spacing, charge = opts["grid_spacing"], opts["charge"]
         if not np.isfinite(grid_spacing) or grid_spacing <= 0:
             raise ValueError("grid_spacing must be positive and finite")
         if type(charge) is not int:
             raise TypeError("charge must be an integer")
-        for value in (
-            spin,
-            unrestricted,
-            trotter,
-            include_singles,
-            sparse,
-            atomic_units,
-            trace,
-            symmetry,
-        ):
-            if type(value) is not bool:
-                raise TypeError("boolean calculation controls require booleans")
-        if native_model is not None and (resources or parallelization is not None):
+        native_model, parallelization = opts["native_model"], opts["parallelization"]
+        if native_model is not None and (opts["resources"] or parallelization is not None):
             raise ValueError(
                 "a supplied model retains its context; configure resources and "
                 "parallelization on its originating calculation"
@@ -1434,7 +1474,7 @@ class Mandacaru(ASEProperties, Calculator):
             _refuse_unavailable_levels(layout, self._method, xc)
         self.resources = CalculationResources(
             parallelization=parallelization,
-            resources=resources,
+            resources=opts["resources"],
             context=None if native_model is None else native_model.context,
         )
         self.context = self.resources.context
@@ -1443,21 +1483,25 @@ class Mandacaru(ASEProperties, Calculator):
         self.run_budget_exhausted = None
         self._gradient_measurement = None
         self._energy_measurement = None
+        backend_provider = opts["backend_provider"]
         if self._execute_circuits or backend_provider is not None:
             from .integrations.circuits import configure
 
-            configure(self, provider=backend_provider, device=device, shots=shots,
-                      options=backend_options, measurement_budget=measurement_budget)
-        elif backend_options is not None or measurement_budget is not None:
+            configure(
+                self, provider=backend_provider, device=opts["device"], shots=opts["shots"],
+                options=opts["backend_options"], measurement_budget=opts["measurement_budget"],
+            )
+        elif opts["backend_options"] is not None or opts["measurement_budget"] is not None:
             raise ValueError("backend options require a circuit provider or device")
         from copy import deepcopy
 
-        basis = deepcopy(basis)
+        basis = deepcopy(opts["basis"])
         self._basis = basis
         from .pseudopotentials.families import lookup_family
 
         family = lookup_family(basis if isinstance(basis, str) else basis.get("name"))
         self._basis_spec = None if family is not None else basis_specification(basis)
+        paw_dataset = opts["paw_dataset"]
         if paw_dataset is not None:
             if self._basis_spec is not None:
                 raise ValueError("paw_dataset applies to a PAW-LCAO or UPAW-LCAO basis")
@@ -1469,86 +1513,47 @@ class Mandacaru(ASEProperties, Calculator):
             self._basis = basis
         if family is not None:
             family.validate_options(
-                {} if isinstance(basis, str)
-                else {key: value for key, value in basis.items() if key != "name"}
+                {} if isinstance(basis, str) else {k: v for k, v in basis.items() if k != "name"}
             )
-        self._vdw = vdw_norm
-        self._requested_xc = xc
+        self._vdw, self._requested_xc = vdw_norm, xc
         self._xc = "lda" if xc is None else xc
-        self._unrestricted = spin or unrestricted
-        self._charge = charge
-        self._n_electrons = n_electrons
-        self._scf_options = dict(scf_options or {}, **_native.excited_state_options(excited_state))
-        self._mapping = mapping or "jordan_wigner"
-        self._active_spec = active_space
+        self._unrestricted = opts["spin"] or opts["unrestricted"]
+        self._charge, self._n_electrons = charge, opts["n_electrons"]
+        self._scf_options = dict(
+            opts["scf_options"] or {}, **_native.excited_state_options(opts["excited_state"])
+        )
+        self._mapping = opts["mapping"] or "jordan_wigner"
+        self._active_spec = opts["active_space"]
         self._grid_spacing = float(grid_spacing)
-        self._explicit_grid = grid
-        self._kinetic = kinetic
-        tolerance_ev = DEFAULT_TWO_BODY_TOLERANCE_EV
-        self._two_body_representation = "dense"
-        self._two_body_truncation_ev = self._two_body_truncation_ha = None
-        self._loaded_two_body = None
-        if two_body is not None:
-            representation = (
-                {"method": two_body} if isinstance(two_body, str) else dict(two_body)
-            )
-            if (
-                set(representation) - {"method", "tolerance", "representation", "truncation"}
-                or representation.get("method", "cholesky") not in TWO_BODY_METHODS
-            ):
-                raise ValueError(
-                    "two_body accepts Cholesky factors with their tolerance, and a "
-                    "representation ('dense' or 'double-factorized') with its truncation"
-                )
-            truncation_ev = representation.get("truncation")
-            if truncation_ev is not None and (
-                    isinstance(truncation_ev, bool)
-                    or not isinstance(truncation_ev, (int, float))):
-                raise ValueError("two_body truncation must be an energy in eV")
-            truncation_ha = (None if truncation_ev is None
-                             else _native.energy_to_hartree(float(truncation_ev), "eV"))
-            self._two_body_representation = _native.two_body_representation(
-                representation.get("representation", "dense"), truncation_ha)
-            self._two_body_truncation_ev = (
-                None if truncation_ev is None else float(truncation_ev))
-            self._two_body_truncation_ha = truncation_ha
-            tolerance_ev = representation.get("tolerance", tolerance_ev)
-            if (isinstance(tolerance_ev, bool) or not isinstance(tolerance_ev, (int, float))
-                    or not np.isfinite(tolerance_ev) or tolerance_ev <= 0):
-                raise ValueError("two_body tolerance must be a finite positive energy in eV")
-        # The Cholesky stopping threshold: given in eV, held in Hartree for the engine.
-        self._two_body_tolerance_ev = float(tolerance_ev)
-        self._cholesky_tolerance = _native.energy_to_hartree(float(tolerance_ev), "eV")
-        self._two_body_requested = two_body is not None
-        self._load_hamiltonian = load_hamiltonian
-        self._save_hamiltonian = save_hamiltonian
-        if (
-            sum(x is not None for x in (native_model, load_hamiltonian, load_crystal))
-            > 1
-        ):
+        self._explicit_grid, self._kinetic, self._loaded_two_body = opts["grid"], opts["kinetic"], None
+        (
+            self._two_body_representation, self._two_body_truncation_ev,
+            self._two_body_truncation_ha, self._two_body_tolerance_ev, self._cholesky_tolerance,
+        ) = _parse_two_body(opts["two_body"])
+        self._two_body_requested = opts["two_body"] is not None
+        load_hamiltonian, load_crystal = opts["load_hamiltonian"], opts["load_crystal"]
+        self._load_hamiltonian, self._save_hamiltonian = load_hamiltonian, opts["save_hamiltonian"]
+        if sum(x is not None for x in (native_model, load_hamiltonian, load_crystal)) > 1:
             raise ValueError("supply only one native model or cached problem")
-        self._supplied_model = native_model
-        self._supplied_hamiltonian = hamiltonian
-        self._hamiltonian_orbitals = n_spatial_orbitals
-        self._hamiltonian_particles = num_particles
+        self._supplied_model, self._supplied_hamiltonian = native_model, opts["hamiltonian"]
+        self._hamiltonian_orbitals = opts["n_spatial_orbitals"]
+        self._hamiltonian_particles = opts["num_particles"]
+        hamiltonian_format = opts["hamiltonian_format"]
         if hamiltonian_format is not None:
             from .core.serialization import resolve_format
 
             hamiltonian_format = resolve_format(hamiltonian_format)
         self._hamiltonian_format = hamiltonian_format
-        if hamiltonian is not None:
-            if (
-                load_hamiltonian is not None
-                or native_model is not None
-                or load_crystal is not None
-            ):
-                raise ValueError(
-                    "supply one Hamiltonian, native model, or cached problem"
-                )
-            if n_spatial_orbitals is None or num_particles is None:
+        if self._supplied_hamiltonian is not None:
+            if load_hamiltonian is not None or native_model is not None or load_crystal is not None:
+                raise ValueError("supply one Hamiltonian, native model, or cached problem")
+            if self._hamiltonian_orbitals is None or self._hamiltonian_particles is None:
                 raise ValueError(
                     "a supplied Hamiltonian needs n_spatial_orbitals and num_particles"
                 )
+
+    def _init_solver_controls(self, opts):
+        checkpoint, checkpoint_every = opts["checkpoint"], opts["checkpoint_every"]
         self._checkpoint_path = checkpoint
         if checkpoint_every is not None and (
             type(checkpoint_every) is not int or checkpoint_every < 1 or checkpoint is None
@@ -1557,36 +1562,34 @@ class Mandacaru(ASEProperties, Calculator):
                 "checkpoint_every must be a positive integer, together with checkpoint="
             )
         self._checkpoint_every = checkpoint_every
-        self._resume_path = resume
-        self._trotter = trotter or self._hva is not None or self._execute_circuits or method in _SEARCH_METHODS
-        self._include_singles = include_singles
+        self._resume_path = opts["resume"]
+        self._trotter = (
+            opts["trotter"]
+            or self._hva is not None
+            or self._execute_circuits
+            or self._capabilities.solver == "search"
+        )
+        self._include_singles = opts["include_singles"]
         from .integrations import tapering
 
         self._taper = tapering.validate(
-            taper,
-            sector=sector,
-            hva=self._hva is not None,
-            transfer=self._transfer,
-            save_hamiltonian=save_hamiltonian,
+            opts["taper"], sector=opts["sector"], hva=self._hva is not None,
+            transfer=self._transfer, save_hamiltonian=opts["save_hamiltonian"],
         )
         from .integrations import measurement_scheme as scheme_options
 
         self._measurement_scheme = scheme_options.validate(
-            measurement_scheme,
-            execute_circuits=self._execute_circuits,
-            hamiltonian=hamiltonian,
-            load_hamiltonian=load_hamiltonian,
-            mapping=mapping,
-            taper=self._taper,
-            hva=self._hva is not None,
+            opts["measurement_scheme"], execute_circuits=self._execute_circuits,
+            hamiltonian=opts["hamiltonian"], load_hamiltonian=opts["load_hamiltonian"],
+            mapping=opts["mapping"], taper=self._taper, hva=self._hva is not None,
         )
         self._sector = (
-            (pool not in ("qubit", "spin-orbit") and self._hva is None and not self._taper)
-            if sector is None
-            else sector
+            (self._pool not in ("qubit", "spin-orbit") and self._hva is None and not self._taper)
+            if opts["sector"] is None
+            else opts["sector"]
         )
-        self._sparse = sparse
-        self._max_growth = max_iterations
+        self._sparse, self._max_growth = opts["sparse"], opts["max_iterations"]
+        num_states, weights = opts["num_states"], opts["weights"]
         if type(num_states) is not int or num_states < 1:
             raise ValueError("num_states must be a positive integer")
         self._weights = (
@@ -1594,102 +1597,40 @@ class Mandacaru(ASEProperties, Calculator):
             if weights is None
             else np.asarray(weights, dtype=float).copy()
         )
-        if (
-            self._weights.shape != (num_states,)
-            or not np.isfinite(self._weights).all()
-            or np.any(self._weights <= 0)
-        ):
-            raise ValueError(
-                "weights must contain one positive finite value per requested state"
-            )
-        self._convergence = dict(
-            {"gradient": 1e-3, "energy": 1e-3} if convergence is None else convergence
-        )
-        self._atomic_units = atomic_units
+        if self._weights.shape != (num_states,) or not np.isfinite(self._weights).all() or np.any(self._weights <= 0):
+            raise ValueError("weights must contain one positive finite value per requested state")
+        self._convergence = dict({"gradient": 1e-3, "energy": 1e-3} if opts["convergence"] is None else opts["convergence"])
+        self._atomic_units = opts["atomic_units"]
         self._search = None
         self._search_geometry = None
-        if method in _SEARCH_METHODS:
+        if self._capabilities.solver == "search":
             from .integrations.search import configure
 
-            configure(self, max_steps=200 if max_steps is None else max_steps,
-                      min_length=min_length, max_length=max_length,
-                      move_weights=move_weights, temperature=temperature,
-                      length_penalty=length_penalty, warm_start=warm_start,
-                      replace_start=replace_start, screen_insertions=screen_insertions,
-                      proposal_temperature=proposal_temperature, proposal=proposal,
-                      record=record, seed=seed, proposal_model=proposal_model,
-                      replicas=replicas, replica_spacing=replica_spacing)
-        elif max_steps is not None or record is not None or screen_insertions or proposal_model is not None:
+            configure(
+                self, max_steps=200 if opts["max_steps"] is None else opts["max_steps"],
+                min_length=opts["min_length"], max_length=opts["max_length"],
+                move_weights=opts["move_weights"], temperature=opts["temperature"],
+                length_penalty=opts["length_penalty"], warm_start=opts["warm_start"],
+                replace_start=opts["replace_start"], screen_insertions=opts["screen_insertions"],
+                proposal_temperature=opts["proposal_temperature"], proposal=opts["proposal"],
+                record=opts["record"], seed=opts["seed"], proposal_model=opts["proposal_model"],
+                replicas=opts["replicas"], replica_spacing=opts["replica_spacing"],
+                early_reject=opts["early_reject"], screen_hamiltonian_terms=opts["screen_hamiltonian_terms"],
+                strip_zero_operators=opts["strip_zero_operators"], carry_hessian=opts["carry_hessian"],
+            )
+        elif opts["max_steps"] is not None or opts["record"] is not None or opts["screen_insertions"] or opts["proposal_model"] is not None:
             raise ValueError("architecture-search controls require vasqa, valsqa, subspace-vasqa or subspace-valsqa")
-        self.trace = trace
-        self.txt = txt
-        requested = (
-            dict(method=optimizer)
-            if isinstance(optimizer, str)
-            else (
-                {
-                    k: v
-                    for k, v in {
-                        "method": optimizer.method,
-                        "maxiter": optimizer.maxiter,
-                        "tol": optimizer.tol,
-                        **getattr(optimizer, "options", {}),
-                    }.items()
-                    if k in {"method", "maxiter", "maxfev", "tol", "track_best"}
-                    and v is not None
-                }
-                if hasattr(optimizer, "method") and not isinstance(optimizer, dict)
-                else dict(optimizer or {})
-            )
+        self.trace, self.txt = opts["trace"], opts["txt"]
+        self._optimizer = _resolve_optimizer(
+            opts["optimizer"], opts["precision"], self._capabilities,
+            self._execute_circuits, opts["shots"], self._convergence, opts["method"],
         )
-        # A complex64 state is not resolved below the floors Rust owns: the
-        # optimizer tolerance left unset resolves to the energy floor (printed in
-        # the optimization setup), a value given below it raises.
-        float32_state = (
-            precision == "float32"
-            and self._capabilities.quantum
-            and not self._execute_circuits
-        )
-        defaults = {
-            "method": "SLSQP",
-            "maxiter": 2000,
-            "tol": _native.FLOAT32_ENERGY_FLOOR_HA if float32_state else 1e-12,
-        }
-        if shots > 0 and requested.get("method", "SPSA") == "SPSA":
-            # A measured energy: the strict two-evaluation SPSA, whose
-            # 2 * maxiter + 1 evaluations are each one job on a processor.
-            defaults = {"method": "SPSA", "maxiter": 100, "tol": None, "track_best": False}
-        self._optimizer = {**defaults, **requested}
-        if self._optimizer["method"] not in _native.OPTIMIZERS:
-            raise ValueError(
-                f"expected a native optimizer in {tuple(_native.OPTIMIZERS)}"
-            )
-        unknown = sorted(set(self._optimizer) - {"method", "maxiter", "maxfev", "tol", "track_best"})
-        if unknown:
-            raise ValueError(f"unknown optimizer option(s) {unknown}; optimizer options are method, maxiter, maxfev, tol and track_best")
-        if shots > 0 and self._optimizer["method"] in NOISE_INTOLERANT:
-            raise ValueError(
-                f"optimizer {self._optimizer['method']!r} differences the energy at tiny "
-                "steps, which turns shot noise into gradient noise; with "
-                "shots > 0 use 'SPSA' (the default) or 'COBYLA'"
-            )
-        if set(self._convergence) - {"gradient", "energy"}:
-            raise ValueError("convergence options are gradient and energy")
-        if float32_state:
-            _check_float32_floors(
-                self._optimizer["method"],
-                self._optimizer.get("tol"),
-                self._convergence,
-                adapt=method.endswith("adapt-vqe"),
-            )
         if not self.capabilities.quantum and (
-            load_hamiltonian is not None
-            or native_model is not None
-            or hamiltonian is not None
+            opts["load_hamiltonian"] is not None or opts["native_model"] is not None or opts["hamiltonian"] is not None
         ):
-            raise ValueError(
-                "mean-field calculations require a geometry or cached crystal"
-            )
+            raise ValueError("mean-field calculations require a geometry or cached crystal")
+
+    def _init_runtime_and_periodic(self, opts):
         self._geometry = None
         self._attached_atoms = None
         self._force_grid = None
@@ -1706,8 +1647,9 @@ class Mandacaru(ASEProperties, Calculator):
         self._basis_report = None
         self._stages = {}
         self._exit_hook_armed = False
-        self._load_crystal = load_crystal
-        self._save_crystal = save_crystal
+        load_crystal = opts["load_crystal"]
+        self._load_crystal, self._save_crystal = load_crystal, opts["save_crystal"]
+        kpts = opts["kpts"]
         self._kpts_spec = (
             {"size": (1, 1, 1), "gamma": True}
             if kpts is None
@@ -1718,14 +1660,17 @@ class Mandacaru(ASEProperties, Calculator):
         size = self._kpts_spec.get("size", (1, 1, 1))
         if len(size) != 3 or any(type(n) is not int or n < 1 for n in size):
             raise ValueError("kpts needs three positive integer mesh sizes")
+        crystal_orbitals = opts["crystal_orbitals"]
         if crystal_orbitals not in ("k-space", "real-space"):
             raise ValueError(
                 f"crystal_orbitals must be 'k-space' or 'real-space', got {crystal_orbitals!r}"
             )
         self._crystal_orbitals = crystal_orbitals
+        periodic_scf_options = opts["periodic_scf_options"]
         self._periodic_options = dict(periodic_scf_options or {})
         # The occupations of a molecular Kohn-Sham run (``smearing=``); empty: Rust's default.
         self._molecular_smearing = {}
+        eigensolver = opts["eigensolver"]
         if eigensolver is not None:
             eigen_norm = str(eigensolver).strip().lower().replace("_", "-")
             if eigen_norm not in ("direct", "davidson", "rmm-diis", "mixed"):
@@ -1735,19 +1680,22 @@ class Mandacaru(ASEProperties, Calculator):
             self._periodic_options.setdefault("eigensolver", eigen_norm)
         self._periodic_options.setdefault("switch_tolerance", 0.01)
         self._periodic_options["exxdiv_treatment"] = _exchange_divergence(
-            exxdiv_treatment, gygi_baldereschi, periodic_scf_options
+            opts["exxdiv_treatment"], opts["gygi_baldereschi"], periodic_scf_options
         )
         if load_crystal is None and self._periodic_options["exxdiv_treatment"] != "none":
             # A crystal file owns its functional: it is checked when the file is read.
             _refuse_exchange_divergence_without_hybrid(
                 self._periodic_options["exxdiv_treatment"], self._xc, periodic=True
             )
-        self._periodic_symmetry = symmetry
-        self._hubbard_u = hubbard.validate(hubbard_u, xc=self._xc, precision=precision)
+        self._periodic_symmetry = opts["symmetry"]
+        self._hubbard_u = hubbard.validate(
+            opts["hubbard_u"], xc=self._xc, precision=opts["precision"]
+        )
+        atoms = opts["atoms"]
         if atoms is not None:
             hubbard.require_crystal(self._hubbard_u, atoms.pbc, method=self._method)
         # A crystal file owns its basis; otherwise the option needs a PAW dataset.
-        paw = None if load_crystal is not None else hubbard.paw_basis(self._hubbard_u, basis)
+        paw = None if load_crystal is not None else hubbard.paw_basis(self._hubbard_u, self._basis)
         if atoms is not None:
             hubbard.check_atoms(self._hubbard_u, self.context, atoms, paw, self._xc)
             if self._method == "dft" and any(atoms.pbc):
@@ -1760,35 +1708,32 @@ class Mandacaru(ASEProperties, Calculator):
                     )
                 if moments is not None and any(moments):
                     self._unrestricted = True
-        self._periodic_basis = basis
+        self._periodic_basis = self._basis
         # Periodic DFT holds no two-body tensor to represent: a representation other than
         # the dense default is refused there (`integrations.paw.configure`).
         self._periodic_two_body_requested = self._two_body_representation != "dense"
-        self._requested_mapping = mapping
-        self._save_hamiltonian = save_hamiltonian
+        self._requested_mapping = opts["mapping"]
+        self._save_hamiltonian = opts["save_hamiltonian"]
         # The processor layout is the context's (`calc.context.parallelization`): not repeated here.
-        self.options = {
-            "memory_limit_bytes": self.context.memory_limit_bytes,
-        }
+        self.options = {"memory_limit_bytes": self.context.memory_limit_bytes}
+        smearing = opts["smearing"]
         if smearing is not None:
             from numbers import Real
 
             if isinstance(smearing, dict):
                 if set(smearing) - {"method", "width"}:
                     raise ValueError("smearing accepts method and width")
-                method, width = (
+                sm_method, width = (
                     smearing.get("method", "fermi-dirac"),
                     smearing.get("width", 0.1),
                 )
             else:
-                method, width = (
-                    ("fermi-dirac", smearing)
-                    if isinstance(smearing, Real)
-                    else smearing
+                sm_method, width = (
+                    ("fermi-dirac", smearing) if isinstance(smearing, Real) else smearing
                 )
             width_ha = _native.energy_to_hartree(float(width), "eV")
-            self._periodic_options.update(smearing=method, width_ha=width_ha)
-            self._molecular_smearing = {"smearing": method, "width": width_ha}
+            self._periodic_options.update(smearing=sm_method, width_ha=width_ha)
+            self._molecular_smearing = {"smearing": sm_method, "width": width_ha}
 
         if atoms is not None:
             atoms.calc = self
@@ -2136,7 +2081,7 @@ class Mandacaru(ASEProperties, Calculator):
                 kind = (
                     self.method
                     if self.method in ("rhf", "uhf", "ghf")
-                    else ("rhf" if particles[0] == particles[1] else "uhf")
+                    else ("ghf" if self._has_spin_orbit_dataset(geometry) else ("rhf" if particles[0] == particles[1] else "uhf"))
                 )
                 self.native_reference = self.integrals.mean_field(
                     kind, particles, **self._scf_options
@@ -2200,49 +2145,47 @@ class Mandacaru(ASEProperties, Calculator):
         except OSError:
             return False
 
-    def _quantum(self, reference, initial_parameters, callback=None):
-        if self._supplied_hamiltonian is not None:
-            source = self._supplied_hamiltonian
-            if isinstance(source, _native.PauliOperator):
-                operator = source
-            else:
-                from .core.mapping import Fermion, PauliSum
+    def _quantum_problem_kwargs(self):
+        return {
+            "mapping": self._mapping,
+            "sector": self._sector,
+            "sparse": self._sparse,
+            "include_singles": self._include_singles,
+            "pool": self._pool,
+            "precision": self._precision,
+            "taper": self._taper,
+            "register_free": self._shots > 0,
+        }
 
-                if isinstance(source, Fermion):
-                    operator = self.context.fermion_operator(
-                        _native.spin_orbital_count(self._hamiltonian_orbitals),
-                        self._hamiltonian_particles,
-                        [
-                            (list(term), float(value.real), float(value.imag))
-                            for term, value in source.terms.items()
-                        ],
-                        mapping=self._mapping,
-                    )
-                elif isinstance(source, PauliSum):
-                    operator = self.context.pauli_operator(
-                        source.num_qubits,
-                        [
-                            (label, float(value.real), float(value.imag))
-                            for label, value in source.terms.items()
-                        ],
-                    )
-                else:
-                    raise TypeError(
-                        "hamiltonian must be a Fermion, PauliSum, or native PauliOperator"
-                    )
-            self.problem = self.context.quantum_problem(
-                operator,
-                self._hamiltonian_orbitals,
-                self._hamiltonian_particles,
-                mapping=self._mapping,
-                sector=self._sector,
-                include_singles=self._include_singles,
-                sparse=self._sparse,
-                pool=self._pool,
-                precision=self._precision,
-                taper=self._taper,
-                register_free=self._shots > 0,
-            )
+    def _problem_from_supplied_hamiltonian(self, common):
+        source = self._supplied_hamiltonian
+        if isinstance(source, _native.PauliOperator):
+            operator = source
+        else:
+            from .core.mapping import Fermion, PauliSum
+
+            if isinstance(source, Fermion):
+                operator = self.context.fermion_operator(
+                    _native.spin_orbital_count(self._hamiltonian_orbitals),
+                    self._hamiltonian_particles,
+                    [(list(term), float(v.real), float(v.imag)) for term, v in source.terms.items()],
+                    mapping=self._mapping,
+                )
+            elif isinstance(source, PauliSum):
+                operator = self.context.pauli_operator(
+                    source.num_qubits,
+                    [(label, float(v.real), float(v.imag)) for label, v in source.terms.items()],
+                )
+            else:
+                raise TypeError("hamiltonian must be a Fermion, PauliSum, or native PauliOperator")
+        return self.context.quantum_problem(
+            operator, self._hamiltonian_orbitals, self._hamiltonian_particles, **common
+        )
+
+    def _build_quantum_problem(self, reference, bloch_momentum):
+        common = self._quantum_problem_kwargs()
+        if self._supplied_hamiltonian is not None:
+            self.problem = self._problem_from_supplied_hamiltonian(common)
         elif self._load_hamiltonian is not None:
             import os
 
@@ -2255,61 +2198,29 @@ class Mandacaru(ASEProperties, Calculator):
             )
             # A double-factorized Hamiltonian records its truncation; the run log states it.
             self._loaded_two_body = _native.snapshot_two_body(snapshot)
-            self.problem = snapshot.problem(
-                sector=self._sector,
-                sparse=self._sparse,
-                include_singles=self._include_singles,
-                pool=self._pool,
-                precision=self._precision,
-                taper=self._taper,
-                register_free=self._shots > 0,
-            )
-            if (
-                self._requested_mapping is not None
-                and self.problem.mapping != self._mapping
-            ):
+            self.problem = snapshot.problem(**{k: v for k, v in common.items() if k != "mapping"})
+            if self._requested_mapping is not None and self.problem.mapping != self._mapping:
                 raise ValueError("mapping disagrees with the cached Hamiltonian")
             self._mapping = self.problem.mapping
         else:
-            model = (
-                self._supplied_model
-                if self._supplied_model is not None
-                else reference.hamiltonian
-            )
-            measured = {}
+            model = reference.hamiltonian if self._supplied_model is None else self._supplied_model
+            measured = {"bloch_momentum": bloch_momentum} if bloch_momentum is not None else {}
             if self._measurement_scheme != "qwc":
                 from .integrations import measurement_scheme as scheme_options
 
                 scheme_options.check_model(model, _native)
                 measured["measurement"] = self._measurement_scheme
-            self.problem = model.problem(
-                mapping=self._mapping,
-                sector=self._sector,
-                sparse=self._sparse,
-                include_singles=self._include_singles,
-                pool=self._pool,
-                precision=self._precision,
-                taper=self._taper,
-                register_free=self._shots > 0,
-                **measured,
-            )
+            self.problem = model.problem(**common, **measured)
         if self._hva is not None:
             self.problem = self.problem.hva(**self._hva)
-        if (
-            reference is None
-            and self._save_hamiltonian
-            and not self._saves_over_its_source()
-        ):
+        if reference is None and self._save_hamiltonian and not self._saves_over_its_source():
             from .core.mapping import PauliSum
             from .core.serialization import save_hamiltonian
 
             save_hamiltonian(
                 self._save_hamiltonian,
                 PauliSum(
-                    {
-                        label: complex(re, im)
-                        for label, re, im in self.problem.hamiltonian_terms
-                    },
+                    {label: complex(re, im) for label, re, im in self.problem.hamiltonian_terms},
                     num_qubits=self.problem.num_qubits,
                 ),
                 mapping=self.problem.mapping,
@@ -2317,8 +2228,10 @@ class Mandacaru(ASEProperties, Calculator):
                 n_spatial_orbitals=self.problem.n_spatial_orbitals,
                 format=self._hamiltonian_format,
             )
+
+    def _prepare_quantum_solver_options(self, reference, initial_parameters):
         opts = dict(
-            adapt=self.method.endswith("adapt-vqe"),
+            adapt=self.capabilities.solver == "adapt",
             trotter=self._trotter,
             quenching=self._quenching,
             tetris=self._tetris,
@@ -2330,8 +2243,11 @@ class Mandacaru(ASEProperties, Calculator):
             track_best=self._optimizer.get("track_best", True),
             max_growth=self._max_growth,
             gradient_tolerance=self._convergence.get("gradient"),
-            energy_tolerance=(None if self._convergence.get("energy") is None else
-                              _native.energy_to_hartree(float(self._convergence["energy"]), "eV")),
+            energy_tolerance=(
+                None
+                if self._convergence.get("energy") is None
+                else _native.energy_to_hartree(float(self._convergence["energy"]), "eV")
+            ),
             initial_parameters=initial_parameters,
         )
         from .integrations.transfer import prepare as prepare_transfer
@@ -2343,101 +2259,126 @@ class Mandacaru(ASEProperties, Calculator):
             opts.update(initial_parameters=carried["parameters"], initial_indices=carried["indices"])
             if carried.get("hessian") is not None and opts["optimizer"] in ("SLSQP", "BFGS"):
                 opts["initial_hessian"] = carried["hessian"]
+        return opts
+
+    def _solve_subspace_problem(self, opts):
+        if self._execute_circuits:
+            raise NotImplementedError("subspace SDK execution requires a multi-reference executor")
+        weights = [2.0, 1.0] if self._weights is None else list(self._weights)
+        resumed = (
+            None
+            if self._resume_path is None
+            else self.context.read_snapshot(str(self._resume_path), "mandacaru-wavefunction-checkpoint")
+        )
+        with self._stage("parameter optimization"):
+            subspace = {k: v for k, v in opts.items() if k not in ("quenching", "tetris", "prune")}
+            raw = self.problem.solve_subspace(weights, resume=resumed, **subspace)
+        for note in raw.get("notes", ()):
+            warnings.warn(note, RuntimeWarning, stacklevel=2)
+        if self._checkpoint_path is not None:
+            self.problem.subspace_checkpoint(
+                raw["indices"], raw["parameters"].tolist(), adapt=opts["adapt"],
+                product_form=opts["adapt"] or self._trotter, weights=weights,
+                energies_ha=raw["energies_ha"], hessian=raw.get("hessian"),
+                hessian_optimizer=self._optimizer["method"],
+                status_json=json.dumps({"complete": True, "converged": raw["success"], "termination": raw["message"]}),
+            ).save(str(self._checkpoint_path))
+        return raw
+
+    def _solve_ground_problem(self, opts, initial_parameters, callback):
         executor = None
-        if self._search is None and self.method.startswith("subspace-"):
-            if self._execute_circuits:
-                raise NotImplementedError("subspace SDK execution requires a multi-reference executor")
-            weights = [2.0, 1.0] if self._weights is None else list(self._weights)
-            resumed = None if self._resume_path is None else self.context.read_snapshot(str(self._resume_path), "mandacaru-wavefunction-checkpoint")
+        resumed = (
+            None
+            if self._resume_path is None
+            else self.context.read_snapshot(str(self._resume_path), "mandacaru-wavefunction-checkpoint")
+        )
+        observer = None
+        if callback is not None and self._search is None:
+            from .analysis.states import AnsatzView
+
+            def observe(info):
+                info = dict(info)
+                info["energy"] = _native.to_user_units(float(info["energy_ha"]), "energy", atomic_units=self._atomic_units)
+                info["ansatz"] = AnsatzView(self.problem, info["indices"], True)
+                callback(info)
+
+            observer = observe
+        if self._execute_circuits:
+            if self.capabilities.objective == "subspace":
+                raise NotImplementedError("subspace architecture search requires local state vectors")
+            from .integrations.circuits import CircuitExecutor, preflight_run_budget
+
+            executor = CircuitExecutor(self)
+            preflight_run_budget(self, opts)
+        if self._search is not None:
+            if callback is not None:
+                raise ValueError("growth callbacks apply to ADAPT, not architecture edits")
+            from .integrations.search import run as run_search
+
             with self._stage("parameter optimization"):
-                subspace = {k: v for k, v in opts.items() if k not in ("quenching", "tetris", "prune")}
-                raw = self.problem.solve_subspace(weights, resume=resumed, **subspace)
+                raw = run_search(self, initial_parameters, executor=executor, resume=resumed)
+        else:
+            self.run_budget_exhausted = None
+            self._resume_lineage = None if resumed is None else _native.snapshot_lineage(resumed)
+            try:
+                with self._stage("parameter optimization"):
+                    raw = self.problem.solve(
+                        resume=resumed, callback=observer, executor=executor,
+                        checkpoint_path=None if self._checkpoint_every is None else str(self._checkpoint_path),
+                        checkpoint_every=self._checkpoint_every or 0, **opts,
+                    )
+            except RuntimeError as exc:
+                if executor is not None and executor.stopped is not None:
+                    from .backends.measurement import RunBudgetExceeded
+
+                    raise RunBudgetExceeded(executor.stopped) from exc
+                raise
             for note in raw.get("notes", ()):
                 warnings.warn(note, RuntimeWarning, stacklevel=2)
-            if self._checkpoint_path is not None:
-                self.problem.subspace_checkpoint(
-                    raw["indices"], raw["parameters"].tolist(), adapt=opts["adapt"], product_form=opts["adapt"] or self._trotter, weights=weights,
-                    energies_ha=raw["energies_ha"], hessian=raw.get("hessian"), hessian_optimizer=self._optimizer["method"],
-                    status_json=json.dumps({"complete": True, "converged": raw["success"], "termination": raw["message"]}),
-                ).save(str(self._checkpoint_path))
+            if raw.get("budget_stopped"):
+                self.run_budget_exhausted = raw["message"]
+                warnings.warn(f"the run budget stopped the optimization at its best point so far: {raw['message']}", RuntimeWarning, stacklevel=2)
+        if executor is not None:
+            raw["execution"], raw["state_kind"], raw["execution_usage"] = (
+                self.provider.name, "none" if self._shots else "statevector", self.provider.run_usage()
+            )
+        from .integrations.transfer import record as record_transfer
+
+        record_transfer(self, raw)
+        status_obj = {"complete": True, "converged": raw["success"], "termination": raw["message"]}
+        status = json.dumps({**status_obj, "search_method": self.method, "search_chain": raw["search_chain"]} if "search_chain" in raw else status_obj)
+        method_name = "adapt-vqe" if self.capabilities.solver == "adapt" else ("vqe" if self.capabilities.solver == "vqe" else self.method)
+        if self.capabilities.objective == "subspace":
+            self.checkpoint = self.problem.subspace_checkpoint(
+                raw["indices"], raw["parameters"].tolist(), adapt=False, product_form=True,
+                weights=[2.0, 1.0] if self._weights is None else list(self._weights), energies_ha=raw["energies_ha"],
+                hessian=raw.get("hessian"), hessian_optimizer=self._optimizer["method"], status_json=status,
+            )
         else:
-            resumed = None if self._resume_path is None else self.context.read_snapshot(str(self._resume_path), "mandacaru-wavefunction-checkpoint")
-            observer = None
-            if callback is not None and self._search is None:
-                from .analysis.states import AnsatzView
-                def observe(info):
-                    info = dict(info)
-                    info["energy"] = _native.to_user_units(float(info["energy_ha"]), "energy", atomic_units=self._atomic_units)
-                    info["ansatz"] = AnsatzView(self.problem, info["indices"], True)
-                    callback(info)
-                observer = observe
-            if self._execute_circuits:
-                if self.method.startswith("subspace-"):
-                    raise NotImplementedError("subspace architecture search requires local state vectors")
-                from .integrations.circuits import CircuitExecutor, preflight_run_budget
-                executor = CircuitExecutor(self)
-                preflight_run_budget(self, opts)
-            if self._search is not None:
-                if callback is not None:
-                    raise ValueError("growth callbacks apply to ADAPT, not architecture edits")
-                from .integrations.search import run as run_search
-                with self._stage("parameter optimization"):
-                    raw = run_search(self, initial_parameters, executor=executor, resume=resumed)
-            else:
-                self.run_budget_exhausted = None
-                self._resume_lineage = None if resumed is None else _native.snapshot_lineage(resumed)
-                try:
-                    with self._stage("parameter optimization"):
-                        raw = self.problem.solve(resume=resumed, callback=observer, executor=executor,
-                                                 checkpoint_path=None if self._checkpoint_every is None else str(self._checkpoint_path),
-                                                 checkpoint_every=self._checkpoint_every or 0, **opts)
-                except RuntimeError as exc:
-                    if executor is not None and executor.stopped is not None:
-                        from .backends.measurement import RunBudgetExceeded
-                        raise RunBudgetExceeded(executor.stopped) from exc
-                    raise
-                for note in raw.get("notes", ()):
-                    warnings.warn(note, RuntimeWarning, stacklevel=2)
-                if raw.get("budget_stopped"):
-                    self.run_budget_exhausted = raw["message"]
-                    warnings.warn(f"the run budget stopped the optimization at its best point so far: {raw['message']}", RuntimeWarning, stacklevel=2)
-            if executor is not None:
-                raw["execution"], raw["state_kind"], raw["execution_usage"] = self.provider.name, "none" if self._shots else "statevector", self.provider.run_usage()
-            from .integrations.transfer import record as record_transfer
-            record_transfer(self, raw)
-            status_obj = {"complete": True, "converged": raw["success"], "termination": raw["message"]}
-            status = json.dumps({**status_obj, "search_method": self.method, "search_chain": raw["search_chain"]} if "search_chain" in raw else status_obj)
-            method_name = "adapt-vqe" if self.method.endswith("adapt-vqe") else ("vqe" if self.method.endswith("vqe") else self.method)
-            if self.method.startswith("subspace-"):
-                self.checkpoint = self.problem.subspace_checkpoint(
-                    raw["indices"], raw["parameters"].tolist(), adapt=False, product_form=True,
-                    weights=[2.0, 1.0] if self._weights is None else list(self._weights), energies_ha=raw["energies_ha"],
-                    hessian=raw.get("hessian"), hessian_optimizer=self._optimizer["method"], status_json=status)
-            else:
-                self.checkpoint = self.problem.checkpoint(
-                    raw["indices"], raw["parameters"].tolist(), product_form=opts["adapt"] or self._trotter, energy_ha=raw["energy_ha"],
-                    method=method_name, hessian=raw.get("hessian"), hessian_optimizer=self._optimizer["method"], status_json=status)
-            if self._checkpoint_path is not None:
-                self.checkpoint.save(str(self._checkpoint_path))
+            self.checkpoint = self.problem.checkpoint(
+                raw["indices"], raw["parameters"].tolist(), product_form=opts["adapt"] or self._trotter, energy_ha=raw["energy_ha"],
+                method=method_name, hessian=raw.get("hessian"), hessian_optimizer=self._optimizer["method"], status_json=status,
+            )
+        if self._checkpoint_path is not None:
+            self.checkpoint.save(str(self._checkpoint_path))
+        return raw, executor
+
+    def _finalize_quantum_result(self, reference, raw, opts, executor):
         from .analysis.states import SolverView
+        from .optimizers import Optimizer
 
         self.solver = SolverView(self.problem, raw, self.checkpoint, opts["adapt"] or self._trotter)
-        from .optimizers import Optimizer
-        self.solver.optimizer = Optimizer(method=self._optimizer["method"], maxiter=self._optimizer.get("maxiter", 300), tol=self._optimizer.get("tol", 1e-9))
+        self.solver.optimizer = Optimizer(
+            method=self._optimizer["method"], maxiter=self._optimizer.get("maxiter", 300),
+            tol=self._optimizer.get("tol", 1e-9),
+        )
         result = CalculationResult(
-            method=self.method,
-            context=self.context,
-            solver=self.solver,
-            profile=self._profile,
-            problem=self.problem,
-            reference=None if reference is None else reference.scf,
-            integrals=None if reference is None else self.integrals,
-            active_space=self._active_spec,
+            method=self.method, context=self.context, solver=self.solver, profile=self._profile,
+            problem=self.problem, reference=None if reference is None else reference.scf,
+            integrals=None if reference is None else self.integrals, active_space=self._active_spec,
             two_body=(self._two_body_representation, self._two_body_truncation_ha),
-            model=None if reference is None else reference.hamiltonian,
-            raw=raw,
-            mapping=self._mapping,
-            atomic_units=self._atomic_units,
+            model=None if reference is None else reference.hamiltonian, raw=raw,
+            mapping=self._mapping, atomic_units=self._atomic_units,
         )
         if executor is not None:
             import weakref
@@ -2454,6 +2395,15 @@ class Mandacaru(ASEProperties, Calculator):
                 stacklevel=2,
             )
         return result
+
+    def _quantum(self, reference, initial_parameters, callback=None, *, bloch_momentum=None):
+        self._build_quantum_problem(reference, bloch_momentum)
+        opts = self._prepare_quantum_solver_options(reference, initial_parameters)
+        if self._search is None and self.capabilities.objective == "subspace":
+            raw, executor = self._solve_subspace_problem(opts), None
+        else:
+            raw, executor = self._solve_ground_problem(opts, initial_parameters, callback)
+        return self._finalize_quantum_result(reference, raw, opts, executor)
 
     def _periodic(self, geometry):
         if self.method != "dft":
@@ -2512,7 +2462,7 @@ class Mandacaru(ASEProperties, Calculator):
         electrostatics, image-summed basis, commensurate periodic grid); the energy is
         reported per primitive cell by ``run()``.
         """
-        from .integrations.bloch import check_geometry, paw_supercell_integrals
+        from .integrations.bloch import check_geometry, kspace_model, paw_supercell_integrals
 
         size = check_geometry(self, geometry)
         from .structure import Geometry
@@ -2562,7 +2512,7 @@ class Mandacaru(ASEProperties, Calculator):
             atomic_units=self._atomic_units,
         )
 
-        result = self._quantum(reference, initial_parameters, callback)
+        result = self._quantum(reference, initial_parameters, callback, bloch_momentum=kspace_model(self, reference))
         # The reference whose model the problem was built from: the spectral function rebuilds
         # the N +- 1 sectors of that model.
         self._bloch_reference = reference
@@ -2950,20 +2900,44 @@ class Mandacaru(ASEProperties, Calculator):
             return voigt_6_to_full_3x3_stress(val)
         return val
 
-    def hubbard_response(self, alphas=(0.05, 0.1)):
-        """Calculate linear-response Hubbard U parameters.
+    def hubbard_response(
+        self,
+        alphas=(0.05, 0.1),
+        *,
+        self_consistent=False,
+        damping=0.5,
+        max_iterations=10,
+        tolerance=None,
+        kernel="spin-summed",
+        spread_tolerance=None,
+    ):
+        """Calculate linear-response Hubbard U parameters on a converged crystal or molecule.
 
         Parameters
         ----------
         alphas : tuple of float, optional
-            Potential shift amplitudes in eV (or Hartree if atomic_units=True).
-            Default is (0.05, 0.1) eV.
+            Potential shift amplitudes in eV (or Hartree if ``atomic_units=True``).
+            Default is ``(0.05, 0.1)`` eV.
+        self_consistent : bool, optional
+            Run the outer damped self-consistent linear-response loop (``LR-12``,
+            crystals only, default ``False``).
+        damping : float, optional
+            Damping factor for outer self-consistent updates (default ``0.5``).
+        max_iterations : int, optional
+            Maximum outer iterations when ``self_consistent=True`` (default ``10``).
+        tolerance : float, optional
+            Outer convergence tolerance on ``|U_out - U_in|`` in user energy units.
+        kernel : str, optional
+            Spin reduction kernel for ``self_consistent=True`` (default ``"spin-summed"``).
+        spread_tolerance : float, optional
+            Allowed per-element spread across equivalent shells in user energy units.
 
         Returns
         -------
-        dict
-            Dictionary containing 'u_matrix', 'u_charge', 'chi0', 'chi', 'alphas',
-            and 'j_response' if collinear spin.
+        HubbardResponse
+            Native linear-response view exposing ``u_matrix``, ``u_charge``, ``u_cross``,
+            ``j_response``, ``chi0``, ``chi``, ``alphas``, ``hubbard_u()``, ``to_json()``,
+            and dictionary-style subscripting.
         """
         with self.resources.lock:
             if self.resources.closed:
@@ -2972,30 +2946,49 @@ class Mandacaru(ASEProperties, Calculator):
                 if self._attached_atoms is None:
                     raise RuntimeError("calculator has no attached atoms and no prior calculation")
                 self.calculate(self._attached_atoms, properties=("energy",))
-            if self.result.periodic is None:
-                raise ValueError("hubbard_response is only supported for periodic crystal calculations")
 
             atomic = self._atomic_units
             unit = "Ha" if atomic else "eV"
+            energy_scale = float(_native.to_user_units(1.0, "energy", atomic))
             alphas_ha = [convert_energy(float(a), unit, "Ha") for a in alphas]
 
-            raw = self.result.periodic.hubbard_response(alphas=alphas_ha)
+            if self.result.periodic is not None:
+                tol_ha = None if tolerance is None else convert_energy(float(tolerance), unit, "Ha")
+                spread_ha = (
+                    None
+                    if spread_tolerance is None
+                    else convert_energy(float(spread_tolerance), unit, "Ha")
+                )
+                resp = self.result.periodic.hubbard_response(
+                    alphas=alphas_ha,
+                    self_consistent=bool(self_consistent),
+                    damping=float(damping),
+                    max_iterations=int(max_iterations),
+                    tolerance_ha=tol_ha,
+                    kernel=kernel,
+                    spread_tolerance_ha=spread_ha,
+                    energy_scale=energy_scale,
+                    unit=unit,
+                )
+            elif self.native_reference is not None and self.method == "dft":
+                if self_consistent:
+                    raise NotImplementedError(
+                        "self_consistent LR-12 hubbard_response is only implemented for crystals"
+                    )
+                resp = self.native_reference.hubbard_response(
+                    self._xc,
+                    alphas=alphas_ha,
+                    energy_scale=energy_scale,
+                    unit=unit,
+                )
+            else:
+                raise ValueError(
+                    "hubbard_response requires a converged DFT crystal or molecular PAW-LCAO calculation"
+                )
 
-            def user(values, quantity="energy"):
-                if isinstance(values, (int, float, np.floating)):
-                    return _native.to_user_units(float(values), quantity, atomic)
-                return _native.to_user_units(np.ascontiguousarray(values, dtype=float), quantity, atomic)
-
-            res = {
-                "u_matrix": user(raw["u_matrix"]),
-                "u_charge": user(raw["u_charge"]),
-                "chi0": user(raw["chi0"], "inverse_energy"),
-                "chi": user(raw["chi"], "inverse_energy"),
-                "alphas": [user(a) for a in raw["alphas"]],
-            }
-            if "j_response" in raw and raw["j_response"] is not None:
-                res["j_response"] = [user(j) for j in raw["j_response"]]
-            return res
+            from .integrations import reporting
+            reporting.write_hubbard_response(self, resp)
+            return resp
 
     def reset(self):
         with self.resources.lock:

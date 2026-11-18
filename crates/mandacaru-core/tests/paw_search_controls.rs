@@ -9,12 +9,12 @@
 //! radius, whose first eight attempts all bind a ghost between -0.4 and -19.5 Ha.
 mod paw_search_support;
 
-use mandacaru_core::models::{atom::Atom, relativity::Treatment, xc_scheme::AtomSolver};
+use mandacaru_core::models::{atom::Atom, relativity::Treatment, xc_scheme::Variational};
 use mandacaru_core::paw::diagnose::{ghosts::GHOST_TOLERANCE, reference::AeLogs, Diagnosis};
 use mandacaru_core::paw::generate::{
     ranking::Badness,
     recipe::Recipe,
-    reference::solve_reference_with,
+    reference::solve_reference,
     search::{
         examine, search_reviewed, Attempt, Error, Faithful, Mode, Options, Pinned, Review, Searched,
     },
@@ -65,7 +65,7 @@ fn search(
     mode: Mode,
     review: &dyn Review,
 ) -> Result<Searched, Error> {
-    search_reviewed(ctx, recipe, &free(mode), atom, &AtomSolver, review)
+    search_reviewed(ctx, recipe, &free(mode), atom, &Variational, review)
 }
 
 /// The ghost of the construction a search returned, measured by the search's own `examine`.
@@ -133,7 +133,7 @@ fn without_the_ghost_criterion_a_ghosted_construction_is_accepted() {
         ("oxygen -3 Ha", ghosted_oxygen()),
         ("silicon 0.2", deep_silicon()),
     ] {
-        let atom = solve_reference_with(&ctx, &recipe, &AtomSolver).unwrap();
+        let atom = solve_reference(&ctx, &recipe).unwrap();
         let right = search(&ctx, &recipe, &atom, Mode::Repair, &Faithful).unwrap();
         let blind = search(&ctx, &recipe, &atom, Mode::Repair, &GhostBlind).unwrap();
         let ghost = ghost_of(&ctx, &atom, &blind);
@@ -166,7 +166,7 @@ fn without_the_ghost_criterion_a_ghosted_construction_is_accepted() {
 fn skipping_the_first_remedy_selects_another_attempt_and_a_different_construction() {
     let ctx = context();
     let recipe = ghosted_oxygen();
-    let atom = solve_reference_with(&ctx, &recipe, &AtomSolver).unwrap();
+    let atom = solve_reference(&ctx, &recipe).unwrap();
     let oracle = search(&ctx, &recipe, &atom, Mode::Repair, &Faithful).unwrap();
     assert_eq!(oracle.label, "norm_deficit=0");
     let skipped = search(&ctx, &recipe, &atom, Mode::Repair, &SkipFirstRemedy).unwrap();
@@ -196,7 +196,7 @@ fn skipping_the_first_remedy_selects_another_attempt_and_a_different_constructio
 fn keeping_the_first_attempt_always_returns_the_ghost_the_repair_removes() {
     let ctx = context();
     let recipe = ghosted_oxygen();
-    let atom = solve_reference_with(&ctx, &recipe, &AtomSolver).unwrap();
+    let atom = solve_reference(&ctx, &recipe).unwrap();
     let repaired = search(&ctx, &recipe, &atom, Mode::Repair, &Faithful).unwrap();
     let kept = search(&ctx, &recipe, &atom, Mode::Keep, &Faithful).unwrap();
     // The oracle is the Repair result: clean, and a different construction from the first.
@@ -224,7 +224,7 @@ fn keeping_the_first_attempt_always_returns_the_ghost_the_repair_removes() {
 fn the_reversed_ranking_keeps_the_deepest_ghost_among_real_attempts() {
     let ctx = context();
     let recipe = deep_silicon();
-    let atom = solve_reference_with(&ctx, &recipe, &AtomSolver).unwrap();
+    let atom = solve_reference(&ctx, &recipe).unwrap();
     let right = search(&ctx, &recipe, &atom, Mode::Flag, &FirstEight).unwrap();
     let reversed = search(&ctx, &recipe, &atom, Mode::Flag, &ReversedRanking).unwrap();
     assert!(right.flagged && reversed.flagged);

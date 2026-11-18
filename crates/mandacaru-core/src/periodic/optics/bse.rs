@@ -259,6 +259,16 @@ pub struct Excitons {
     pub branches: Option<Branches>,
 }
 
+/// Summary observables extracted from a converged [`Excitons`] solution.
+pub struct ExcitonSummary {
+    pub binding: Vec<f64>,
+    pub areas: Vec<f64>,
+    pub participation: Vec<f64>,
+    pub kpoint_weights: Vec<f64>,
+    pub dominant: Vec<(usize, usize, usize, f64)>,
+    pub dominant_channels: Vec<usize>,
+}
+
 fn check(sampler: &Sampler<'_>, request: &Request) -> Result<()> {
     if sampler.channels() == 2 && request.spin == Spin::Triplet {
         return Err(invalid(
@@ -396,10 +406,10 @@ pub fn operator(sampler: &Sampler<'_>, mesh: &MeshIndex, request: &Request) -> R
         pairs.energies.iter().map(|e| C64::new(*e, 0.)),
     ));
     let exchanged = request.kernel != Kernel::Independent && request.spin == Spin::Singlet;
-    // The coupling blocks before the direct term: `B` and `A'` of the exchange.
+    // The coupling blocks before the direct term: `B` and `A'` of the exchange and +U.
     let mut coupled = if request.coupling {
         let zero = || DMatrix::<C64>::zeros(n, n);
-        let (resonant, antiresonant) = if exchanged {
+        let (mut resonant, mut antiresonant) = if exchanged {
             (
                 exchange(&pairs, false, true)?,
                 exchange(&pairs, true, true)? - exchange(&pairs, false, false)?.map(|v| v.conj()),
@@ -407,12 +417,28 @@ pub fn operator(sampler: &Sampler<'_>, mesh: &MeshIndex, request: &Request) -> R
         } else {
             (zero(), zero())
         };
+        if request.kernel != Kernel::Independent {
+            if let Some(hu_rb) = hubbard_block(&pairs, false, true, request.spin)? {
+                resonant += hu_rb;
+            }
+            if let (Some(hu_bb), Some(hu_ff)) = (
+                hubbard_block(&pairs, true, true, request.spin)?,
+                hubbard_block(&pairs, false, false, request.spin)?,
+            ) {
+                antiresonant += hu_bb - hu_ff.map(|v| v.conj());
+            }
+        }
         Some((resonant, antiresonant))
     } else {
         None
     };
     if exchanged {
         hamiltonian += exchange(&pairs, false, false)?;
+    }
+    if request.kernel != Kernel::Independent {
+        if let Some(hu) = hubbard_block(&pairs, false, false, request.spin)? {
+            hamiltonian += hu;
+        }
     }
     let mut head = 0.;
     let mut static_tensor = [[0.; 3]; 3];
@@ -712,6 +738,34 @@ fn exchange(pairs: &Pairs, rows: bool, columns: bool) -> Result<DMatrix<C64>> {
     let (left, right) = (weighted(rows), weighted(columns));
     let product = complex_product(left.as_view(), true, right.as_view())?;
     Ok(product * C64::new(pairs.scale(), 0.))
+}
+
+fn hubbard_block(
+    pairs: &Pairs,
+    rows: bool,
+    columns: bool,
+    spin: Spin,
+) -> Result<Option<DMatrix<C64>>> {
+    let Some(hk) = pairs.hubbard() else {
+        return Ok(None);
+    };
+    let kernel_mat = match spin {
+        Spin::Triplet => hk.triplet.as_ref().ok_or_else(|| {
+            invalid("Hubbard triplet optical kernel requires a restricted reference")
+        })?,
+        Spin::Singlet => &hk.singlet,
+    };
+    let nb = pairs.coulomb().len();
+    let mu = hk.size;
+    let n = pairs.energies.len();
+    let extract = |backward: bool| {
+        DMatrix::from_fn(mu, n, |u, i| pairs.column(i, backward)[3 + nb + u])
+    };
+    let (left, right) = (extract(rows), extract(columns));
+    let mid = complex_product(kernel_mat.as_view(), false, right.as_view())?;
+    let prod = complex_product(left.as_view(), true, mid.as_view())?;
+    let scale = pairs.scale() * pairs.volume / pairs.degeneracy();
+    Ok(Some(prod * C64::new(scale, 0.)))
 }
 
 /// The band window of the direct term (indices into a frame's bands).
@@ -1131,6 +1185,52 @@ impl Operator {
         self.amplitude_dipoles(&excitons.vectors, excitons.antiresonant.as_ref())
     }
 
+    /// Summary observables of `excitons` (binding energies, line areas in `Im eps`, inverse
+    /// participation ratios, k-point weights, and dominant transitions).
+    pub fn analyze(&self, excitons: &Excitons) -> ExcitonSummary {
+        let roots = excitons.energies.len();
+        let nk = self.mesh.iter().product::<usize>();
+        let binding = excitons.energies.iter().map(|e| self.onset - e).collect();
+        let areas = self
+            .dipoles_of(excitons)
+            .iter()
+            .flat_map(|o| o.map(|v| 4. * std::f64::consts::PI.powi(2) * self.scale * v.norm_sqr()))
+            .collect();
+        let mut participation = Vec::with_capacity(roots);
+        let mut kpoint_weights = vec![0.; roots * nk];
+        let mut dominant = Vec::with_capacity(roots);
+        let mut dominant_channels = Vec::with_capacity(roots);
+        for l in 0..roots {
+            let a = excitons.vectors.column(l).normalize();
+            let ipr: f64 = a.iter().map(|x| x.norm_sqr().powi(2)).sum();
+            participation.push(1. / ipr);
+            for (t, transition) in self.transitions.iter().enumerate() {
+                kpoint_weights[l * nk + transition.k] += a[t].norm_sqr();
+            }
+            let (t, weight) = a
+                .iter()
+                .enumerate()
+                .map(|(t, x)| (t, x.norm_sqr()))
+                .fold((0, -1.), |best, x| if x.1 > best.1 { x } else { best });
+            let transition = self.transitions[t];
+            dominant.push((
+                transition.k,
+                transition.valence,
+                transition.conduction,
+                weight,
+            ));
+            dominant_channels.push(transition.channel);
+        }
+        ExcitonSummary {
+            binding,
+            areas,
+            participation,
+            kpoint_weights,
+            dominant,
+            dominant_channels,
+        }
+    }
+
     fn amplitude_dipoles(&self, x: &DMatrix<C64>, y: Option<&DMatrix<C64>>) -> Vec<[C64; 3]> {
         (0..x.ncols())
             .map(|l| {
@@ -1273,8 +1373,17 @@ pub fn coupled_tensor(pairs: &Pairs, z: C64) -> Result<[[C64; 3]; 3]> {
     let weighted = DMatrix::from_fn(nb, 2 * n, |g, i| {
         pairs.column(i / 2, i % 2 == 1)[3 + g] * coulomb[g]
     });
-    let kernel = complex_product(weighted.as_view(), true, weighted.as_view())?
+    let mut kernel = complex_product(weighted.as_view(), true, weighted.as_view())?
         * C64::new(pairs.scale(), 0.);
+    if let Some(hk) = pairs.hubbard() {
+        let u_cols = DMatrix::from_fn(hk.size, 2 * n, |u, i| {
+            pairs.column(i / 2, i % 2 == 1)[3 + nb + u]
+        });
+        let mid = complex_product(hk.singlet.as_view(), false, u_cols.as_view())?;
+        let hu = complex_product(u_cols.as_view(), true, mid.as_view())?
+            * C64::new(pairs.scale() * pairs.volume / pairs.degeneracy(), 0.);
+        kernel += hu;
+    }
     let system = DMatrix::from_fn(2 * n, 2 * n, |i, j| {
         let diagonal = if i == j {
             let d = pairs.energies[i / 2];

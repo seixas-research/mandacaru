@@ -124,6 +124,7 @@ class CalculationResult:
                 **{name: self._in_unit(s[f"{key}_ha"]) for name, key in self._HUBBARD_ENERGIES},
                 trace=np.array(s["trace"]),
                 n=s["n"].copy(),
+                **({"U_source": s["U_source"]} if "U_source" in s else {}),
             )
             for s in shells
         ]
@@ -473,7 +474,7 @@ class CalculationResult:
             "mapping": self._mapping,
         }
 
-    def _molecular_observables(self, *, state=0, **options):
+    def _molecular_gamma(self, *, state=0):
         if self._problem is not None and self._raw.get("state_kind") == "none":
             raise ValueError(
                 "a shot-based run builds no state vector (its Hamiltonian, pool and observables "
@@ -481,13 +482,11 @@ class CalculationResult:
                 "orbitals to read; run with shots=0 for the state"
             )
         if self._reference is None or self._integrals is None:
-            raise ValueError(
-                "molecular fields require the calculation's retained basis and orbitals"
-            )
+            raise ValueError("molecular fields require the calculation's retained basis and orbitals")
         if self._problem is None:
             if state != 0:
                 raise IndexError("a mean-field calculation has one state")
-            return self._reference.observables(**options)
+            return {}
         states = self._raw.get("state", self._raw.get("states"))
         if np.ndim(states) == 1:
             if state != 0:
@@ -495,39 +494,46 @@ class CalculationResult:
         else:
             states = states[state]
         gamma, _ = self._problem.rdms(np.ascontiguousarray(states), two_body=False)
-        model = self.hamiltonian
-        return self._reference.observables(
-            gamma=gamma,
-            model=model,
-            **options,
-        )
+        return {"gamma": gamma, "model": self.hamiltonian}
 
-    def natural_orbitals(self, *, state=0):
-        """Spin-summed natural orbitals diagonalized in Rust, in occupation order."""
-        from .analysis.fields import NaturalOrbitals
+    def _molecular_observables(self, *, state=0, **options):
+        return self._reference.observables(**self._molecular_gamma(state=state), **options)
 
-        values = self._molecular_observables(state=state)
-        return NaturalOrbitals(**values)
-
-    def volumetric_field(
-        self, quantity="density", index=0, *, state=0, component="auto", grid=None
-    ):
-        """Sample a molecular density, density difference or natural orbital in Rust."""
+    def _native_grid(self, grid):
         from . import _native
-        from .analysis.fields import SamplingGrid, VolumetricField
+        from .analysis.fields import SamplingGrid
 
         if isinstance(grid, SamplingGrid):
-            grid = grid.native
-        elif grid is not None and not isinstance(grid, _native.SpatialGrid):
-            grid = _native.SpatialGrid(
+            return grid.native
+        if grid is not None and not isinstance(grid, _native.SpatialGrid):
+            return _native.SpatialGrid(
                 grid.shape,
                 [float(grid.X.flat[0]), float(grid.Y.flat[0]), float(grid.Z.flat[0])],
                 np.ascontiguousarray(grid.step),
                 periodic=grid.periodic,
             )
+        return grid
+
+    def partial_charges(self, method="bader", *, state=0, grid=None, interpolate=True):
+        """Partition electron density into atomic partial charges (Bader, Hirshfeld, or Voronoi) in Rust."""
+        if self.periodic is not None:
+            return self.periodic.partial_charges(method, interpolate=interpolate)
+        return self._reference.partial_charges(
+            method, grid=self._native_grid(grid), interpolate=interpolate, **self._molecular_gamma(state=state))
+
+    def natural_orbitals(self, *, state=0):
+        """Spin-summed natural orbitals diagonalized in Rust, in occupation order."""
+        from .analysis.fields import NaturalOrbitals
+
+        return NaturalOrbitals(**self._molecular_observables(state=state))
+
+    def volumetric_field(self, quantity="density", index=0, *, state=0, component="auto", grid=None):
+        """Sample a molecular density, density difference or natural orbital in Rust."""
+        from .analysis.fields import SamplingGrid, VolumetricField
+
         values = self._molecular_observables(
             state=state,
-            grid=grid,
+            grid=self._native_grid(grid),
             quantity=quantity,
             index=index,
             component=component,
@@ -568,22 +574,22 @@ class CalculationResult:
     def reference_state(self, mapping=None):
         return self.scf_state(mapping)
 
-    def forces(self, *, internal=False, project_translation=False):
+    def forces(self, *, internal=False, project_translation=False, root=0):
         """Forces in eV/Angstrom, analytic.
 
-        A variational state (PAW-LCAO only) is differentiated with the response of its
-        orbitals (canonical Hartree-Fock, MP2 natural orbitals, one CPHF solve) and the
-        Lagrangian (Z-vector) correction of its residual parameter gradient;
-        ``force_details`` reports ``stationarity``, ``parameter_gradient_norm``,
-        ``z_vector_norm`` and the Hessian solve. A stationary mean-field state's gradient, all-electron
-        or PAW-LCAO, is analytic, and ``force_details`` names the scheme and the stationarity
-        of the state it differentiated.
+        A variational state (single-state or subspace eigenstate ``root``, PAW-LCAO only) is
+        differentiated with the response of its orbitals (canonical Hartree-Fock, MP2 natural
+        orbitals, one CPHF solve) and the Lagrangian (Z-vector) correction of its residual
+        parameter gradient; ``force_details`` reports ``stationarity``,
+        ``parameter_gradient_norm``, ``z_vector_norm`` and the Hessian solve. A stationary
+        mean-field state's gradient, all-electron or PAW-LCAO, is analytic, and ``force_details``
+        names the scheme and the stationarity of the state it differentiated.
         """
+        states = self._raw.get("states") if self._problem is not None else None
+        n_roots = 1 if states is None else len(states)
+        if type(root) is not int or root not in range(n_roots):
+            raise ValueError(f"invalid root {root!r} (requires nonnegative index inside subspace range)")
         if self._problem is not None:
-            if "states" in self._raw:
-                raise ValueError(
-                    "variational forces are refused for the states of a subspace method: an ensemble has no "
-                    "single parameter gradient, and its state-averaged Lagrangian correction is not implemented")
             if "execution" in self._raw:
                 driver = getattr(self, "_device", lambda: None)()
                 if self._reference is None or self._model is None or driver is None:
@@ -600,24 +606,23 @@ class CalculationResult:
                     gradient = self.context.remove_force_translation(np.ascontiguousarray(gradient))
                 return _native.to_user_units(np.ascontiguousarray(gradient, dtype=float), "gradient_to_force",
                                              plus=self._dispersion_forces())
-            if self._reference is None or self._model is None or "state" not in self._raw:
-                raise ValueError("variational forces need a single molecular state and its retained reference")
-            if not hasattr(self, "_gradient_cache"):
-                self._gradient_cache = {}
-            cache_key = bool(internal)
-            if cache_key not in self._gradient_cache:
-                self._gradient_cache[cache_key] = self._reference.quantum_gradient(
-                    self._problem, self._model,
-                    np.ascontiguousarray(self._raw["state"]),
-                    internal=internal,
-                    indices=[int(i) for i in self._raw["indices"]],
-                    parameters=np.ascontiguousarray(self._raw["parameters"], dtype=float),
-                    product_form=self.solver.ansatz.product_form)
-            gradient = self._gradient_cache[cache_key]["gradient"]
-            self.force_details = {
-                key: value.copy() if isinstance(value, np.ndarray) else value
-                for key, value in self._gradient_cache[cache_key].items()
-            }
+            if self._reference is None or self._model is None or not (states is not None or "state" in self._raw):
+                raise ValueError("variational forces need a molecular state, model, and retained reference")
+            cache = self.__dict__.setdefault("_gradient_cache", {})
+            key = (bool(internal), root)
+            if key not in cache:
+                common = dict(internal=internal, indices=[int(i) for i in self._raw["indices"]],
+                              parameters=np.ascontiguousarray(self._raw["parameters"], dtype=float),
+                              product_form=self.solver.ansatz.product_form)
+                cache[key] = (
+                    self._reference.quantum_subspace_gradient(
+                        self._problem, self._model, [float(w) for w in self._raw["weights"]],
+                        np.ascontiguousarray(states[root]), **common)
+                    if states is not None else
+                    self._reference.quantum_gradient(
+                        self._problem, self._model, np.ascontiguousarray(self._raw["state"]), **common))
+            gradient = cache[key]["gradient"]
+            self.force_details = {k: v.copy() if isinstance(v, np.ndarray) else v for k, v in cache[key].items()}
         elif self.periodic is not None:
             # The analytic crystal force of the Rust engine (Hartree/Bohr), converted once here.
             if not hasattr(self, "_crystal_forces"):

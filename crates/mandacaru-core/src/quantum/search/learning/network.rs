@@ -1,5 +1,8 @@
 //! Two term/qubit message-passing layers and a first-choice scoring head.
-use super::graph::{BipartiteGraph, Candidates, Matrix};
+use super::{
+    data::EditKind,
+    graph::{BipartiteGraph, Candidates, Matrix},
+};
 use crate::{
     math::{
         autodiff::{Id, Tape},
@@ -24,14 +27,18 @@ pub struct Parameters {
 }
 fn layout() -> Vec<(String, usize, usize, bool)> {
     let mut result = vec![
-        ("qubit_in".into(), 4, HIDDEN, false),
+        ("qubit_in".into(), 8, HIDDEN, false),
         ("qubit_bias".into(), 1, HIDDEN, true),
         ("term_in".into(), 6, HIDDEN, false),
         ("term_bias".into(), 1, HIDDEN, true),
-        ("w1".into(), GRAPH_WIDTH + 9, HEAD, false),
+        ("w1".into(), GRAPH_WIDTH + 12, HEAD, false),
         ("b1".into(), 1, HEAD, true),
         ("w2".into(), HEAD, 1, false),
-        ("w_desc".into(), 9, 1, true),
+        ("w_desc".into(), 12, 1, true),
+        ("w_delete_head".into(), HEAD, 1, true),
+        ("w_delete_desc".into(), 12, 1, true),
+        ("w_replace_head".into(), HEAD, 1, true),
+        ("w_replace_desc".into(), 12, 1, true),
     ];
     for layer in 0..LAYERS {
         for letter in 0..3 {
@@ -106,7 +113,17 @@ impl Parameters {
         Ok(result)
     }
     pub fn as_json(&self) -> Value {
-        Value::Object(self.values.iter().map(|(name,value)| (name.clone(),json!({"rows":value.nrows(),"columns":value.ncols(),"values":value.as_slice()}))).collect())
+        Value::Object(
+            self.values
+                .iter()
+                .map(|(name, value)| {
+                    (
+                        name.clone(),
+                        json!({"rows": value.nrows(), "columns": value.ncols(), "values": value.as_slice()}),
+                    )
+                })
+                .collect(),
+        )
     }
     pub fn variables(&self, tape: &mut Tape) -> Result<BTreeMap<String, Id>> {
         self.values
@@ -149,7 +166,9 @@ pub fn embed(
                 part
             });
         }
-        let message = tape.scale_rows(message.unwrap(), &graph.support)?;
+        let message = message
+            .ok_or_else(|| crate::Error::Invalid("no Pauli-to-term incidence edges".into()))?;
+        let message = tape.scale_rows(message, &graph.support)?;
         let combined = tape.concat(&[hp, message])?;
         let update = tape.matmul(combined, p[&format!("term_update.{layer}")])?;
         let update = tape.add(update, p[&format!("term_update_bias.{layer}")])?;
@@ -165,7 +184,9 @@ pub fn embed(
                 part
             });
         }
-        let message = tape.scale_rows(message.unwrap(), &graph.reach)?;
+        let message = message
+            .ok_or_else(|| crate::Error::Invalid("no Pauli-to-qubit weighted edges".into()))?;
+        let message = tape.scale_rows(message, &graph.reach)?;
         let combined = tape.concat(&[hq, message])?;
         let update = tape.matmul(combined, p[&format!("qubit_update.{layer}")])?;
         let update = tape.add(update, p[&format!("qubit_update_bias.{layer}")])?;
@@ -183,6 +204,7 @@ pub fn embed(
             part
         });
     }
+    let za = za.ok_or_else(|| crate::Error::Invalid("no pool readout edges".into()))?;
     let nq = tape.value(hq).nrows();
     let average = tape.constant(&Matrix::from_element(1, nq, 1. / nq as f64))?;
     let ones = tape.constant(&Matrix::from_element(1, nq, 1.))?;
@@ -201,11 +223,11 @@ pub fn embed(
     let mean_p = tape.matmul(weights_normalized, hp)?;
     let sum_p = tape.matmul(weights, hp)?;
     let global = tape.constant(&graph.global)?;
-    Ok((
-        tape.concat(&[mean_q, sum_q, mean_p, sum_p, global])?,
-        za.unwrap(),
-    ))
+    Ok((tape.concat(&[mean_q, sum_q, mean_p, sum_p, global])?, za))
 }
+/// Evaluates canonical 12-feature GNN candidate scores (`[base(9), overlap, curvature, pos]`)
+/// for `move_kind` (`Insert`, `Delete`, `Replace`).
+#[allow(clippy::too_many_arguments)]
 pub fn scores(
     tape: &mut Tape,
     p: &BTreeMap<String, Id>,
@@ -213,10 +235,17 @@ pub fn scores(
     rows: &Candidates,
     mean: &[f64; 9],
     std: &[f64; 9],
+    curvatures: Option<&[f64]>,
+    positions: Option<&[usize]>,
+    move_kind: EditKind,
 ) -> Result<Id> {
     let (zh, za) = embed(tape, p, graph)?;
-    head(tape, p, zh, za, rows, mean, std)
+    head(
+        tape, p, zh, za, rows, mean, std, curvatures, positions, move_kind,
+    )
 }
+
+#[allow(clippy::too_many_arguments)]
 pub fn head(
     tape: &mut Tape,
     p: &BTreeMap<String, Id>,
@@ -225,6 +254,9 @@ pub fn head(
     rows: &Candidates,
     mean: &[f64; 9],
     std: &[f64; 9],
+    curvatures: Option<&[f64]>,
+    positions: Option<&[usize]>,
+    move_kind: EditKind,
 ) -> Result<Id> {
     if std.iter().any(|v| !v.is_finite() || *v <= 0.) || mean.iter().any(|v| !v.is_finite()) {
         return Err(invalid(
@@ -242,14 +274,24 @@ pub fn head(
     let candidate = tape.gather(za, &rows.operators)?;
     let features = tape.concat(&[zh, mean_c, mean_pos, candidate])?;
     let normalized = tape.normalize_rows(features, 1e-6)?;
-    let descriptors = tape.constant(&Matrix::from_fn(count, 9, |r, c| {
-        (rows.descriptors[(r, c)] - mean[c]) / std[c]
+    let edit_rows = rows.edit_features(curvatures, positions);
+    let descriptors = tape.constant(&Matrix::from_fn(count, 12, |r, c| {
+        if c < 9 {
+            (edit_rows[r][c] - mean[c]) / std[c]
+        } else {
+            edit_rows[r][c]
+        }
     }))?;
     let input = tape.concat(&[normalized, descriptors])?;
     let hidden = tape.matmul(input, p["w1"])?;
     let hidden = tape.add(hidden, p["b1"])?;
     let hidden = tape.tanh(hidden)?;
-    let nonlinear = tape.matmul(hidden, p["w2"])?;
-    let linear = tape.matmul(descriptors, p["w_desc"])?;
+    let (head_key, desc_key) = match move_kind {
+        EditKind::Insert => ("w2", "w_desc"),
+        EditKind::Delete => ("w_delete_head", "w_delete_desc"),
+        EditKind::Replace => ("w_replace_head", "w_replace_desc"),
+    };
+    let nonlinear = tape.matmul(hidden, p[head_key])?;
+    let linear = tape.matmul(descriptors, p[desc_key])?;
     tape.add(linear, nonlinear)
 }

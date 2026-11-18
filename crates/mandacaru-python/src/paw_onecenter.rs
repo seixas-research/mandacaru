@@ -1,10 +1,8 @@
-//! Bindings of the PAW one-center electron-electron terms and the local-potential
-//! range separation. Arrays are copied in and returned owned; the work is in
-//! `mandacaru_core::paw::{onecenter*, local_split}`.
+//! Bindings of the PAW one-center electron-electron terms. Arrays are copied in
+//! and returned owned; the work is in `mandacaru_core::paw::onecenter*`.
 use super::{array, copy, error, Array, PyContext};
 use mandacaru_core::{
     paw::{
-        local_split,
         onecenter::{self, Basis, Channel, Couplings, Projector, Sphere},
         onecenter_hybrid::{
             self as hybrid, ChannelData, ChannelStack, ExactAtom, Factors, Hybrid, HybridAtom,
@@ -359,7 +357,7 @@ fn paw_frozen_exchange<'py>(
     let (constant, blocks) = py
         .detach(|| {
             let occupied = owned.iter().map(Owned::occupied).collect::<Vec<_>>();
-            terms::frozen_exchange_terms(ctx, &r, &core, &occupied, omega, basis)
+            terms::frozen_exchange_terms(ctx, &r, None, &core, &occupied, omega, basis)
         })
         .map_err(error)?;
     let ls = blocks.iter().map(|b| b.l).collect();
@@ -1030,168 +1028,6 @@ impl PyOneCenterHybrid {
     }
 }
 
-// --- local_split -----------------------------------------------------------
-
-#[pyfunction]
-fn paw_long_range_potential<'py>(
-    context: PyRef<'_, PyContext>,
-    py: Python<'py>,
-    charge: f64,
-    sigma: f64,
-    radius: PyReadonlyArray1<'py, f64>,
-) -> PyResult<Array<'py, f64>> {
-    let (radius, _a) = copy(&context.inner, &radius)?;
-    let out = local_split::long_range_potential(charge, sigma, &radius);
-    array(py, &[out.len()], out)
-}
-
-/// `sampled - v^lr` (or the derivative's): `sampled` is the dataset's local potential
-/// (or its derivative) at `radius`.
-#[pyfunction]
-fn paw_short_range_potential<'py>(
-    context: PyRef<'_, PyContext>,
-    py: Python<'py>,
-    sampled: PyReadonlyArray1<'py, f64>,
-    charge: f64,
-    sigma: f64,
-    radius: PyReadonlyArray1<'py, f64>,
-    derivative: bool,
-) -> PyResult<Array<'py, f64>> {
-    let (sampled, _a) = copy(&context.inner, &sampled)?;
-    let (radius, _b) = copy(&context.inner, &radius)?;
-    let out = if derivative {
-        local_split::short_range_potential_derivative(&sampled, charge, sigma, &radius)
-    } else {
-        local_split::short_range_potential(&sampled, charge, sigma, &radius)
-    }
-    .map_err(error)?;
-    array(py, &[out.len()], out)
-}
-
-/// Most nodes `paw_linspace` returns: a scan grid, not a table (16 Mi nodes, 128 MiB).
-const LINSPACE_MAX: usize = 1 << 24;
-
-/// `np.linspace(start, stop, num)`, the memory reserved from the context first.
-#[pyfunction]
-fn paw_linspace<'py>(
-    context: PyRef<'_, PyContext>,
-    py: Python<'py>,
-    start: f64,
-    stop: f64,
-    num: usize,
-) -> PyResult<Array<'py, f64>> {
-    if num > LINSPACE_MAX {
-        return Err(invalid(&format!(
-            "the number of nodes must be at most {LINSPACE_MAX}, got {num}"
-        )));
-    }
-    let _memory = context
-        .inner
-        .reserve(num * std::mem::size_of::<f64>())
-        .map_err(error)?;
-    let out = local_split::linspace(start, stop, num);
-    array(py, &[out.len()], out)
-}
-
-#[pyfunction]
-fn paw_tail_radius(
-    context: PyRef<'_, PyContext>,
-    radius: PyReadonlyArray1<'_, f64>,
-    sampled: PyReadonlyArray1<'_, f64>,
-    charge: f64,
-    tolerance: f64,
-) -> PyResult<f64> {
-    let (radius, _a) = copy(&context.inner, &radius)?;
-    let (sampled, _b) = copy(&context.inner, &sampled)?;
-    local_split::tail_radius(&radius, &sampled, charge, tolerance).map_err(error)
-}
-
-#[pyfunction]
-fn paw_short_range_radius(sigma: f64, sigmas: f64, cutoff: f64, tail: f64) -> f64 {
-    local_split::short_range_radius(sigma, sigmas, cutoff, tail)
-}
-
-#[pyfunction]
-fn paw_split_width(step: PyReadonlyArray2<'_, f64>, factor: f64) -> PyResult<f64> {
-    if step.shape() != [3, 3] {
-        return Err(invalid("the grid step is a 3 x 3 matrix"));
-    }
-    let mut matrix = [0.; 9];
-    matrix.copy_from_slice(step.as_slice()?);
-    Ok(factor * local_split::grid_spacing(&matrix))
-}
-
-#[pyfunction]
-fn paw_radial_rule<'py>(
-    py: Python<'py>,
-    radius: f64,
-    panel: f64,
-    points: usize,
-) -> PyResult<(Array<'py, f64>, Array<'py, f64>)> {
-    let (r, w) = local_split::radial_rule(radius, panel, points).map_err(error)?;
-    Ok((array(py, &[r.len()], r)?, array(py, &[w.len()], w)?))
-}
-
-#[pyfunction]
-fn paw_angular_rule<'py>(
-    py: Python<'py>,
-    polar: usize,
-    azimuthal: usize,
-) -> PyResult<(Array<'py, f64>, Array<'py, f64>)> {
-    let (directions, weights) = local_split::angular_rule(polar, azimuthal).map_err(error)?;
-    let n = weights.len();
-    Ok((
-        array(py, &[3, n], directions.into_iter().flatten().collect())?,
-        array(py, &[n], weights)?,
-    ))
-}
-
-#[pyfunction]
-#[pyo3(signature=(center, radius, radial, polar, azimuthal, panel=0.0))]
-fn paw_sphere_rule<'py>(
-    py: Python<'py>,
-    center: [f64; 3],
-    radius: f64,
-    radial: usize,
-    polar: usize,
-    azimuthal: usize,
-    panel: f64,
-) -> PyResult<(
-    (Array<'py, f64>, Array<'py, f64>, Array<'py, f64>),
-    Array<'py, f64>,
-    Array<'py, f64>,
-    Array<'py, f64>,
-)> {
-    let (r, w_r) = local_split::radial_rule(radius, panel, radial).map_err(error)?;
-    let (directions, w_ang) = local_split::angular_rule(polar, azimuthal).map_err(error)?;
-    let n_r = r.len();
-    let n_ang = w_ang.len();
-    let total = n_r * n_ang;
-    let mut x = Vec::with_capacity(total);
-    let mut y = Vec::with_capacity(total);
-    let mut z = Vec::with_capacity(total);
-    let mut weights = Vec::with_capacity(total);
-    for i in 0..n_r {
-        let ri = r[i];
-        let w_ri = w_r[i];
-        for j in 0..n_ang {
-            x.push(center[0] + ri * directions[0][j]);
-            y.push(center[1] + ri * directions[1][j]);
-            z.push(center[2] + ri * directions[2][j]);
-            weights.push(w_ri * w_ang[j]);
-        }
-    }
-    let pts = (
-        array(py, &[total], x)?,
-        array(py, &[total], y)?,
-        array(py, &[total], z)?,
-    );
-    let w = array(py, &[total], weights)?;
-    let r_arr = array(py, &[n_r], r)?;
-    let dirs = array(py, &[3, n_ang], directions.into_iter().flatten().collect())?;
-    Ok((pts, w, r_arr, dirs))
-}
-
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(paw_radial_coulomb, m)?)?;
     m.add_function(wrap_pyfunction!(paw_long_range_kernel, m)?)?;
@@ -1205,15 +1041,6 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(paw_exact_atom, m)?)?;
     m.add_function(wrap_pyfunction!(paw_exact_channels, m)?)?;
     m.add_function(wrap_pyfunction!(paw_exact_channel_derivatives, m)?)?;
-    m.add_function(wrap_pyfunction!(paw_long_range_potential, m)?)?;
-    m.add_function(wrap_pyfunction!(paw_short_range_potential, m)?)?;
-    m.add_function(wrap_pyfunction!(paw_linspace, m)?)?;
-    m.add_function(wrap_pyfunction!(paw_tail_radius, m)?)?;
-    m.add_function(wrap_pyfunction!(paw_short_range_radius, m)?)?;
-    m.add_function(wrap_pyfunction!(paw_split_width, m)?)?;
-    m.add_function(wrap_pyfunction!(paw_radial_rule, m)?)?;
-    m.add_function(wrap_pyfunction!(paw_angular_rule, m)?)?;
-    m.add_function(wrap_pyfunction!(paw_sphere_rule, m)?)?;
     m.add_class::<PyOneCenterHybrid>()?;
     Ok(())
 }

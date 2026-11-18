@@ -10,7 +10,24 @@ use mandacaru_core::{
     molecular::{scf::STABILITY_TOLERANCE, MeanField, MolecularIntegrals, ScfOptions},
     Context,
 };
-use paw_supercell_support::{molecular_integrals, molecule_in_a_box};
+use nalgebra::Matrix3;
+use paw_supercell_support::{cells_with_basis, molecular_integrals, molecule_in_a_box, Primitive};
+
+/// The molecular PAW-LCAO Hamiltonian of an isolated `symbol` atom in the cubic box with `size`
+/// basis (`"SZ"`, `"DZP"`, etc.).
+fn isolated_atom(
+    ctx: &Context,
+    symbol: &'static str,
+    basis_size: &'static str,
+) -> MolecularIntegrals {
+    let cell = Primitive {
+        lattice: Matrix3::from_diagonal_element(SIDE),
+        shape: [NODES; 3],
+        atoms: vec![(symbol, [0.5; 3])],
+    };
+    let setup = cells_with_basis(ctx, "lda-sr", false, &cell, 1, [0.; 3], basis_size);
+    molecular_integrals(ctx, &setup)
+}
 
 /// The 8 A box in Bohr and its grid.
 const SIDE: f64 = 8. / 0.529_177_210_903;
@@ -353,4 +370,102 @@ fn the_stretched_diatomic_scan_has_no_converged_saddle() {
         }
     }
     assert!(failures.is_empty(), "{failures:#?}");
+}
+
+fn check_open_shell_atoms(cases: &[(&'static str, &'static str, f64)]) {
+    let ctx = Context::new(Some(4), 1800 << 20).unwrap();
+    let opts = ScfOptions::default();
+    let mut failures = Vec::new();
+    for &(symbol, size, moment) in cases {
+        let integrals = isolated_atom(&ctx, symbol, size);
+        let particles = integrals
+            .particles_from_moments(0, &[moment], None)
+            .unwrap();
+        let state = integrals.mean_field("uhf", particles, &opts).unwrap();
+        let root = integrals.stability(&state).unwrap();
+        if !state.converged || root.is_some_and(|r| r < -STABILITY_TOLERANCE) {
+            let residual = state.iterations.last().map_or(f64::NAN, |i| i.residual);
+            failures.push(format!(
+                "{symbol} {size} M={moment}: converged={}, residual={residual:e}, lowest_root={root:?}",
+                state.converged
+            ));
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// Wave E1 regression gate: representative open-shell isolated atoms across 2p (`C DZP`),
+/// 3p on a centered `[33; 3]` grid (`Al pbe-sr DZP`), 3d (`Ni SZ`), 4d (`Nb SZ`, `Ru SZ`), and
+/// 4f (`Gd SZ`) shells converge under default UHF options to stable determinants (not trapped on
+/// DIIS excited saddles or stalled in soft/quartic rotational valleys).
+#[test]
+fn open_shell_atoms_converge_to_stable_uhf_states() {
+    let ctx = Context::new(Some(4), 1800 << 20).unwrap();
+    let opts = ScfOptions::default();
+    let al_setup = cells_with_basis(
+        &ctx,
+        "pbe-sr",
+        false,
+        &Primitive {
+            lattice: Matrix3::from_diagonal_element(SIDE),
+            shape: [33; 3],
+            atoms: vec![("Al", [16.0 / 33.0; 3])],
+        },
+        1,
+        [0.; 3],
+        "DZP",
+    );
+    let al = molecular_integrals(&ctx, &al_setup);
+    let particles = al.particles_from_moments(0, &[1.0], None).unwrap();
+    let al_state = al.mean_field("uhf", particles, &opts).unwrap();
+    let al_root = al.stability(&al_state).unwrap();
+    assert!(
+        al_state.converged && al_root.is_some_and(|r| r >= -STABILITY_TOLERANCE),
+        "Al pbe-sr DZP (33): converged={}, root={al_root:?}",
+        al_state.converged
+    );
+    check_open_shell_atoms(&[
+        ("Ni", "SZ", 2.0),
+        ("Nb", "SZ", 5.0),
+        ("Ru", "SZ", 4.0),
+        ("Gd", "SZ", 8.0),
+        ("C", "DZP", 2.0),
+    ]);
+}
+
+/// Full 22-atom open-shell PAW-LCAO (`SZ` and `DZP`) UHF sweep from `PLAN4.md E1-3`.
+#[test]
+#[ignore = "slow: 44 isolated atom UHF solves (~7 min); run: MANDACARU_PAW_PATH=... cargo test --profile release-test -p mandacaru-core --test molecular_stability -- --ignored the_open_shell_atom_scan_converges_for_uhf"]
+fn the_open_shell_atom_scan_converges_for_uhf() {
+    let atoms = [
+        ("B", 1.0),
+        ("C", 2.0),
+        ("O", 2.0),
+        ("Al", 1.0),
+        ("Sc", 1.0),
+        ("Ti", 2.0),
+        ("V", 3.0),
+        ("Cr", 6.0),
+        ("Mn", 5.0),
+        ("Fe", 4.0),
+        ("Co", 3.0),
+        ("Ni", 2.0),
+        ("Cu", 1.0),
+        ("Zr", 2.0),
+        ("Nb", 5.0),
+        ("Mo", 6.0),
+        ("Ru", 4.0),
+        ("Rh", 3.0),
+        ("Pd", 0.0),
+        ("La", 1.0),
+        ("Ce", 2.0),
+        ("Gd", 8.0),
+    ];
+    let mut cases = Vec::with_capacity(atoms.len() * 2);
+    for size in ["SZ", "DZP"] {
+        for &(symbol, moment) in &atoms {
+            cases.push((symbol, size, moment));
+        }
+    }
+    check_open_shell_atoms(&cases);
 }

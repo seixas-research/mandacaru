@@ -1892,7 +1892,7 @@ fn the_hubbard_kernel_is_the_derivative_of_the_fock() {
     // a guard that the +U part is a measurable share of the kernel.
     let ctx = Context::new(Some(2), 1 << 30).unwrap();
     let (plain, electrons) = copper_hydride(&ctx, None);
-    for (form, u, j) in [("dudarev-fll", 20., 0.), ("liechtenstein-fll", 20., 3.)] {
+    for (form, u, j) in [("dudarev", 20., 0.), ("liechtenstein", 20., 3.)] {
         let (integrals, _) = copper_hydride(&ctx, Some((form, u, j)));
         assert!(integrals.corrections.as_ref().unwrap().hubbard.is_some());
         let state = integrals
@@ -1922,7 +1922,7 @@ fn the_hubbard_kernel_has_the_dudarev_antisymmetric_channel() {
     // imaginary Hermitian change iA of the occupations its change is -u_eff i A, and the A - B
     // kernel is -u_eff P_o A P_v^T with A = P_o^T y P_v - (P_o^T y P_v)^T, P = C^T Q.
     let ctx = Context::new(Some(1), 1 << 30).unwrap();
-    let (integrals, electrons) = copper_hydride(&ctx, Some(("dudarev-fll", 20., 0.)));
+    let (integrals, electrons) = copper_hydride(&ctx, Some(("dudarev", 20., 0.)));
     let state = integrals
         .kohn_sham("lda", [electrons / 2, electrons / 2], false, &options())
         .unwrap();
@@ -1971,7 +1971,7 @@ fn the_hubbard_kernel_has_the_dudarev_antisymmetric_channel() {
 fn hubbard_roots_satisfy_the_dense_and_sum_rule_identities() {
     // V3 and V4 with +U: A - B carries the +U antisymmetric channel, and the sum rule holds with it.
     let ctx = Context::new(Some(1), 1 << 30).unwrap();
-    let (integrals, electrons) = copper_hydride(&ctx, Some(("liechtenstein-fll", 20., 3.)));
+    let (integrals, electrons) = copper_hydride(&ctx, Some(("liechtenstein", 20., 3.)));
     let state = integrals
         .kohn_sham("lda", [electrons / 2, electrons / 2], false, &options())
         .unwrap();

@@ -995,4 +995,32 @@ fn the_analytic_force_of_a_paw_supercell_is_per_cell_and_cartesian() {
         "{error}"
     );
     assert!(error.to_string().contains("PAW-LCAO supercell"), "{error}");
+
+    // Device gradient (per-cell Cartesian) from spatial RDMs matches state-vector response::gradient.
+    let basis = problem.register("supercell device gradient test").unwrap();
+    let rdms =
+        mandacaru_core::quantum::properties::spatial_rdms(&ctx, &problem.encoding, basis, state)
+            .unwrap();
+    let one_real: Vec<f64> = rdms.one.as_slice().iter().map(|v| v.re).collect();
+    let two_real: Vec<f64> = rdms.two.as_slice().iter().map(|v| v.re).collect();
+    let mut one_err = vec![0.; one_real.len()];
+    one_err[0] = 1e-4;
+    let measured = response::MeasuredDensities {
+        one: &one_real,
+        two: &two_real,
+        one_error: Some(&one_err),
+        two_error: None,
+    };
+    let dev =
+        response::device_gradient(&integrals, &reference, &model, &measured, None, false).unwrap();
+    assert_eq!(dev.gradient.as_slice().len(), 3 * atoms);
+    for (a, b) in dev
+        .gradient
+        .as_slice()
+        .iter()
+        .zip(gradient.gradient.as_slice())
+    {
+        assert!((a - b).abs() < 1e-11, "{a} vs {b}");
+    }
+    assert!(dev.error.as_slice().iter().all(|v| v.is_finite()));
 }

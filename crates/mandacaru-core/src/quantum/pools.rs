@@ -47,9 +47,85 @@ impl CrystalMomentum {
     }
 }
 
-/// Check crystal-momentum conservation for labeled excitation/CEO generators (`Some(bool)`),
-/// returning `None` for unlabeled Pauli-string generators (`qubit`).
-pub(crate) fn label_conserves_momentum(label: &str, momentum: &CrystalMomentum) -> Option<bool> {
+/// Crystal point-/space-group Abelian orbital characters (`characters[s][p]` is the unit-modulus
+/// eigenvalue of spatial orbital `p` under symmetry `s`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct CrystalPointSymmetry {
+    pub labels: Vec<String>,
+    pub characters: Vec<Vec<C64>>,
+}
+
+impl CrystalPointSymmetry {
+    /// Validate symmetry labels and unit-modulus orbital characters of uniform spatial width `m > 0`.
+    pub fn new(labels: Vec<String>, characters: Vec<Vec<C64>>) -> Result<Self> {
+        if labels.len() != characters.len() || characters.is_empty() {
+            return Err(Error::Invalid(
+                "crystal point symmetry needs matching non-empty symmetry labels and characters"
+                    .into(),
+            ));
+        }
+        let m = characters[0].len();
+        if m == 0
+            || characters.iter().any(|row| {
+                row.len() != m
+                    || row.iter().any(|c| {
+                        !c.re.is_finite() || !c.im.is_finite() || (c.norm() - 1.).abs() > 1e-4
+                    })
+            })
+        {
+            return Err(Error::Invalid(
+                "crystal point symmetry characters must be unit-modulus numbers of uniform spatial orbital length".into(),
+            ));
+        }
+        Ok(Self { labels, characters })
+    }
+
+    /// Spatial orbital count `m`.
+    pub fn n_orbitals(&self) -> usize {
+        self.characters.first().map_or(0, Vec::len)
+    }
+
+    /// Return `true` iff exciting `annihilate -> create` transforms trivially under every symmetry.
+    pub fn conserves_modes(&self, annihilate: &[usize], create: &[usize]) -> bool {
+        let m = self.n_orbitals();
+        if m == 0 {
+            return true;
+        }
+        self.characters.iter().all(|row| {
+            let mut prod = C64::new(1., 0.);
+            for &q in create {
+                prod *= row[q % m];
+            }
+            for &p in annihilate {
+                prod *= row[p % m].conj();
+            }
+            (prod - C64::new(1., 0.)).norm() <= 1e-4
+        })
+    }
+
+    /// Total symmetry character tuple across all occupied spatial orbitals encoded in `occ`
+    /// (`occ` bit `2*m - 1 - bit`).
+    pub fn occupation_characters(&self, modes: usize, occ: u64) -> Vec<C64> {
+        let m = self.n_orbitals();
+        self.characters
+            .iter()
+            .map(|row| {
+                let mut prod = C64::new(1., 0.);
+                for bit in 0..modes {
+                    if (occ >> (modes - 1 - bit)) & 1 != 0 {
+                        prod *= row[bit % m];
+                    }
+                }
+                prod
+            })
+            .collect()
+    }
+}
+
+fn label_matches_excitation(
+    label: &str,
+    predicate: impl Fn(&[usize], &[usize]) -> bool,
+) -> Option<bool> {
     let mut saw_excitation = false;
     let mut rest = label;
     while let Some(open) = rest.find('(') {
@@ -69,13 +145,28 @@ pub(crate) fn label_conserves_momentum(label: &str, momentum: &CrystalMomentum) 
                 return None;
             }
             saw_excitation = true;
-            if !momentum.conserves_modes(&ann, &cre) {
+            if !predicate(&ann, &cre) {
                 return Some(false);
             }
         }
         rest = &after_open[close + 1..];
     }
     saw_excitation.then_some(true)
+}
+
+/// Check crystal-momentum conservation for labeled excitation/CEO generators (`Some(bool)`),
+/// returning `None` for unlabeled Pauli-string generators (`qubit`).
+pub(crate) fn label_conserves_momentum(label: &str, momentum: &CrystalMomentum) -> Option<bool> {
+    label_matches_excitation(label, |ann, cre| momentum.conserves_modes(ann, cre))
+}
+
+/// Check Abelian crystal point-/space-group character conservation for labeled excitation/CEO
+/// generators (`Some(bool)`), returning `None` for unlabeled Pauli-string generators (`qubit`).
+pub(crate) fn label_conserves_point_symmetry(
+    label: &str,
+    symmetry: &CrystalPointSymmetry,
+) -> Option<bool> {
+    label_matches_excitation(label, |ann, cre| symmetry.conserves_modes(ann, cre))
 }
 
 pub struct Pool {
@@ -199,6 +290,19 @@ pub fn build_with_momentum(
     singles: bool,
     momentum: Option<&CrystalMomentum>,
 ) -> Result<Pool> {
+    build_with_crystal_symmetry(ctx, encoding, name, singles, momentum, None)
+}
+
+/// Build an operator pool optionally restricted to excitations conserving crystal momentum
+/// and Abelian crystal point-/space-group characters.
+pub fn build_with_crystal_symmetry(
+    ctx: &Context,
+    encoding: &Encoding,
+    name: &str,
+    singles: bool,
+    momentum: Option<&CrystalMomentum>,
+    point_symmetry: Option<&CrystalPointSymmetry>,
+) -> Result<Pool> {
     let m = encoding.modes / 2;
     if let Some(mom) = momentum {
         if encoding.modes % 2 != 0 || mom.orbital_k.len() != m {
@@ -207,8 +311,18 @@ pub fn build_with_momentum(
             ));
         }
     }
+    if let Some(sym) = point_symmetry {
+        if encoding.modes % 2 != 0 || (sym.n_orbitals() != m && sym.n_orbitals() != encoding.modes)
+        {
+            return Err(Error::Invalid(
+                "crystal point symmetry orbital count must match spatial or spin-orbital count"
+                    .into(),
+            ));
+        }
+    }
     let conserves = |ann: &[usize], cre: &[usize]| -> bool {
         momentum.is_none_or(|mom| mom.conserves_modes(ann, cre))
+            && point_symmetry.is_none_or(|sym| sym.conserves_modes(ann, cre))
     };
     let mut operators = Vec::new();
     let mut screenable = Vec::new();
@@ -423,7 +537,7 @@ pub fn build_with_momentum(
                                 continue;
                             }
                             if members.len() == 1 {
-                                let mut only = members.pop().unwrap();
+                                let mut only = members.swap_remove(0);
                                 only.label = format!("CEO[o{p},o{q},o{r},o{s}]{{{}}}", only.label);
                                 append(only, true, vec![]);
                                 continue;

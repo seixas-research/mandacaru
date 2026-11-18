@@ -20,7 +20,9 @@ use std::f64::consts::PI;
 type Matrix = DMatrix<C64>;
 pub mod disentangle;
 pub mod downfold;
+pub mod interpolation;
 pub mod model;
+pub mod populations;
 pub mod sampling;
 pub mod setup;
 
@@ -278,6 +280,19 @@ pub fn unitary_step(generator: &Matrix) -> Result<Matrix> {
         ))
         * vectors.adjoint())
 }
+/// Objective minimized during periodic Wannier orbital localization.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Localization {
+    /// Marzari-Vanderbilt quadratic spread `Omega = Omega_I + Omega_OD + Omega_D`.
+    #[default]
+    Spread,
+    /// Pipek-Mezey atomic-population localization maximizing `sum_n sum_{A,R} (q^{A,R}_{nn})^p`.
+    Populations {
+        scheme: populations::PopulationScheme,
+        exponent: usize,
+    },
+}
+
 /// The localization options. The minimization is converged, and stops, when the gradient norm
 /// [`gradient_norm`] is below `gradient_tolerance` (Bohr^2) AND the last step changed the spread by
 /// less than `tolerance` (Bohr^2), at a point that a small rotation and a new descent do not
@@ -289,6 +304,7 @@ pub struct Options {
     pub tolerance: f64,
     pub step: f64,
     pub gradient_tolerance: f64,
+    pub localization: Localization,
 }
 impl Default for Options {
     fn default() -> Self {
@@ -297,6 +313,7 @@ impl Default for Options {
             tolerance: 1e-10,
             step: 0.5,
             gradient_tolerance: 1e-6,
+            localization: Localization::Spread,
         }
     }
 }
@@ -318,11 +335,79 @@ pub struct Localized {
     pub spread: Spread,
     pub history: Vec<[f64; 3]>,
     pub converged: bool,
+    pub objective: f64,
     _memory: Reservation,
 }
+
+struct ObjectiveSample {
+    value: f64,
+    record: [f64; 3],
+    gradient: Vec<Matrix>,
+    spread: Option<Spread>,
+}
+
+trait GaugeObjective {
+    fn sample(
+        &self,
+        ctx: &Context,
+        gauge: &[Matrix],
+        reference: Option<&[[f64; 3]]>,
+    ) -> Result<ObjectiveSample>;
+}
+
+struct SpreadObjective<'a>(&'a Mesh);
+impl GaugeObjective for SpreadObjective<'_> {
+    fn sample(
+        &self,
+        ctx: &Context,
+        gauge: &[Matrix],
+        reference: Option<&[[f64; 3]]>,
+    ) -> Result<ObjectiveSample> {
+        let s = spread(ctx, self.0, gauge, reference)?;
+        let g = gradient(ctx, self.0, gauge, s.centers.as_slice())?.values;
+        Ok(ObjectiveSample {
+            value: s.total(),
+            record: [s.invariant, s.off_diagonal, s.diagonal],
+            gradient: g,
+            spread: Some(s),
+        })
+    }
+}
+
+struct PopulationObjective<'a>(&'a populations::PopulationMesh);
+impl GaugeObjective for PopulationObjective<'_> {
+    fn sample(
+        &self,
+        ctx: &Context,
+        gauge: &[Matrix],
+        _reference: Option<&[[f64; 3]]>,
+    ) -> Result<ObjectiveSample> {
+        let (neg_pop, g) = self.0.evaluate(ctx, gauge)?;
+        Ok(ObjectiveSample {
+            value: neg_pop,
+            record: [-neg_pop, 0., 0.],
+            gradient: g,
+            spread: None,
+        })
+    }
+}
+
 pub fn localize(
     ctx: &Context,
     mesh: &Mesh,
+    initial: &[Matrix],
+    reference: Option<&[[f64; 3]]>,
+    options: &Options,
+) -> Result<Localized> {
+    localize_with_populations(ctx, mesh, None, initial, reference, options)
+}
+
+/// General localization driver shared across spread (`populations = None`) and Pipek-Mezey
+/// atomic-population (`populations = Some(...)`) objectives.
+pub fn localize_with_populations(
+    ctx: &Context,
+    mesh: &Mesh,
+    populations: Option<&populations::PopulationMesh>,
     initial: &[Matrix],
     reference: Option<&[[f64; 3]]>,
     options: &Options,
@@ -352,20 +437,31 @@ pub fn localize(
     let _work = ctx.reserve(
         product(&[mesh.points, mesh.bands, functions, 16, 3])?
             .checked_add(product(&[mesh.bands, mesh.bands, 16, 12])?)
-            // The conjugate-gradient state: the previous gradient and direction, the steepest
-            // direction and the current one.
             .and_then(|v| v.checked_add(product(&[mesh.points, functions, functions, 16, 4]).ok()?))
             .ok_or(crate::Error::Overflow)?,
     )?;
     ctx.run(|| {
-        let start = spread(ctx, mesh, initial, reference)?;
-        let mut history = vec![[start.invariant, start.off_diagonal, start.diagonal]];
         let scale = mesh.weights.as_slice().iter().map(|w| w.abs()).sum::<f64>();
-        let first_step = options.step * mesh.points as f64 / (4. * scale);
+        let spread_obj = SpreadObjective(mesh);
+        let pop_obj = populations.map(PopulationObjective);
+        let (objective, first_step): (&dyn GaugeObjective, f64) = match &options.localization {
+            Localization::Spread => (
+                &spread_obj,
+                options.step * mesh.points as f64 / (4. * scale),
+            ),
+            Localization::Populations { .. } => {
+                let p = pop_obj.as_ref().ok_or_else(|| {
+                    invalid("population localization requires a prepared PopulationMesh")
+                })?;
+                (p, options.step * 0.5)
+            }
+        };
+        let start = objective.sample(ctx, initial, reference)?;
+        let mut history = vec![start.record];
         let mut steps = 0;
-        let (mut gauge, mut value, mut converged) = descend(
+        let (mut gauge, mut current, mut converged) = descend(
             ctx,
-            mesh,
+            objective,
             initial.to_vec(),
             start,
             options,
@@ -373,12 +469,6 @@ pub fn localize(
             &mut steps,
             &mut history,
         )?;
-        // A vanishing gradient does not tell a minimum from a saddle (the spread has both, and
-        // the descent can stall at one). A converged point is turned by a small deterministic
-        // rotation and minimized again; a lower spread replaces it, and the check repeats on the
-        // new point. A point counts as converged only when a check confirms it: a check that
-        // cannot run, or whose descent runs out of `max_iterations` without going lower, leaves it
-        // unconfirmed, and a lower point the budget did not let converge is returned unconverged.
         if converged {
             for attempt in 0..SADDLE_CHECKS {
                 if steps >= options.max_iterations {
@@ -386,11 +476,12 @@ pub fn localize(
                     break;
                 }
                 let kicked = rotated_gauge(&gauge, attempt as u64, SADDLE_KICK)?;
-                let kicked_value = spread(ctx, mesh, &kicked, Some(value.centers.as_slice()))?;
+                let kick_ref = current.spread.as_ref().map(|s| s.centers.as_slice());
+                let kicked_value = objective.sample(ctx, &kicked, kick_ref)?;
                 let mut trial_history = vec![];
                 let (trial_gauge, trial_value, trial_converged) = descend(
                     ctx,
-                    mesh,
+                    objective,
                     kicked,
                     kicked_value,
                     options,
@@ -398,29 +489,31 @@ pub fn localize(
                     &mut steps,
                     &mut trial_history,
                 )?;
-                let gain = value.total() - trial_value.total();
-                if gain <= options.tolerance.max(1e-9 * value.total().abs()) {
-                    // Not lower: the point is kept, confirmed if that descent finished and
-                    // unconfirmed if it ran out of budget.
+                let gain = current.value - trial_value.value;
+                if gain <= options.tolerance.max(1e-9 * current.value.abs()) {
                     converged = trial_converged;
                     break;
                 }
-                // Keep the monotone record: only the steps below the point it escaped.
-                let floor = value.total();
-                history.extend(
-                    trial_history
-                        .into_iter()
-                        .filter(|h| h.iter().sum::<f64>() < floor),
-                );
+                let floor = current.value;
+                history.extend(trial_history.into_iter().filter(|h| {
+                    let val = match options.localization {
+                        Localization::Spread => h.iter().sum::<f64>(),
+                        Localization::Populations { .. } => -h[0],
+                    };
+                    val < floor
+                }));
                 gauge = trial_gauge;
-                value = trial_value;
+                current = trial_value;
                 converged = trial_converged;
                 if !converged {
-                    // Lower, but the budget ran out before it converged.
                     break;
                 }
             }
         }
+        let final_spread = match current.spread {
+            Some(s) => s,
+            None => spread(ctx, mesh, &gauge, reference)?,
+        };
         memory.shrink_to(
             product(&[mesh.points, mesh.bands, functions, 16])?
                 .checked_add(product(&[history.len(), 24])?)
@@ -428,9 +521,13 @@ pub fn localize(
         )?;
         Ok(Localized {
             gauge,
-            spread: value,
+            spread: final_spread,
             history,
             converged,
+            objective: match options.localization {
+                Localization::Spread => current.value,
+                Localization::Populations { .. } => -current.value,
+            },
             _memory: memory,
         })
     })
@@ -474,39 +571,33 @@ fn rotated_gauge(gauge: &[Matrix], seed: u64, size: f64) -> Result<Vec<Matrix>> 
         .collect()
 }
 
-/// One conjugate-gradient descent from `gauge` (spread `value`), counting its steps in `steps`
-/// against `options.max_iterations` and recording each in `history`. Converged as [`Options`]
-/// says: the gradient norm below `gradient_tolerance` and the last step below `tolerance`.
+/// One conjugate-gradient descent from `gauge`, counting its steps in `steps` against
+/// `options.max_iterations` and recording each in `history`.
 #[allow(clippy::too_many_arguments)]
 fn descend(
     ctx: &Context,
-    mesh: &Mesh,
+    objective: &dyn GaugeObjective,
     mut gauge: Vec<Matrix>,
-    mut value: Spread,
+    mut current: ObjectiveSample,
     options: &Options,
     first_step: f64,
     steps: &mut usize,
     history: &mut Vec<[f64; 3]>,
-) -> Result<(Vec<Matrix>, Spread, bool)> {
-    let mut g = gradient(ctx, mesh, &gauge, value.centers.as_slice())?.values;
+) -> Result<(Vec<Matrix>, ObjectiveSample, bool)> {
+    let mut g = std::mem::take(&mut current.gradient);
     let mut change = 0f64;
-    // Polak-Ribiere conjugate gradient on the product of unitary groups: the direction
-    // `D = -G + beta D_previous` (generators at the current gauge), restarted on steepest descent
-    // every `restart` steps, when beta is negative and when D is not a descent direction. The
-    // line search works on the exact directional derivative `phi'(a) = <G(U e^{aD}), D>`, not on
-    // the spread itself: near a minimum the spread's decrease sinks below its round-off long
-    // before the gradient does, and a search on the spread would stop on a plateau where descent
-    // continues.
     let restart = 10;
     let mut previous: Option<(Vec<Matrix>, Vec<Matrix>)> = None;
     let mut since_restart = 0;
     loop {
         let stationary = gradient_norm(&g) < options.gradient_tolerance;
         if stationary && change < options.tolerance {
-            return Ok((gauge, value, true));
+            current.gradient = g;
+            return Ok((gauge, current, true));
         }
         if *steps >= options.max_iterations {
-            return Ok((gauge, value, false));
+            current.gradient = g;
+            return Ok((gauge, current, false));
         }
         let steepest: Vec<Matrix> = g.iter().map(|x| -x).collect();
         let mut direction = match &previous {
@@ -535,48 +626,41 @@ fn descend(
         }
         let mut accepted = None;
         for attempt in 0..2 {
-            accepted = line_search(ctx, mesh, &gauge, &value, &g, &direction, first_step)?;
+            accepted = line_search(ctx, objective, &gauge, &current, &g, &direction, first_step)?;
             if accepted.is_some() || attempt == 1 {
                 break;
             }
-            // No step along a conjugate direction: retry on steepest descent.
             since_restart = 0;
             direction = steepest.clone();
         }
-        let Some(point) = accepted else {
-            // Not even a steepest-descent step lowers the spread: the gradient is at the
-            // round-off of the link matrices.
-            return Ok((gauge, value, stationary));
+        let Some(mut point) = accepted else {
+            current.gradient = g;
+            return Ok((gauge, current, stationary));
         };
-        change = (point.spread.total() - value.total()).abs();
+        change = (point.sample.value - current.value).abs();
+        let next_g = std::mem::take(&mut point.sample.gradient);
         gauge = point.gauge;
-        value = point.spread;
-        previous = Some((std::mem::replace(&mut g, point.gradient), direction));
-        history.push([value.invariant, value.off_diagonal, value.diagonal]);
+        current = point.sample;
+        previous = Some((std::mem::replace(&mut g, next_g), direction));
+        history.push(current.record);
         since_restart += 1;
         *steps += 1;
     }
 }
 
-/// A gauge along a search line, with its spread and gradient.
+/// A gauge along a search line, with its sampled objective and gradient.
 struct LinePoint {
     gauge: Vec<Matrix>,
-    spread: Spread,
-    gradient: Vec<Matrix>,
-    /// `phi'(a) = <G(U e^{aD}), D>`: `D` commutes with `e^{aD}`, so this is the exact
-    /// derivative of the spread along the line at `a`.
+    sample: ObjectiveSample,
+    /// `phi'(a) = <G(U e^{aD}), D>`.
     slope: f64,
 }
 
-/// A step along `direction` from `gauge` to near the first minimum of the spread on the line:
-/// the derivative is followed until it changes sign (doubling the step from `first`), the bracket
-/// is narrowed by secants until `|phi'(a)| <= |phi'(0)| / 10`, and every accepted point must not
-/// raise the spread beyond its round-off. `None` when no such point exists.
 fn line_search(
     ctx: &Context,
-    mesh: &Mesh,
+    objective: &dyn GaugeObjective,
     gauge: &[Matrix],
-    value: &Spread,
+    current: &ObjectiveSample,
     g: &[Matrix],
     direction: &[Matrix],
     first: f64,
@@ -585,26 +669,23 @@ fn line_search(
     if start >= 0. {
         return Ok(None);
     }
-    let noise = 1e-12 * value.total().abs().max(1.);
+    let noise = 1e-12 * current.value.abs().max(1.);
+    let ref_centers = current.spread.as_ref().map(|s| s.centers.as_slice());
     let at = |step: f64| -> Result<LinePoint> {
         let moved = gauge
             .iter()
             .zip(direction)
             .map(|(u, d)| unitary_step(&(d * C64::new(step, 0.))).map(|e| u * e))
             .collect::<Result<Vec<_>>>()?;
-        let spread = spread(ctx, mesh, &moved, Some(value.centers.as_slice()))?;
-        let gradient = gradient(ctx, mesh, &moved, spread.centers.as_slice())?.values;
-        let slope = inner(&gradient, direction);
+        let sample = objective.sample(ctx, &moved, ref_centers)?;
+        let slope = inner(&sample.gradient, direction);
         Ok(LinePoint {
             gauge: moved,
-            spread,
-            gradient,
+            sample,
             slope,
         })
     };
-    let downhill = |p: &LinePoint| p.spread.total() <= value.total() + noise;
-    // Bracket the first sign change of the derivative: `lo` still descends, `hi` does not (its
-    // derivative is nonnegative, or it is uphill: the step overshot).
+    let downhill = |p: &LinePoint| p.sample.value <= current.value + noise;
     let (mut lo, mut lo_slope, mut best): (f64, f64, Option<(f64, LinePoint)>) = (0., start, None);
     let mut hi: Option<(f64, f64, bool)> = None;
     let mut step = first;
@@ -636,8 +717,6 @@ fn line_search(
             if span <= 1e-12 * first {
                 break;
             }
-            // An uphill end says nothing about the derivative's root: shrink fast toward `lo`.
-            // Otherwise the secant of the derivative, kept inside the bracket.
             let trial = if uphill {
                 lo + 0.25 * span
             } else {

@@ -73,6 +73,33 @@ def write_record(driver, title, view):
         append_record(target, title, view)
 
 
+def write_hubbard_response(driver, resp):
+    """Append ``[HUBBARD RESPONSE]`` for a linear-response ``U`` measurement to the run log."""
+    from ..utils.logging import append_block
+
+    targets = _targets(driver)
+    if not targets:
+        return
+    unit = resp.energy_unit
+    u_charge = resp.u_charge
+    diag = [float(u_charge[i, i]) for i in range(resp.shells)]
+    fields = {
+        "shells": resp.shells,
+        "channels": resp.channels,
+        "self_consistent": resp.self_consistent,
+        f"alphas_{unit}": ", ".join(f"{a:.6f}" for a in resp.alphas),
+        f"u_charge_diag_{unit}": ", ".join(f"{u:.6f}" for u in diag),
+        "nonlinearity": resp.nonlinearity,
+        "asymmetry": f"{resp.asymmetry:.3e}",
+        "condition": f"{resp.condition:.3e}",
+        "floor": f"{resp.floor:.3e}",
+    }
+    if resp.j_response is not None:
+        fields[f"j_response_{unit}"] = ", ".join(f"{j:.6f}" for j in resp.j_response)
+    for target in targets:
+        append_block(target, "[HUBBARD RESPONSE]", fields)
+
+
 def write_optimization_summary(driver, atoms=None, fmax=None, optimizer=None, force=False, status=None):
     from ase.data import chemical_symbols
     from ..structure import geometry_value
@@ -268,13 +295,13 @@ def write_calculation(driver, result, geometry, *, log_expressivity=False):
                 symbols=[chemical_symbols[z] for z in geometry.numbers],
                 positions=geometry.positions,
                 units=geometry.units,
-                cell=geometry.cell,
-                pbc=geometry.pbc,
-                magmoms=(geometry.magnetic_moments if geometry.moment_vectors is None
-                         else geometry.moment_vectors),
+                cell=geometry.cell, pbc=geometry.pbc,
+                magmoms=(geometry.magnetic_moments if geometry.moment_vectors is None else geometry.moment_vectors),
             )
         log.write_basis(*basis_report(driver, geometry))
         log.write_electrons(run_log_fields.electrons(driver, result, geometry))
+        if geometry is not None:
+            log.write_block("SYMMETRY", run_log_fields.symmetry(driver, result, geometry))
         if geometry is not None and driver.native_reference is not None:
             _write_scf(log, driver, result)
         elif getattr(result, "_crystal", None) is not None:

@@ -1,25 +1,18 @@
 //! PAW local potentials, compact compensation charges and radial quadrature.
-use super::invalid;
+use super::{
+    invalid,
+    multipole::{shape_at, shape_potential_at},
+};
 use crate::math::radial::{derivatives, gauss_legendre, validate};
 use crate::{finite, Buffer, Context, Result};
 use nalgebra::{DMatrix, DVector};
 use std::f64::consts::PI;
 
 pub fn shape(r: f64, radius: f64) -> f64 {
-    if r >= radius {
-        0.
-    } else {
-        315. / (64. * PI * radius.powi(3)) * (1. - (r / radius).powi(2)).powi(3)
-    }
+    shape_at(r, radius, 0) / (4. * PI)
 }
 pub fn compensation_potential(r: f64, radius: f64) -> f64 {
-    if r >= radius {
-        return 1. / r;
-    }
-    let x = r / radius;
-    let enclosed_over_x =
-        315. / 16. * (x.powi(2) / 3. - 3. * x.powi(4) / 5. + 3. * x.powi(6) / 7. - x.powi(8) / 9.);
-    (enclosed_over_x + 315. / 128. * (1. - x * x).powi(4)) / radius
+    shape_potential_at(r, radius, 0) / (4. * PI)
 }
 
 pub fn compensation_coulomb(

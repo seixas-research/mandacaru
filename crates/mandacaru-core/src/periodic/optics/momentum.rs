@@ -30,8 +30,14 @@ use super::super::{
     bloch_mesh::{MeshIndex, Sampler},
     input::KPoint,
     invalid,
-    setup::{blocks::to_raw_basis, pulay::periodic_parts, pulay::Mesh, spin_orbit, PeriodicSetup},
+    setup::{
+        blocks::to_raw_basis,
+        pulay::{periodic_parts, Mesh},
+        spheres::{moment_projections, projections},
+        spin_orbit, PeriodicSetup,
+    },
     wannier::sampling::Frame,
+    Crystal, PeriodicResult,
 };
 use crate::{
     math::{
@@ -179,6 +185,80 @@ pub struct BandMomenta {
     pub residual: f64,
 }
 
+/// The converged DFT+U operator for spin channel `channel` (or the `2p x 2p` spinor operator),
+/// together with `crystal.spinor`.
+pub fn hubbard_operator<'a>(
+    crystal: &Crystal,
+    state: &'a PeriodicResult,
+    channel: usize,
+) -> Option<(&'a Matrix, bool)> {
+    crystal
+        .hubbard
+        .as_ref()
+        .filter(|h| h.is_active())
+        .and(state.hubbard.as_ref())
+        .map(|h| {
+            let idx = if crystal.spinor { 0 } else { channel };
+            (&h.operators[idx], crystal.spinor)
+        })
+}
+
+/// The one-center Hubbard velocity `i [V_U, r]` at the Cartesian `k`, in the Bloch LCAO basis:
+/// three Hermitian `m x m` matrices (for collinear) or `2m x 2m` spin-major matrices (for spinor).
+///
+/// Since `V_U = sum_{i,j} |p_i> O_{ij} <p_j|` acts strictly intra-atomically, the atomic center
+/// shifts `R_I` cancel identically inside the commutator `i (|p_i> O_{ij} <(r - R)_c p_j| -
+/// |(r - R)_c p_i> O_{ij} <p_j|)` = `d/dA (exp(-i A.r) V_U exp(i A.r))|_{A=0}`.
+pub fn hubbard_velocity(
+    ctx: &Context,
+    setup: &PeriodicSetup,
+    k: [f64; 3],
+    operator: &Matrix,
+    spinor: bool,
+) -> Result<[Matrix; 3]> {
+    let m = setup.shells.functions();
+    let p = setup.projectors.len();
+    let expected = if spinor { 2 * p } else { p };
+    if operator.shape() != (expected, expected) {
+        return Err(invalid(
+            "Hubbard operator shape does not match crystal projectors",
+        ));
+    }
+    let p0_buf = projections(ctx, &setup.shells, &setup.lattice, &[k], &setup.projectors)?;
+    let p0 = Matrix::from_row_slice(m, p, p0_buf.as_slice());
+    let mut out = [
+        Matrix::zeros(if spinor { 2 * m } else { m }, if spinor { 2 * m } else { m }),
+        Matrix::zeros(if spinor { 2 * m } else { m }, if spinor { 2 * m } else { m }),
+        Matrix::zeros(if spinor { 2 * m } else { m }, if spinor { 2 * m } else { m }),
+    ];
+    for (axis, dst) in out.iter_mut().enumerate() {
+        let mc_buf = moment_projections(
+            ctx,
+            &setup.shells,
+            &setup.lattice,
+            &[k],
+            &setup.projectors,
+            axis,
+        )?;
+        let mc = Matrix::from_row_slice(m, p, mc_buf.as_slice());
+        if !spinor {
+            let prod = &p0 * operator * mc.adjoint();
+            *dst = (&prod - prod.adjoint()) * C64::new(0., 1.);
+        } else {
+            let p0_adj = p0.adjoint();
+            let mc_adj = mc.adjoint();
+            for s in 0..2 {
+                for t in 0..2 {
+                    let op_st = operator.view((s * p, t * p), (p, p));
+                    let v_st = (&p0 * op_st * &mc_adj - &mc * op_st * &p0_adj) * C64::new(0., 1.);
+                    dst.view_mut((s * m, t * m), (m, m)).copy_from(&v_st);
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// [`BandMomenta`] of `frame` (every band it holds) at the Cartesian `k`; a spinor frame's
 /// carries the spin-orbit part when the crystal has the term (module documentation).
 pub fn band_momenta(
@@ -189,6 +269,19 @@ pub fn band_momenta(
     k: [f64; 3],
     one_center: &[Matrix; 3],
 ) -> Result<BandMomenta> {
+    band_momenta_with_hubbard(ctx, setup, mesh, frame, k, one_center, None)
+}
+
+/// [`band_momenta`] with the one-center DFT+U commutator `i [V_U, r]` from `hubbard`.
+pub fn band_momenta_with_hubbard(
+    ctx: &Context,
+    setup: &PeriodicSetup,
+    mesh: &Mesh,
+    frame: &Frame,
+    k: [f64; 3],
+    one_center: &[Matrix; 3],
+    hubbard: Option<(&Matrix, bool)>,
+) -> Result<BandMomenta> {
     let whole = momenta(
         ctx,
         setup,
@@ -198,8 +291,24 @@ pub fn band_momenta(
         k,
         one_center,
     )?;
+    let add_basis_term = |matrices: &mut [Matrix; 3], v: &[Matrix; 3], c: &Matrix| {
+        for (to, mat) in matrices.iter_mut().zip(v) {
+            let proj = c.adjoint() * mat * c;
+            *to += (&proj + proj.adjoint()) * C64::new(0.5, 0.);
+        }
+    };
     match frame.components {
-        1 => Ok(whole),
+        1 => {
+            let mut matrices = whole.matrices;
+            if let Some((op, _)) = hubbard {
+                let velocity = hubbard_velocity(ctx, setup, k, op, false)?;
+                add_basis_term(&mut matrices, &velocity, &frame.coefficients);
+            }
+            Ok(BandMomenta {
+                matrices,
+                residual: whole.residual,
+            })
+        }
         // A spinor's rows are `(component, band)`, and `p` is diagonal in the spin: `P_ab` is the
         // sum of the two components' blocks.
         2 => {
@@ -228,6 +337,10 @@ pub fn band_momenta(
                     *to += c.adjoint() * v * c;
                 }
             }
+            if let Some((op, _)) = hubbard {
+                let velocity = hubbard_velocity(ctx, setup, k, op, true)?;
+                add_basis_term(&mut matrices, &velocity, &frame.coefficients);
+            }
             Ok(BandMomenta {
                 matrices,
                 residual: whole.residual,
@@ -246,7 +359,21 @@ pub fn basis_momenta(
     point: &KPoint,
     one_center: &[Matrix; 3],
 ) -> Result<BandMomenta> {
-    momenta(
+    basis_momenta_with_hubbard(ctx, setup, mesh, point, one_center, false, None)
+}
+
+/// [`basis_momenta`] generalized for spinor (`2m x 2m`, carrying `i [h^SO, r]`) and DFT+U
+/// (`i [V_U, r]`) crystals.
+pub fn basis_momenta_with_hubbard(
+    ctx: &Context,
+    setup: &PeriodicSetup,
+    mesh: &Mesh,
+    point: &KPoint,
+    one_center: &[Matrix; 3],
+    spinor: bool,
+    hubbard: Option<&Matrix>,
+) -> Result<BandMomenta> {
+    let whole = momenta(
         ctx,
         setup,
         mesh,
@@ -254,7 +381,55 @@ pub fn basis_momenta(
         &point.projections,
         point.k,
         one_center,
-    )
+    )?;
+    if !spinor {
+        let mut matrices = whole.matrices;
+        if let Some(op) = hubbard {
+            let velocity = hubbard_velocity(ctx, setup, point.k, op, false)?;
+            for (to, v) in matrices.iter_mut().zip(&velocity) {
+                *to += v;
+            }
+        }
+        return Ok(BandMomenta {
+            matrices,
+            residual: whole.residual,
+        });
+    }
+    let m = setup.shells.functions();
+    let mut matrices: [Matrix; 3] = whole.matrices.map(|spatial| {
+        let mut big = Matrix::zeros(2 * m, 2 * m);
+        big.view_mut((0, 0), (m, m)).copy_from(&spatial);
+        big.view_mut((m, m), (m, m)).copy_from(&spatial);
+        big
+    });
+    if !setup.spin_orbit_couplings.is_empty() {
+        let velocity = spin_orbit::velocity(
+            ctx,
+            &setup.shells,
+            &setup.lattice,
+            point.k,
+            &setup.spin_orbit_projectors,
+            &setup.spin_orbit_couplings,
+        )?;
+        for (to, v) in matrices.iter_mut().zip(&velocity) {
+            if v.as_slice().len() != 4 * m * m {
+                return Err(invalid(
+                    "the spin-orbit velocity does not match the basis size",
+                ));
+            }
+            *to += Matrix::from_row_slice(2 * m, 2 * m, v.as_slice());
+        }
+    }
+    if let Some(op) = hubbard {
+        let velocity = hubbard_velocity(ctx, setup, point.k, op, true)?;
+        for (to, v) in matrices.iter_mut().zip(&velocity) {
+            *to += v;
+        }
+    }
+    Ok(BandMomenta {
+        matrices,
+        residual: whole.residual,
+    })
 }
 
 /// `P = P_grid + proj Delta p proj^dagger` of the functions whose grid samples are the rows of
@@ -418,7 +593,15 @@ pub fn transitions(
         let fractional = mesh.point(point[s]);
         point[s] += 1;
         let k: [f64; 3] = (sampler.reciprocal * nalgebra::Vector3::from(fractional)).into();
-        let momenta = band_momenta(ctx, sampler.setup, &grid_mesh, &frame, k, &one_center)?;
+        let momenta = band_momenta_with_hubbard(
+            ctx,
+            sampler.setup,
+            &grid_mesh,
+            &frame,
+            k,
+            &one_center,
+            hubbard_operator(sampler.crystal, sampler.state, s),
+        )?;
         out.residual = out.residual.max(momenta.residual);
         let along = &momenta.matrices[0] * C64::new(e[0], 0.)
             + &momenta.matrices[1] * C64::new(e[1], 0.)

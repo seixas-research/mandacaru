@@ -12,8 +12,9 @@ import numpy as np
 import pytest
 from ase import Atoms
 from mandacaru import Mandacaru
-from mandacaru.analysis.berry import (AnomalousHall, BerryCurvature, BerryPhase, Polarization,
-                                      WannierChargeCenterFlow, Z2Invariant)
+from mandacaru.analysis.berry import (AnomalousHall, BerryCurvature, BerryPhase, BornCharges,
+                                      PiezoelectricTensor, Polarization, WannierChargeCenterFlow,
+                                      Z2Invariant)
 
 BOHR = 0.529177210903
 CELL = np.array([6.0, 8.0, 8.0]) * BOHR
@@ -395,14 +396,11 @@ def test_bulk_bi2se3_at_the_experimental_lattice_with_spin_orbit_coupling_is_inv
 
 
 @pytest.mark.slow
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=(
-    "G12 on the owner's cell is a marginal inversion (the self-consistent fully-relativistic plane-wave "
-    "reference inverts by only 0.05 eV) and the engine's Bi 6p spin-orbit splitting is 13 % short "
-    "(1.60-1.62 eV against 1.850 eV from all-electron Dirac-PBE; gate G13): the cell stays trivial until "
-    "the Bi spin-orbit operator is fixed. Remove this mark then; strict, so a fix announces itself."))
 def test_bulk_bi2se3_at_the_owner_cell_with_spin_orbit_coupling_is_inverted(tmp_path):
     """The owner's required quantitative gate: Z2 = (1; 000) with the signed Gamma gap negative on the
-    PBE-expanded cell, by parity and by the flow of the six planes. Strict xfail: stops at the parity, 1520 s (SCF 1220 s, parity 258 s), peak RSS 1.72 GB."""
+    PBE-expanded cell, by parity and by the flow of the six planes. With calibrated pbe-fr Bi 6p
+    spin-orbit coupling (G13: +0.2% vs Dirac), parity gives Z2 = (1, 0, 0, 0), gamma_minus = 34, and
+    signed_gamma_gap = -0.029273 eV (measured 2026-11-18)."""
     _bulk_bi2se3_with_spin_orbit_coupling(BI2SE3_CELL, BI2SE3_POSITIONS, tmp_path)
 
 
@@ -424,3 +422,142 @@ def test_bulk_bi2se3_without_spin_orbit_coupling_is_a_trivial_insulator(tmp_path
     assert abs(_signed_gamma_gap(parity) - 0.42) < 0.05
     flow = atoms.calc.get_z2_invariant(kpts=BI2SE3_STRINGS)
     assert flow.indices == (0, 0, 0, 0) and flow.planes == parity.planes and flow.spin_degenerate
+
+
+def _lih_polar(**options):
+    """Polar LiH chain in a skew cell (no inversion center, nonzero P and Z*)."""
+    atoms = Atoms("LiH", positions=[[0.0, 0.0, 0.0], [1.6, 0.25, 0.15]],
+                  cell=[[3.5, 0.0, 0.0], [0.4, 3.8, 0.0], [0.2, 0.3, 4.0]], pbc=True)
+    settings = dict(method="dft", xc="lda", basis={"name": "PAW-LCAO", "size": "SZ"},
+                    grid_spacing=0.38, kpts={"size": (1, 1, 1), "gamma": True},
+                    smearing={"method": "fermi-dirac", "width": 0.01},
+                    parallelization={"threads": 2}, trace=False)
+    settings.update(options)
+    atoms.calc = Mandacaru(**settings)
+    atoms.get_potential_energy()
+    return atoms
+
+
+def test_born_effective_charges_views_asr_and_spin_channels(chain):
+    z = chain.calc.get_born_effective_charges(displacement=0.01, kpts=MESH)
+    assert isinstance(z, BornCharges)
+    assert z.charges.shape == (2, 3, 3)
+    assert z.channels.shape == (1, 2, 3, 3)
+    assert z.polarization_steps.shape == (2, 3, 3)
+    assert abs(z.displacement - 0.01) < 1e-12
+    assert isinstance(z.asr_residual, float) and z.corrected is None
+    assert len(z.scf_iterations) > 0
+    np.testing.assert_allclose(z.charges[0] + z.charges[1], z.asr_mean * 2.0, atol=1e-10)
+
+    z_imposed = chain.calc.get_born_effective_charges(
+        displacement=0.01, kpts=MESH, acoustic_sum_rule="impose"
+    )
+    assert z_imposed.corrected is not None and z_imposed.corrected.shape == (2, 3, 3)
+    np.testing.assert_allclose(z_imposed.corrected.sum(axis=0), 0.0, atol=1e-12)
+
+    polarized = _chain(spin=True)
+    z_spin = polarized.calc.get_born_effective_charges(displacement=0.01, kpts=MESH)
+    assert z_spin.channels.shape == (2, 2, 3, 3)
+    np.testing.assert_allclose(z_spin.charges, z.charges, atol=1e-3)
+
+
+def test_piezoelectric_tensor_clamped_and_units(chain):
+    mesh = (2, 2, 2)
+    e_si = chain.calc.get_piezoelectric_tensor(strain=0.005, kpts=mesh, ions="clamped")
+    assert isinstance(e_si, PiezoelectricTensor)
+    assert e_si.tensor.shape == (3, 6) and e_si.clamped.shape == (3, 6)
+    np.testing.assert_allclose(e_si.tensor, e_si.clamped, atol=1e-12)
+    assert e_si.relaxed is None and e_si.born_charges is None
+    assert e_si.internal_strain is None and e_si.force_constants is None
+    assert e_si.acoustic_frequencies_removed is None
+    assert e_si.polarization_steps.shape == (6, 3)
+    assert len(e_si.scf_iterations) == 12
+    # Centrosymmetric H2 chain has zero clamped piezoelectric tensor.
+    np.testing.assert_allclose(e_si.clamped, 0.0, atol=1e-3)
+
+    chain_au = _chain(atomic_units=True)
+    e_au = chain_au.calc.get_piezoelectric_tensor(strain=0.005, kpts=mesh, ions="clamped")
+    np.testing.assert_allclose(e_au.tensor * E_PER_BOHR2, e_si.tensor, atol=1e-6)
+
+
+def test_born_and_piezo_refusals(chain, metal):
+    with pytest.raises(ValueError, match="positive"):
+        chain.calc.get_born_effective_charges(displacement=0.0, kpts=MESH)
+    with pytest.raises(ValueError, match="acoustic_sum_rule"):
+        chain.calc.get_born_effective_charges(acoustic_sum_rule="drop", kpts=MESH)
+    with pytest.raises(ValueError, match="positive"):
+        chain.calc.get_piezoelectric_tensor(strain=-0.01, kpts=MESH)
+    with pytest.raises(ValueError, match="ions"):
+        chain.calc.get_piezoelectric_tensor(ions="frozen", kpts=MESH)
+    with pytest.raises(ValueError, match="bool"):
+        chain.calc.get_piezoelectric_tensor(richardson="yes", kpts=MESH)
+    with pytest.raises(ValueError):
+        chain.calc.get_born_effective_charges(displacement=0.2, kpts=MESH)
+    with pytest.raises(ValueError):
+        chain.calc.get_piezoelectric_tensor(strain=0.05, kpts=MESH)
+
+    mol = Atoms("H2", positions=[[0, 0, 0], [0.74, 0, 0]])
+    mol.calc = Mandacaru(method="dft", xc="lda", basis={"name": "PAW-LCAO", "size": "SZ"},
+                         grid_spacing=0.25, trace=False)
+    with pytest.raises(ValueError, match="Brillouin zone"):
+        mol.calc.get_born_effective_charges(kpts=MESH)
+    with pytest.raises(ValueError, match="Brillouin zone"):
+        mol.calc.get_piezoelectric_tensor(kpts=MESH)
+
+    with pytest.raises(ValueError, match="insulator"):
+        metal.calc.get_born_effective_charges(kpts=(4, 2, 2))
+    with pytest.raises(ValueError, match="insulator"):
+        metal.calc.get_piezoelectric_tensor(kpts=(4, 2, 2))
+
+    qmol = Atoms("H2", positions=[[0, 0, 0], [0.74, 0, 0]], cell=[3.0, 4.0, 4.0], pbc=True)
+    qmol.calc = Mandacaru(method="adapt-vqe", crystal_orbitals="real-space", trace=False)
+    with pytest.raises(NotImplementedError, match="Bloch bands"):
+        qmol.calc.get_born_effective_charges(kpts=(2, 1, 1))
+    with pytest.raises(NotImplementedError, match="Bloch bands"):
+        qmol.calc.get_piezoelectric_tensor(kpts=(2, 1, 1))
+
+    f32 = _chain(precision="float32")
+    with pytest.raises(ValueError, match="float64"):
+        f32.calc.get_born_effective_charges(kpts=MESH)
+    with pytest.raises(ValueError, match="float64"):
+        f32.calc.get_piezoelectric_tensor(kpts=MESH)
+
+
+def test_ts_dispersion_clamped_piezoelectric():
+    chain_ts = _chain(vdw="ts")
+    e_ts = chain_ts.calc.get_piezoelectric_tensor(strain=0.005, kpts=(2, 2, 2), ions="clamped")
+    assert e_ts.tensor.shape == (3, 6)
+    np.testing.assert_allclose(e_ts.clamped, 0.0, atol=1e-3)
+
+
+@pytest.mark.slow  # 255 s: 18 SCF+force calls on P1 LiH skew cell; gated fast in berry_perturbation.rs
+def test_polar_lih_soft_mode_refusal():
+    lih = _lih_polar()
+    with pytest.raises(ValueError, match="soft or unstable mode"):
+        lih.calc.get_piezoelectric_tensor(strain=0.005, kpts=(2, 2, 2), ions="relaxed")
+
+
+@pytest.mark.slow
+def test_zincblende_bn_relaxed_piezoelectric_tensor():
+    a = 3.615
+    bn = Atoms("BN", scaled_positions=[[0.0, 0.0, 0.0], [0.25, 0.25, 0.25]],
+               cell=[[0.0, 0.5 * a, 0.5 * a], [0.5 * a, 0.0, 0.5 * a], [0.5 * a, 0.5 * a, 0.0]],
+               pbc=True)
+    bn.calc = Mandacaru(
+        method="dft", xc="lda", basis={"name": "PAW-LCAO", "size": "SZ"},
+        grid_spacing=0.30, kpts={"size": (2, 2, 2), "gamma": True},
+        parallelization={"threads": 2}, trace=False,
+    )
+    bn.get_potential_energy()
+    e = bn.calc.get_piezoelectric_tensor(strain=0.005, displacement=0.01, kpts=(2, 2, 2),
+                                         ions="relaxed")
+    assert isinstance(e, PiezoelectricTensor) and e.relaxed is not None
+    assert e.born_charges is not None and e.born_charges.charges.shape == (2, 3, 3)
+    assert e.internal_strain is not None and e.internal_strain.shape == (6, 6)
+    assert e.force_constants is not None and e.force_constants.shape == (6, 6)
+    assert e.acoustic_frequencies_removed is not None and e.acoustic_frequencies_removed.shape == (3,)
+    np.testing.assert_allclose(e.tensor, e.relaxed, atol=1e-12)
+    np.testing.assert_allclose(e.force_constants, e.force_constants.T, atol=1e-10)
+    assert abs(e.tensor[0, 3]) > 1e-3
+    np.testing.assert_allclose(e.tensor[0, 3], e.tensor[1, 4], atol=1e-2)
+    np.testing.assert_allclose(e.tensor[0, 3], e.tensor[2, 5], atol=1e-2)

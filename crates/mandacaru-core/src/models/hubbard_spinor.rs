@@ -59,8 +59,10 @@
 //!
 //! Units are the caller's: `U`, `J`, `E_U` and `V` share one energy unit.
 use super::hubbard::{self, Form, Hubbard, HERMITIAN_TOLERANCE};
+use super::hubbard_liechtenstein::check_shell;
+use super::hubbard_slater::{Basis, Coupling, Ratios};
 use super::invalid;
-use crate::{product, Buffer, Context, Error, Result};
+use crate::{product, Buffer, Context, Result};
 use nalgebra::{DMatrix, SymmetricEigen};
 use num_complex::Complex64 as C64;
 use std::mem::size_of;
@@ -102,6 +104,11 @@ impl Layout {
         }
         Ok(spin * self.width() + a)
     }
+    /// Where `Theta` sends basis state `j`: `Theta|j> = sign |image>`.
+    pub(crate) fn time_reversal_image(&self, j: usize) -> (usize, f64) {
+        self.image(j)
+    }
+
     /// Where `Theta` sends basis state `j`: `Theta|j> = sign |image>`.
     fn image(&self, j: usize) -> (usize, f64) {
         let p = self.width();
@@ -266,17 +273,48 @@ pub struct Evaluation {
     pub potential: Potential,
 }
 
-/// Evaluates the correction for one shell. The potential is reserved from `ctx`
-/// before anything is computed; on error nothing is kept. Only the simplified
-/// Dudarev form exists for a spinor shell; any other form raises.
+/// Evaluates the correction for one shell (Dudarev FLL for any `l <= MAX_L`, or rotationally
+/// invariant Liechtenstein FLL for `l = 2, 3` with default Slater ratios). The potential is
+/// reserved from `ctx` before anything is computed; on error nothing is kept.
 pub fn evaluate(ctx: &Context, h: &Hubbard, n: &Occupation) -> Result<Evaluation> {
-    if h.form != Form::DudarevFll {
-        return Err(Error::Unsupported(format!(
-            "Liechtenstein is collinear: the noncollinear Hubbard model implements only the '{}' form, not '{}'",
-            Form::DudarevFll.name(),
+    match h.form {
+        Form::Dudarev => evaluate_dudarev(ctx, h, n),
+        Form::Liechtenstein => {
+            let l = check_shell(n.layout.l)?;
+            evaluate_liechtenstein_with_ratios(ctx, h, &Ratios::default_for(l)?, n)
+        }
+    }
+}
+
+/// Evaluates the noncollinear Liechtenstein functional for a `d` or `f` shell using
+/// explicit Slater integral ratios `ratios` (`F^4/F^2` and, for `f`, `F^6/F^2`).
+pub fn evaluate_liechtenstein_with_ratios(
+    ctx: &Context,
+    h: &Hubbard,
+    ratios: &Ratios,
+    n: &Occupation,
+) -> Result<Evaluation> {
+    if h.form != Form::Liechtenstein {
+        return Err(invalid(format!(
+            "expected '{}' form for Slater Liechtenstein evaluation, got '{}'",
+            Form::Liechtenstein.name(),
             h.form.name()
         )));
     }
+    let layout = n.layout;
+    let l = check_shell(layout.l)?;
+    ratios.validate(l)?;
+    let basis = if layout.real {
+        Basis::Real
+    } else {
+        Basis::Complex
+    };
+    let coupling = Coupling::new(ctx, l, basis)?;
+    let integrals = coupling.integrals(h.u, h.j, ratios)?;
+    evaluate_liechtenstein_core(ctx, h, &coupling, &integrals, n)
+}
+
+fn evaluate_dudarev(ctx: &Context, h: &Hubbard, n: &Occupation) -> Result<Evaluation> {
     let (layout, d, p) = (n.layout, n.layout.size(), n.layout.width());
     let mut potential = ctx.allocate::<C64>(d * d)?;
     let data = n.data.as_slice();
@@ -316,6 +354,174 @@ pub fn evaluate(ctx: &Context, h: &Hubbard, n: &Occupation) -> Result<Evaluation
         per_u_eff: g,
         interaction: hubbard::interaction(h, plus, minus, squares, 0.),
         double_counting: hubbard::double_counting(h, plus, minus),
+        spin_vector,
+        potential: Potential {
+            layout,
+            data: potential,
+        },
+    })
+}
+
+fn evaluate_liechtenstein_core(
+    ctx: &Context,
+    h: &Hubbard,
+    coupling: &Coupling,
+    integrals: &[f64],
+    n: &Occupation,
+) -> Result<Evaluation> {
+    let (layout, d, p) = (n.layout, n.layout.size(), n.layout.width());
+    let mut potential = ctx.allocate::<C64>(d * d)?;
+    let data = n.data.as_slice();
+
+    // Exact Hermitian spin blocks n^{s t}_{ab} and total orbital occupation N = n^{00} + n^{11}.
+    let mut blocks = vec![C64::default(); 4 * p * p];
+    let mut n_total = vec![C64::default(); p * p];
+    for s in 0..2 {
+        for t in 0..2 {
+            let blk = (s * 2 + t) * (p * p);
+            for a in 0..p {
+                for b in 0..p {
+                    let val = hermitian(d, data, s * p + a, t * p + b);
+                    blocks[blk + a * p + b] = val;
+                    if s == t {
+                        n_total[a * p + b] += val;
+                    }
+                }
+            }
+        }
+    }
+
+    let mut tr = 0.0_f64;
+    let mut sq = 0.0_f64;
+    for a in 0..d {
+        tr += data[a * d + a].re;
+        for b in 0..d {
+            sq += hermitian(d, data, a, b).norm_sqr();
+        }
+    }
+    let per_u_eff = 0.5 * (tr - sq);
+    let spin_vector = pauli(layout, data);
+    let moment = spin_vector.iter().map(|x| x * x).sum::<f64>().sqrt();
+    let (plus, minus) = (0.5 * (tr + moment), 0.5 * (tr - moment));
+
+    if h.is_inert() {
+        return Ok(Evaluation {
+            energy: 0.0,
+            per_u_eff,
+            interaction: 0.0,
+            double_counting: 0.0,
+            spin_vector,
+            potential: Potential {
+                layout,
+                data: potential,
+            },
+        });
+    }
+
+    let p4 = p.pow(4);
+    let mut v = vec![0.0_f64; p4];
+    for (i, &k) in coupling.orders().iter().enumerate() {
+        let fk = integrals[i];
+        let tensor = coupling.tensor(k)?;
+        for idx in 0..p4 {
+            v[idx] += fk * tensor[idx];
+        }
+    }
+
+    // E_Hub = 0.5 * sum_abcd v_abcd [ N_ca N_db - sum_{s,t} n^{ts}_{da} n^{st}_{cb} ].
+    let block = |s: usize, t: usize| -> &[C64] {
+        let start = (s * 2 + t) * (p * p);
+        &blocks[start..start + p * p]
+    };
+    let mut e_dir = 0.0_f64;
+    let mut e_exch = 0.0_f64;
+    for a in 0..p {
+        for b in 0..p {
+            for c in 0..p {
+                for dd in 0..p {
+                    let v_val = v[((a * p + b) * p + c) * p + dd];
+                    if v_val == 0.0 {
+                        continue;
+                    }
+                    e_dir += v_val * (n_total[c * p + a] * n_total[dd * p + b]).re;
+                    let mut term_exch = 0.0_f64;
+                    for s in 0..2 {
+                        for t in 0..2 {
+                            let n_ts = block(t, s);
+                            let n_st = block(s, t);
+                            term_exch += (n_ts[dd * p + a] * n_st[c * p + b]).re;
+                        }
+                    }
+                    e_exch += v_val * term_exch;
+                }
+            }
+        }
+    }
+    let interaction = 0.5 * (e_dir - e_exch);
+    let double_counting = hubbard::double_counting(h, plus, minus);
+    let energy = interaction - double_counting;
+
+    // Spin-rotationally invariant FLL double-counting potential:
+    // dE_dc/dn = [U(N - 1/2) - J/2 (N - 1)] I - (J/2) (m . sigma).
+    let (mx, my, mz) = (spin_vector[0], spin_vector[1], spin_vector[2]);
+    let dc_scalar = h.u * (tr - 0.5) - 0.5 * h.j * (tr - 1.0);
+    let dc_spin = [
+        [
+            C64::new(dc_scalar - 0.5 * h.j * mz, 0.0),
+            C64::new(-0.5 * h.j * mx, 0.5 * h.j * my),
+        ],
+        [
+            C64::new(-0.5 * h.j * mx, -0.5 * h.j * my),
+            C64::new(dc_scalar + 0.5 * h.j * mz, 0.0),
+        ],
+    ];
+
+    let out = potential.as_mut_slice();
+    for s in 0..2 {
+        for t in 0..2 {
+            let n_st = block(s, t);
+            for a in 0..p {
+                for b in 0..p {
+                    let mut dir = C64::default();
+                    let mut exch = C64::default();
+                    for c in 0..p {
+                        for dd in 0..p {
+                            if s == t {
+                                let v_dir = v[((a * p + c) * p + b) * p + dd];
+                                if v_dir != 0.0 {
+                                    dir += n_total[dd * p + c] * v_dir;
+                                }
+                            }
+                            let v_exc = v[((a * p + c) * p + dd) * p + b];
+                            if v_exc != 0.0 {
+                                exch += n_st[dd * p + c] * v_exc;
+                            }
+                        }
+                    }
+                    let dc = if a == b {
+                        dc_spin[s][t]
+                    } else {
+                        C64::default()
+                    };
+                    out[(s * p + a) * d + (t * p + b)] = dir - exch - dc;
+                }
+            }
+        }
+    }
+    for r in 0..d {
+        out[r * d + r] = C64::new(out[r * d + r].re, 0.0);
+        for c in (r + 1)..d {
+            let sym = 0.5 * (out[r * d + c] + out[c * d + r].conj());
+            out[r * d + c] = sym;
+            out[c * d + r] = sym.conj();
+        }
+    }
+
+    Ok(Evaluation {
+        energy,
+        per_u_eff,
+        interaction,
+        double_counting,
         spin_vector,
         potential: Potential {
             layout,

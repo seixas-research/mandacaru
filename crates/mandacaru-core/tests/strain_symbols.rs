@@ -156,14 +156,14 @@ fn strain_voigt() -> [(usize, usize); 6] {
 }
 
 #[test]
-fn the_shape_slope_is_the_slope_of_the_linear_piece() {
+fn the_shape_slope_is_the_smooth_cubic_derivative() {
     let ctx = context();
     let cell = Cell::load(&ctx, "si");
     let q_max = max_wavenumber(&ctx, &cell.grid).unwrap();
     let shapes = Shapes::new(&ctx, &cell.sites(), q_max).unwrap();
     let table = shapes.table(cell.atoms[0].compensation_radius, 1).unwrap();
-    for x in [0.0123, 0.5049, 3.3351, 17.775, 119.9951] {
-        let half = 0.5 * SHAPE_TABLE_STEP * 0.4;
+    for x in [0.0123, 0.5049, 1.0, 3.3351, 17.775, 119.9951] {
+        let half = 1e-5;
         let numeric = (table.at(x + half) - table.at(x - half)) / (2. * half);
         assert!(
             (table.slope(x) - numeric).abs() < 1e-9 * numeric.abs().max(1e-3),
@@ -173,10 +173,12 @@ fn the_shape_slope_is_the_slope_of_the_linear_piece() {
     // Clamped outside the table, as `at` is.
     assert_eq!(table.slope(-1.), 0.);
     assert_eq!(table.slope(1e9), 0.);
-    // On a node the slope is the right-hand one.
+    // Smooth across a table knot: slope matches centered finite difference straddling q[j].
     let j = 100;
-    let right = (table.f[j + 1] - table.f[j]) / (table.q[j + 1] - table.q[j]);
-    assert_eq!(table.slope(table.q[j]), right);
+    let qj = table.q[j];
+    let half = 1e-4;
+    let central = (table.at(qj + half) - table.at(qj - half)) / (2. * half);
+    assert!((table.slope(qj) - central).abs() < 1e-9);
 }
 
 #[test]
@@ -284,7 +286,12 @@ fn the_shape_gradient_is_the_difference_of_the_shapes_under_a_strain() {
         println!("{name}: shape gradient {gap:.2e} of max {scale:.2e}; controls: sign {flipped:.2e}, transposed {transposed:.2e}, exact radial derivative {exact_radial:.2e}, no angular gradient {no_angular:.2e}");
         assert!(scale > 1.);
         assert!(gap < 1e-8 * scale, "{name}");
-        for control in [flipped, transposed, exact_radial, no_angular] {
+        // Smooth cubic ShapeTable matches the exact continuous radial Bessel derivative:
+        assert!(
+            exact_radial < 1e-8 * scale,
+            "{name}: cubic shape slope agrees with exact derivative"
+        );
+        for control in [flipped, transposed, no_angular] {
             assert!(
                 control > 100. * 1e-8 * scale,
                 "{name}: a control does not bite"

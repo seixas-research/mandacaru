@@ -619,9 +619,11 @@ fn sparse_forward_states(
     }
     let mut states = Vec::with_capacity(length);
     let mut cur = vec![(start_row, C64::new(1., 0.))];
+    let mut next = Vec::new();
     for (k, g) in ops.iter().enumerate() {
         let (x, linear, quadratic) = rotations[k];
-        cur = g.rotate_sparse_state(basis, x, linear, quadratic, &cur);
+        g.rotate_sparse_state_into(basis, x, linear, quadratic, &cur, &mut next);
+        std::mem::swap(&mut cur, &mut next);
         if k + 1 < length {
             states.push(cur.clone());
         } else {
@@ -649,10 +651,13 @@ fn tangent_gradient_with(
         .sum::<usize>()
         .saturating_mul(length);
     let compute_k = |k: usize| -> f64 {
-        let mut tk = ops[k].apply_sparse_state(basis, &states[k]);
+        let mut tk = Vec::new();
+        let mut next = Vec::new();
+        ops[k].apply_sparse_state_into(basis, &states[k], &mut tk);
         for j in k + 1..length {
             let (x, linear, quadratic) = rotations[j];
-            tk = ops[j].rotate_sparse_state(basis, x, linear, quadratic, &tk);
+            ops[j].rotate_sparse_state_into(basis, x, linear, quadratic, &tk, &mut next);
+            std::mem::swap(&mut tk, &mut next);
         }
         2. * overlap_with(&tk).re / normalization
     };
@@ -1047,11 +1052,13 @@ pub(super) fn forward_from_row<'h, A: Amplitude>(
         }
         let sparse_limit = d / 8;
         let mut entries = vec![(start_row, C64::new(1., 0.))];
+        let mut next = Vec::new();
         let mut fell_back = None;
         for (k, (&g, &t)) in ops.iter().zip(theta).enumerate() {
             let (x, linear, quadratic) = pair_rotation(g, t)?
                 .ok_or_else(|| Error::Invalid("operator lacks single-mask pair rotation".into()))?;
-            entries = g.rotate_sparse_state(basis, x, linear, quadratic, &entries);
+            g.rotate_sparse_state_into(basis, x, linear, quadratic, &entries, &mut next);
+            std::mem::swap(&mut entries, &mut next);
             if entries.len() >= sparse_limit {
                 fell_back = Some(k + 1);
                 break;
@@ -1373,12 +1380,15 @@ fn importance_at<A: Amplitude>(
         if let Some(p_sup) = prefix_support {
             let p_sparse: Vec<(usize, C64)> =
                 p_sup.iter().map(|&r| (r, prefix[r].widen())).collect();
-            let mut ti = ops[i].apply_sparse_state(basis, &p_sparse);
+            let mut ti = Vec::new();
+            let mut next = Vec::new();
+            ops[i].apply_sparse_state_into(basis, &p_sparse, &mut ti);
             for j in i + 1..length {
                 let (x, linear, quadratic) = pair_rotation(ops[j], theta[j])?.ok_or_else(|| {
                     Error::Invalid("operator lacks single-mask pair rotation".into())
                 })?;
-                ti = ops[j].rotate_sparse_state(basis, x, linear, quadratic, &ti);
+                ops[j].rotate_sparse_state_into(basis, x, linear, quadratic, &ti, &mut next);
+                std::mem::swap(&mut ti, &mut next);
             }
             let psi = scratch.data.as_slice();
             let wide = scratch.wide.as_slice();
@@ -1492,6 +1502,7 @@ fn importances_sparse(
     }
     let mut prefixes = Vec::with_capacity(length);
     let mut cur = vec![(start_row, C64::new(1., 0.))];
+    let mut next_prefix = Vec::new();
     for i in 0..length {
         if !is_sparse(cur.len()) {
             return Ok(None);
@@ -1499,7 +1510,8 @@ fn importances_sparse(
         if i + 1 < length {
             prefixes.push(cur.clone());
             let (x, linear, quadratic) = rotations[i];
-            cur = ops[i].rotate_sparse_state(basis, x, linear, quadratic, &cur);
+            ops[i].rotate_sparse_state_into(basis, x, linear, quadratic, &cur, &mut next_prefix);
+            std::mem::swap(&mut cur, &mut next_prefix);
         } else {
             prefixes.push(cur);
             break;
@@ -1508,9 +1520,11 @@ fn importances_sparse(
 
     let eval_position = |i: usize| -> Result<Option<(f64, Work)>> {
         let mut psi = prefixes[i].clone();
+        let mut next = Vec::new();
         for j in i + 1..length {
             let (x, linear, quadratic) = rotations[j];
-            psi = ops[j].rotate_sparse_state(basis, x, linear, quadratic, &psi);
+            ops[j].rotate_sparse_state_into(basis, x, linear, quadratic, &psi, &mut next);
+            std::mem::swap(&mut psi, &mut next);
             if !is_sparse(psi.len()) {
                 return Ok(None);
             }
@@ -1528,10 +1542,12 @@ fn importances_sparse(
             return Err(Error::Kernel("invalid Hermitian expectation value".into()));
         }
         let hpsi = h.centered_action_sparse_on_kets(basis, &psi, &kets);
-        let mut ti = ops[i].apply_sparse_state(basis, &prefixes[i]);
+        let mut ti = Vec::new();
+        ops[i].apply_sparse_state_into(basis, &prefixes[i], &mut ti);
         for j in i + 1..length {
             let (x, linear, quadratic) = rotations[j];
-            ti = ops[j].rotate_sparse_state(basis, x, linear, quadratic, &ti);
+            ops[j].rotate_sparse_state_into(basis, x, linear, quadratic, &ti, &mut next);
+            std::mem::swap(&mut ti, &mut next);
         }
         let overlap = sparse_residual_inner(&ti, &hpsi, &psi, energy.re);
         let g_i = 2. * overlap.re / norm_sqr;

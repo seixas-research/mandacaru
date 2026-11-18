@@ -145,7 +145,9 @@ impl QuantumProblem {
                         best = Some((out, state));
                     }
                 }
-                let (out, state) = best.unwrap();
+                let (out, state) = best.ok_or_else(|| {
+                    Error::Invalid("deflation requires at least one restart".into())
+                })?;
                 let mut action = ctx.allocate::<C64>(d)?;
                 self.hamiltonian
                     .apply_into(basis, state.as_slice(), action.as_mut_slice());

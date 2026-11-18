@@ -57,30 +57,55 @@ pub(crate) fn nodes_inside(r: &[f64], radius: f64) -> usize {
     (r.partition_point(|x| *x < radius) + 1).min(r.len())
 }
 
+/// Short-range hole-model semilocal exchange energy and radial potentials `(energy, local, gradient)`.
+fn short_range_hole(
+    ctx: &Context,
+    r: &[f64],
+    shell: &[f64],
+    density: &[f64],
+    omega: f64,
+) -> Result<(f64, Vec<f64>, Vec<f64>)> {
+    let slope = gradient_first_edge(r, density)?;
+    let values = density
+        .iter()
+        .zip(&slope)
+        .flat_map(|(n, s)| [*n, s * s])
+        .collect::<Vec<_>>();
+    let hole = exchange_hole_batch(ctx, &values, omega)?;
+    let hole = hole.as_slice();
+    let grid = r.len();
+    let integrand = (0..grid)
+        .map(|i| hole[3 * i] * shell[i])
+        .collect::<Vec<_>>();
+    Ok((
+        trapezoid(r, &integrand),
+        (0..grid).map(|i| hole[3 * i + 1]).collect(),
+        (0..grid).map(|i| 2. * hole[3 * i + 2] * slope[i]).collect(),
+    ))
+}
+
 /// `(X0 - V.D0, {l: V_l})`: the reference atom's one-center short-range semilocal
 /// exchange, linearized, in the hole model with screening `omega`
-/// (unpolarized densities). `X0 = E[n1] - E[n1~ + n~_c]`, `V_ij` the matrix
-/// elements of the exchange potentials of the all-electron valence density and of the smooth
-/// valence density plus `smooth_core`.
+/// (unpolarized densities). `X0 = (E[n1 + n_c] - E[n_c]) - E[n1~ + n~_c]`, `V_ij` the matrix
+/// elements of the exchange potentials of the all-electron density (valence plus frozen core when
+/// present) and of the smooth valence density plus `smooth_core`.
 ///
 /// The grid evaluates the short-range functional on the smooth valence density plus the smooth
-/// core of the nonlinear core correction, while the exact exchange it replaces is the valence
-/// electrons' only. The sphere therefore takes the whole smooth side off, core included, and
-/// restores the all-electron VALENCE density: grid plus spheres is then the valence short-range
-/// exchange `E[n_v]`, with no core self or core-valence term left over. (Putting the frozen core
-/// on the all-electron side would subtract core exchange nothing adds back.) `smooth_core` is
-/// the core the grid places: zeros without a nonlinear core correction.
+/// core of the nonlinear core correction, while core-valence exact exchange is added in
+/// [`super::screened_atom::screened`]. Subtracting the constant `E[n_c]` keeps the frozen core's
+/// self-exchange out of the total energy, matching the Kohn-Sham one-center convention.
 pub fn frozen_exchange_terms(
     ctx: &Context,
     r: &[f64],
+    core_density: Option<&[f64]>,
     smooth_core: &[f64],
     channels: &[Occupied<'_>],
     omega: f64,
     basis: Basis,
 ) -> Result<(f64, Vec<Block>)> {
     let grid = r.len();
-    if smooth_core.len() != grid {
-        return Err(invalid("the smooth core does not match the radial grid"));
+    if smooth_core.len() != grid || core_density.is_some_and(|c| c.len() != grid) {
+        return Err(invalid("the core density does not match the radial grid"));
     }
     let channels = sorted(channels, grid)?;
     let shell = r.iter().map(|r| 4. * PI * r * r).collect::<Vec<_>>();
@@ -100,30 +125,24 @@ pub fn frozen_exchange_terms(
                 }
             }
         }
-        if side == 1 {
-            for (n, core) in n.iter_mut().zip(smooth_core) {
+        let added = if side == 0 {
+            core_density
+        } else {
+            Some(smooth_core)
+        };
+        if let Some(core) = added {
+            for (n, core) in n.iter_mut().zip(core) {
                 *n += core;
             }
         }
-        let slope = gradient_first_edge(r, &n)?;
-        let values = n
-            .iter()
-            .zip(&slope)
-            .flat_map(|(n, s)| [*n, s * s])
-            .collect::<Vec<_>>();
-        let hole = exchange_hole_batch(ctx, &values, omega)?;
-        let hole = hole.as_slice();
-        let integrand = (0..grid)
-            .map(|i| hole[3 * i] * shell[i])
-            .collect::<Vec<_>>();
-        energy[side] = trapezoid(r, &integrand);
-        potentials.push((
-            (0..grid).map(|i| hole[3 * i + 1]).collect::<Vec<_>>(),
-            (0..grid)
-                .map(|i| 2. * hole[3 * i + 2] * slope[i])
-                .collect::<Vec<_>>(),
-        ));
+        let (side_energy, local, gradient) = short_range_hole(ctx, r, &shell, &n, omega)?;
+        energy[side] = side_energy;
+        potentials.push((local, gradient));
     }
+    let core_energy = match core_density {
+        Some(core) => short_range_hole(ctx, r, &shell, core, omega)?.0,
+        None => 0.,
+    };
     let inside = nodes_inside(
         r,
         channels
@@ -171,7 +190,7 @@ pub fn frozen_exchange_terms(
             matrix,
         });
     }
-    Ok((energy[0] - energy[1] - linear, blocks))
+    Ok(((energy[0] - core_energy) - energy[1] - linear, blocks))
 }
 
 /// A frozen-core subshell: its angular momentum, electrons and radial function `R(r)`.

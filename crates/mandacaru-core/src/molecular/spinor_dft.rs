@@ -42,22 +42,23 @@ pub struct SpinorEvaluation {
     pub xc: f64,
     /// The Hartree energy (of the charge alone).
     pub hartree: f64,
+    pub hubbard_energy: Option<f64>,
+    pub hubbard_report: Option<Vec<super::hubbard::MolecularHubbardReport>>,
 }
 
-/// What a spinor Kohn-Sham state cannot carry yet, refused by name.
+/// Checks whether the spinor Kohn-Sham calculation stays within the supported scope.
 pub fn check(integrals: &MolecularIntegrals, name: &str) -> Result<()> {
     crate::models::functional(name)?;
-    let refuse = |what: &str| {
-        Err(crate::Error::Unsupported(format!(
-            "spinor molecular Kohn-Sham is not available for {what}"
-        )))
-    };
     if integrals
         .corrections
         .as_ref()
         .is_some_and(|c| c.hubbard.is_some())
     {
-        return refuse("DFT+U");
+        let precision = match integrals.precision() {
+            crate::math::storage::Precision::Float64 => "float64",
+            crate::math::storage::Precision::Float32 => "float32",
+        };
+        crate::models::hubbard_request::check_scope(name, precision)?;
     }
     Ok(())
 }
@@ -208,12 +209,12 @@ pub fn spinor_response(
 
 /// What every evaluation of one functional on one geometry shares, built once per SCF rather
 /// than per iteration: a meta-GGA's orbital gradients and a screened hybrid's pair integrals.
-pub(super) struct Shared {
+pub(in crate::molecular) struct Shared {
     gradients: Option<RealSamples>,
     screening: Option<super::dft::Screening>,
 }
 impl Shared {
-    pub(super) fn new(integrals: &MolecularIntegrals, name: &str) -> Result<Self> {
+    pub(in crate::molecular) fn new(integrals: &MolecularIntegrals, name: &str) -> Result<Self> {
         check(integrals, name)?;
         let gradients = crate::models::functional(name)?
             .requires_tau
@@ -228,14 +229,14 @@ impl Shared {
 
 /// The Pauli-channel exchange-correlation potentials of a spinor density, frame terms included:
 /// `v` (`4 n`) and, for a meta-GGA, `(v_tau, flux)` (`4 n`, `4 x 3 n`).
-pub(super) struct ChannelPotentials {
+pub(in crate::molecular) struct ChannelPotentials {
     pub v: Buffer<f64>,
     pub meta: Option<(Buffer<f64>, Buffer<f64>)>,
 }
 
 /// [`spinor_response`] and what its force needs: the restricted evaluation's grid fields (the
 /// charge, its Hartree potential) and the Pauli-channel exchange-correlation potentials.
-pub(super) fn spinor_parts(
+pub(in crate::molecular) fn spinor_parts(
     integrals: &MolecularIntegrals,
     d: &Matrix,
     name: &str,
@@ -250,7 +251,7 @@ pub(super) fn spinor_parts(
     // The restricted state of the same charge: every term but the exchange-correlation.
     let charge = noncollinear::component(d, m, 0);
     let half = &charge * C64::new(0.5, 0.);
-    let (mut fock, fields, mut energy, hartree) = super::dft::response_with_shared(
+    let (mut fock, fields, mut energy, hartree) = super::dft::response_without_hubbard(
         integrals,
         &[half.clone()],
         name,
@@ -473,12 +474,27 @@ pub(super) fn spinor_parts(
         out += h;
         fixed = (d * h).trace().re;
     }
+    let hubbard_eval = integrals
+        .corrections
+        .as_ref()
+        .and_then(|c| c.hubbard.as_ref())
+        .map(|hubbard| hubbard.evaluate_spinor(ctx, d))
+        .transpose()?;
+    let (hubbard_energy, hubbard_report) = match hubbard_eval {
+        Some((e_u, delta_fock, report)) => {
+            out += delta_fock;
+            (Some(e_u), Some(report))
+        }
+        None => (None, None),
+    };
     Ok((
         SpinorEvaluation {
             fock: out,
-            energy: energy - restricted_xc + terms.energy + fixed,
+            energy: energy - restricted_xc + terms.energy + fixed + hubbard_energy.unwrap_or(0.),
             xc: terms.energy,
             hartree,
+            hubbard_energy,
+            hubbard_report,
         },
         fields,
         ChannelPotentials {
@@ -584,6 +600,51 @@ impl MolecularIntegrals {
             Some(start),
         )
     }
+    /// Spinor Kohn-Sham with Fermi-Dirac ensemble occupations at `width` Hartree (`U3`).
+    pub fn spinor_kohn_sham_smeared(
+        &self,
+        functional: &str,
+        electrons: usize,
+        width: f64,
+        options: &super::scf::ScfOptions,
+    ) -> Result<super::scf::MeanField> {
+        if !width.is_finite() || width <= 0. {
+            return Err(invalid("the Fermi-Dirac width must be positive and finite"));
+        }
+        self.spinor_kohn_sham_solve(functional, electrons, options, None, None, Some(width))
+    }
+    /// Restarts a converged spinor Kohn-Sham calculation from `ground_state` under an optional
+    /// `2m x 2m` Hermitian one-body potential shift, holding `electrons` and optional `width` fixed.
+    pub fn spinor_kohn_sham_shifted(
+        &self,
+        functional: &str,
+        ground_state: &super::scf::MeanField,
+        shift: Option<&Matrix>,
+        width: Option<f64>,
+        options: &super::scf::ScfOptions,
+    ) -> Result<super::scf::MeanField> {
+        if ground_state.method != "ghf" || !ground_state.converged {
+            return Err(invalid(
+                "spinor_kohn_sham_shifted needs a converged spinor Kohn-Sham reference",
+            ));
+        }
+        let m2 = 2 * self.m();
+        if let Some(s) = shift {
+            if s.shape() != (m2, m2) {
+                return Err(invalid("spinor shift operator must have shape (2m, 2m)"));
+            }
+        }
+        let electrons = ground_state.particles[0] + ground_state.particles[1];
+        let eff_width = width.or(ground_state.smearing_width);
+        self.spinor_kohn_sham_solve(
+            functional,
+            electrons,
+            options,
+            Some(ground_state.densities[0].clone()),
+            shift,
+            eff_width,
+        )
+    }
     /// Spinor Kohn-Sham from the default starts, or from the orbitals of the Fock matrix of
     /// `density` (a `2m x 2m` start density) when one is given.
     fn spinor_kohn_sham_from(
@@ -593,12 +654,40 @@ impl MolecularIntegrals {
         options: &super::scf::ScfOptions,
         density: Option<Matrix>,
     ) -> Result<super::scf::MeanField> {
+        self.spinor_kohn_sham_solve(functional, electrons, options, density, None, None)
+    }
+    /// Evaluates the `2m x 2m` spinor Fock matrix and energy at `density`.
+    pub(crate) fn spinor_kohn_sham_fock(
+        &self,
+        functional: &str,
+        density: &Matrix,
+    ) -> Result<(Matrix, f64)> {
+        check(self, functional)?;
+        let spin_orbit = spin_orbit_term(self)?;
+        let shared = Shared::new(self, functional)?;
+        let e = spinor_parts(self, density, functional, spin_orbit.as_ref(), &shared)?.0;
+        Ok((e.fock, e.energy))
+    }
+    fn spinor_kohn_sham_solve(
+        &self,
+        functional: &str,
+        electrons: usize,
+        options: &super::scf::ScfOptions,
+        density: Option<Matrix>,
+        shift: Option<&Matrix>,
+        width: Option<f64>,
+    ) -> Result<super::scf::MeanField> {
         if self.corrections.as_ref().is_some_and(|c| c.dft.is_none()) {
             return Err(invalid(
                 "native molecular PAW Kohn-Sham augmentation is not yet implemented",
             ));
         }
         check(self, functional)?;
+        if let Some(w) = width {
+            if !w.is_finite() || w <= 0. {
+                return Err(invalid("the Fermi-Dirac width must be positive and finite"));
+            }
+        }
         let m = self.m();
         if electrons == 0
             || electrons > 2 * m
@@ -626,7 +715,7 @@ impl MolecularIntegrals {
             if let Some(so) = &spin_orbit {
                 h += so;
             }
-            let (_, core) = crate::math::linalg::eigen(h)?;
+            let (core_levels, core) = crate::math::linalg::eigen(h)?;
             // A start with the highest occupied and lowest empty spinors turned in spin space, so the
             // iteration does not begin collinear.
             let mut turned = core.clone();
@@ -640,16 +729,35 @@ impl MolecularIntegrals {
                 }
             }
             let shared = Shared::new(self, functional)?;
-            let evaluate = |d: &Matrix| {
-                spinor_parts(self, d, functional, spin_orbit.as_ref(), &shared).map(|p| p.0)
+            let evaluate = |d: &Matrix| -> Result<SpinorEvaluation> {
+                let mut e = spinor_parts(self, d, functional, spin_orbit.as_ref(), &shared)?.0;
+                if let Some(sh) = shift {
+                    e.fock += sh;
+                    e.energy += (d * sh).trace().re;
+                }
+                Ok(e)
             };
-            let starts = match &density {
-                Some(d) => vec![crate::math::linalg::eigen(evaluate(d)?.fock)?.1],
-                None => vec![core, turned],
+            let starts: Vec<(Matrix, Vec<f64>)> = match &density {
+                Some(d) => {
+                    let (lv, co) = crate::math::linalg::eigen(evaluate(d)?.fock)?;
+                    vec![(co, lv)]
+                }
+                None => vec![(core, core_levels.clone()), (turned, core_levels)],
             };
-            let mut best: Option<(super::scf::Candidate, f64, f64)> = None;
-            for start in starts {
-                let run = self.iterate_start(&[start], &[electrons], None, options, |d| {
+            let mut best: Option<(
+                super::scf::Candidate,
+                f64,
+                f64,
+                Option<(f64, Vec<super::hubbard::MolecularHubbardReport>)>,
+            )> = None;
+            for (start, start_levels) in starts {
+                let level_buf = [start_levels];
+                let filling = width.map(|w| super::dft::Filling {
+                    levels: &level_buf,
+                    width: w,
+                    degeneracy: 1.,
+                });
+                let run = self.iterate_start(&[start], &[electrons], filling, options, |d| {
                     let e = evaluate(&d[0])?;
                     Ok((vec![e.fock], e.energy))
                 })?;
@@ -657,6 +765,19 @@ impl MolecularIntegrals {
                     (run.coefficients, run.densities, run.history, run.converged);
                 let value = evaluate(&d[0])?;
                 let (energies, _) = crate::math::linalg::eigen(value.fock.clone())?;
+                let column_levels: Vec<f64> = (0..c[0].ncols())
+                    .map(|j| (c[0].column(j).adjoint() * &value.fock * c[0].column(j))[(0, 0)].re)
+                    .collect();
+                let inversion = super::occupation::non_aufbau(
+                    &column_levels,
+                    &run.occupations[0],
+                    super::scf::AUFBAU_TOLERANCE,
+                )
+                .map(|(i, a)| column_levels[i] - column_levels[a]);
+                let mut order: Vec<usize> = (0..column_levels.len()).collect();
+                order.sort_by(|&a, &b| column_levels[a].total_cmp(&column_levels[b]));
+                let ordered: Vec<f64> = order.into_iter().map(|j| run.occupations[0][j]).collect();
+                let fractional = !super::occupation::is_integer(&ordered);
                 let candidate = super::scf::Candidate {
                     energy: value.energy,
                     converged,
@@ -665,27 +786,34 @@ impl MolecularIntegrals {
                     densities: d,
                     energies: vec![energies],
                     unstable_pair: None,
-                    occupations: None,
-                    aufbau_inversion: None,
-                    entropy: 0.,
+                    occupations: fractional.then_some(vec![ordered]),
+                    aufbau_inversion: inversion,
+                    entropy: run.entropy,
                 };
                 if best
                     .as_ref()
-                    .is_none_or(|(b, _, _)| candidate.beats(b, options.tolerance))
+                    .is_none_or(|(b, _, _, _)| candidate.beats(b, options.tolerance))
                 {
-                    best = Some((candidate, value.hartree, value.xc));
+                    best = Some((
+                        candidate,
+                        value.hartree,
+                        value.xc,
+                        value.hubbard_energy.zip(value.hubbard_report),
+                    ));
                 }
             }
-            let (candidate, eh, exc) = best.expect("a start ran");
-            self.finish(
+            let (candidate, eh, exc, hubbard_data) = best.expect("a start ran");
+            let mut out = self.finish(
                 "ghf",
                 [electrons.div_ceil(2), electrons / 2],
                 options,
                 candidate,
                 workspace,
                 Some((functional, eh, exc)),
-                None,
-            )
+                hubbard_data,
+            )?;
+            out.smearing_width = width;
+            Ok(out)
         })
     }
 }
@@ -898,6 +1026,7 @@ impl MolecularIntegrals {
                 orbitals,
                 stationarity,
                 exact_exchange: false,
+                hubbard: false,
             };
             let mut gradient = self.contract_frozen(frozen, setup)?;
             let atoms = self.geometry.numbers().len();
@@ -924,14 +1053,26 @@ impl MolecularIntegrals {
                     extra.push((term, values));
                 }
             }
-            if spin_orbit.is_some() {
+            let has_hubbard = self
+                .corrections
+                .as_ref()
+                .is_some_and(|c| c.hubbard.is_some());
+            if spin_orbit.is_some() || has_hubbard {
                 let (ao, li) = (l.nrows(), l.map(|v| C64::new(v, 0.)));
                 let mut lift = Matrix::zeros(2 * ao, 2 * m);
                 lift.view_mut((0, 0), (ao, m)).copy_from(&li);
                 lift.view_mut((ao, m), (ao, m)).copy_from(&li);
                 let d_ao = &lift * d * lift.transpose();
-                let so = setup.spin_orbit_gradient(&self.context, self.geometry.positions(), &d_ao)?;
-                extra.push(("spin_orbit/projections", so.into_iter().flatten().collect()));
+                if spin_orbit.is_some() {
+                    let so =
+                        setup.spin_orbit_gradient(&self.context, self.geometry.positions(), &d_ao)?;
+                    extra.push(("spin_orbit/projections", so.into_iter().flatten().collect()));
+                }
+                if let Some(hubbard_grad) =
+                    crate::paw::molecular::gradient::hubbard_spinor_force(setup, self, &d_ao)?
+                {
+                    extra.push(("hubbard/projection", hubbard_grad));
+                }
             }
             for (name, values) in extra {
                 for (t, v) in gradient.total.as_mut_slice().iter_mut().zip(&values) {

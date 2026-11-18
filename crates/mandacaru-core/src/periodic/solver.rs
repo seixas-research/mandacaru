@@ -169,6 +169,69 @@ pub(super) fn sym_field(c: &Crystal, field: &[f64], out: &mut [f64]) {
             c.permutations.iter().map(|p| field[p[k]]).sum::<f64>() / c.permutations.len() as f64;
     }
 }
+
+/// Returns `sigma_TR * det(R) R` for every kept magnetic operation when `c.permutations` is
+/// nonempty (each entry maps axial vectors `m`, `v_spin`, `tau_vec`, `d_k` from the crystal
+/// frame to its star image).
+pub(super) fn magnetic_axial_rotations(c: &Crystal) -> Result<Vec<nalgebra::Matrix3<f64>>> {
+    let description = c.description.as_ref().ok_or_else(|| {
+        invalid("symmetrizing magnetic spinor fields requires the setup description")
+    })?;
+    let group = description.point_group.as_ref().ok_or_else(|| {
+        invalid("symmetrizing magnetic spinor fields requires the point group rotations")
+    })?;
+    let flags = description
+        .operations
+        .as_ref()
+        .and_then(|o| o.anti_unitary.as_ref())
+        .ok_or_else(|| {
+            invalid("symmetrizing magnetic spinor fields requires anti_unitary operation flags")
+        })?;
+    if group.len() != c.permutations.len() || flags.len() != c.permutations.len() {
+        return Err(invalid(
+            "magnetic spinor symmetry operations do not match the crystal's permutations",
+        ));
+    }
+    Ok(group
+        .rotations()
+        .iter()
+        .zip(flags)
+        .map(|(r, &anti)| r * (r.determinant() * if anti { -1. } else { 1. }))
+        .collect())
+}
+
+/// Symmetrizes a 4-component spinor Pauli field `[n_or_v0, mx_or_vx, my_or_vy, mz_or_vz]` (`4 * n`)
+/// under the magnetic little group: channel 0 as a scalar, channels 1..4 as an axial vector
+/// transformed by `sigma_TR * det(R) R` (`sigma_TR = -1` for anti-unitary `T * g`, `+1` for unitary `g`).
+pub(super) fn sym_pauli_fields(c: &Crystal, fields: &[f64], out: &mut [f64]) -> Result<()> {
+    let n = c.grid.index.points();
+    if fields.len() != 4 * n || out.len() != 4 * n {
+        return Err(invalid("spinor Pauli fields must match 4 * grid points"));
+    }
+    if c.permutations.is_empty() {
+        out.copy_from_slice(fields);
+        return Ok(());
+    }
+    sym_field(c, &fields[..n], &mut out[..n]);
+    let axial_t: Vec<nalgebra::Matrix3<f64>> = magnetic_axial_rotations(c)?
+        .into_iter()
+        .map(|m| m.transpose())
+        .collect();
+    let inv_n = 1. / c.permutations.len() as f64;
+    for k in 0..n {
+        let mut sum = nalgebra::Vector3::<f64>::zeros();
+        for (perm, m_t) in c.permutations.iter().zip(&axial_t) {
+            let p = perm[k];
+            sum +=
+                m_t * nalgebra::Vector3::new(fields[n + p], fields[2 * n + p], fields[3 * n + p]);
+        }
+        let avg = sum * inv_n;
+        out[n + k] = avg[0];
+        out[2 * n + k] = avg[1];
+        out[3 * n + k] = avg[2];
+    }
+    Ok(())
+}
 pub(super) fn reciprocal(c: &Crystal, fft: &mut Fft3, input: &[f64]) -> Result<Buffer<C64>> {
     let mut out = c.context.allocate::<C64>(input.len())?;
     for (a, &b) in out.as_mut_slice().iter_mut().zip(input) {
@@ -535,29 +598,42 @@ pub(super) fn local_potential(
     let terms = exchange_correlation(c, fft, rho, tau)?;
     let mut xc = terms.potential;
     let mut kinetic = terms.kinetic_potential;
-    let mut work = c.context.allocate::<f64>(n)?;
-    for s in 0..c.field_channels() {
+    if c.spinor && !c.time_reversal {
+        let mut work = c.context.allocate::<f64>(4 * n)?;
+        work.as_mut_slice().copy_from_slice(xc.as_slice());
         for k in 0..n {
-            work.as_mut_slice()[k] = xc.as_slice()[s * n + k]
-                + if !c.spinor || s == 0 {
-                    electro.potential.as_slice()[k]
-                } else {
-                    0.
-                };
+            work.as_mut_slice()[k] += electro.potential.as_slice()[k];
         }
-        sym_field(
-            c,
-            work.as_slice(),
-            &mut xc.as_mut_slice()[s * n..(s + 1) * n],
-        );
+        sym_pauli_fields(c, work.as_slice(), xc.as_mut_slice())?;
         if let Some(v) = &mut kinetic {
-            work.as_mut_slice()
-                .copy_from_slice(&v.as_slice()[s * n..(s + 1) * n]);
+            work.as_mut_slice().copy_from_slice(v.as_slice());
+            sym_pauli_fields(c, work.as_slice(), v.as_mut_slice())?;
+        }
+    } else {
+        let mut work = c.context.allocate::<f64>(n)?;
+        for s in 0..c.field_channels() {
+            for k in 0..n {
+                work.as_mut_slice()[k] = xc.as_slice()[s * n + k]
+                    + if !c.spinor || s == 0 {
+                        electro.potential.as_slice()[k]
+                    } else {
+                        0.
+                    };
+            }
             sym_field(
                 c,
                 work.as_slice(),
-                &mut v.as_mut_slice()[s * n..(s + 1) * n],
+                &mut xc.as_mut_slice()[s * n..(s + 1) * n],
             );
+            if let Some(v) = &mut kinetic {
+                work.as_mut_slice()
+                    .copy_from_slice(&v.as_slice()[s * n..(s + 1) * n]);
+                sym_field(
+                    c,
+                    work.as_slice(),
+                    &mut v.as_mut_slice()[s * n..(s + 1) * n],
+                );
+            }
         }
     }
     Ok(LocalPotential {
@@ -670,8 +746,41 @@ pub fn diagonalize_with_solver_ws(
     previous_y: Option<&Matrix>,
     projector_ws: Option<&mut crate::math::projection::ComplexProjectorWorkspace>,
 ) -> Result<(Vec<f64>, Matrix, Matrix)> {
+    diagonalize_with_solver_ws_irreps(
+        c,
+        data,
+        v,
+        w,
+        kinetic_potential,
+        hubbard,
+        exchange,
+        eigensolver,
+        switch_tolerance,
+        current_residual,
+        previous_y,
+        projector_ws,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn diagonalize_with_solver_ws_irreps(
+    c: &Crystal,
+    data: &KPoint,
+    v: &[f64],
+    w: &[C64],
+    kinetic_potential: Option<&[f64]>,
+    hubbard: Option<&Matrix>,
+    exchange: Option<&Matrix>,
+    eigensolver: Eigensolver,
+    switch_tolerance: f64,
+    current_residual: f64,
+    previous_y: Option<&Matrix>,
+    projector_ws: Option<&mut crate::math::projection::ComplexProjectorWorkspace>,
+    irrep_projectors: Option<&super::irreps::IrrepProjectors>,
+) -> Result<(Vec<f64>, Matrix, Matrix)> {
     if c.spinor {
-        return super::spinor::diagonalize_with_solver(
+        return super::spinor::diagonalize_with_solver_and_irreps(
             c,
             data,
             v,
@@ -683,6 +792,7 @@ pub fn diagonalize_with_solver_ws(
             switch_tolerance,
             current_residual,
             previous_y,
+            irrep_projectors,
         );
     }
     let h = hamiltonian(
@@ -1234,6 +1344,11 @@ impl Crystal {
         self.solve_with(options, None, None)
     }
 
+    /// Solve SCF without precomputed double-group symmetry blocking (reference unblocked path).
+    pub fn solve_unblocked(&self, options: &Options) -> Result<PeriodicResult> {
+        self.solve_from_mode(options, None, None, None, None, false)
+    }
+
     /// The SCF from `initial` (or the crystal's own start) with optional `shifts`.
     ///
     /// A run that ends at `max_iterations` unconverged is repeated, and a repeat that converges
@@ -1257,7 +1372,18 @@ impl Crystal {
         initial: Option<&PeriodicResult>,
         shifts: Option<&[Matrix]>,
     ) -> Result<PeriodicResult> {
-        let first = self.solve_from(options, initial, shifts, None, None)?;
+        self.solve_with_hubbard(options, initial, shifts, None)
+    }
+
+    pub(crate) fn solve_with_hubbard(
+        &self,
+        options: &Options,
+        initial: Option<&PeriodicResult>,
+        shifts: Option<&[Matrix]>,
+        hubbard_override: Option<&super::hubbard::Spec>,
+    ) -> Result<PeriodicResult> {
+        let first =
+            self.solve_from_hubbard(options, initial, shifts, None, None, true, hubbard_override)?;
         if first.converged {
             return Ok(first);
         }
@@ -1270,7 +1396,7 @@ impl Crystal {
                     | crate::Error::LayoutBudget(_)
             )
         };
-        if let Some(spec) = self.hubbard.as_ref().filter(|h| {
+        if let Some(spec) = hubbard_override.or(self.hubbard.as_ref()).filter(|h| {
             initial.is_none()
                 && h.is_active()
                 && h.shells
@@ -1279,7 +1405,15 @@ impl Crystal {
         }) {
             let mut best: Option<PeriodicResult> = None;
             for start in spec.integer_starts(self)? {
-                let run = match self.solve_from(options, None, shifts, Some(&start), None) {
+                let run = match self.solve_from_hubbard(
+                    options,
+                    None,
+                    shifts,
+                    Some(&start),
+                    None,
+                    true,
+                    hubbard_override,
+                ) {
                     Ok(run) => run,
                     Err(error) if retained(&error) => break,
                     Err(error) => return Err(error),
@@ -1297,7 +1431,15 @@ impl Crystal {
             }
         }
         if options.algorithm == ScfAlgorithm::Diis && options.history > 1 {
-            match self.solve_from(options, initial, shifts, None, Some(MIXER_RESTART)) {
+            match self.solve_from_hubbard(
+                options,
+                initial,
+                shifts,
+                None,
+                Some(MIXER_RESTART),
+                true,
+                hubbard_override,
+            ) {
                 Ok(run) if run.converged => return Ok(run),
                 Ok(_) => {}
                 Err(error) if retained(&error) => {}
@@ -1307,13 +1449,36 @@ impl Crystal {
         Ok(first)
     }
 
-    fn solve_from(
+    fn solve_from_mode(
         &self,
         options: &Options,
         initial: Option<&PeriodicResult>,
         shifts: Option<&[Matrix]>,
         start: Option<&[Vec<C64>]>,
         restart: Option<f64>,
+        use_double_group_blocking: bool,
+    ) -> Result<PeriodicResult> {
+        self.solve_from_hubbard(
+            options,
+            initial,
+            shifts,
+            start,
+            restart,
+            use_double_group_blocking,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn solve_from_hubbard(
+        &self,
+        options: &Options,
+        initial: Option<&PeriodicResult>,
+        shifts: Option<&[Matrix]>,
+        start: Option<&[Vec<C64>]>,
+        restart: Option<f64>,
+        use_double_group_blocking: bool,
+        hubbard_override: Option<&super::hubbard::Spec>,
     ) -> Result<PeriodicResult> {
         let c = self;
         let ctx = &c.context;
@@ -1321,7 +1486,7 @@ impl Crystal {
         let nk = c.points.len();
         let m = c.bands();
         let meta = crate::models::functional(&c.functional)?.requires_tau;
-        let hub = c.hubbard.as_ref();
+        let hub = hubbard_override.or(c.hubbard.as_ref());
         let active = hub.is_some_and(|h| h.is_active());
         let hub_bytes = match hub {
             Some(h) => h.bytes(c)?,
@@ -1343,7 +1508,10 @@ impl Crystal {
             ));
         }
         if let Some(sh) = shifts {
-            if sh.len() != c.spins || sh.iter().any(|m| m.nrows() != c.p || m.ncols() != c.p) {
+            let valid = |m: &Matrix| {
+                m.nrows() == m.ncols() && (m.nrows() == c.p || (c.spinor && m.nrows() == 2 * c.p))
+            };
+            if sh.len() != c.spins || sh.iter().any(|m| !valid(m)) {
                 return Err(invalid(
                     "shift operators must match spins and projector dimension",
                 ));
@@ -1487,6 +1655,14 @@ impl Crystal {
                 Some(_) => super::exchange_state::zeros(c),
                 None => vec![],
             };
+            let irrep_blocks: Vec<Option<super::irreps::IrrepProjectors>> =
+                if use_double_group_blocking && c.spinor {
+                    ctx.map_independent(nk, |k_idx| {
+                        super::irreps::IrrepProjectors::for_crystal_point(c, &c.points[k_idx])
+                    })?
+                } else {
+                    vec![None; nk]
+                };
             let mut exchange_energy = 0.0;
             let mut previous_y: Vec<Option<Matrix>> = vec![None; c.spins * nk];
             for iteration in 1..=options.max_iterations {
@@ -1508,7 +1684,15 @@ impl Crystal {
                 let effective_operators: Option<Vec<Matrix>> = match (hub_operators, shifts) {
                     (Some(mut ops), Some(sh)) => {
                         for (op, s) in ops.iter_mut().zip(sh) {
-                            *op += s;
+                            if op.nrows() == 2 * c.p && s.nrows() == c.p {
+                                for block in 0..2 {
+                                    let mut dst =
+                                        op.view_mut((block * c.p, block * c.p), (c.p, c.p));
+                                    dst += s;
+                                }
+                            } else {
+                                *op += s;
+                            }
                         }
                         Some(ops)
                     }
@@ -1526,7 +1710,7 @@ impl Crystal {
                 // not depend on the layout.
                 let solved = ctx.map_tasks(Level::Kpts, &mut projector_ws, tasks, |ws, idx| {
                     let (s, k_idx) = (idx / nk, idx % nk);
-                    diagonalize_with_solver_ws(
+                    diagonalize_with_solver_ws_irreps(
                         c,
                         &c.points[k_idx],
                         if c.spinor {
@@ -1550,6 +1734,7 @@ impl Crystal {
                         current_residual,
                         previous_y[idx].as_ref(),
                         ws.as_mut(),
+                        irrep_blocks[k_idx].as_ref(),
                     )
                 })?;
                 for (idx, (eps, coeff, y_ortho)) in solved.into_iter().enumerate() {
@@ -1845,8 +2030,17 @@ impl Crystal {
         ground_state: &PeriodicResult,
         shifts: Option<&[Matrix]>,
     ) -> Result<Vec<Vec<C64>>> {
+        self.frozen_occupations_with(ground_state, shifts, None)
+    }
+
+    pub(crate) fn frozen_occupations_with(
+        &self,
+        ground_state: &PeriodicResult,
+        shifts: Option<&[Matrix]>,
+        hubbard_override: Option<&super::hubbard::Spec>,
+    ) -> Result<Vec<Vec<C64>>> {
         let c = self;
-        let hub = c.hubbard.as_ref().ok_or_else(|| {
+        let hub = hubbard_override.or(c.hubbard.as_ref()).ok_or_else(|| {
             invalid("frozen_occupations needs a crystal with a hubbard specification")
         })?;
         let ctx = &c.context;

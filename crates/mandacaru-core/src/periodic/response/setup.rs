@@ -10,19 +10,19 @@ use super::super::{
         provider::{Core, Inputs, Operators},
         pulay::Matrix,
         shapes::{Atom, Channel, Shapes, Sites, COMPENSATION_CUTOFF},
-        shells::{Radial, Shell, Shells},
+        shells::{Radial, Shells},
         spheres::Projector,
     },
     Crystal,
 };
 use crate::{paw::record::PawDataset, quantum::C64, Error, Result};
 use nalgebra::Matrix3;
-use std::{collections::BTreeMap, path::Path, sync::Arc};
+use std::{collections::BTreeMap, sync::Arc};
 
 /// The geometry of a crystal as the engines read it, owned. The borrowed views (`cores`, `inputs`)
 /// are made on demand.
 pub(in crate::periodic) struct Setup {
-    records: Vec<PawDataset>,
+    records: Vec<Arc<PawDataset>>,
     /// The record of every atom.
     kind: Vec<usize>,
     atoms: Vec<Atom>,
@@ -52,35 +52,7 @@ impl Setup {
             )));
         }
         // One record per distinct dataset file; each atom names its file and the digest it was read with.
-        let mut files: Vec<(&str, &str)> = Vec::new();
-        let mut kind = Vec::new();
-        for (file, digest) in &d.datasets {
-            let key = (file.as_str(), digest.as_str());
-            kind.push(match files.iter().position(|f| *f == key) {
-                Some(at) => at,
-                None => {
-                    files.push(key);
-                    files.len() - 1
-                }
-            });
-        }
-        let mut records = Vec::new();
-        for (file, digest) in files {
-            if file.is_empty() || digest.is_empty() {
-                return Err(Error::Unsupported(
-                    "a dataset of this crystal was not read from a file (the sites block has no \
-                     file name or digest), which forces and stress read again"
-                        .into(),
-                ));
-            }
-            let record = PawDataset::read(ctx, Path::new(file))?;
-            if record.content_sha256(ctx)? != digest {
-                return Err(invalid(format!(
-                    "{file} is not the dataset file the snapshot was built from (content SHA-256 differs)"
-                )));
-            }
-            records.push(record);
-        }
+        let (records, kind) = super::super::setup::snapshot::load_snapshot_datasets(c, d)?;
         let atoms: Vec<Atom> = d
             .centers
             .iter()
@@ -99,37 +71,7 @@ impl Setup {
         }
         let shape = c.grid.index.shape();
         let lattice = Matrix3::from_fn(|i, j| shape[j] as f64 * c.grid.step[(i, j)]);
-        // The basis: one shell per run of functions of one atom and one table.
-        let tables: Vec<Arc<Radial>> = d
-            .tables
-            .iter()
-            .map(|t| Radial::new(ctx, &t.r, &t.values, t.confinement).map(Arc::new))
-            .collect::<Result<_>>()?;
-        let mut shells: Vec<Shell> = Vec::new();
-        let mut shell_key: Vec<(usize, usize)> = Vec::new();
-        for (row, ((&atom, &m), &table)) in d
-            .function_atom
-            .iter()
-            .zip(&d.function_m)
-            .zip(&d.function_table)
-            .enumerate()
-        {
-            if shell_key.last() == Some(&(atom, table)) {
-                let s = shells.last_mut().expect("a shell per key");
-                s.ms.push(m);
-                s.rows.push(row);
-            } else {
-                shell_key.push((atom, table));
-                shells.push(Shell {
-                    center: d.centers[atom],
-                    l: d.tables[table].l,
-                    ms: vec![m],
-                    rows: vec![row],
-                    radial: tables[table].clone(),
-                });
-            }
-        }
-        let shells = Shells::new(shells)?;
+        let shells = super::super::setup::snapshot::shells_from_description(c, d)?;
         let owner = d.function_atom.clone();
         // The projectors of every atom in the order of the Python crystal; the block must say the same.
         let mut projectors = Vec::new();
@@ -170,7 +112,7 @@ impl Setup {
         let blocks = (0..c.channels)
             .map(|a| Matrix::from_fn(p, p, |i, j| c.blocks.as_slice()[(a * p + i) * p + j]))
             .collect();
-        let dataset_of = |atom: usize| &records[kind[atom]];
+        let dataset_of = |atom: usize| &*records[kind[atom]];
         let augmentation =
             block_diagonal(&projectors, &dataset_of, |ch| ch.overlap_correction.data())?;
         let ion_operator = block_diagonal(&projectors, &dataset_of, |ch| ch.coupling.data())?;

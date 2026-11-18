@@ -29,21 +29,51 @@ fn check(r_g: f64) -> Result<()> {
     Ok(())
 }
 
+/// Pointwise compensation shape `g_L(r) = N_L r^L (1 - r^2/r_g^2)^3` for `r < r_g`, zero beyond.
+pub fn shape_at(r: f64, r_g: f64, l: usize) -> f64 {
+    if r >= r_g {
+        return 0.;
+    }
+    let x = r / r_g;
+    shape_norm(r_g, l) * r.powi(l as i32) * (1. - x * x).powi(3)
+}
+
 /// `g_L(r) = N_L r^L (1 - r^2/r_g^2)^3` inside `r_g`, zero beyond.
 pub fn shape_function(radius: &[f64], r_g: f64, l: usize) -> Result<Vec<f64>> {
     check(r_g)?;
+    Ok(radius.iter().map(|&r| shape_at(r, r_g, l)).collect())
+}
+
+/// Interior and exterior radial parts `(inner, outer)` of the compensation multipole potential
+/// without the harmonic (`shape_potential_at = inner + outer`).
+pub fn shape_potential_parts(r: f64, r_g: f64, l: usize) -> (f64, f64) {
+    let prefactor = 4. * PI / (2 * l + 1) as f64;
+    if r >= r_g {
+        return (prefactor / r.max(1e-300).powi(l as i32 + 1), 0.);
+    }
     let norm = shape_norm(r_g, l);
-    Ok(radius
-        .iter()
-        .map(|&r| {
-            let x = r / r_g;
-            if x < 1. {
-                norm * r.powi(l as i32) * (1. - x * x).powi(3)
-            } else {
-                0.
-            }
-        })
-        .collect())
+    let x = (r / r_g).max(0.);
+    let (mut inner, mut tail) = (0., 0.);
+    for (k, c) in [1., -3., 3., -1.].into_iter().enumerate() {
+        let power = (2 * l + 3 + 2 * k) as i32;
+        inner += c * x.powi(power) / power as f64;
+        let exponent = 2 * k as i32 + 2;
+        tail += c * (1. - x.powi(exponent)) / exponent as f64;
+    }
+    inner *= norm * r_g.powi(2 * l as i32 + 3);
+    tail *= norm * r_g * r_g;
+    let enclosed = if r > 0. {
+        inner / r.max(1e-300).powi(l as i32 + 1)
+    } else {
+        0.
+    };
+    (prefactor * enclosed, prefactor * r.powi(l as i32) * tail)
+}
+
+/// Pointwise Coulomb potential of `g_L Y_LM` without the harmonic.
+pub fn shape_potential_at(r: f64, r_g: f64, l: usize) -> f64 {
+    let (inner, outer) = shape_potential_parts(r, r_g, l);
+    inner + outer
 }
 
 /// Coulomb potential of `g_L Y_LM` without the harmonic:
@@ -51,31 +81,9 @@ pub fn shape_function(radius: &[f64], r_g: f64, l: usize) -> Result<Vec<f64>> {
 /// both integrals in closed form.
 pub fn shape_potential(radius: &[f64], r_g: f64, l: usize) -> Result<Vec<f64>> {
     check(r_g)?;
-    let prefactor = 4. * PI / (2 * l + 1) as f64;
-    let norm = shape_norm(r_g, l);
     Ok(radius
         .iter()
-        .map(|&r| {
-            if r >= r_g {
-                return prefactor / r.max(1e-300).powi(l as i32 + 1);
-            }
-            let x = (r / r_g).max(0.);
-            let (mut inner, mut tail) = (0., 0.);
-            for (k, c) in [1., -3., 3., -1.].into_iter().enumerate() {
-                let power = (2 * l + 3 + 2 * k) as i32;
-                inner += c * x.powi(power) / power as f64;
-                let exponent = 2 * k as i32 + 2;
-                tail += c * (1. - x.powi(exponent)) / exponent as f64;
-            }
-            inner *= norm * r_g.powi(2 * l as i32 + 3);
-            tail *= norm * r_g * r_g;
-            let enclosed = if r > 0. {
-                inner / r.max(1e-300).powi(l as i32 + 1)
-            } else {
-                0.
-            };
-            prefactor * (enclosed + r.powi(l as i32) * tail)
-        })
+        .map(|&r| shape_potential_at(r, r_g, l))
         .collect())
 }
 

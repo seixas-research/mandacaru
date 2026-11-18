@@ -248,7 +248,8 @@ pub fn diagonalize_with_exchange(
 /// each channel adds `T[v_a] = 1/2 <grad chi | v_a | grad chi>` to its spin blocks, as the
 /// local potential channels do. A meta-GGA without it is refused.
 #[allow(clippy::too_many_arguments)]
-pub fn diagonalize_with_solver(
+/// Spinor Kohn-Sham Hamiltonian `H(k)` in the `2m x 2m` spin-major Bloch basis (Hermitized).
+pub(super) fn hamiltonian(
     c: &Crystal,
     point: &KPoint,
     fields: &[f64],
@@ -256,11 +257,7 @@ pub fn diagonalize_with_solver(
     kinetic: Option<&[f64]>,
     hubbard: Option<&Matrix>,
     exchange: Option<&Matrix>,
-    eigensolver: solver::Eigensolver,
-    switch_tolerance: f64,
-    current_residual: f64,
-    previous_y: Option<&Matrix>,
-) -> Result<(Vec<f64>, Matrix, Matrix)> {
+) -> Result<Matrix> {
     let m = c.m;
     let n = c.grid.index.points();
     if fields.len() != c.field_channels() * n
@@ -276,13 +273,33 @@ pub fn diagonalize_with_solver(
             .map(|a| moments[a] * c.blocks.as_slice()[(a * c.p + i) * c.p + j])
             .sum()
     });
+    let mut spinor_hubbard = None;
     if let Some(extra) = hubbard {
-        operator += extra;
+        if extra.shape() == (c.p, c.p) {
+            operator += extra;
+        } else if extra.shape() == (2 * c.p, 2 * c.p) {
+            spinor_hubbard = Some(extra);
+        } else {
+            return Err(invalid(
+                "spinor Hubbard operator must match p x p or 2p x 2p projector dimensions",
+            ));
+        }
     }
     let fixed = &point.fixed + &point.projections * operator * point.projections.adjoint();
     let mut h = Matrix::zeros(2 * m, 2 * m);
     for s in 0..2 {
         h.view_mut((s * m, s * m), (m, m)).copy_from(&fixed);
+    }
+    if let Some(extra) = spinor_hubbard {
+        let c_adj = point.projections.adjoint();
+        for s in 0..2 {
+            for t in 0..2 {
+                let block = extra.view((s * c.p, t * c.p), (c.p, c.p)).into_owned();
+                let lifted = &point.projections * block * &c_adj;
+                let mut dst = h.view_mut((s * m, t * m), (m, m));
+                dst += lifted;
+            }
+        }
     }
     if let Some(soc) = &point.spin_orbit {
         h += soc;
@@ -326,8 +343,65 @@ pub fn diagonalize_with_solver(
     if let Some(k) = exchange {
         h -= k * C64::new(c.require_screened_exchange()?.1, 0.);
     }
+    Ok((&h + h.adjoint()) * C64::new(0.5, 0.))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn diagonalize_with_solver(
+    c: &Crystal,
+    point: &KPoint,
+    fields: &[f64],
+    moments: &[C64],
+    kinetic: Option<&[f64]>,
+    hubbard: Option<&Matrix>,
+    exchange: Option<&Matrix>,
+    eigensolver: solver::Eigensolver,
+    switch_tolerance: f64,
+    current_residual: f64,
+    previous_y: Option<&Matrix>,
+) -> Result<(Vec<f64>, Matrix, Matrix)> {
+    diagonalize_with_solver_and_irreps(
+        c,
+        point,
+        fields,
+        moments,
+        kinetic,
+        hubbard,
+        exchange,
+        eigensolver,
+        switch_tolerance,
+        current_residual,
+        previous_y,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn diagonalize_with_solver_and_irreps(
+    c: &Crystal,
+    point: &KPoint,
+    fields: &[f64],
+    moments: &[C64],
+    kinetic: Option<&[f64]>,
+    hubbard: Option<&Matrix>,
+    exchange: Option<&Matrix>,
+    eigensolver: solver::Eigensolver,
+    switch_tolerance: f64,
+    current_residual: f64,
+    previous_y: Option<&Matrix>,
+    irrep_projectors: Option<&super::irreps::IrrepProjectors>,
+) -> Result<(Vec<f64>, Matrix, Matrix)> {
+    let m = c.m;
+    let h = hamiltonian(c, point, fields, moments, kinetic, hubbard, exchange)?;
+    if let Some(proj) = irrep_projectors {
+        let solved = proj.solve_hamiltonian(&h)?;
+        return Ok((
+            solved.eigenvalues,
+            solved.eigenvectors,
+            solved.lowdin_eigenvectors,
+        ));
+    }
     let lowdin = lowdin_block(point, m, true);
-    let h = (&h + h.adjoint()) * C64::new(0.5, 0.);
     let h_ortho = lowdin.adjoint() * h * &lowdin;
     let h_ortho = (&h_ortho + h_ortho.adjoint()) * C64::new(0.5, 0.);
 
@@ -401,10 +475,16 @@ pub fn density<M: MatrixSource + Sync>(
             .map(|(i, j)| projected[(i, j)] * c.blocks.as_slice()[(a * p + j) * p + i])
             .sum();
     }
-    if c.time_reversal {
-        let mut charge = c.context.allocate::<f64>(n)?;
-        solver::sym_field(c, rho.as_slice(), charge.as_mut_slice());
-        rho = charge;
+    if c.time_reversal || !c.permutations.is_empty() {
+        if c.time_reversal {
+            let mut charge = c.context.allocate::<f64>(n)?;
+            solver::sym_field(c, rho.as_slice(), charge.as_mut_slice());
+            rho = charge;
+        } else {
+            let mut sym = c.context.allocate::<f64>(4 * n)?;
+            solver::sym_pauli_fields(c, rho.as_slice(), sym.as_mut_slice())?;
+            rho = sym;
+        }
         let mut moments = c.context.allocate::<C64>(c.channels)?;
         for a in 0..c.channels {
             moments.as_mut_slice()[a] = (0..c.channels)
@@ -468,6 +548,14 @@ fn anisotropy<M: MatrixSource>(c: &Crystal, matrices: &[M]) -> Result<Matrix3<f6
                 tensor[(a, b)] += 0.5 * point.weight * trace;
             }
         }
+    }
+    if !c.permutations.is_empty() {
+        let axials = solver::magnetic_axial_rotations(c)?;
+        let mut averaged = Matrix3::<f64>::zeros();
+        for m in &axials {
+            averaged += m * tensor * m.transpose();
+        }
+        tensor = averaged / axials.len() as f64;
     }
     Ok(tensor)
 }

@@ -800,7 +800,7 @@ fn widest_table(count: usize) -> Value {
             "weights": vec![0.1; 8], "projector_basis": "raw",
             "seed": {"occupations": [identity(7), identity(7)]}})
     };
-    serde_json::json!({"form": "dudarev-fll", "shells": (0..count).map(shell).collect::<Vec<_>>()})
+    serde_json::json!({"form": "dudarev", "shells": (0..count).map(shell).collect::<Vec<_>>()})
 }
 
 #[test]
@@ -875,7 +875,7 @@ fn unsupported_combinations_raise_and_no_full_mesh_crystal_has_a_symmetry_table(
         table(|h| h["shells"][1]["projectors"] = h["shells"][0]["projectors"].clone())
             .contains("share")
     );
-    assert!(table(|h| h["form"] = "liechtenstein".into()).contains("form"));
+    assert!(table(|h| h["form"] = "amf".into()).contains("form"));
     assert!(table(|h| h["shells"][0]["l"] = 1.into()).contains("d or f"));
     assert!(table(|h| h["shells"][0]["u"] = (-1.).into()).contains("negative"));
     assert!(table(|h| h["shells"][0]["j"] = 1.0.into()).contains("exceeds"));
@@ -890,19 +890,22 @@ fn unsupported_combinations_raise_and_no_full_mesh_crystal_has_a_symmetry_table(
         message.contains("restricted") && message.contains("moment"),
         "{message}"
     );
-    // spin-orbit crystals
+    // spin-orbit crystals accept both Dudarev and Liechtenstein
     let spec = load(&ctx, "cuh_7").hubbard.unwrap().to_json();
-    let parse = |spinor| {
+    let parse = |raw: &Value, spinor| {
         mandacaru_core::periodic::hubbard::Spec::parse(
-            &spec,
+            raw,
             26,
             1,
             spinor,
             mandacaru_core::math::storage::Precision::Float64,
         )
     };
-    assert!(parse(false).unwrap().is_some());
-    assert!(parse(true).err().unwrap().to_string().contains("spinor"));
+    assert!(parse(&spec, false).unwrap().is_some());
+    assert!(parse(&spec, true).unwrap().is_some());
+    let mut liech = spec.clone();
+    liech["form"] = Value::String("liechtenstein".into());
+    assert!(parse(&liech, true).unwrap().is_some());
     // the plain entry point would drop the operator
     let mut c = load(&ctx, "cuh_7");
     with_u(&mut c, 4.);

@@ -20,6 +20,16 @@ def _user(values, quantity, atomic):
     return _native.to_user_units(np.ascontiguousarray(values, dtype=float), quantity, atomic)
 
 
+def _user_scalar(value, quantity, atomic):
+    return float(_native.to_user_units(float(value), quantity, atomic))
+
+
+def _optional(value, transform):
+    if value is None:
+        return None
+    return transform(value)
+
+
 @dataclass(frozen=True)
 class BerryPhase:
     r"""Berry phases of closed k-point strings along ``G_direction``.
@@ -216,6 +226,7 @@ class AnomalousHall:
     plaquettes: int = 0
     fermi: float = 0.0
     scf_electron_error: float = 0.0
+    method: str = "direct"
 
     @classmethod
     def from_native(cls, raw, atomic=False, stacklevel=1):
@@ -238,6 +249,7 @@ class AnomalousHall:
             plaquettes=int(raw.get("plaquettes", 0)),
             fermi=_user(raw.get("fermi", 0.0), "energy", atomic),
             scf_electron_error=float(raw.get("scf_electron_error", 0.0)),
+            method=str(raw.get("method", "direct")),
         )
 
 
@@ -372,4 +384,92 @@ class Z2Invariant:
             inversion_center=None if detail is None else tuple(detail["center"]),
             spin_degenerate=degenerate,
             strings=tuple(raw["size"]),
+        )
+
+
+@dataclass(frozen=True)
+class BornCharges:
+    r"""Born effective charges :math:`Z^*_{a,ij} = (\Omega / e)\,\partial P_i / \partial u_{a,j}`.
+
+    Computed by central finite differences of the Berry-phase polarization on perturbed
+    self-consistent crystals. ``charges`` has shape ``(N, 3, 3)`` in units of ``e``. The
+    per-run acoustic sum rule residual is ``asr_residual``; when ``acoustic_sum_rule="impose"``
+    was requested, ``corrected`` holds the sum-rule-projected tensor (else ``None``).
+    ``channels`` holds the spin-resolved electronic contributions, ``displacement`` the step
+    size in user length units (Angstrom, or Bohr when ``atomic_units=True``),
+    ``polarization_steps`` the folded polarization step per run in quanta, and
+    ``scf_iterations`` the SCF iteration count of every perturbed run.
+    """
+
+    charges: np.ndarray
+    asr_residual: float
+    corrected: np.ndarray | None
+    channels: np.ndarray
+    displacement: float
+    polarization_steps: np.ndarray
+    scf_iterations: tuple[int, ...]
+    asr_mean: np.ndarray
+
+    @classmethod
+    def from_native(cls, raw, atomic=False, stacklevel=1):
+        """Build from a native ``born_charges`` dictionary, issuing any ASR warning."""
+        note = raw.get("warnings", ())
+        if note:
+            warnings.warn(note[0], stacklevel=stacklevel)
+        return cls(
+            charges=np.asarray(raw["charges"], dtype=float),
+            asr_residual=float(raw["asr_residual"]),
+            corrected=_optional(raw["corrected"], lambda c: np.asarray(c, dtype=float)),
+            channels=np.asarray(raw["channels"], dtype=float),
+            displacement=_user_scalar(raw["delta"], "length", atomic),
+            polarization_steps=np.asarray(raw["steps"], dtype=float),
+            scf_iterations=tuple(int(n) for n in raw["iterations"]),
+            asr_mean=np.asarray(raw["asr_mean"], dtype=float),
+        )
+
+
+@dataclass(frozen=True)
+class PiezoelectricTensor:
+    r"""Proper piezoelectric tensor :math:`e_{i,v}` (Voigt indices ``xx, yy, zz, yz, xz, xy``).
+
+    In C/m\ :sup:`2` (``e / Bohr^2`` when ``atomic_units=True``). ``tensor`` is the active
+    tensor (``relaxed`` when ``ions="relaxed"``, otherwise ``clamped``). When
+    ``ions="relaxed"`` was requested, ``born_charges``, ``internal_strain`` (``3N x 6`` in user
+    length units), ``force_constants`` (``3N x 3N`` in ``eV / Angstrom^2`` or
+    ``Hartree / Bohr^2``), and ``acoustic_frequencies_removed`` (the 3 translational eigenvalues
+    removed before pseudo-inversion) are also populated.
+    """
+
+    tensor: np.ndarray
+    clamped: np.ndarray
+    strain: float
+    polarization_steps: np.ndarray
+    scf_iterations: tuple[int, ...]
+    relaxed: np.ndarray | None = None
+    born_charges: BornCharges | None = None
+    internal_strain: np.ndarray | None = None
+    force_constants: np.ndarray | None = None
+    acoustic_frequencies_removed: np.ndarray | None = None
+
+    @classmethod
+    def from_native(cls, raw, atomic=False, stacklevel=1):
+        """Build from a native ``piezoelectric`` dictionary, converting units via Rust."""
+        return cls(
+            tensor=_user(raw["tensor"], "polarization", atomic),
+            clamped=_user(raw["clamped"], "polarization", atomic),
+            strain=float(raw["delta"]),
+            polarization_steps=np.asarray(raw["steps"], dtype=float),
+            scf_iterations=tuple(int(n) for n in raw["iterations"]),
+            relaxed=_optional(raw["relaxed"], lambda r: _user(r, "polarization", atomic)),
+            born_charges=_optional(
+                raw["born_charges"],
+                lambda z: BornCharges.from_native(z, atomic=atomic, stacklevel=stacklevel),
+            ),
+            internal_strain=_optional(raw["internal_strain"], lambda g: _user(g, "length", atomic)),
+            force_constants=_optional(
+                raw["force_constants"], lambda k: _user(k, "force_constant", atomic)
+            ),
+            acoustic_frequencies_removed=_optional(
+                raw["acoustic_eigenvalues"], lambda e: _user(e, "force_constant", atomic)
+            ),
         )

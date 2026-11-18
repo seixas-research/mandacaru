@@ -7,7 +7,10 @@
 
 use mandacaru_core::{
     periodic::{
-        setup::parse::{create_setup, AtomSpec, SetupInput},
+        setup::{
+            parse::{create_setup, AtomSpec, SetupInput},
+            PeriodicSetup,
+        },
         solver::Options,
         spectrum, Crystal, PeriodicResult,
     },
@@ -53,6 +56,15 @@ pub fn context() -> Context {
 }
 
 pub fn build(ctx: &Context, reference: &Matrix3<f64>, cell: &Cell, points: Points) -> Crystal {
+    build_with_setup(ctx, reference, cell, points).1
+}
+
+pub fn build_with_setup(
+    ctx: &Context,
+    reference: &Matrix3<f64>,
+    cell: &Cell,
+    points: Points,
+) -> (PeriodicSetup, Crystal) {
     let (mesh, kpoints, weights, symmetry) = match points {
         Points::Whole => {
             // The mesh point by point, as the setup lists it before any reduction.
@@ -120,10 +132,9 @@ pub fn build(ctx: &Context, reference: &Matrix3<f64>, cell: &Cell, points: Point
         hubbard_u: None,
         charge: cell.charge,
     };
-    create_setup(ctx, input, datasets)
-        .unwrap()
-        .build(ctx)
-        .unwrap()
+    let setup = create_setup(ctx, input, datasets).unwrap();
+    let crystal = setup.build(ctx).unwrap();
+    (setup, crystal)
 }
 
 pub fn solve(c: &Crystal, options: &Options) -> PeriodicResult {

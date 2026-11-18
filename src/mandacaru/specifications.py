@@ -15,25 +15,20 @@ class Capability:
     fermionic excitations.
     """
 
-    quantum: bool
-    forces: bool
-    periodic: bool = False
-    default_pool: str | None = None
-
+    quantum: bool; forces: bool; periodic: bool = False; default_pool: str | None = None
+    objective: str = "single"; solver: str = "mean-field"; learned: bool = False
 
 METHODS = {
-    "rhf": Capability(False, True),
-    "uhf": Capability(False, True),
-    "ghf": Capability(False, False),
+    "rhf": Capability(False, True), "uhf": Capability(False, True), "ghf": Capability(False, False),
     "dft": Capability(False, True, True),
-    "vqe": Capability(True, True, True, "fermionic"),
-    "adapt-vqe": Capability(True, True, True, "ceo"),
-    "subspace-vqe": Capability(True, False, False, "fermionic"),
-    "subspace-adapt-vqe": Capability(True, False, False, "ceo"),
-    "vasqa": Capability(True, True, True, "fermionic"),
-    "valsqa": Capability(True, True, True, "fermionic"),
-    "subspace-vasqa": Capability(True, False, True, "fermionic"),
-    "subspace-valsqa": Capability(True, False, True, "fermionic"),
+    "vqe": Capability(True, True, True, "fermionic", "single", "vqe"),
+    "adapt-vqe": Capability(True, True, True, "ceo", "single", "adapt"),
+    "subspace-vqe": Capability(True, True, False, "fermionic", "subspace", "vqe"),
+    "subspace-adapt-vqe": Capability(True, True, False, "ceo", "subspace", "adapt"),
+    "vasqa": Capability(True, True, True, "fermionic", "single", "search"),
+    "valsqa": Capability(True, True, True, "fermionic", "single", "search", True),
+    "subspace-vasqa": Capability(True, True, True, "fermionic", "subspace", "search"),
+    "subspace-valsqa": Capability(True, True, True, "fermionic", "subspace", "search", True),
 }
 from . import _native
 from ._native import FUNCTIONALS as _FUNCTIONALS

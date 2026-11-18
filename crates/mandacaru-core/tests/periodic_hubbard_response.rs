@@ -1,15 +1,28 @@
 //! Tests for linear-response Hubbard U measurement on crystals (periodic_hubbard_response).
 mod hubbard_support;
+mod setup_shells_support;
 
 use hubbard_support::{load, HARTREE_EV};
 use mandacaru_core::{
-    models::hubbard_response::Probe,
+    models::{
+        hubbard::Form,
+        hubbard_request::Request,
+        hubbard_response::{ColumnSource, Fit, Kernel, Options as ResponseOptions, Probe},
+    },
+    paw::digest::dataset_content_sha256,
     periodic::{
-        hubbard_response::{hubbard_response, sum_over_states_chi0, PeriodicProbe},
+        hubbard_response::{
+            hubbard_response, hubbard_response_with_symmetry, sum_over_states_chi0, PeriodicProbe,
+        },
+        response_scf::{converge_hubbard_u, Options as ScfLoopOptions},
+        setup::parse::{create_setup, AtomSpec, SetupInput},
         Crystal, Options, PeriodicResult,
     },
     Context,
 };
+use nalgebra::Matrix3;
+use setup_shells_support::dataset;
+use std::sync::Arc;
 
 fn context() -> Context {
     Context::new(Some(1), 1 << 30).unwrap()
@@ -149,5 +162,168 @@ fn nio_linear_response_spin_resolved_kernel_and_j() {
         );
         assert!(res.chi0[(i, i)] < 0.0);
         assert!(sos_chi0[(i, i)] < 0.0);
+    }
+}
+
+#[test]
+fn symmetry_column_reduction_and_lr_scf_match_direct_response_on_crystals() {
+    let ctx = context();
+    // LR-6: NiO AFM-2 with mapped spin-flipped second Ni site matches unreduced full-column probe.
+    let mut nio = load(&ctx, "nio_afm2");
+    with_u(&mut nio, 0.0);
+    let nio_state = solve(&nio, 0.05);
+    let alphas = [0.05 / HARTREE_EV];
+    let opts = ResponseOptions::new(&alphas, Fit::Central).unwrap();
+    let full = hubbard_response_with_symmetry(
+        &nio,
+        &nio_state,
+        &opts,
+        &[ColumnSource::Direct, ColumnSource::Direct],
+    )
+    .unwrap();
+    let reduced = hubbard_response_with_symmetry(
+        &nio,
+        &nio_state,
+        &opts,
+        &[
+            ColumnSource::Direct,
+            ColumnSource::Mapped {
+                rep: 0,
+                rows: vec![(1, true), (0, true)],
+            },
+        ],
+    )
+    .unwrap();
+    let diff_u = (&full.u_matrix - &reduced.u_matrix).amax();
+    let diff_chi = (&full.chi - &reduced.chi).amax();
+    assert!(
+        diff_u < 1e-4 && diff_chi < 1e-4,
+        "LR-6 mismatch: dU={diff_u:e}, dchi={diff_chi:e}"
+    );
+    let spread_ok = full
+        .hubbard_u(Form::Liechtenstein, Kernel::Charge, None, 0.5 / HARTREE_EV)
+        .unwrap();
+    assert_eq!(spread_ok.len(), 1);
+    assert_eq!(spread_ok[0].0.key, "Ni");
+
+    // LR-12: outer self-consistent U convergence on CuH.
+    let mut cuh = load(&ctx, "cuh_7");
+    with_u(&mut cuh, 0.0);
+    let cuh_state = solve(&cuh, 0.01);
+    let mut lr_opts = ScfLoopOptions::default();
+    lr_opts.alphas = vec![0.05 / HARTREE_EV];
+    lr_opts.max_iterations = 6;
+    lr_opts.tolerance = 0.05 / HARTREE_EV;
+    lr_opts.damping = 0.7;
+    lr_opts.scf_options = Options {
+        width: 0.01 / HARTREE_EV,
+        ..Default::default()
+    };
+    let sc = converge_hubbard_u(&cuh, &cuh_state, &lr_opts).unwrap();
+    assert!(sc.converged, "LR-12 did not converge: {:?}", sc.history);
+    assert!(sc.response.self_consistent);
+    assert_eq!(
+        sc.final_hubbard.shells[0].source.as_deref(),
+        Some("lr-scf")
+    );
+    assert!(sc.elements[0].1 > 0.0);
+}
+
+#[test]
+fn spinor_crystal_linear_response_respects_trs_and_measures_magnetic_j() {
+    let ctx = Context::new(Some(2), 2 << 30).unwrap();
+    let root = std::path::PathBuf::from(std::env::var_os("MANDACARU_PAW_PATH").unwrap())
+        .join("lda-fr");
+    let build = |sym: &str, moment: f64, hub_spec: &str| {
+        let species = [sym, "H"];
+        let files: Vec<_> = species
+            .iter()
+            .map(|s| {
+                let path = root.join(format!("{s}.parquet"));
+                (
+                    path.to_string_lossy().into_owned(),
+                    dataset_content_sha256(&ctx, &path).unwrap(),
+                )
+            })
+            .collect();
+        let datasets: Vec<_> = species
+            .iter()
+            .map(|s| Arc::new(dataset(&ctx, "lda-fr", s)))
+            .collect();
+        let input = SetupInput {
+            mesh: None,
+            recipes: None,
+            projector_basis: "raw".into(),
+            lattice: Matrix3::from_diagonal(&nalgebra::Vector3::new(7.5, 7.5, 7.5)),
+            grid_shape: [20, 20, 20],
+            atoms: vec![
+                AtomSpec {
+                    species: 0,
+                    symbol: sym.into(),
+                    fractional: [0.15, 0.2, 0.2],
+                    moment,
+                },
+                AtomSpec {
+                    species: 1,
+                    symbol: "H".into(),
+                    fractional: [0.50, 0.2, 0.2],
+                    moment: 0.0,
+                },
+            ],
+            kpoints_frac: vec![[-0.25, 0.0, 0.0], [0.25, 0.0, 0.0]],
+            weights: vec![0.5, 0.5],
+            functional: "lda".into(),
+            precision: "float64".into(),
+            basis_size: "SZ".into(),
+            spinor: true,
+            spin: false,
+            symmetry: false,
+            filter_cutoff: None,
+            sigma: None,
+            dataset_files: Some(files),
+            hubbard_u: Some(Request::parse(hub_spec).unwrap()),
+            charge: None,
+        };
+        create_setup(&ctx, input, datasets)
+            .unwrap()
+            .build(&ctx)
+            .unwrap()
+    };
+
+    // TRS spinor CuH: channels == 1, j_response == None, SOS chi0 agrees with FD.
+    let cuh = build("Cu", 0.0, r#"{"Cu": {"l": "d", "U": 0.0}}"#);
+    assert!(cuh.spinor && cuh.time_reversal);
+    let cuh_state = solve(&cuh, 0.01);
+    let res_trs = hubbard_response(&cuh, &cuh_state, &[0.05 / HARTREE_EV]).unwrap();
+    assert_eq!(res_trs.response.channels, 1);
+    assert!(res_trs.j_response.is_none());
+    assert!(res_trs.u_matrix[(0, 0)] > 0.0);
+    let sos_trs = sum_over_states_chi0(&cuh, &cuh_state).unwrap();
+    assert!(
+        (sos_trs[(0, 0)] - res_trs.chi0[(0, 0)]).abs() < 2e-3,
+        "TRS spinor chi0 SOS {} vs FD {}",
+        sos_trs[(0, 0)],
+        res_trs.chi0[(0, 0)]
+    );
+
+    // Magnetic spinor NiH (!time_reversal): channels == 2, j_response is Some, u_cross is Some.
+    let nih = build("Ni", 1.5, r#"{"Ni": {"l": "d", "U": 0.0}}"#);
+    assert!(nih.spinor && !nih.time_reversal);
+    let nih_state = solve(&nih, 0.05);
+    let res_mag = hubbard_response(&nih, &nih_state, &[0.05 / HARTREE_EV]).unwrap();
+    assert_eq!(res_mag.response.channels, 2);
+    assert_eq!(res_mag.u_matrix.nrows(), 2);
+    assert!(res_mag.j_response.is_some());
+    assert!(res_mag.u_cross().is_some());
+    assert!(res_mag.u_charge[(0, 0)] > 0.0);
+    let sos_mag = sum_over_states_chi0(&nih, &nih_state).unwrap();
+    assert_eq!(sos_mag.nrows(), 2);
+    for i in 0..2 {
+        assert!(
+            (sos_mag[(i, i)] - res_mag.chi0[(i, i)]).abs() < 5e-3,
+            "Magnetic spinor chi0[{i}] SOS {} vs FD {}",
+            sos_mag[(i, i)],
+            res_mag.chi0[(i, i)]
+        );
     }
 }

@@ -155,12 +155,6 @@ pub fn core(ds: &PawDataset) -> Vec<Row> {
         ds.defaults_applied.is_empty(),
         ds.defaults_applied.join(", "),
     ));
-    rows.push(Row::flag(
-        "G5",
-        "no core_scheme field",
-        ds.core_scheme.is_none(),
-        ds.core_scheme.clone().unwrap_or_default(),
-    ));
     let Some(states) = &ds.core_states else {
         for check in ["core charge", "core density reproduction"] {
             rows.push(Row::not_applicable(

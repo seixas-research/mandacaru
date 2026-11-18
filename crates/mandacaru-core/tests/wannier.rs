@@ -360,3 +360,272 @@ fn a_saddle_is_escaped_and_an_unfinished_escape_is_not_converged() {
     }
     assert_eq!(ctx.memory_used(), 0);
 }
+
+#[test]
+fn math_boys_and_pipek_mezey_kernels_localize_synthetic_operators() {
+    use mandacaru_core::math::localization::{boys, pipek_mezey};
+    let s = std::f64::consts::FRAC_1_SQRT_2;
+    let rot0 = DMatrix::from_row_slice(2, 2, &[s, -s, s, s]);
+    let mut r_ops = [
+        &rot0.transpose() * DMatrix::from_diagonal(&DVector::from_vec(vec![0.0, 3.0])) * &rot0,
+        DMatrix::zeros(2, 2),
+        DMatrix::zeros(2, 2),
+    ];
+    let b = boys(&mut r_ops, 200, 1e-12).unwrap();
+    assert!(b.converged);
+    assert!((b.objective - 9.0).abs() < 1e-12);
+    assert!(r_ops[0][(0, 1)].abs() < 1e-10);
+
+    for exponent in [2usize, 4] {
+        let mut pops = [
+            &rot0.transpose() * DMatrix::from_diagonal(&DVector::from_vec(vec![1.0, 0.0])) * &rot0,
+            &rot0.transpose() * DMatrix::from_diagonal(&DVector::from_vec(vec![0.0, 1.0])) * &rot0,
+        ];
+        let pm = pipek_mezey(&mut pops, exponent, 200, 1e-12).unwrap();
+        assert!(pm.converged, "exp={exponent}");
+        assert!(
+            (pm.objective - 2.0).abs() < 1e-10,
+            "exp={exponent}: {}",
+            pm.objective
+        );
+    }
+}
+
+#[test]
+fn periodic_pipek_mezey_gradient_and_atomic_limit_hold_for_mulliken_and_lowdin() {
+    use mandacaru_core::periodic::wannier::{
+        populations::{AtomPartition, PopulationMesh, PopulationScheme},
+        Localization,
+    };
+    let ctx = Context::new(Some(1), 32 << 20).unwrap();
+    {
+        let (mesh, ideal, centers) = atomic_mesh(&ctx);
+        let size = [mesh.points, 1, 1];
+        // Two orthogonalized Bloch AO states with non-identity overlap S(k) (Mulliken != I, Lowdin symmetric).
+        let partition = AtomPartition::from_atom_rows(2, vec![vec![0], vec![1]]).unwrap();
+        let s_raw = Matrix::from_row_slice(
+            2,
+            2,
+            &[
+                C64::new(1.0, 0.),
+                C64::new(0.2, 0.05),
+                C64::new(0.2, -0.05),
+                C64::new(1.0, 0.),
+            ],
+        );
+        let (s_vals, s_vecs) = mandacaru_core::math::linalg::eigen(s_raw.clone()).unwrap();
+        let s_inv_sqrt = &s_vecs
+            * Matrix::from_diagonal(&DVector::from_iterator(
+                2,
+                s_vals.iter().map(|v| C64::new(1. / v.sqrt(), 0.)),
+            ))
+            * s_vecs.adjoint();
+        // Band coefficients C_k = S^{-1/2} * ideal_k satisfy C_k^H S C_k = I.
+        let c_mats: Vec<Matrix> = ideal.iter().map(|u| &s_inv_sqrt * u).collect();
+        let c_refs: Vec<&Matrix> = c_mats.iter().collect();
+        let metrics: Vec<(&Matrix, &Matrix)> = vec![(&s_raw, &s_inv_sqrt); mesh.points];
+        let mut rng = berry_models_support::Rng(0x55aa_1234_9876_fedcu64);
+        let start_gauge: Vec<Matrix> = (0..mesh.points).map(|_| rng.unitary(2)).collect();
+        let dir: Vec<Matrix> = (0..mesh.points).map(|k| generator(k + 1, 0.25)).collect();
+
+        for (scheme, exponent) in [
+            (PopulationScheme::Mulliken, 2),
+            (PopulationScheme::Lowdin, 2),
+            (PopulationScheme::Lowdin, 4),
+        ] {
+            let pop_mesh = PopulationMesh::new(
+                size,
+                1,
+                &c_refs,
+                &metrics,
+                partition.clone(),
+                scheme,
+                exponent,
+            )
+            .unwrap();
+            // 1. Finite-difference derivative check against analytic Riemannian gradient.
+            let h = 1e-6;
+            let val_at = |step: f64| -> f64 {
+                let moved: Vec<Matrix> = start_gauge
+                    .iter()
+                    .zip(&dir)
+                    .map(|(u, d)| u * wannier::unitary_step(&(d * C64::new(step, 0.))).unwrap())
+                    .collect();
+                pop_mesh.evaluate(&ctx, &moved).unwrap().0
+            };
+            let fd = (val_at(h) - val_at(-h)) / (2. * h);
+            let (_, grad) = pop_mesh.evaluate(&ctx, &start_gauge).unwrap();
+            let analytic: f64 = grad
+                .iter()
+                .zip(&dir)
+                .map(|(g, d)| (g.adjoint() * d).trace().re)
+                .sum();
+            assert!(
+                (fd - analytic).abs() < 1e-7 * analytic.abs().max(1.),
+                "{scheme:?} p={exponent}: fd={fd} analytic={analytic}"
+            );
+
+            // 2. Conjugate gradient recovers localized gauge cleanly and monotonically.
+            let result = wannier::localize_with_populations(
+                &ctx,
+                &mesh,
+                Some(&pop_mesh),
+                &start_gauge,
+                Some(&centers),
+                &Options {
+                    tolerance: 1e-12,
+                    gradient_tolerance: 1e-7,
+                    localization: Localization::Populations { scheme, exponent },
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            assert!(result.converged, "{scheme:?} p={exponent}");
+            let vals: Vec<f64> = result.history.iter().map(|h| h[0]).collect();
+            assert!(vals.windows(2).all(|w| w[1] >= w[0] - 1e-12), "{vals:?}");
+        }
+    }
+    assert_eq!(ctx.memory_used(), 0);
+}
+
+#[test]
+fn interpolation_and_w4_anomalous_hall_match_qwz_and_haldane_models() {
+    use mandacaru_core::periodic::{
+        berry::hall,
+        spectrum::Smearing,
+        wannier::interpolation::{anomalous_hall, Model},
+    };
+    use nalgebra::Matrix3;
+    let ctx = Context::new(Some(1), 32 << 20).unwrap();
+    {
+        // Build Qi-Wu-Zhang directly in R-space: H(0) = m sz, H(+-1,0,0) = (sz +- i sx)/2, H(0,+-1,0) = (sz +- i sy)/2.
+        let lattice = Matrix3::identity() * 4.0;
+        let vectors = vec![[-1, 0, 0], [0, -1, 0], [0, 0, 0], [0, 1, 0], [1, 0, 0]];
+        let pauli = [
+            berry_models_support::sigma([1., 0., 0.]),
+            berry_models_support::sigma([0., 1., 0.]),
+            berry_models_support::sigma([0., 0., 1.]),
+        ];
+        for (m, expected_chern) in [
+            (-3.0, 0i64),
+            (-2.5, 0),
+            (-1.5, 1),
+            (-0.5, 1),
+            (0.5, -1),
+            (1.5, -1),
+            (2.5, 0),
+            (3.0, 0),
+        ] {
+            let h_r = vec![
+                (&pauli[2] - &pauli[0] * C64::i()) * C64::new(0.5, 0.),
+                (&pauli[2] - &pauli[1] * C64::i()) * C64::new(0.5, 0.),
+                &pauli[2] * C64::new(m, 0.),
+                (&pauli[2] + &pauli[1] * C64::i()) * C64::new(0.5, 0.),
+                (&pauli[2] + &pauli[0] * C64::i()) * C64::new(0.5, 0.),
+            ];
+            let zero = vec![Matrix::zeros(2, 2); vectors.len()];
+            // Add non-trivial diagonal sublattice center offsets to check basis-position invariance.
+            let mut az = zero.clone();
+            az[2][(0, 0)] = C64::new(0.3, 0.);
+            az[2][(1, 1)] = C64::new(1.7, 0.);
+            let model = Model::from_tight_binding(
+                lattice,
+                vectors.clone(),
+                h_r,
+                [zero.clone(), zero, az],
+                0.,
+            )
+            .unwrap();
+            let qwz_hall = anomalous_hall(
+                &ctx,
+                &[&model],
+                [48, 48, 2],
+                1.0,
+                0.0,
+                Smearing::FermiDirac,
+                0.0,
+                1.0,
+                true,
+            )
+            .unwrap();
+            assert!(!qwz_hall.metallic, "m={m}");
+            assert_eq!(qwz_hall.total, [0, 0, expected_chern], "m={m}");
+            let (_, sigma_expected) = hall::conductivity(&model.reciprocal, [0, 0, expected_chern]);
+            assert!(
+                (qwz_hall.sigma[0][1] - sigma_expected[0][1]).abs() < 1e-4,
+                "m={m}: {} vs {}",
+                qwz_hall.sigma[0][1],
+                sigma_expected[0][1]
+            );
+        }
+
+        // Haldane honeycomb model with t1 = 1, t2 = 0.25, phi = pi/2, M = 0.3 (topological C = +-1) vs M = 2.0 (trivial C = 0).
+        let a1 = [1.0, 0.0, 0.0];
+        let a2 = [0.5, 3f64.sqrt() * 0.5, 0.0];
+        let hex_lat = Matrix3::from_columns(&[
+            nalgebra::Vector3::from(a1) * 4.0,
+            nalgebra::Vector3::from(a2) * 4.0,
+            nalgebra::Vector3::new(0., 0., 8.0),
+        ]);
+        let h_vectors = vec![
+            [-1, 0, 0],
+            [-1, 1, 0],
+            [0, -1, 0],
+            [0, 0, 0],
+            [0, 1, 0],
+            [1, -1, 0],
+            [1, 0, 0],
+        ];
+        let t2_val = 0.25;
+        let phase = C64::new(0., 1.); // i t2 for +phi = pi/2
+        for (mass, expected) in [(0.3, 1i64), (2.0, 0i64)] {
+            let mut hh = vec![Matrix::zeros(2, 2); h_vectors.len()];
+            // H(R)_{AB} with basis B at (a1+a2)/3 inside cell: NN hoppings A(0)->B(0), B(-a1), B(-a2):
+            // B(0) in R=0, A in cell 0 hops to B in R=(0,0), (-1,0), (0,-1).
+            hh[3][(0, 0)] = C64::new(mass, 0.);
+            hh[3][(1, 1)] = C64::new(-mass, 0.);
+            hh[3][(0, 1)] = C64::new(1., 0.);
+            hh[0][(0, 1)] = C64::new(1., 0.);
+            hh[2][(0, 1)] = C64::new(1., 0.);
+            hh[3][(1, 0)] = C64::new(1., 0.);
+            hh[6][(1, 0)] = C64::new(1., 0.);
+            hh[4][(1, 0)] = C64::new(1., 0.);
+            // NNN clockwise/counterclockwise: A hops +-R: (+1,0), (-1,+1), (0,-1) get -t2 i; conjugates get +t2 i. B gets opposite sign.
+            for (pos_r, neg_r) in [(6, 0), (1, 5), (2, 4)] {
+                let d_a = phase * (-t2_val);
+                hh[pos_r][(0, 0)] = d_a;
+                hh[neg_r][(0, 0)] = d_a.conj();
+                hh[pos_r][(1, 1)] = d_a.conj();
+                hh[neg_r][(1, 1)] = d_a;
+            }
+            let z = vec![Matrix::zeros(2, 2); h_vectors.len()];
+            let mut ax = z.clone();
+            let mut ay = z.clone();
+            // Position of B sublattice relative to A inside unit cell: (hex_lat.col(0) + hex_lat.col(1)) / 3.
+            let tau_b = (hex_lat.column(0) + hex_lat.column(1)) / 3.0;
+            ax[3][(1, 1)] = C64::new(tau_b[0], 0.);
+            ay[3][(1, 1)] = C64::new(tau_b[1], 0.);
+            let haldane =
+                Model::from_tight_binding(hex_lat, h_vectors.clone(), hh, [ax, ay, z], 0.).unwrap();
+            let h_ahc = anomalous_hall(
+                &ctx,
+                &[&haldane],
+                [18, 18, 2],
+                1.0,
+                0.0,
+                Smearing::FermiDirac,
+                0.0,
+                1.0,
+                false,
+            )
+            .unwrap();
+            assert_eq!(
+                h_ahc.total[2].abs(),
+                expected,
+                "mass={mass}: {:?}",
+                h_ahc.numbers
+            );
+        }
+    }
+    assert_eq!(ctx.memory_used(), 0);
+}

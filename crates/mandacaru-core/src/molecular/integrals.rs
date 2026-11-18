@@ -46,8 +46,8 @@ pub struct MolecularCorrections {
     /// Why Hartree-Fock has no frozen-core exchange for one of the molecule's species (it names
     /// the element); `None` when every core is empty or has its core-valence exchange in `one`.
     pub core_refusal: Option<String>,
-    /// Whether every species' core is one a screened hybrid supports (empty or a single closed 1s
-    /// shell).
+    /// Whether every species' core is one a screened hybrid supports (empty or a valid closed
+    /// `FrozenCore`).
     pub hybrid_core_supported: bool,
     pub hubbard: Option<crate::molecular::hubbard::MolecularHubbard>,
     pub projections: Option<Vec<DMatrix<f64>>>,

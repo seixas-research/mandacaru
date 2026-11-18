@@ -589,7 +589,17 @@ impl OrbitalHessian {
             return Ok(None);
         }
         hessian.zero_modes = DMatrix::zeros(dimension, 0);
-        if method == "ghf" {
+        let spin_conserving = method == "ghf" && {
+            let m = h.nrows() / 2;
+            (0..m).all(|p| {
+                (0..m).all(|q| {
+                    (h[(p, q)] - h[(m + p, m + q)]).norm() <= 1e-12
+                        && h[(p, m + q)].norm() <= 1e-12
+                        && h[(m + p, q)].norm() <= 1e-12
+                })
+            })
+        };
+        if spin_conserving {
             // The generators -i/2 Sigma_k of the global spin rotations, in the rotation coordinates.
             let (c, _, n) = &hessian.channels[0];
             let m = c.nrows() / 2;
@@ -846,7 +856,7 @@ const SETTLE_ITERATIONS: usize = 12;
 /// The level shift (Hartree) of those iterations.
 const SETTLE_SHIFT: f64 = 0.5;
 /// The most second-order steps of [`second_order_descent`].
-const NEWTON_STEPS: usize = 40;
+const NEWTON_STEPS: usize = 200;
 /// The longest second-order step (radians).
 const NEWTON_RADIUS: f64 = 0.2;
 /// The lowest eigenvalue (Hartree) of the shifted Hessian of a second-order step.
@@ -918,12 +928,12 @@ fn follow_instabilities(
     Ok(best)
 }
 
-/// Second-order steps of a restart off a saddle, used when the DIIS restart does not end lower:
+/// Second-order steps of a restart off a saddle or out of a soft/oscillating valley:
 /// at the semicanonical orbitals of each point, the step `x = -(H + mu)^-1 g` with `mu` holding
-/// the shifted Hessian [`NEWTON_MARGIN`] above zero, at most [`NEWTON_RADIUS`] long, accepted
-/// only when the energy falls (otherwise halved), so every step is a descent, including along
-/// the soft valleys of degenerate shells that DIIS climbs out of; then the SCF from the last
-/// point.
+/// the shifted Hessian [`NEWTON_MARGIN`] above zero (or zero on a strictly positive Hessian so
+/// soft atomic/shell valleys move at full Newton step), at most [`NEWTON_RADIUS`] long, accepted
+/// when the energy falls (or, at the float rounding floor of a positive Hessian, when `[F, D]`
+/// falls strictly); then the SCF from the last point.
 fn second_order_descent(
     integrals: &MolecularIntegrals,
     method: &str,
@@ -943,14 +953,17 @@ fn second_order_descent(
     };
     let mut c = start;
     let mut d = densities(&c);
-    let mut value = energy(&d, &fock(eri.as_ref(), h, &d, method), h, method);
+    let mut f_now = fock(eri.as_ref(), h, &d, method);
+    let mut value = energy(&d, &f_now, h, method);
+    let mut stat_now = stationarity(&f_now, &d);
     let mut radius = NEWTON_RADIUS;
     let mut missed = false;
     for _ in 0..NEWTON_STEPS {
         let Some(hessian) = OrbitalHessian::new(eri.clone(), h, method, &d, particles)? else {
             break;
         };
-        if hessian.gradient.amax() < options.tolerance {
+        let target = (options.tolerance * 1e-2).max(1e-13);
+        if hessian.gradient.amax() < target && stat_now < target {
             break;
         }
         let Some(root) =
@@ -961,9 +974,32 @@ fn second_order_descent(
         if !root.converged {
             break;
         }
-        let shift = (NEWTON_MARGIN - root.value).max(0.);
-        let solve =
-            crate::math::davidson::solve_shifted(&hessian, shift, &-&hessian.gradient, 1e-4, 200)?;
+        let cg_tol = 1e-8;
+        let cg_iters = hessian.size().max(200);
+        let shift = if root.value > 1e-6 {
+            0.
+        } else if root.value >= -STABILITY_TOLERANCE {
+            (2. * (-root.value).max(0.)).max(1e-7)
+        } else {
+            (NEWTON_MARGIN - root.value).max(0.)
+        };
+        let mut solve = crate::math::davidson::solve_shifted(
+            &hessian,
+            shift,
+            &-&hessian.gradient,
+            cg_tol,
+            cg_iters,
+        )?;
+        if !solve.positive && shift < NEWTON_MARGIN - root.value {
+            let safe_shift = (NEWTON_MARGIN - root.value).max(NEWTON_MARGIN);
+            solve = crate::math::davidson::solve_shifted(
+                &hessian,
+                safe_shift,
+                &-&hessian.gradient,
+                cg_tol,
+                cg_iters,
+            )?;
+        }
         if !solve.positive {
             // The shifted Hessian has a direction of non-positive curvature: the root search
             // missed a lower root, so no point reached from here is shown to be a minimum.
@@ -974,7 +1010,7 @@ fn second_order_descent(
         if x.norm() > radius {
             x *= radius / x.norm();
         }
-        if root.value < 0. {
+        if root.value < -STABILITY_TOLERANCE {
             // Negative curvature: the trust region's step reaches its boundary along the mode,
             // downhill to first order.
             let sign = if root.vector.dot(&hessian.gradient) > 0. {
@@ -986,12 +1022,20 @@ fn second_order_descent(
             x += &root.vector * (sign * along);
         }
         let mut accepted = false;
-        while x.norm() > 1e-7 {
+        let step_floor = (options.tolerance * 1e-3).min(1e-12);
+        while x.norm() > step_floor {
             let trial = hessian.rotated(&x, 1.)?;
             let td = densities(&trial);
-            let trial_value = energy(&td, &fock(eri.as_ref(), h, &td, method), h, method);
-            if trial_value < value {
-                (c, d, value) = (trial, td, trial_value);
+            let tf = fock(eri.as_ref(), h, &td, method);
+            let trial_value = energy(&td, &tf, h, method);
+            let trial_stat = stationarity(&tf, &td);
+            let floor_tol = 1e-12 * (1. + value.abs());
+            if trial_value < value
+                || (root.value >= -STABILITY_TOLERANCE
+                    && trial_value <= value + floor_tol
+                    && trial_stat < 0.9 * stat_now)
+            {
+                (c, d, f_now, value, stat_now) = (trial, td, tf, trial_value, trial_stat);
                 radius = (2. * radius).min(NEWTON_RADIUS);
                 accepted = true;
                 break;
@@ -1003,6 +1047,7 @@ fn second_order_descent(
             break;
         }
     }
+    let _ = f_now;
     let mut out = iterate(integrals, method, h, particles, c, options, 0)?;
     out.converged &= !missed;
     Ok(out)
@@ -1037,7 +1082,7 @@ impl MolecularIntegrals {
         }
         OrbitalHessian::new(
             self.eri()?,
-            &self.core_operator(&state.method),
+            &self.core_operator(&state.method)?,
             &state.method,
             &state.densities,
             state.particles,
@@ -1062,20 +1107,28 @@ impl MolecularIntegrals {
         }
         Ok(Some(root.value))
     }
-    /// The core operator of `method` in the orthonormal frame (the spinor block diagonal for GHF).
-    fn core_operator(&self, method: &str) -> Matrix {
+    /// The core operator of `method` in the orthonormal frame (two-component spin-orbit included
+    /// for GHF on a spin-orbit PAW dataset).
+    fn core_operator(&self, method: &str) -> Result<Matrix> {
         let m = self.m();
         let spatial = Matrix::from_fn(m, m, |i, j| C64::new(self.one.as_slice()[i * m + j], 0.));
         if method != "ghf" {
-            return spatial;
+            return Ok(spatial);
         }
-        Matrix::from_fn(2 * m, 2 * m, |i, j| {
+        let mut h = Matrix::from_fn(2 * m, 2 * m, |i, j| {
             if i / m == j / m {
                 spatial[(i % m, j % m)]
             } else {
                 C64::default()
             }
-        })
+        });
+        if let Some(spin_orbit) = super::spinor_dft::spin_orbit_term(self)? {
+            if spin_orbit.shape() != (2 * m, 2 * m) {
+                return Err(invalid("spin-orbit matrix must be (2m, 2m)"));
+            }
+            h += spin_orbit;
+        }
+        Ok(h)
     }
 }
 
@@ -1210,10 +1263,12 @@ impl MolecularIntegrals {
             ));
         }
         self.require_hartree_fock_core()?;
-        if self.paw_setup.as_ref().is_some_and(|s| s.has_spin_orbit()) {
+        let has_spin_orbit = self.paw_setup.as_ref().is_some_and(|s| s.has_spin_orbit());
+        if method != "ghf" && has_spin_orbit {
             return Err(crate::Error::Unsupported(
-                "Hartree-Fock of a molecule with spin-orbit datasets is not available: the spin-orbit \
-                 term is carried by spinor Kohn-Sham (spinor_kohn_sham) only"
+                "spin-collinear Hartree-Fock of a molecule with spin-orbit datasets is not \
+                 available: use generalized Hartree-Fock (ghf), a variational solver, or \
+                 spinor Kohn-Sham (spinor_kohn_sham)"
                     .into(),
             ));
         }
@@ -1223,18 +1278,7 @@ impl MolecularIntegrals {
                 .checked_add(product(&[options.max_iterations, 128, 4])?)
                 .ok_or(crate::Error::Overflow)?,
         )?;
-        let spatial = Matrix::from_fn(m, m, |i, j| C64::new(self.one.as_slice()[i * m + j], 0.));
-        let h = if method == "ghf" {
-            Matrix::from_fn(2 * m, 2 * m, |i, j| {
-                if i / m == j / m {
-                    spatial[(i % m, j % m)]
-                } else {
-                    C64::default()
-                }
-            })
-        } else {
-            spatial.clone()
-        };
+        let h = self.core_operator(method)?;
         let (_, core) = eigen(h.clone())?;
         let mut starts = vec![if method == "uhf" {
             vec![core.clone(), core.clone()]
@@ -1242,10 +1286,16 @@ impl MolecularIntegrals {
             vec![core.clone()]
         }];
         if options.guesses >= 2 {
-            let screened = if method == "uhf" {
-                let d = density(&core, particles[0]) + density(&core, particles[1]);
-                let (j, _) = jk(self.eri()?.as_ref(), m, &d);
-                &h + j * C64::new(0.5, 0.)
+            if method == "uhf" {
+                let da = density(&core, particles[0]);
+                let db = density(&core, particles[1]);
+                let f = fock(self.eri()?.as_ref(), &h, &[da, db], "uhf");
+                let mut spin_starts = Vec::with_capacity(2);
+                for f_s in f {
+                    let (_, c) = eigen(hermitian((&h + f_s) * C64::new(0.5, 0.)))?;
+                    spin_starts.push(c);
+                }
+                starts.push(spin_starts);
             } else {
                 let d = density(
                     &core,
@@ -1256,14 +1306,9 @@ impl MolecularIntegrals {
                     },
                 );
                 let f = fock(self.eri()?.as_ref(), &h, &[d], method).remove(0);
-                (&h + f) * C64::new(0.5, 0.)
-            };
-            let (_, c) = eigen(hermitian(screened))?;
-            starts.push(if method == "uhf" {
-                vec![c.clone(), c]
-            } else {
-                vec![c]
-            });
+                let (_, c) = eigen(hermitian((&h + f) * C64::new(0.5, 0.)))?;
+                starts.push(vec![c]);
+            }
         }
         if method == "uhf"
             && options.guesses >= 3
@@ -1283,7 +1328,7 @@ impl MolecularIntegrals {
             }
             starts.push(vec![ca, cb]);
         }
-        if method == "ghf" && options.guesses >= 3 {
+        if method == "ghf" && options.guesses >= 3 && !has_spin_orbit {
             let uhf = self.mean_field_inner("uhf", particles, options)?;
             starts.push(vec![collinear(
                 &uhf.coefficients[0],
@@ -1298,8 +1343,8 @@ impl MolecularIntegrals {
         };
         let mut best: Option<Candidate> = None;
         let mut restarts = Vec::new();
-        for start in starts {
-            let candidate = iterate(self, method, &h, particles, start, options, 0)?;
+        for start in &starts {
+            let candidate = iterate(self, method, &h, particles, start.clone(), options, 0)?;
             // A non-aufbau RHF stationary point (held by the level shift) is a saddle: restart
             // once from it with the offending pair mixed, the same 0.3 rad the UHF start uses,
             // and the shift off. The selector keeps whichever is lower and converged.
@@ -1316,6 +1361,40 @@ impl MolecularIntegrals {
                 best = Some(candidate);
             }
         }
+        if !best.as_ref().is_some_and(|b| b.converged) {
+            for start in starts.into_iter().rev() {
+                let candidate = iterate(
+                    self,
+                    method,
+                    &h,
+                    particles,
+                    start,
+                    options,
+                    SETTLE_ITERATIONS,
+                )?;
+                if better(&candidate, best.as_ref()) {
+                    best = Some(candidate);
+                }
+            }
+            let current = best.take().unwrap();
+            if !current.converged {
+                let second = second_order_descent(
+                    self,
+                    method,
+                    &h,
+                    particles,
+                    options,
+                    current.coefficients.clone(),
+                )?;
+                best = Some(if better(&second, Some(&current)) {
+                    second
+                } else {
+                    current
+                });
+            } else {
+                best = Some(current);
+            }
+        }
         let best = follow_instabilities(self, method, &h, particles, options, best.unwrap())?;
         self.finish(method, particles, options, best, workspace, None, None)
     }
@@ -1330,18 +1409,7 @@ impl MolecularIntegrals {
         hubbard: Option<(f64, Vec<crate::molecular::hubbard::MolecularHubbardReport>)>,
     ) -> Result<MeanField> {
         let m = self.m();
-        let spatial = Matrix::from_fn(m, m, |i, j| C64::new(self.one.as_slice()[i * m + j], 0.));
-        let h = if method == "ghf" {
-            Matrix::from_fn(2 * m, 2 * m, |i, j| {
-                if i / m == j / m {
-                    spatial[(i % m, j % m)]
-                } else {
-                    C64::default()
-                }
-            })
-        } else {
-            spatial
-        };
+        let h = self.core_operator(method)?;
         let mut natural_occupations = vec![];
         let model_orbitals = if method == "uhf" {
             let (mut occupations, c) = eigen(&best.densities[0] + &best.densities[1])?;
@@ -1518,33 +1586,17 @@ impl MeanField {
             .unwrap_or_else(|e| e.into_inner())
             .is_some()
     }
-    pub fn model(&self, integrals: &MolecularIntegrals) -> Result<Arc<Model>> {
-        integrals.require_hartree_fock_core()?;
-        self.require_frame()?;
-        let mut cache = self.model.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(model) = cache.as_ref() {
-            return Ok(model.clone());
-        }
+    pub(super) fn build_model_from_orbitals(
+        &self,
+        integrals: &MolecularIntegrals,
+        orbitals: &Matrix,
+    ) -> Result<Model> {
         let ctx = &integrals.context;
         let m = integrals.m();
-        let c = &self.model_orbitals;
-        let n = c.ncols();
+        let n = orbitals.ncols();
         let eri = integrals.eri()?;
-        let spatial = Matrix::from_fn(m, m, |i, j| {
-            C64::new(integrals.one.as_slice()[i * m + j], 0.)
-        });
-        let h = if self.method == "ghf" {
-            Matrix::from_fn(2 * m, 2 * m, |i, j| {
-                if i / m == j / m {
-                    spatial[(i % m, j % m)]
-                } else {
-                    C64::default()
-                }
-            })
-        } else {
-            spatial
-        };
-        let transformed = c.adjoint() * h * c;
+        let h = integrals.core_operator(&self.method)?;
+        let transformed = orbitals.adjoint() * h * orbitals;
         let mut one = ctx.allocate::<C64>(product(&[n, n])?)?;
         for i in 0..n {
             for j in 0..n {
@@ -1555,8 +1607,8 @@ impl MeanField {
             let mut out = ctx.allocate::<C64>(product(&[n, n, n, n])?)?;
             for alpha in 0..2 {
                 for beta in 0..2 {
-                    let ca = c.rows(alpha * m, m).into_owned();
-                    let cb = c.rows(beta * m, m).into_owned();
+                    let ca = orbitals.rows(alpha * m, m).into_owned();
+                    let cb = orbitals.rows(beta * m, m).into_owned();
                     let block = transform::four(ctx, &eri, [&ca, &cb, &ca, &cb])?;
                     for (a, b) in out.as_mut_slice().iter_mut().zip(block.as_slice()) {
                         *a += b;
@@ -1565,11 +1617,12 @@ impl MeanField {
             }
             out
         } else {
-            transform::four(ctx, &eri, [c; 4])?
+            transform::four(ctx, &eri, [orbitals; 4])?
         };
+        let n_spatial = if self.method == "ghf" { n / 2 } else { n };
         let mut model = Model::new(
             ctx,
-            m,
+            n_spatial,
             self.particles,
             one,
             two,
@@ -1577,6 +1630,17 @@ impl MeanField {
             self.method == "ghf",
         )?;
         model.exchange_madelung = integrals.exchange_madelung()?;
+        Ok(model)
+    }
+
+    pub fn model(&self, integrals: &MolecularIntegrals) -> Result<Arc<Model>> {
+        integrals.require_hartree_fock_core()?;
+        self.require_frame()?;
+        let mut cache = self.model.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(model) = cache.as_ref() {
+            return Ok(model.clone());
+        }
+        let model = self.build_model_from_orbitals(integrals, &self.model_orbitals)?;
         let model = Arc::new(model);
         *cache = Some(model.clone());
         Ok(model)
@@ -1630,14 +1694,23 @@ impl MeanField {
         Ok(state)
     }
 
-    /// The one-body density of each spin in the model frame, `(2m, 2m)` row-major, spin-diagonal
-    /// blocks.
+    /// The one-body density of each spin in the model frame, `(2m, 2m)` row-major.
     pub fn model_rdm(&self, integrals: &MolecularIntegrals) -> Result<crate::Buffer<C64>> {
         let m = integrals.m();
         let _work = integrals.context.reserve(crate::product(&[m, m, 16, 8])?)?;
         let mut out = integrals
             .context
             .allocate::<C64>(crate::product(&[2 * m, 2 * m])?)?;
+        if self.densities.len() == 1 && self.densities[0].nrows() == 2 * m {
+            let transformed =
+                self.model_orbitals.adjoint() * &self.densities[0] * &self.model_orbitals;
+            for p in 0..2 * m {
+                for q in 0..2 * m {
+                    out.as_mut_slice()[p * 2 * m + q] = transformed[(p, q)];
+                }
+            }
+            return Ok(out);
+        }
         for spin in 0..2 {
             let density = &self.densities[if self.densities.len() == 1 { 0 } else { spin }];
             let transformed = self.model_orbitals.adjoint() * density * &self.model_orbitals;

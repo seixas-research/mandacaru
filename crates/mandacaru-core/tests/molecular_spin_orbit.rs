@@ -1864,3 +1864,133 @@ fn the_state_averaged_gradient_of_a_degenerate_spinor_pair_follows_its_energy() 
     assert_eq!(ctx.memory_used(), 0);
     assert!(failures.is_empty(), "{failures:#?}");
 }
+
+#[test]
+fn spin_orbit_ghf_and_variational_solver_carry_the_spin_orbit_term() {
+    use mandacaru_core::{
+        molecular::{spinor_dft::spin_orbit_term, ScfOptions},
+        paw::molecular::Arrays,
+        quantum::{algebra::Basis, solver::SolveOptions, Space},
+    };
+    use paw_molecular_support::{analytic_shells, dataset, molecule_with};
+    let ctx = Context::new(Some(2), 768 << 20).unwrap();
+    {
+        let root = std::path::PathBuf::from(
+            std::env::var_os("MANDACARU_PAW_PATH").expect("MANDACARU_PAW_PATH"),
+        );
+        let build = |set: &str, with_so: bool| {
+            let file = root.join(set).join("Br.parquet");
+            let species = vec![serde_json::json!({ "file": file.to_string_lossy() })];
+            molecule_with(
+                &ctx,
+                &[35],
+                &[[0.03, -0.02, 0.01]],
+                10.,
+                0.5,
+                (species, vec![0], Arrays::new()),
+                "raw",
+                &analytic_shells(&[0, 1]),
+                &[("spin_orbit", serde_json::json!(with_so))],
+            )
+        };
+        let electrons = dataset::read(&ctx, "pbe-fr", "Br").valence_charge.round() as usize;
+        let particles = [electrons / 2 - 1, electrons / 2]; // Br+ (6 valence e-: closed 4p_{3/2}^4 vs open 4p^4)
+        let n_e: usize = particles.iter().sum();
+        let fr = build("pbe-fr", true);
+        let sr = build("pbe-sr", false);
+        assert!(fr
+            .mean_field("rhf", particles, &ScfOptions::default())
+            .is_err());
+        assert!(fr
+            .mean_field("uhf", particles, &ScfOptions::default())
+            .is_err());
+
+        let options = ScfOptions {
+            tolerance: 1e-10,
+            max_iterations: 200,
+            ..Default::default()
+        };
+        let ghf_fr = fr.mean_field("ghf", particles, &options).unwrap();
+        let ghf_sr = sr.mean_field("ghf", particles, &options).unwrap();
+        assert!(ghf_fr.converged && ghf_sr.converged);
+        let total_fr = ghf_fr.electronic_energy + fr.nuclear;
+        let total_sr = ghf_sr.electronic_energy + sr.nuclear;
+        assert!(
+            total_fr < total_sr - 1e-3,
+            "spin-orbit Br+ GHF should lie below scalar Br+ GHF: fr {total_fr:.8}, sr {total_sr:.8}"
+        );
+
+        let h_so = spin_orbit_term(&fr).unwrap().unwrap();
+        let rdm = ghf_fr.model_rdm(&fr).unwrap();
+        let tr: f64 = (0..8).map(|i| rdm.as_slice()[i * 8 + i].re).sum();
+        assert!((tr - n_e as f64).abs() < 1e-10, "RDM trace {tr} != {n_e}");
+        let expected_so = (0..8)
+            .flat_map(|i| (0..8).map(move |j| (i, j)))
+            .map(|(i, j)| (ghf_fr.densities[0][(j, i)] * h_so[(i, j)]).re)
+            .sum::<f64>();
+        assert!(
+            expected_so.abs() > 1e-3,
+            "nonzero SOC expectation {expected_so}"
+        );
+
+        let model = ghf_fr.model(&fr).unwrap();
+        assert!(model.spinor);
+        let mut problem = model
+            .problem_in(&ctx, "jordan_wigner", Space::Sector, true, true)
+            .unwrap();
+        let h_mat = problem
+            .dense
+            .as_ref()
+            .expect("dense matrix on sector")
+            .as_slice();
+        let basis = Basis::total_number(&ctx, &problem.encoding).unwrap();
+        let dim = basis.len();
+        let h_full = DMatrix::from_fn(dim, dim, |i, j| h_mat[i * dim + j]);
+        let exact = mandacaru_core::math::linalg::eigen(h_full).unwrap().0[0];
+        assert!(
+            exact < total_fr - 1e-5,
+            "exact FCI {exact:.8} vs GHF {total_fr:.8}"
+        );
+
+        problem.use_pool("spin-orbit", true).unwrap();
+        let vqe = problem
+            .solve(
+                &SolveOptions {
+                    adapt: false,
+                    trotter: false,
+                    gradient_tolerance: Some(1e-6),
+                    ..Default::default()
+                },
+                None,
+            )
+            .unwrap();
+        assert!(
+            vqe.energy < total_fr,
+            "VQE {0:.8} should improve GHF {total_fr:.8}",
+            vqe.energy
+        );
+        assert!(
+            (vqe.energy - exact).abs() < 1e-5,
+            "VQE {0:.8} vs exact spin-orbit FCI {exact:.8}",
+            vqe.energy
+        );
+        let adapt = problem
+            .solve(
+                &SolveOptions {
+                    adapt: true,
+                    trotter: true,
+                    max_growth: 20,
+                    gradient_tolerance: Some(1e-6),
+                    ..Default::default()
+                },
+                None,
+            )
+            .unwrap();
+        assert!(
+            (adapt.energy - exact).abs() < 1e-4,
+            "ADAPT-VQE {0:.8} vs exact spin-orbit FCI {exact:.8}",
+            adapt.energy
+        );
+    }
+    assert_eq!(ctx.memory_used(), 0);
+}

@@ -107,7 +107,12 @@ pub struct Model {
     pub frozen_indices: Vec<usize>,
     /// Full source-MO rotation, shared by reduced models and density views.
     pub orbital_rotation: Option<std::sync::Arc<OrbitalRotation>>,
+    /// Complex crystal-momentum Bloch orbitals (`m_full x m_full` or `m_full x active`)
+    /// when built with `crystal_orbitals="k-space"`.
+    pub bloch_orbitals: Option<DMatrix<C64>>,
     pub orbital_symmetry_sets: Vec<Vec<usize>>,
+    /// Verified Abelian crystal point-/space-group orbital characters for active orbitals.
+    pub crystal_point_symmetry: Option<crate::quantum::CrystalPointSymmetry>,
     /// The double-factorized two-body representation, when the model holds one instead of the
     /// dense tensor; `two` is then empty and every reader of it goes through
     /// [`Model::dense_two`], which refuses by name.
@@ -240,7 +245,9 @@ impl Model {
             orbital_indices: (0..n).collect(),
             frozen_indices: vec![],
             orbital_rotation: None,
+            bloch_orbitals: None,
             orbital_symmetry_sets: Vec::new(),
+            crystal_point_symmetry: None,
             factorized: None,
             exchange_madelung: 0.,
             _memory: ctx.reserve(product(&[n, n, 64])?)?,
@@ -272,7 +279,9 @@ impl Model {
             orbital_indices: (0..m).collect(),
             frozen_indices: vec![],
             orbital_rotation: None,
+            bloch_orbitals: None,
             orbital_symmetry_sets: Vec::new(),
+            crystal_point_symmetry: None,
             factorized: Some(std::sync::Arc::new(factorized)),
             exchange_madelung: 0.,
             _memory: ctx.reserve(product(&[m, m, 64])?)?,
@@ -396,8 +405,30 @@ impl Model {
             .chain(frozen.iter().map(|&i| self.orbital_indices[i]))
             .collect();
         result.orbital_rotation = self.orbital_rotation.clone();
+        result.bloch_orbitals = self.bloch_orbitals.clone();
         result.orbital_symmetry_sets = self.orbital_symmetry_sets.clone();
+        result.crystal_point_symmetry = self.crystal_point_symmetry.clone();
         Ok(result)
+    }
+    /// Lightweight descriptor holding only orbital index sets on `0..m` for canonical CPHF relaxation.
+    pub(super) fn canonical_view(ctx: &Context, m: usize, particles: [usize; 2]) -> Result<Self> {
+        Ok(Self {
+            m,
+            particles,
+            one: ctx.allocate(0)?,
+            two: ctx.allocate(0)?,
+            constant: 0.,
+            spinor: false,
+            orbital_indices: (0..m).collect(),
+            frozen_indices: vec![],
+            orbital_rotation: None,
+            bloch_orbitals: None,
+            orbital_symmetry_sets: Vec::new(),
+            crystal_point_symmetry: None,
+            factorized: None,
+            exchange_madelung: 0.,
+            _memory: ctx.reserve(64)?,
+        })
     }
     pub fn fermion_terms(&self) -> Result<Vec<(Vec<(usize, bool)>, C64)>> {
         let two = self.dense_two("the fermion term list")?;
@@ -516,6 +547,11 @@ impl Model {
         self.problem_in(ctx, mapping, space, dense, singles)
     }
     /// The quantum problem of this model in `space` (see [`Space`]).
+    ///
+    /// For two-component GHF / spinor models (`spinor = true`), occupies `n_e = particles[0] +
+    /// particles[1]` lowest spinor orbitals in canonical `[0..n_a, m..m+n_b]` slots, builds the
+    /// total-electron-number sector (or register/Pauli space) with the `"spin-orbit"` pool, and
+    /// applies any double-group [`CrystalPointSymmetry`].
     pub fn problem_in(
         &self,
         ctx: &Context,
@@ -525,12 +561,85 @@ impl Model {
         singles: bool,
     ) -> Result<QuantumProblem> {
         if self.spinor {
-            return Err(invalid(
-                "the native GHF (spinor) model has no quantum handoff: a quantum solve needs an RHF or UHF reference",
-            ));
+            if mapping == "parity_reduced" {
+                return Err(invalid("GHF spinors do not have a fixed alpha parity"));
+            }
+            let encoding = Encoding::new(mapping, 2 * self.m, self.particles)?;
+            let h = self.operator(ctx, mapping)?;
+            let mut prob = QuantumProblem::spinor_in(ctx, encoding, h, space, dense, singles)?;
+            if let Some(sym) = &self.crystal_point_symmetry {
+                prob = prob.with_point_symmetry(sym)?;
+            }
+            return Ok(prob);
         }
         let encoding = Encoding::new(mapping, 2 * self.m, self.particles)?;
         let h = self.operator(ctx, mapping)?;
         QuantumProblem::new_in(ctx, encoding, h, space, dense, singles)
+    }
+
+    /// Return `true` iff every non-negligible 1- and 2-body matrix element of this active model
+    /// conserves unit-modulus orbital characters `chars` (`len == m`, or `2 * m` for spinors).
+    pub fn conserves_point_characters(&self, chars: &[C64]) -> bool {
+        let m = if self.spinor { 2 * self.m } else { self.m };
+        if chars.len() != m {
+            return false;
+        }
+        let one = self.one.as_slice();
+        for p in 0..m {
+            for q in 0..m {
+                if one[p * m + q].norm() > 1e-8
+                    && (chars[p].conj() * chars[q] - C64::new(1., 0.)).norm() > 1e-4
+                {
+                    return false;
+                }
+            }
+        }
+        if let Some(df) = &self.factorized {
+            let leaves: Vec<(f64, DMatrix<f64>)> =
+                df.leaves.iter().map(|l| (l.sign, l.matrix())).collect();
+            for p in 0..m {
+                for r in 0..m {
+                    for q in 0..m {
+                        for s in 0..m {
+                            let val: f64 = leaves
+                                .iter()
+                                .map(|(sign, mat)| sign * mat[(p, r)] * mat[(q, s)])
+                                .sum();
+                            if val.abs() > 1e-8
+                                && (chars[p].conj() * chars[q].conj() * chars[r] * chars[s]
+                                    - C64::new(1., 0.))
+                                .norm()
+                                    > 1e-4
+                            {
+                                return false;
+                            }
+                        }
+                    }
+                }
+            }
+            return true;
+        }
+        let two = self.two.as_slice();
+        if two.len() != m * m * m * m {
+            return false;
+        }
+        for p in 0..m {
+            for q in 0..m {
+                for r in 0..m {
+                    for s in 0..m {
+                        let idx = ((p * m + q) * m + r) * m + s;
+                        if two[idx].norm() > 1e-8
+                            && (chars[p].conj() * chars[q].conj() * chars[r] * chars[s]
+                                - C64::new(1., 0.))
+                            .norm()
+                                > 1e-4
+                        {
+                            return false;
+                        }
+                    }
+                }
+            }
+        }
+        true
     }
 }

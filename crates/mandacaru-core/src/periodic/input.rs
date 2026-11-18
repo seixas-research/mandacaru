@@ -736,12 +736,8 @@ impl Crystal {
                 "spinor time-reversal constraint requires a spinor crystal",
             ));
         }
-        if spinor && (spins != 1 || (!permutations.is_empty() && !time_reversal)) {
-            return Err(invalid(
-                "a spinor crystal needs one spinor block, and symmetry averaging only when it is \
-                 time-reversal symmetric (a magnetization would need the spin rotation of every \
-                 operation)",
-            ));
+        if spinor && spins != 1 {
+            return Err(invalid("a spinor crystal needs one spinor block"));
         }
         if points
             .iter()
@@ -807,6 +803,19 @@ impl Crystal {
                 Err(other) => return Err(other),
             }
         };
+        if spinor && !permutations.is_empty() && !time_reversal {
+            let has_magnetic_ops = description
+                .as_ref()
+                .and_then(|d| d.operations.as_ref())
+                .and_then(|o| o.anti_unitary.as_ref())
+                .is_some_and(|flags| flags.len() == permutations.len());
+            if !has_magnetic_ops {
+                return Err(invalid(
+                    "a spinor crystal needs symmetry averaging only when it is time-reversal \
+                     symmetric or carries magnetic group anti_unitary flags",
+                ));
+            }
+        }
         let core_tau = if definition.requires_tau {
             let values = arrays.real(ctx, &v["core_tau"], n, "core kinetic density")?;
             if values.as_slice().iter().any(|v| *v < 0.) {

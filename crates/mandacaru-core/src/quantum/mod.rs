@@ -31,5 +31,5 @@ pub mod transfer;
 pub use algebra::{Basis, Encoding, Operator};
 pub use amplitude::{Amplitude, Floors, State};
 pub use num_complex::Complex64 as C64;
-pub use pools::CrystalMomentum;
+pub use pools::{CrystalMomentum, CrystalPointSymmetry};
 pub use solver::{QuantumProblem, SolveOptions, SolveResult, Space};

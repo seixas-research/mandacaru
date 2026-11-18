@@ -12,10 +12,9 @@
 mod paw_diagnose_support;
 
 use mandacaru_core::models::atom::Atom;
-use mandacaru_core::models::xc_scheme::AtomSolver;
 use mandacaru_core::paw::diagnose::{
     ghosts::{ghost_errors, missing_states, reference_offsets, GHOST_TOLERANCE, MISSING_TOLERANCE},
-    reference::{reference_atom_with, AeLogs, AllElectron},
+    reference::{reference_atom, AeLogs, AllElectron},
     scattering::{scattering_errors, PHASE_TOLERANCE, RESONANCE_TOLERANCE},
     spectrum::{self, nodes},
     view::{Key, Smooth},
@@ -36,7 +35,7 @@ struct Bench {
 fn bench(set: &str, element: &str) -> Bench {
     let ctx = context();
     let ds = read(&ctx, &dataset_path(set, element));
-    let atom = reference_atom_with(&ctx, &ds, &AtomSolver).unwrap();
+    let atom = reference_atom(&ctx, &ds).unwrap();
     let smooth = smooth_of(&ctx, &ds);
     Bench { ctx, smooth, atom }
 }
@@ -364,4 +363,24 @@ fn an_unconverged_reference_atom_is_named_as_such() {
         message.contains("is not the one the record asks for") && !message.contains("converge"),
         "{message}"
     );
+}
+
+#[test]
+fn local_potential_ghosts_uses_scalar_relativistic_all_electron_count() {
+    use mandacaru_core::paw::diagnose::ghosts::{local_potential_ghosts, EXCITED_GHOST_MARGIN};
+    let mut b = bench("lda-sr", "O");
+    let ae = AllElectron::new(
+        &b.atom,
+        b.smooth.atomic_number,
+        &b.smooth.frozen,
+        &b.smooth.semicore,
+    );
+    assert!(local_potential_ghosts(&b.ctx, &b.smooth, &ae)
+        .unwrap()
+        .is_empty());
+    // A deep well binds a spurious state in the unprojected d channel (l = 2) below -0.1 Ha.
+    add_well(&mut b.smooth, 40., 0.8);
+    let found = local_potential_ghosts(&b.ctx, &b.smooth, &ae).unwrap();
+    let d_ghost = *found.get(&2).expect("unprojected l=2 ghost detected");
+    assert!(d_ghost < -EXCITED_GHOST_MARGIN, "{d_ghost}");
 }

@@ -831,3 +831,36 @@ fn the_crystal_setup_and_build_run_on_the_context_threads() {
         ctx.workers_peak()
     );
 }
+
+#[test]
+fn charged_cell_refuses_nonfinite_or_nonpositive_electron_count() {
+    let ctx = Context::new(Some(1), 1 << 30).unwrap();
+    let root = std::env::var_os("MANDACARU_PAW_PATH").expect("MANDACARU_PAW_PATH is unset");
+    let dataset =
+        Arc::new(PawDataset::read(&ctx, &PathBuf::from(root).join("lda-sr/H.parquet")).unwrap());
+
+    let mut nonfinite = parse_input_json(&request()).unwrap();
+    nonfinite.charge = Some(f64::NAN);
+    let err_nan = create_setup(&ctx, nonfinite, vec![dataset.clone()])
+        .err()
+        .unwrap();
+    assert!(err_nan.to_string().contains("finite"), "{err_nan}");
+
+    let mut depleted = parse_input_json(&request()).unwrap();
+    depleted.charge = Some(dataset.valence_charge);
+    let err_zero = create_setup(&ctx, depleted, vec![dataset.clone()])
+        .err()
+        .unwrap();
+    assert!(
+        err_zero.to_string().contains("positive electron"),
+        "{err_zero}"
+    );
+
+    let mut valid_charged = parse_input_json(&request()).unwrap();
+    valid_charged.charge = Some(0.5);
+    let crystal = create_setup(&ctx, valid_charged, vec![dataset])
+        .unwrap()
+        .build(&ctx)
+        .unwrap();
+    assert!((crystal.electrons - 0.5).abs() < 1e-12);
+}

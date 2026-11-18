@@ -126,57 +126,15 @@ pub fn calculate(
     for r in &mut position {
         *r = c.transpose() * r.clone() * &c;
     }
-    let mut rotation = DMatrix::<f64>::identity(n, n);
     let mut centers: Vec<_> = position
         .iter()
         .map(|r| DMatrix::from_fn(n, n, |i, j| r[(correlated[i], correlated[j])]))
         .collect();
-    let mut localized = false;
-    for _ in 0..200 {
-        let mut largest = 0_f64;
-        for i in 0..n {
-            for j in i + 1..n {
-                let a: Vec<_> = centers.iter().map(|r| r[(i, j)]).collect();
-                let b: Vec<_> = centers.iter().map(|r| r[(i, i)] - r[(j, j)]).collect();
-                let aa = a.iter().map(|x| x * x).sum::<f64>()
-                    - 0.25 * b.iter().map(|x| x * x).sum::<f64>();
-                let bb = a.iter().zip(&b).map(|(x, y)| x * y).sum::<f64>();
-                if aa.abs() < 1e-14 && bb.abs() < 1e-14 {
-                    continue;
-                }
-                let angle = 0.25 * bb.atan2(-aa);
-                largest = largest.max(angle.abs());
-                if angle.abs() < 1e-10 {
-                    continue;
-                }
-                let (s, q) = angle.sin_cos();
-                for r in &mut centers {
-                    for k in 0..n {
-                        let (a, b) = (r[(i, k)], r[(j, k)]);
-                        r[(i, k)] = q * a + s * b;
-                        r[(j, k)] = -s * a + q * b;
-                    }
-                    for k in 0..n {
-                        let (a, b) = (r[(k, i)], r[(k, j)]);
-                        r[(k, i)] = q * a + s * b;
-                        r[(k, j)] = -s * a + q * b;
-                    }
-                }
-                for k in 0..n {
-                    let (a, b) = (rotation[(k, i)], rotation[(k, j)]);
-                    rotation[(k, i)] = q * a + s * b;
-                    rotation[(k, j)] = -s * a + q * b;
-                }
-            }
-        }
-        if largest < 1e-10 {
-            localized = true;
-            break;
-        }
-    }
-    if !localized {
+    let boys = crate::math::localization::boys(&mut centers, 200, 1e-10)?;
+    if !boys.converged {
         return Err(invalid("Boys localization did not converge"));
     }
+    let rotation = boys.rotation;
     let lmo = DMatrix::from_fn(m, n, |i, j| {
         correlated
             .iter()

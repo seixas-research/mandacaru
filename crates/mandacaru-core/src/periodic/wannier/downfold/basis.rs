@@ -90,6 +90,7 @@ fn functions(
             samples: &point.psi,
             projections,
             gauge,
+            components: 1,
         })
         .collect();
     let ids: Vec<usize> = (0..frame.ncols()).collect();
@@ -113,6 +114,7 @@ fn crystal_row_functions(
             samples: &point.psi,
             projections: &point.projections,
             gauge,
+            components: 1,
         })
         .collect();
     let ids: Vec<usize> = (0..gauges.first().map_or(0, |g| g.ncols())).collect();
@@ -210,6 +212,7 @@ fn moving_functions(
             samples,
             projections,
             gauge,
+            components: 1,
         })
         .collect();
     let ids: Vec<usize> = (0..gauges.first().map_or(0, |g| g.ncols())).collect();
@@ -235,6 +238,7 @@ fn joined(ctx: &crate::Context, base: &Functions, moving: Functions) -> Result<F
         values,
         coefficients,
         projectors: base.projectors,
+        components: base.components,
     })
 }
 
@@ -320,6 +324,7 @@ impl<'a> Moving<'a> {
                 .map(|c| ctx.copy_slice(c.as_slice()))
                 .collect::<Result<_>>()?,
             projectors: self.base.projectors,
+            components: self.base.components,
         };
         Streamed::new(self.crystal, &self.setup, self.grid.clone(), copy)
     }

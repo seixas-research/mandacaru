@@ -127,18 +127,14 @@ fn dataset_set(source: &str) -> String {
 /// the crystal's projectors: [`build`] runs them first, and the calculator runs them at
 /// construction when the atoms are known, before any crystal is assembled.
 ///
-/// A spin-orbit crystal, an element of the option that no dataset covers, a dataset without
-/// the requested channel and a channel whose reference atom holds no electron (no bound
-/// orbital to project on: Ba 5d, Au 5f in `lda-sr`) raise, naming the element, the shell and
-/// the dataset set.
-pub fn check_datasets(request: &Request, spin_orbit: bool, datasets: &[Dataset<'_>]) -> Result<()> {
-    if spin_orbit {
-        return Err(Error::Unsupported(
-            "hubbard_u with a spin-orbit (fully relativistic) dataset: DFT+U is implemented for \
-             scalar-relativistic datasets only"
-                .into(),
-        ));
-    }
+/// Spin-orbit datasets accept both Dudarev (`dudarev`) and Liechtenstein (`liechtenstein`).
+/// Missing elements, datasets without the requested channel, and channels whose reference atom
+/// holds no electron raise, naming the element, the shell and the dataset set.
+pub fn check_datasets(
+    request: &Request,
+    _spin_orbit: bool,
+    datasets: &[Dataset<'_>],
+) -> Result<()> {
     let missing: Vec<&str> = request
         .entries
         .iter()
@@ -413,9 +409,11 @@ fn build_table(
             l,
             u: entry.u,
             j: entry.j,
+            ratios: entry.ratios,
             projectors: listed,
             weights: weights.clone(),
             basis: Some(basis.to_string()),
+            source: Some("user".to_string()),
             seed: Seed::Moment {
                 n_electrons: *electrons,
                 moment,
@@ -428,14 +426,23 @@ fn build_table(
     })
 }
 
-/// `symbol: l, U, J` of each element of a table, in Hartree; the shells of one element must
+/// `symbol: l, U, J, ratios` of each element of a table; the shells of one element must
 /// agree, otherwise `None` marks the element as inconsistent.
 fn describe<'a>(
-    shells: impl Iterator<Item = (&'a str, usize, f64, f64)>,
-) -> BTreeMap<&'a str, Option<(usize, f64, f64)>> {
-    let mut out: BTreeMap<&str, Option<(usize, f64, f64)>> = BTreeMap::new();
-    for (symbol, l, u, j) in shells {
-        let value = Some((l, u, j));
+    shells: impl Iterator<
+        Item = (
+            &'a str,
+            usize,
+            f64,
+            f64,
+            crate::models::hubbard_slater::Ratios,
+        ),
+    >,
+) -> BTreeMap<&'a str, Option<(usize, f64, f64, crate::models::hubbard_slater::Ratios)>> {
+    let mut out: BTreeMap<&str, Option<(usize, f64, f64, crate::models::hubbard_slater::Ratios)>> =
+        BTreeMap::new();
+    for (symbol, l, u, j, ratios) in shells {
+        let value = Some((l, u, j, ratios));
         out.entry(symbol)
             .and_modify(|seen| {
                 if *seen != value {
@@ -447,13 +454,23 @@ fn describe<'a>(
     out
 }
 
-fn show(map: &BTreeMap<&str, Option<(usize, f64, f64)>>) -> String {
+fn show(
+    map: &BTreeMap<&str, Option<(usize, f64, f64, crate::models::hubbard_slater::Ratios)>>,
+) -> String {
     if map.is_empty() {
         return "no correction".into();
     }
     map.iter()
         .map(|(symbol, v)| match v {
-            Some((l, u, j)) => format!("{symbol}: (l = {l}, U = {u}, J = {j})"),
+            Some((l, u, j, r)) => match r.f6_f2 {
+                Some(f6) => {
+                    format!(
+                        "{symbol}: (l = {l}, U = {u}, J = {j}, f4_f2 = {}, f6_f2 = {f6})",
+                        r.f4_f2
+                    )
+                }
+                None => format!("{symbol}: (l = {l}, U = {u}, J = {j}, f4_f2 = {})", r.f4_f2),
+            },
             None => format!("{symbol}: (shells that differ)"),
         })
         .collect::<Vec<_>>()
@@ -469,13 +486,13 @@ pub fn check_loaded(request: &Request, loaded: Option<&Spec>) -> Result<()> {
         request
             .entries
             .iter()
-            .map(|e| (e.symbol.as_str(), e.l, e.u, e.j)),
+            .map(|e| (e.symbol.as_str(), e.l, e.u, e.j, e.ratios)),
     );
     let file = describe(
         loaded
             .into_iter()
             .flat_map(|spec| spec.shells.iter())
-            .map(|s| (s.symbol.as_str(), s.l, s.u, s.j)),
+            .map(|s| (s.symbol.as_str(), s.l, s.u, s.j, s.ratios)),
     );
     let same_form = loaded.is_none_or(|spec| spec.form == request.form());
     if file == wanted && same_form {

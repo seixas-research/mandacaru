@@ -769,7 +769,7 @@ fn the_hubbard_weak_kick_response_is_the_casida_response_function() {
         &Response::new(&plain, &plain_state, Spin::Singlet, Coupling::Adiabatic).unwrap(),
         0,
     );
-    for (form, u, j) in [("dudarev-fll", 20., 0.), ("liechtenstein-fll", 20., 3.)] {
+    for (form, u, j) in [("dudarev", 20., 0.), ("liechtenstein", 20., 3.)] {
         let (integrals, _) = copper_hydride(&ctx, Some((form, u, j)));
         let state = integrals
             .kohn_sham("lda", [half, half], false, &options())

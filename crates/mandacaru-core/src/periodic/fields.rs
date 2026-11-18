@@ -515,6 +515,14 @@ fn spinor_kinetic_density<M: MatrixSource>(c: &Crystal, matrices: &[M]) -> Resul
         }
         return Ok(charge);
     }
+    if !c.permutations.is_empty() {
+        let mut sym = c.context.allocate::<f64>(4 * n)?;
+        super::solver::sym_pauli_fields(c, raw.as_slice(), sym.as_mut_slice())?;
+        for value in &mut sym.as_mut_slice()[..n] {
+            *value = value.max(0.);
+        }
+        return Ok(sym);
+    }
     for value in &mut raw.as_mut_slice()[..n] {
         *value = value.max(0.);
     }

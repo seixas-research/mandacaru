@@ -16,24 +16,32 @@ pub fn radial_value(r: f64, breaks: &[f64], coeffs: &[f64], nb: usize, rc: f64, 
     if r > x_end || r >= rc {
         return 0.0;
     }
-    let rr = if r < x0 { x0 } else { r };
+    if r < x0 && x0 > 0.0 {
+        let t = (if r > 0.0 { r } else { 0.0 }) / x0;
+        let y0 = coeffs[3];
+        let y0p = coeffs[2];
+        let lf = l as f64;
+        let c0 = 0.5 * ((lf + 2.0) * y0 - x0 * y0p);
+        let c2 = y0 - c0;
+        return if l == 0 {
+            c0 + c2 * t * t
+        } else {
+            (c0 + c2 * t * t) * t.powi(l)
+        };
+    }
     let mut lo = 0usize;
     let mut hi = nb - 2;
     while lo < hi {
         let mid = (lo + hi + 1) / 2;
-        if breaks[mid] <= rr {
+        if breaks[mid] <= r {
             lo = mid;
         } else {
             hi = mid - 1;
         }
     }
     let c = &coeffs[4 * lo..4 * lo + 4];
-    let t = rr - breaks[lo];
-    let mut value = ((c[0] * t + c[1]) * t + c[2]) * t + c[3];
-    if r < x0 && x0 > 0.0 && l > 0 {
-        value *= (if r > 0.0 { r / x0 } else { 0.0 }).powi(l);
-    }
-    value
+    let t = r - breaks[lo];
+    ((c[0] * t + c[1]) * t + c[2]) * t + c[3]
 }
 
 #[inline(always)]
@@ -44,11 +52,17 @@ pub fn radial_slope(r: f64, breaks: &[f64], coeffs: &[f64], nb: usize, rc: f64, 
         return 0.0;
     }
     if r < x0 && x0 > 0.0 {
+        let t = (if r > 0.0 { r } else { 0.0 }) / x0;
+        let y0 = coeffs[3];
+        let y0p = coeffs[2];
+        let lf = l as f64;
+        let c0 = 0.5 * ((lf + 2.0) * y0 - x0 * y0p);
+        let c2 = y0 - c0;
         if l == 0 {
-            return 0.0;
+            return y0p * t;
         }
-        let edge = radial_value(x0, breaks, coeffs, nb, rc, l);
-        return (l as f64) * edge * (r / x0).powi(l - 1) / x0;
+        let tl_1 = t.powi(l - 1);
+        return (lf * c0 * tl_1 + (lf + 2.0) * c2 * tl_1 * t * t) / x0;
     }
     let mut lo = 0usize;
     let mut hi = nb - 2;

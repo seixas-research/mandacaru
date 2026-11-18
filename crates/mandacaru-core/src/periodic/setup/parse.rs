@@ -137,7 +137,20 @@ pub fn create_setup(
         .any(|a| !datasets[a.species].spin_orbit.is_empty());
     if let Some(request) = &input.hubbard_u {
         if has_spin_orbit {
-            crate::periodic::hubbard_table::check_datasets(request, true, &[])?;
+            use crate::periodic::hubbard_table::Dataset;
+            let ds: Vec<Dataset<'_>> = datasets
+                .iter()
+                .map(|d| Dataset {
+                    symbol: &d.symbol,
+                    source: "",
+                    occupations: d
+                        .channels
+                        .iter()
+                        .map(|(&l, c)| (l as usize, c.occupations.data()))
+                        .collect(),
+                })
+                .collect();
+            crate::periodic::hubbard_table::check_datasets(request, true, &ds)?;
         }
     }
     if has_spin_orbit && !input.spinor {
@@ -168,6 +181,19 @@ pub fn create_setup(
         return Err(invalid(
             "filter cutoff and sigma must be finite and positive",
         ));
+    }
+    if let Some(charge) = input.charge {
+        if !charge.is_finite() {
+            return Err(invalid("cell charge must be finite"));
+        }
+        let valence_sum: f64 = input
+            .atoms
+            .iter()
+            .map(|a| datasets[a.species].valence_charge)
+            .sum();
+        if valence_sum - charge <= 0.0 {
+            return Err(invalid("charged crystal must have positive electron count"));
+        }
     }
     if input
         .dataset_files
@@ -400,56 +426,68 @@ pub fn create_setup(
     // Symmetry operations
     let magnetic = input.atoms.iter().any(|a| a.moment != 0.);
     // A collinear moment pattern keeps the operations that map every atom onto an atom of the SAME
-    // element and the SAME signed moment (the density of each spin channel is then symmetrized
-    // channel by channel). An operation that would send a moment to its opposite needs a spin flip
-    // of the channels: it is not kept (the moment-preserving subgroup of the magnetic group).
-    // A spinor crystal keeps the operations only when it is time-reversal symmetric: it then carries
-    // the charge and its multipoles alone, scalars under the spin rotation of an operation. A
-    // magnetic or spin-polarized spinor needs that rotation on its magnetization and keeps the whole
-    // mesh.
+    // element and the SAME signed moment. A nonmagnetic spinor crystal keeps the full space group
+    // (carries charge alone). A magnetic spinor crystal keeps the magnetic little group: unitary
+    // ops preserving (det R) R m_a = m_{s(a)} and anti-unitary ops T * g preserving -(det R) R m_a = m_{s(a)}.
     let spin_rotation_free = !input.spinor || (!input.spin && !magnetic);
+    let magnetic_spinor = input.spinor && magnetic;
     // A hybrid's exchange rotates the states of the listed points to their stars (`periodic::star`):
     // the setup reduces its mesh by the space group only when it builds the mesh itself.
     let hybrid_reducible = !hybrid || input.mesh.is_some();
-    let symmetry = if input.symmetry && spin_rotation_free && hybrid_reducible {
-        let mut keys: Vec<(u32, i64)> = Vec::new();
-        let labels: Vec<u32> = atomic_numbers
+    let max_l = 4.max(
+        atoms_species
             .iter()
-            .zip(&moments)
-            .map(|(&z, &m)| {
-                let key = (z, (m * 1e4).round() as i64);
-                match keys.iter().position(|k| *k == key) {
-                    Some(i) => i as u32,
-                    None => {
-                        keys.push(key);
-                        (keys.len() - 1) as u32
-                    }
-                }
-            })
-            .collect();
-        let geom = Geometry {
-            lattice: input.lattice,
-            fractional: &fractional_atoms,
-            species: &atomic_numbers,
-            labels: &labels,
-            grid: shape,
-            symprec: 1e-4,
-            max_l: 4.max(
-                atoms_species
-                    .iter()
-                    .map(|&species| {
-                        2 * datasets[species]
-                            .channels
-                            .keys()
-                            .copied()
-                            .max()
-                            .unwrap_or(0) as usize
-                    })
+            .map(|&species| {
+                2 * datasets[species]
+                    .channels
+                    .keys()
+                    .copied()
                     .max()
-                    .unwrap_or(0),
-            ),
-        };
-        Some(Symmetry::new(&geom)?)
+                    .unwrap_or(0) as usize
+            })
+            .max()
+            .unwrap_or(0),
+    );
+    let symmetry = if input.symmetry && (spin_rotation_free || magnetic_spinor) && hybrid_reducible
+    {
+        if magnetic_spinor {
+            let geom = Geometry {
+                lattice: input.lattice,
+                fractional: &fractional_atoms,
+                species: &atomic_numbers,
+                labels: &atomic_numbers,
+                grid: shape,
+                symprec: 1e-4,
+                max_l,
+            };
+            Some(Symmetry::new_magnetic_spinor(&geom, &moments)?)
+        } else {
+            let mut keys: Vec<(u32, i64)> = Vec::new();
+            let labels: Vec<u32> = atomic_numbers
+                .iter()
+                .zip(&moments)
+                .map(|(&z, &m)| {
+                    let key = (z, (m * 1e4).round() as i64);
+                    match keys.iter().position(|k| *k == key) {
+                        Some(i) => i as u32,
+                        None => {
+                            keys.push(key);
+                            (keys.len() - 1) as u32
+                        }
+                    }
+                })
+                .collect();
+            let geom = Geometry {
+                lattice: input.lattice,
+                fractional: &fractional_atoms,
+                species: &atomic_numbers,
+                labels: &labels,
+                grid: shape,
+                symprec: 1e-4,
+                max_l,
+            };
+            Some(Symmetry::new(&geom)?)
+        }
     } else {
         None
     };
@@ -461,22 +499,21 @@ pub fn create_setup(
         let reduced = if let Some(sym) = symmetry.take() {
             let kept = sym.keeping_mesh(size, gamma)?;
             let reduced = kept.mesh(ctx, size, gamma)?;
-            let halved = if hybrid {
+            let baseline = if hybrid {
                 Some(crate::periodic::spectrum::mesh(
                     ctx,
                     size,
                     gamma,
                     &[],
-                    true,
+                    !whole,
                 )?)
             } else {
                 None
             };
-            match halved {
-                // The operations reduce a hybrid's mesh no further than time reversal does: it keeps
-                // the mesh it had without them (halved, whole when magnetic) and no operations
-                // (nothing to rotate).
-                Some(halved) if halved.points.len() == reduced.points.len() => {
+            match baseline {
+                // Keep the operations only when they reduce the mesh beyond the zero-op baseline
+                // (time-reversal halved when !whole; whole mesh when magnetic).
+                Some(base) if base.points.len() == reduced.points.len() => {
                     crate::periodic::spectrum::mesh(ctx, size, gamma, &[], !whole)?
                 }
                 _ => {
@@ -545,6 +582,7 @@ pub fn create_setup(
             rotations: vec![],
             translations: vec![],
             atom_maps: vec![],
+            anti_unitary: sym.anti_unitary_flags().map(<[bool]>::to_vec),
         };
         for k in 0..sym.len() {
             let w = sym.rotation(k);

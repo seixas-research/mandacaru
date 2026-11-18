@@ -137,6 +137,12 @@ fn malformed_datasets_are_refused_with_the_reason() {
             "\"extra\" is not part of the schema",
         ),
         (
+            "malformed provenance object",
+            hydrogen.clone(),
+            Box::new(|_, _, p| p["provenance"] = json!({"generator": "test"})),
+            "\"version\" is missing",
+        ),
+        (
             "ragged matrix",
             hydrogen.clone(),
             Box::new(|_, _, p| p["channels"]["0"]["coupling"] = json!([[1.0, 2.0], [3.0]])),

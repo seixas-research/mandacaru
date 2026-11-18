@@ -1,9 +1,10 @@
 //! Owned Wannier result bindings. Numerical work detaches from Python.
-use super::{array, copy, downfold::PyDownfolded, error, Array};
+use super::{array, copy, downfold::PyDownfolded, error};
 use mandacaru_core::{
     periodic::wannier::{
         downfold::{CoulombBox, Request, Screening},
         setup::Wannier,
+        Localization,
     },
     quantum::C64,
 };
@@ -108,6 +109,35 @@ impl PyWannierResult {
                 channel.hoppings.values.as_slice().to_vec(),
             )?,
         )?;
+        let nr = channel.hoppings.vectors.as_slice().len();
+        let pos_flat: Vec<C64> = channel
+            .positions_r
+            .iter()
+            .flat_map(|b| b.as_slice().iter().copied())
+            .collect();
+        out.set_item("positions_R", array(py, &[3, nr, n, n], pos_flat)?)?;
+        out.set_item(
+            "position_asymmetry",
+            channel.interpolation.position_asymmetry,
+        )?;
+        let lat = channel.interpolation.lattice;
+        let cell_rows: Vec<f64> = (0..3)
+            .flat_map(|a| (0..3).map(move |x| lat[(x, a)]))
+            .collect();
+        out.set_item("cell_bohr", array(py, &[3, 3], cell_rows)?)?;
+        out.set_item("fermi_ha", owner.state.fermi)?;
+        match owner.localization {
+            Localization::Spread => {
+                out.set_item("localization", "spread")?;
+                out.set_item("populations", py.None())?;
+                out.set_item("exponent", py.None())?;
+            }
+            Localization::Populations { scheme, exponent } => {
+                out.set_item("localization", "populations")?;
+                out.set_item("populations", scheme.name())?;
+                out.set_item("exponent", exponent)?;
+            }
+        }
         out.set_item(
             "labels",
             owner
@@ -153,13 +183,14 @@ impl PyWannierResult {
             coulomb: coulomb.to_owned(),
         })
     }
-    #[pyo3(signature=(fractional_kpoints,*,spin=0))]
+    #[pyo3(signature=(fractional_kpoints,*,spin=0,eigenvectors=false))]
     fn interpolate<'py>(
         &self,
         py: Python<'py>,
         fractional_kpoints: PyReadonlyArray2<'py, f64>,
         spin: usize,
-    ) -> PyResult<Array<'py, f64>> {
+        eigenvectors: bool,
+    ) -> PyResult<Bound<'py, PyAny>> {
         if fractional_kpoints.shape()[1] != 3 {
             return Err(pyo3::exceptions::PyValueError::new_err(
                 "fractional k-points need shape (n,3)",
@@ -171,13 +202,41 @@ impl PyWannierResult {
         let ctx = &self.inner.crystal.context;
         let (values, _memory) = copy(ctx, &fractional_kpoints)?;
         let points: Vec<[f64; 3]> = values.chunks_exact(3).map(|r| [r[0], r[1], r[2]]).collect();
-        let out = py
-            .detach(|| channel.hoppings.interpolate(ctx, &points))
+        let n_k = points.len();
+        let j = channel.hoppings.functions;
+        if !eigenvectors {
+            let out = py
+                .detach(|| channel.hoppings.interpolate(ctx, &points))
+                .map_err(error)?;
+            return Ok(array(py, &[n_k, j], out.as_slice().to_vec())?.into_any());
+        }
+        let (e_buf, vecs) = py
+            .detach(|| channel.interpolation.interpolate_with_vectors(ctx, &points))
             .map_err(error)?;
-        array(
-            py,
-            &[points.len(), channel.hoppings.functions],
-            out.as_slice().to_vec(),
-        )
+        let e_arr = array(py, &[n_k, j], e_buf.as_slice().to_vec())?;
+        let mut flat_vecs = Vec::with_capacity(n_k * j * j);
+        for m in &vecs {
+            for r in 0..m.nrows() {
+                for c in 0..m.ncols() {
+                    flat_vecs.push(m[(r, c)]);
+                }
+            }
+        }
+        let v_arr = array(py, &[n_k, j, j], flat_vecs)?;
+        Ok((e_arr, v_arr).into_pyobject(py)?.into_any())
+    }
+    /// Wannier-interpolated anomalous Hall conductivity on mesh `size` (`periodic::wannier::setup::Wannier::anomalous_hall`), e^2/(hbar Bohr).
+    #[pyo3(signature=(size,*,refine=true))]
+    fn anomalous_hall<'py>(
+        &self,
+        py: Python<'py>,
+        size: [usize; 3],
+        refine: bool,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let owner = self.inner.clone();
+        let h = py
+            .detach(|| owner.anomalous_hall(size, refine))
+            .map_err(error)?;
+        super::berry::hall_dict(py, &h, "wannier")
     }
 }

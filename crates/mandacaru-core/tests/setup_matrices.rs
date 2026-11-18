@@ -621,3 +621,71 @@ fn the_setup_reduces_its_mesh_and_its_description_round_trips() {
     .unwrap();
     assert_eq!(back.blocks(), description.blocks());
 }
+
+#[test]
+fn matrices_at_is_bit_identical_across_thread_and_auto_layouts() {
+    let ctx1 = mandacaru_core::Context::new(Some(1), 1 << 30).unwrap();
+    let ctx4 = mandacaru_core::Context::new(Some(4), 1 << 30).unwrap();
+    let ctx_auto = mandacaru_core::Context::new(Some(4), 1 << 30)
+        .unwrap()
+        .with_auto_layout()
+        .unwrap();
+    let ds = Arc::new(dataset(&ctx1, "lda-sr", "Si"));
+    let a = 10.26;
+    let input = serde_json::json!({
+        "lattice": [0., a / 2., a / 2., a / 2., 0., a / 2., a / 2., a / 2., 0.],
+        "grid_shape": [16, 16, 16],
+        "atoms": [
+            {"species": 0, "symbol": "Si", "fractional": [0., 0., 0.]},
+            {"species": 0, "symbol": "Si", "fractional": [0.25, 0.25, 0.25]}
+        ],
+        "mesh": {"size": [2, 2, 2], "gamma": true},
+        "basis_size": "SZ",
+        "symmetry": false
+    });
+    let setup = create_setup(
+        &ctx1,
+        mandacaru_core::periodic::setup::parse_input_json(&input).unwrap(),
+        vec![ds],
+    )
+    .unwrap();
+    let shifted: Vec<[f64; 3]> = (0..6).map(|i| [0.05 * i as f64, 0.11, -0.07]).collect();
+    let weights = vec![1.0 / shifted.len() as f64; shifted.len()];
+    let ref_pts = setup.matrices_at(&ctx1, &shifted, &weights).unwrap();
+    for ctx in [&ctx4, &ctx_auto] {
+        let got_pts = setup.matrices_at(ctx, &shifted, &weights).unwrap();
+        assert_eq!(got_pts.len(), ref_pts.len());
+        for (a_pt, b_pt) in ref_pts.iter().zip(&got_pts) {
+            assert_eq!(
+                a_pt.overlap
+                    .iter()
+                    .map(|z| (z.re.to_bits(), z.im.to_bits()))
+                    .collect::<Vec<_>>(),
+                b_pt.overlap
+                    .iter()
+                    .map(|z| (z.re.to_bits(), z.im.to_bits()))
+                    .collect::<Vec<_>>(),
+            );
+            assert_eq!(
+                a_pt.fixed
+                    .iter()
+                    .map(|z| (z.re.to_bits(), z.im.to_bits()))
+                    .collect::<Vec<_>>(),
+                b_pt.fixed
+                    .iter()
+                    .map(|z| (z.re.to_bits(), z.im.to_bits()))
+                    .collect::<Vec<_>>(),
+            );
+            assert_eq!(
+                a_pt.lowdin
+                    .iter()
+                    .map(|z| (z.re.to_bits(), z.im.to_bits()))
+                    .collect::<Vec<_>>(),
+                b_pt.lowdin
+                    .iter()
+                    .map(|z| (z.re.to_bits(), z.im.to_bits()))
+                    .collect::<Vec<_>>(),
+            );
+        }
+    }
+}

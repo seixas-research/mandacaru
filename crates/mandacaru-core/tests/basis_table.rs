@@ -43,30 +43,40 @@ fn the_function_is_zero_beyond_the_table_and_at_nan() {
 }
 
 #[test]
-fn below_the_first_node_the_function_continues_as_a_power_law() {
+fn below_the_first_node_the_function_continues_as_regular_polynomial() {
     let ctx = context();
     let r = grid(0.5, 4., 30);
     let values = r.iter().map(|x| x * (-x).exp()).collect::<Vec<_>>();
+    let r0 = 0.5;
     for l in 0..4usize {
-        let first = evaluate(&ctx, &r, &values, l, &[0.5], false).unwrap()[0];
+        let y0 = evaluate(&ctx, &r, &values, l, &[r0], false).unwrap()[0];
+        let y0p = evaluate(&ctx, &r, &values, l, &[r0], true).unwrap()[0];
+        let c0 = 0.5 * ((l as f64 + 2.) * y0 - r0 * y0p);
+        let c2 = y0 - c0;
         let nodes = [0.0, 0.1, 0.25, -1.];
         let value = evaluate(&ctx, &r, &values, l, &nodes, false).unwrap();
         let slope = evaluate(&ctx, &r, &values, l, &nodes, true).unwrap();
         for (i, x) in nodes.iter().enumerate() {
             let x = f64::max(*x, 0.);
+            let t = x / r0;
             let expect = if l == 0 {
-                first
+                c0 + c2 * t * t
             } else {
-                first * (x / 0.5).powi(l as i32)
+                (c0 + c2 * t * t) * t.powi(l as i32)
             };
             assert!((value[i] - expect).abs() < 1e-13, "l={l} x={x}");
-            let expect = if l == 0 {
-                0.
+            let expect_slope = if l == 0 {
+                y0p * t
             } else {
-                first * l as f64 * x.powi(l as i32 - 1) / 0.5f64.powi(l as i32)
+                (l as f64 * c0 * t.powi(l as i32 - 1) + (l as f64 + 2.) * c2 * t.powi(l as i32 + 1))
+                    / r0
             };
-            assert!((slope[i] - expect).abs() < 1e-12, "slope l={l} x={x}");
+            assert!((slope[i] - expect_slope).abs() < 1e-12, "slope l={l} x={x}");
         }
+        // C^1 continuity right across r0
+        let left_s = evaluate(&ctx, &r, &values, l, &[r0 - 1e-9], true).unwrap()[0];
+        let right_s = evaluate(&ctx, &r, &values, l, &[r0 + 1e-9], true).unwrap()[0];
+        assert!((left_s - right_s).abs() < 1e-7, "C1 jump at r0 for l={l}");
     }
 }
 

@@ -15,7 +15,7 @@ use std::fmt::Write;
 
 use super::digits::round_digits;
 use super::json::fail;
-use super::{Array, Channel, PawDataset, SpinOrbit, FORMAT_TAG};
+use super::{Array, Channel, PawDataset, Provenance, SpinOrbit, FORMAT_TAG};
 use crate::{Context, Error, Reservation, Result};
 
 struct Counter(usize);
@@ -378,10 +378,10 @@ fn payload<W: Write>(
             })?;
             w.write_char(',').map_err(bad)?;
         }
-        if let Some(scheme) = &ds.core_scheme {
-            key(w, "core_scheme")?;
-            json_str(w, scheme)?;
-            w.write_char(',').map_err(bad)?;
+    }
+    if form == Form::File {
+        if let Some(p) = &ds.provenance {
+            provenance(w, p)?;
         }
     }
     defects(w, ds)?;
@@ -459,6 +459,27 @@ fn defects<W: Write>(w: &mut W, ds: &PawDataset) -> Result<()> {
         object(w, &d.branch_ghosts, |w, v| {
             num(w, *v, "defects.branch_ghosts")
         })?;
+    }
+    w.write_str("},").map_err(bad)
+}
+
+fn provenance<W: Write>(w: &mut W, p: &Provenance) -> Result<()> {
+    w.write_str("\"provenance\":{").map_err(bad)?;
+    for (name, value) in [
+        ("generator", &p.generator),
+        ("version", &p.version),
+        ("xc_scheme", &p.xc_scheme),
+    ] {
+        key(w, name)?;
+        json_str(w, value)?;
+        w.write_char(',').map_err(bad)?;
+    }
+    field_f64(w, "rc_factor", p.rc_factor)?;
+    field_f64(w, "local_factor", p.local_factor)?;
+    write!(w, "\"n_bessel\":{}", p.n_bessel).map_err(bad)?;
+    if let Some(search) = &p.search {
+        w.write_str(",\"search\":").map_err(bad)?;
+        json_str(w, search)?;
     }
     w.write_str("},").map_err(bad)
 }

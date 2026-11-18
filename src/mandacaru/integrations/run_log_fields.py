@@ -144,21 +144,32 @@ def crystal_scf_setup(driver, result):
     The defaults are those the native solve declares, read from its signature (as for a
     molecule); the smearing is the one the result reports.
     """
-    options = {name: parameter.default
-               for name, parameter in inspect.signature(result._crystal.solve).parameters.items()
-               if parameter.default is not inspect.Parameter.empty}
+    options = {name: parameter.default for name, parameter in inspect.signature(result._crystal.solve).parameters.items() if parameter.default is not inspect.Parameter.empty}
     options.update(driver._periodic_options)
     method, width = result._raw["smearing"]
     return {
         "scf_method": f"periodic Kohn-Sham DFT ({result._raw['functional']}), Bloch states",
         "scf_max_iterations": options["max_iterations"],
-        "scf_convergence_Hartree": (f"{options['tolerance']:g} (free-energy change), density "
-                                    f"residual {options['density_tolerance']:g}"),
-        "scf_mixing": (f"{options['algorithm']}, mixing {options['mixing']:g}, "
-                       f"history {options['history']}"),
+        "scf_convergence_Hartree": f"{options['tolerance']:g} (free-energy change), density residual {options['density_tolerance']:g}",
+        "scf_mixing": f"{options['algorithm']}, mixing {options['mixing']:g}, history {options['history']}",
         "scf_smearing": f"{method}, width {width:.6g} Ha",
         "scf_eigensolver": options["eigensolver"],
     }
+
+
+def symmetry(driver, result, geometry):
+    """The ``[SYMMETRY]`` block: material point/space group, magnetic Shubnikov group, and spin-orbit double group."""
+    crystal = getattr(result, "_crystal", None)
+    crystal_sym = getattr(crystal, "symmetry", None)
+    return _native.symmetry_log_fields(
+        np.ascontiguousarray(geometry.positions, dtype=float), np.ascontiguousarray(geometry.numbers, dtype=np.int64),
+        units=geometry.units, cell=np.ascontiguousarray(geometry.cell, dtype=float), pbc=list(geometry.pbc),
+        moments=geometry.magnetic_moments, moment_vectors=geometry.moment_vectors, spins=result._raw.get("n_spins", 1),
+        num_particles=getattr(result._problem, "num_particles", None) or result._raw.get("num_particles"),
+        unrestricted=bool(driver._unrestricted), magnetization=result._raw.get("magnetization"), method=result.method,
+        spin_orbit=bool(result._raw.get("spinor") or driver._has_spin_orbit_dataset(geometry)),
+        kmesh_reduced=bool(crystal_sym is not None or driver._periodic_symmetry),
+        kept_operations=getattr(crystal_sym, "n_operations", None), context=driver.context)
 
 
 def crystal_scf_rows(driver, result):
@@ -168,9 +179,7 @@ def crystal_scf_rows(driver, result):
     spin = result._raw["n_spins"] == 2
     rows = []
     for iteration, free, delta, residual, _moment_residual, magnetization in result._raw["history"]:
-        row = {"iter": iteration, "energy": _native.energy_from_hartree(float(free), unit),
-               "dE": None if delta is None else _native.energy_from_hartree(float(delta), unit),
-               "residual": residual}
+        row = {"iter": iteration, "energy": _native.energy_from_hartree(float(free), unit), "dE": None if delta is None else _native.energy_from_hartree(float(delta), unit), "residual": residual}
         if spin:
             row["moment"] = magnetization
         rows.append(row)
@@ -187,15 +196,12 @@ def scf_setup(driver, snapshot):
         entry, label = driver.integrals.kohn_sham, f"Kohn-Sham DFT ({snapshot['functional']})"
     else:
         entry, label = driver.integrals.mean_field, SCF_LABELS[snapshot["method"]]
-    options = {name: parameter.default
-               for name, parameter in inspect.signature(entry).parameters.items()
-               if parameter.default is not inspect.Parameter.empty}
+    options = {name: parameter.default for name, parameter in inspect.signature(entry).parameters.items() if parameter.default is not inspect.Parameter.empty}
     options.update(driver._scf_options)
     return {
         "scf_method": label,
         "scf_max_iterations": options["max_iterations"],
-        "scf_convergence_Hartree": (f"{options['tolerance']:g} (energy change and "
-                                    "residual)"),
+        "scf_convergence_Hartree": f"{options['tolerance']:g} (energy change and residual)",
         "scf_acceleration": "DIIS" if options["diis"] else "none",
         "scf_history": "iterations of the lowest-energy start",
     }
@@ -216,8 +222,10 @@ def hubbard(result):
     for shell in shells:
         key = f"hubbard_{shell['symbol']}_{shell['l']}"
         if key not in fields:
-            fields[key] = (f"U {shell['U']:.6f} {unit}, J {shell['J']:.6f} {unit}, "
-                           f"U_eff {shell['U_eff']:.6f} {unit}")
+            line = f"U {shell['U']:.6f} {unit}, J {shell['J']:.6f} {unit}, U_eff {shell['U_eff']:.6f} {unit}"
+            if "U_source" in shell and shell["U_source"] is not None:
+                line += f", source {shell['U_source']}"
+            fields[key] = line
     return fields
 
 
@@ -225,9 +233,7 @@ def scf_rows(driver, snapshot):
     """The saved SCF history as table rows, in the log's energy unit."""
     unit = "Ha" if driver._atomic_units else "eV"
     return [{"iter": iteration, "energy": _native.energy_from_hartree(float(energy), unit),
-             "dE": None if delta is None else _native.energy_from_hartree(float(delta), unit),
-             "residual": residual}
-            for iteration, energy, delta, residual in snapshot["history"]]
+             "dE": None if delta is None else _native.energy_from_hartree(float(delta), unit), "residual": residual} for iteration, energy, delta, residual in snapshot["history"]]
 
 
 #: Operator labels a ``start_operators`` line names before it counts the rest.

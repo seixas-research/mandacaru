@@ -5,7 +5,9 @@
 mod hubbard_spinor_support;
 
 use hubbard_spinor_support::*;
-use mandacaru_core::models::hubbard::{self, Spin};
+use mandacaru_core::models::hubbard::{self, Form, Hubbard, Spin};
+use mandacaru_core::models::hubbard_liechtenstein;
+use mandacaru_core::models::hubbard_slater::{Basis, Coupling, Ratios};
 use mandacaru_core::models::hubbard_spinor::{self as spinor, Layout, Occupation, Potential};
 use mandacaru_core::{Context, Error};
 use nalgebra::DMatrix;
@@ -326,4 +328,301 @@ fn zero_u_is_the_identity_and_the_hellmann_feynman_factor_survives() {
     let (a, b) = (eval(&hub(3.0, 0.), lay, &n), eval(&hub(3.001, 0.), lay, &n));
     assert!(((b.energy - a.energy) / 0.001 - a.per_u_eff).abs() < 1e-10);
     let _: &Potential = &a.potential;
+}
+
+// ---------------------------------------------------------------- spinor Liechtenstein (SO-2)
+
+fn hub_liech(u: f64, j: f64) -> Hubbard {
+    Hubbard::with_form(u, j, Form::Liechtenstein).unwrap()
+}
+
+fn eval_liech(u: f64, j: f64, lay: Layout, m: &DMatrix<C64>) -> spinor::Evaluation {
+    eval(&hub_liech(u, j), lay, m)
+}
+
+/// Real-space or complex-harmonic SO(3) orbital rotation `D` lifted to `D x I_2` on spinors.
+fn orbital_so3(l: usize, real: bool, axis: [f64; 3], angle: f64) -> DMatrix<C64> {
+    let p = 2 * l + 1;
+    let norm = axis.iter().map(|x| x * x).sum::<f64>().sqrt();
+    let unit = [axis[0] / norm, axis[1] / norm, axis[2] / norm];
+    let ls = ls_matrix(l, real);
+    // Generator of orbital rotation: L_i on orbital block from (L . n).
+    // Even simpler: use spin-diagonal block of J_orb from explicit L_z, L_+- in complex basis
+    // then transform with T if `real == true`.
+    let mut jz = DMatrix::<C64>::zeros(p, p);
+    let mut jx = DMatrix::<C64>::zeros(p, p);
+    let mut jy = DMatrix::<C64>::zeros(p, p);
+    let lf = l as f64;
+    for i in 0..p {
+        let m = i as f64 - lf;
+        jz[(i, i)] = C64::new(m, 0.);
+        if i + 1 < p {
+            let c_plus = (lf * (lf + 1.) - m * (m + 1.)).sqrt();
+            jx[(i + 1, i)] += C64::new(0.5 * c_plus, 0.);
+            jx[(i, i + 1)] += C64::new(0.5 * c_plus, 0.);
+            jy[(i + 1, i)] += C64::new(0., -0.5 * c_plus);
+            jy[(i, i + 1)] += C64::new(0., 0.5 * c_plus);
+        }
+    }
+    let _ = ls;
+    let gen =
+        &jx * C64::new(unit[0], 0.) + &jy * C64::new(unit[1], 0.) + &jz * C64::new(unit[2], 0.);
+    let steps = 8usize;
+    let dt = angle / (1usize << steps) as f64;
+    let mut step = DMatrix::<C64>::identity(p, p);
+    let mut term = DMatrix::<C64>::identity(p, p);
+    for k in 1..=12 {
+        term = &term * &gen * C64::new(0., -dt / k as f64);
+        step += &term;
+    }
+    let mut rot = step;
+    for _ in 0..steps {
+        rot = &rot * &rot;
+    }
+    if real {
+        let t_flat = mandacaru_core::models::hubbard_slater::real_coefficients(l).unwrap();
+        let t = dm(p, &t_flat);
+        rot = t.map(|x| x.conj()) * rot * t.transpose();
+    }
+    DMatrix::from_fn(2 * p, 2 * p, |i, j| {
+        if i / p == j / p {
+            rot[(i % p, j % p)]
+        } else {
+            C64::default()
+        }
+    })
+}
+
+#[test]
+fn liechtenstein_freeze_reproduces_hub_energy_and_potential_for_d_and_f() {
+    let doc = freeze();
+    let ctx = context();
+    for (name, l) in [("d", 2usize), ("f", 3)] {
+        let d = &doc[name]["liechtenstein_noncollinear"];
+        let f: Vec<f64> = d["F"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_f64().unwrap())
+            .collect();
+        let u = f[0];
+        let coupling = Coupling::new(&ctx, l, Basis::Complex).unwrap();
+        let j = coupling.exchange_j(&f).unwrap();
+        let ratios = Ratios::new(
+            l,
+            Some(f[1 + 1] / f[1]),
+            if l == 3 { Some(f[3] / f[1]) } else { None },
+        )
+        .unwrap();
+        let lay = layout(l, false);
+        let n = json_matrix(&d["n"]);
+        let hb = hub_liech(u, j);
+        let ev =
+            spinor::evaluate_liechtenstein_with_ratios(&ctx, &hb, &ratios, &occ(lay, &n)).unwrap();
+
+        let want_e_hub = d["E_Hub"].as_f64().unwrap();
+        assert!(
+            (ev.interaction - want_e_hub).abs() < 1e-11 * want_e_hub.abs().max(1.),
+            "{name}: got E_Hub={} vs want={want_e_hub}",
+            ev.interaction
+        );
+        assert!(
+            (ev.energy - (ev.interaction - ev.double_counting)).abs() < 1e-13,
+            "{name}"
+        );
+
+        // V_plan_formula in the freeze is V_Hub (without -V_dc); verify V_Hub = V_U + V_dc.
+        let v_u = potential(&ev);
+        let v_hub_freeze = json_matrix(&d["V_plan_formula"]);
+        let p = lay.width();
+        let total_n = (0..2 * p).map(|a| n[(a, a)].re).sum::<f64>();
+        let m = pauli(p, &n);
+        let dc_s = u * (total_n - 0.5) - 0.5 * j * (total_n - 1.0);
+        let mut v_dc = DMatrix::<C64>::zeros(2 * p, 2 * p);
+        for a in 0..p {
+            v_dc[(a, a)] = C64::new(dc_s - 0.5 * j * m[2], 0.);
+            v_dc[(p + a, p + a)] = C64::new(dc_s + 0.5 * j * m[2], 0.);
+            v_dc[(a, p + a)] = C64::new(-0.5 * j * m[0], 0.5 * j * m[1]);
+            v_dc[(p + a, a)] = C64::new(-0.5 * j * m[0], -0.5 * j * m[1]);
+        }
+        assert!(
+            max_abs(&(&v_u + &v_dc - v_hub_freeze)) < 1e-12,
+            "{name}: V_U + V_dc mismatch"
+        );
+    }
+}
+
+#[test]
+fn liechtenstein_reduces_to_dudarev_when_j_is_zero() {
+    let mut rng = Lcg(71);
+    for (l, real) in CASES {
+        let lay = layout(l, real);
+        let (n, _, _) = random_state(lay.size(), &mut rng);
+        let dud = eval(&hub(3.7, 0.), lay, &n);
+        let lie = eval_liech(3.7, 0., lay, &n);
+        assert!((lie.energy - dud.energy).abs() < 1e-12);
+        assert!((lie.interaction - dud.interaction).abs() < 1e-12);
+        assert!((lie.double_counting - dud.double_counting).abs() < 1e-12);
+        assert!(max_abs(&(potential(&lie) - potential(&dud))) < 1e-12);
+    }
+}
+
+#[test]
+fn liechtenstein_block_diagonal_reproduces_the_collinear_model() {
+    let mut rng = Lcg(73);
+    for (l, real) in CASES {
+        let lay = layout(l, real);
+        let p = lay.width();
+        let basis = if real { Basis::Real } else { Basis::Complex };
+        for (u, j) in [(2.5, 0.), (4.2, 0.9)] {
+            let (up, _, _) = random_state(p, &mut rng);
+            let (dn, _, _) = random_state(p, &mut rng);
+            let mut n = DMatrix::<C64>::zeros(2 * p, 2 * p);
+            n.view_mut((0, 0), (p, p)).copy_from(&up);
+            n.view_mut((p, p), (p, p)).copy_from(&dn);
+            let e = eval_liech(u, j, lay, &n);
+            let (fu, fd) = (flat(&up), flat(&dn));
+            let c = hubbard_liechtenstein::evaluate_with_basis(
+                &context(),
+                u,
+                j,
+                l,
+                basis,
+                Spin::Unrestricted,
+                &[fu.as_slice(), fd.as_slice()],
+            )
+            .unwrap();
+            let tol = 1e-12 * c.energy.abs().max(1.);
+            assert!((e.energy - c.energy).abs() < tol, "l={l} real={real}");
+            assert!((e.interaction - c.interaction).abs() < 1e-12 * c.interaction.abs().max(1.));
+            assert!((e.double_counting - c.double_counting).abs() < 1e-12);
+            let v = potential(&e);
+            for (s, block) in c.potentials.iter().enumerate() {
+                for a in 0..p {
+                    for b in 0..p {
+                        assert!(
+                            (v[(s * p + a, s * p + b)] - block.as_slice()[a * p + b]).norm()
+                                < 1e-12
+                        );
+                    }
+                }
+            }
+            for a in 0..p {
+                for b in 0..p {
+                    assert_eq!(v[(a, p + b)], C64::default());
+                    assert_eq!(v[(p + a, b)], C64::default());
+                }
+            }
+            // Spin-flip block changes E_U when U > 0.
+            let mut flipped = n.clone();
+            flipped[(0, p)] = C64::new(0.12, -0.04);
+            flipped[(p, 0)] = C64::new(0.12, 0.04);
+            assert!((eval_liech(u, j, lay, &flipped).energy - e.energy).abs() > 1e-4);
+        }
+    }
+}
+
+#[test]
+fn liechtenstein_is_invariant_under_su2_so3_and_time_reversal_and_covariant() {
+    let mut rng = Lcg(79);
+    let hb = hub_liech(4.8, 0.9);
+    for (l, real) in CASES {
+        let lay = layout(l, real);
+        let p = lay.width();
+        let (n, _, _) = random_state(lay.size(), &mut rng);
+        let base = eval(&hb, lay, &n);
+
+        // 1. Pure SU(2) spin rotation.
+        let w = spin_rotation(p, &mut rng);
+        let spin_rot = eval(&hb, lay, &(&w * &n * w.adjoint()));
+        assert!((spin_rot.energy - base.energy).abs() < 1e-11);
+        assert!(max_abs(&(potential(&spin_rot) - &w * potential(&base) * w.adjoint())) < 1e-11);
+
+        // 2. Simultaneous SO(3) orbital x SU(2) spin rotation.
+        let d = orbital_so3(l, real, [1.2, -0.7, 0.5], 1.15);
+        let comb = &d * &w;
+        let both_rot = eval(&hb, lay, &(&comb * &n * comb.adjoint()));
+        let diff_e = (both_rot.energy - base.energy).abs();
+        assert!(
+            diff_e < 1e-11,
+            "l={l} real={real} both_rot energy diff {diff_e:e}"
+        );
+        assert!(
+            max_abs(&(potential(&both_rot) - &comb * potential(&base) * comb.adjoint())) < 1e-11
+        );
+
+        // 3. Time reversal Theta.
+        let tr_n = spinor::time_reversed(&context(), &occ(lay, &n)).unwrap();
+        let tr_eval = spinor::evaluate(&context(), &hb, &tr_n).unwrap();
+        assert!((tr_eval.energy - base.energy).abs() < 1e-11);
+
+        // 4. Negative control: arbitrary U(2p) orbital+spin mixing breaks rotational invariance.
+        let q = unitary(lay.size(), &mut rng);
+        let broken = eval(&hb, lay, &(&q * &n * q.adjoint()));
+        assert!((broken.energy - base.energy).abs() > 1e-3);
+    }
+}
+
+#[test]
+fn liechtenstein_potential_matches_complex_hermitian_finite_difference() {
+    let mut rng = Lcg(83);
+    for (u, j) in [(5.1, 1.1), (3.0, 3.0)] {
+        let hb = hub_liech(u, j);
+        for (l, real) in CASES {
+            let lay = layout(l, real);
+            let (n, _, _) = random_state(lay.size(), &mut rng);
+            let h_dir = hermitian_direction(lay.size(), &mut rng);
+            let ev = eval(&hb, lay, &n);
+            let v = potential(&ev);
+            assert!(max_abs(&(&v - v.adjoint())) < 1e-14);
+            let fd = finite_difference(&hb, lay, &n, &h_dir);
+            let analytical = tr_vh(&v, &h_dir);
+            assert!(
+                (analytical - fd).abs() < 1e-9 * fd.abs().max(1.),
+                "u={u} j={j} l={l} real={real}: analytical={analytical} fd={fd}"
+            );
+            // Negative controls: V^T and V * 1.01 must fail.
+            assert!((tr_vh(&v.transpose(), &h_dir) - fd).abs() > 1e-3);
+            assert!((tr_vh(&(&v * C64::new(1.01, 0.)), &h_dir) - fd).abs() > 1e-3);
+        }
+    }
+}
+
+#[test]
+fn liechtenstein_refusals_inert_and_memory_budget() {
+    let ctx = context();
+    let mut rng = Lcg(89);
+    // p shell (l = 1) rejected with 0 bytes retained.
+    let lay_p = layout(1, false);
+    let (n_p, _, _) = random_state(lay_p.size(), &mut rng);
+    let o_p = Occupation::new(&ctx, lay_p, &flat(&n_p)).unwrap();
+    let used = ctx.memory_used();
+    assert!(matches!(
+        spinor::evaluate(&ctx, &hub_liech(3.0, 0.5), &o_p),
+        Err(Error::Invalid(_))
+    ));
+    assert_eq!(ctx.memory_used(), used);
+
+    // U = 0, J = 0 is inert; U = J != 0 is active!
+    let lay_d = layout(2, false);
+    let (n_d, _, _) = random_state(lay_d.size(), &mut rng);
+    let inert = eval_liech(0., 0., lay_d, &n_d);
+    assert_eq!(inert.energy, 0.);
+    assert_eq!(inert.interaction, 0.);
+    assert_eq!(inert.double_counting, 0.);
+    assert!(potential(&inert).iter().all(|x| *x == C64::default()));
+
+    let active = eval_liech(3.0, 3.0, lay_d, &n_d);
+    assert!(potential(&active).norm() > 1e-2);
+
+    // Budget exhaustion inside Liechtenstein evaluation keeps no partial allocation.
+    let d = lay_d.size();
+    let small = Context::new(Some(1), d * d * 16 + 100).unwrap();
+    let o_small = Occupation::new(&small, lay_d, &flat(&n_d)).unwrap();
+    let used_small = small.memory_used();
+    assert!(matches!(
+        spinor::evaluate(&small, &hub_liech(3.0, 0.5), &o_small),
+        Err(Error::Budget { .. })
+    ));
+    assert_eq!(small.memory_used(), used_small);
 }

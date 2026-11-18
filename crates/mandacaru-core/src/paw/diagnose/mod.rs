@@ -155,6 +155,35 @@ impl Diagnosis {
         Ok(self)
     }
 
+    /// Add the scattering phase errors of the `j` branches of `dataset` into [`Self::phases`]
+    /// (keyed by `(l, Some(kappa))`; a no-op without spin-orbit entries). Each branch is compared
+    /// against its own Dirac equation on `ae` (`cache` reuses the all-electron logarithmic
+    /// derivatives).
+    pub fn with_branch_phases(
+        mut self,
+        ctx: &Context,
+        dataset: &crate::paw::record::PawDataset,
+        ae: &AllElectron<'_>,
+        cache: &mut AeLogs,
+    ) -> Outcome<Self> {
+        if dataset.spin_orbit.is_empty() {
+            return Ok(self);
+        }
+        let branches = kappa::branches(ctx, dataset)?;
+        self.phases
+            .extend(scattering_errors(ctx, &branches, ae, cache)?);
+        Ok(self)
+    }
+
+    /// The `j`-resolved branch phase errors (`kappa.is_some()`) recorded in [`Self::phases`].
+    pub fn branch_phases(&self) -> BTreeMap<Key, [f64; 2]> {
+        self.phases
+            .iter()
+            .filter(|(k, _)| k.kappa.is_some())
+            .map(|(k, &v)| (*k, v))
+            .collect()
+    }
+
     /// The channels of the `j`-averaged set whose phase is outside `PHASE_TOLERANCE` near the
     /// reference or `RESONANCE_TOLERANCE` farther out. A phase that is not a number is outside
     /// (a NaN fails every gate).

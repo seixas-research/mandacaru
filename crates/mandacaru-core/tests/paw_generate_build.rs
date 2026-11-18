@@ -78,6 +78,41 @@ fn hydrogen_is_written_read_back_and_checked_in_place() {
         assert!(channel.phase.is_some(), "l={} has no phase", channel.l);
         assert!(channel.lowest.is_finite() && channel.r_cut > 0.);
     }
+    // Provenance metadata survives Parquet round-tripping and is excluded from content_sha256.
+    let provenance = built
+        .loaded
+        .provenance
+        .as_ref()
+        .expect("format-3 provenance");
+    assert_eq!(provenance.generator, "mandacaru-core");
+    assert_eq!(provenance.version, env!("CARGO_PKG_VERSION"));
+    assert_eq!(provenance.xc_scheme, "variational");
+    assert_eq!(provenance.rc_factor, recipe.rc_factor);
+    assert_eq!(provenance.local_factor, recipe.local_factor);
+    assert_eq!(provenance.n_bessel, recipe.n_bessel as u32);
+    assert_eq!(
+        provenance.search.as_deref(),
+        Some(built.searched.label.as_str())
+    );
+    let mut stripped = built.loaded.parts(&ctx).unwrap();
+    stripped.text = {
+        let mut v: serde_json::Value = serde_json::from_str(&stripped.text).unwrap();
+        v.as_object_mut().unwrap().remove("provenance");
+        v.to_string()
+    };
+    let columns = stripped
+        .tables
+        .iter()
+        .map(|(n, buf)| Ok((n.clone(), ctx.copy_slice(buf)?)))
+        .collect::<mandacaru_core::Result<Vec<_>>>()
+        .unwrap();
+    let without_provenance = PawDataset::from_parts(&ctx, &stripped.text, columns).unwrap();
+    assert!(without_provenance.provenance.is_none());
+    assert_eq!(
+        without_provenance.content_sha256(&ctx).unwrap(),
+        built.loaded.content_sha256(&ctx).unwrap(),
+        "provenance must not alter the physics content digest"
+    );
     // The report is of the file: reading it again gives the record that was checked.
     let again = PawDataset::read(&ctx, &path).unwrap();
     assert_eq!(
@@ -160,4 +195,44 @@ fn nothing_is_left_beside_the_path_when_the_build_fails() {
         "a write under a file must fail: {blocked:?}"
     );
     assert_eq!(folder.names(), vec!["blocker".to_string()]);
+}
+
+#[test]
+fn dirac_build_reports_j_branch_phases_in_diagnosis_and_g3() {
+    use mandacaru_core::paw::validate::Status;
+    let ctx = Context::new(Some(1), 2 << 30).unwrap();
+    let folder = Folder::new("dirac-c");
+    let path = folder.0.join("C.parquet");
+    let (recipe, pinned) = resolve(
+        "C",
+        mandacaru_core::paw::record::Family::PawLcao,
+        "lda",
+        "dirac",
+        Overrides::default(),
+    )
+    .unwrap();
+    let options = Options {
+        mode: Mode::Repair,
+        pinned,
+    };
+    let built = build(&ctx, &recipe, &options, &path, Format::Parquet, 4, true).unwrap();
+    let branch_phases = built.diagnosis.branch_phases();
+    assert_eq!(branch_phases.len(), 2 * built.loaded.spin_orbit.len());
+    let g3_jbranch: Vec<_> = built
+        .report
+        .gate("G3")
+        .into_iter()
+        .filter(|r| r.check.starts_with("j-branch phase error"))
+        .collect();
+    assert_eq!(g3_jbranch.len(), 2, "{:#?}", built.report.gate("G3"));
+    assert!(g3_jbranch.iter().all(|r| r.status == Status::Pass));
+    assert_eq!(
+        built
+            .loaded
+            .provenance
+            .as_ref()
+            .expect("provenance")
+            .n_bessel,
+        recipe.n_bessel as u32
+    );
 }

@@ -1,15 +1,20 @@
 //! Multipole moments and exact valence Coulomb/exchange corrections.
 use super::*;
 use crate::{
-    math::{linalg::real_eigen, spline::simpson},
-    paw::pair_tables::{layout, pair_tensor, ChannelView, Projector, SpeciesView, Tables, POINTS},
+    math::linalg::real_eigen,
+    paw::{
+        multipole_pairs::radial_moment,
+        pair_tables::{layout, pair_tensor, ChannelView, Projector, SpeciesView, Tables, POINTS},
+    },
 };
 
 /// The radial tables of `species` the species-level one-center code reads.
 pub(super) fn view(species: &Species) -> SpeciesView<'_> {
     SpeciesView {
         knots: species.ionic.knots.as_slice(),
+        core_density: species.core_density.as_deref(),
         smooth_core: species.xc_core.values.as_slice(),
+        frozen_core: species.frozen_core.as_ref(),
         compensation_radius: species.compensation_radius,
         channels: species
             .channels
@@ -73,15 +78,13 @@ pub fn build(ctx: &Context, species: &Species) -> Result<AtomTerms> {
                 let moment = if *l == 0 && pa.channel == pb.channel {
                     ca.overlap[(pa.radial, pb.radial)]
                 } else {
-                    let inside = source.partition_point(|r| *r <= ca.radius.max(cb.radius));
-                    let values: Vec<_> = (0..inside)
-                        .map(|k| {
-                            (ca.ae[pa.radial][k] * cb.ae[pb.radial][k]
-                                - ca.ps[pa.radial][k] * cb.ps[pb.radial][k])
-                                * source[k].powi((*l + 2) as i32)
-                        })
-                        .collect();
-                    simpson(&source[..inside], &values)?
+                    radial_moment(
+                        source,
+                        ca.radius.max(cb.radius),
+                        [&ca.ae[pa.radial], &cb.ae[pb.radial]],
+                        [&ca.ps[pa.radial], &cb.ps[pb.radial]],
+                        *l,
+                    )?
                 };
                 block[(a, b)] = moment * g[(a, b)];
             }

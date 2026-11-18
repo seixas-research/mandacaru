@@ -5,8 +5,13 @@
 //! and smooth partial waves of every channel and the reference density matrix.
 //! The molecular and the periodic engines each fill a view from their own dataset
 //! storage; the tables, the multipole shape functions and `Delta W` are shared.
-use super::invalid;
-use crate::{math::spline::simpson, product, Result};
+use super::{
+    core_exchange::FrozenCore,
+    invalid,
+    multipole::{angular_grid, shape_at, AZIMUTHAL_POINTS, POLAR_POINTS},
+    onecenter_radial::{radial_coulomb, radial_coulomb_weighted},
+};
+use crate::{math::spline::simpson_weights, product, Result};
 use nalgebra::DMatrix;
 use std::f64::consts::PI;
 
@@ -23,11 +28,15 @@ pub struct ChannelView<'a> {
 /// The radial tables of a species the one-center screened terms are built from.
 pub struct SpeciesView<'a> {
     pub knots: &'a [f64],
+    /// The all-electron frozen core density on `knots`, if this species has a frozen core.
+    pub core_density: Option<&'a [f64]>,
     /// The smooth core the grid's exchange-correlation sees (the dataset's nonlinear core
     /// correction; zeros when the dataset was not unscreened with one), on `knots`. The
     /// screened hybrid's semilocal short-range exchange is evaluated on the smooth valence
     /// density plus this core on the grid, so the spheres take it off the smooth side.
     pub smooth_core: &'a [f64],
+    /// The closed frozen-core subshells for screened core-valence exact exchange, if any.
+    pub frozen_core: Option<&'a FrozenCore>,
     pub compensation_radius: f64,
     pub channels: Vec<ChannelView<'a>>,
 }
@@ -62,53 +71,17 @@ pub fn layout(species: &SpeciesView<'_>) -> Vec<Projector> {
 pub fn harmonic(l: usize, m: i32, point: [f64; 3]) -> f64 {
     crate::math::angular::cartesian(l, m, point)
 }
-pub fn shape(r: f64, radius: f64, l: usize) -> f64 {
-    if r >= radius {
-        return 0.;
-    }
-    let l = l as i32;
-    let bracket = 1. / (2 * l + 3) as f64 - 3. / (2 * l + 5) as f64 + 3. / (2 * l + 7) as f64
-        - 1. / (2 * l + 9) as f64;
-    r.powi(l) * (1. - (r / radius).powi(2)).powi(3) / (radius.powi(2 * l + 3) * bracket)
-}
-pub fn potential(r: f64, radius: f64, l: usize) -> f64 {
-    let prefactor = 4. * PI / (2 * l + 1) as f64;
-    if r >= radius {
-        return prefactor / r.powi((l + 1) as i32);
-    }
-    let x = r / radius;
-    let norm = 1.
-        / (radius.powi((2 * l + 3) as i32)
-            * (1. / (2 * l + 3) as f64 - 3. / (2 * l + 5) as f64 + 3. / (2 * l + 7) as f64
-                - 1. / (2 * l + 9) as f64));
-    let mut enclosed = 0.;
-    let mut tail = 0.;
-    for (k, c) in [1., -3., 3., -1.].into_iter().enumerate() {
-        let power = (2 * l + 3 + 2 * k) as i32;
-        enclosed += c * x.powi(power) / power as f64;
-        tail += c * (1. - x.powi((2 * k + 2) as i32)) / (2 * k + 2) as f64;
-    }
-    prefactor
-        * norm
-        * (if r == 0. {
-            0.
-        } else {
-            radius.powi((2 * l + 3) as i32) * enclosed / r.powi((l + 1) as i32)
-        } + r.powi(l as i32) * radius * radius * tail)
-}
 pub fn angular_rule(polar: usize, azimuthal: usize) -> Result<Vec<([f64; 3], f64)>> {
-    let mut out = Vec::new();
-    for (mu, w) in crate::math::radial::gauss_legendre(polar)? {
-        for k in 0..azimuthal {
-            let phi = 2. * PI * (k as f64 + 0.5) / azimuthal as f64;
-            let sin = (1. - mu * mu).max(0.).sqrt();
-            out.push((
-                [sin * phi.cos(), sin * phi.sin(), mu],
-                w * 2. * PI / azimuthal as f64,
-            ));
-        }
-    }
-    Ok(out)
+    let (theta, phi, weights) = angular_grid(polar, azimuthal)?;
+    Ok(theta
+        .into_iter()
+        .zip(phi)
+        .zip(weights)
+        .map(|((th, ph), w)| {
+            let sin = th.sin();
+            ([sin * ph.cos(), sin * ph.sin(), th.cos()], w)
+        })
+        .collect())
 }
 fn linear(x: &[f64], y: &[f64], at: f64) -> f64 {
     let i = x.partition_point(|v| *v <= at);
@@ -121,18 +94,10 @@ fn linear(x: &[f64], y: &[f64], at: f64) -> f64 {
     }
 }
 pub fn coulomb(r: &[f64], a: &[f64], b: &[f64], l: usize) -> f64 {
-    // SAFETY: callers supply equal-length live, finite slices, of at least
-    // four nodes and a count checked by the radial input boundary to fit i32;
-    // the raw routine writes no caller memory and retains no pointers.
-    unsafe {
-        mandacaru_kernels::onecenter::mandacaru_radial_coulomb(
-            l as i32,
-            r.len() as i32,
-            r.as_ptr(),
-            a.as_ptr(),
-            b.as_ptr(),
-        )
+    if r.len() < 3 {
+        return 0.;
     }
+    radial_coulomb(r, a, b, l).expect("valid radial Coulomb inputs")
 }
 
 /// Points of the radial quadrature of the one-center pair tables.
@@ -154,7 +119,7 @@ impl Tables {
         let p = projectors.len();
         let pp = product(&[p, p])?;
         let lmax = projectors.iter().map(|p| p.l).max().unwrap_or(0) * 2;
-        let angular = angular_rule(24, 48)?;
+        let angular = angular_rule(POLAR_POINTS, AZIMUTHAL_POINTS)?;
         let mut gaunts = Vec::new();
         for l in 0..=lmax {
             for m in -(l as i32)..=l as i32 {
@@ -207,18 +172,19 @@ impl Tables {
                 }
             }
         }
+        let simpson_w = simpson_weights(&r)?;
         let mut compensated = Vec::new();
         for l in 0..=lmax {
             let mut pairs = Vec::new();
+            let power = (l + 2) as i32;
             for ab in 0..pp {
-                let difference: Vec<_> = (0..POINTS)
-                    .map(|k| (ae_pair[ab][k] - ps_pair[ab][k]) * r[k].powi((l + 2) as i32))
-                    .collect();
-                let moment = simpson(&r, &difference)?;
+                let moment: f64 = (0..POINTS)
+                    .map(|k| simpson_w[k] * (ae_pair[ab][k] - ps_pair[ab][k]) * r[k].powi(power))
+                    .sum();
                 pairs.push(
                     (0..POINTS)
                         .map(|k| {
-                            ps_pair[ab][k] + moment * shape(r[k], species.compensation_radius, l)
+                            ps_pair[ab][k] + moment * shape_at(r[k], species.compensation_radius, l)
                         })
                         .collect::<Vec<_>>(),
                 );
@@ -246,6 +212,8 @@ pub fn pair_tensor(
 ) -> Result<DMatrix<f64>> {
     let p = t.p;
     let pp = p * p;
+    let r = &t.r;
+    let simpson_w = simpson_weights(r)?;
     let mut w = DMatrix::zeros(pp, pp);
     for ab in 0..pp {
         for cd in ab..pp {
@@ -263,13 +231,29 @@ pub fn pair_tensor(
                 if angular.abs() < 1e-14 {
                     continue;
                 }
-                let r = &t.r;
                 let bare = 0.5
-                    * (coulomb(r, &t.ae_pair[ab], &t.ae_pair[cd], l)
-                        + coulomb(r, &t.ae_pair[cd], &t.ae_pair[ab], l));
+                    * (radial_coulomb_weighted(r, &t.ae_pair[ab], &t.ae_pair[cd], l, &simpson_w)?
+                        + radial_coulomb_weighted(
+                            r,
+                            &t.ae_pair[cd],
+                            &t.ae_pair[ab],
+                            l,
+                            &simpson_w,
+                        )?);
                 let smooth = 0.5
-                    * (coulomb(r, &compensated[ab], &compensated[cd], l)
-                        + coulomb(r, &compensated[cd], &compensated[ab], l));
+                    * (radial_coulomb_weighted(
+                        r,
+                        &compensated[ab],
+                        &compensated[cd],
+                        l,
+                        &simpson_w,
+                    )? + radial_coulomb_weighted(
+                        r,
+                        &compensated[cd],
+                        &compensated[ab],
+                        l,
+                        &simpson_w,
+                    )?);
                 let mut difference = bare - smooth;
                 if let Some(lr) = long_range {
                     let ae = super::screened_atom::LongRange::form(
@@ -293,9 +277,13 @@ pub fn pair_tensor(
 
 /// A species' channels need distinct angular momenta and as many projectors as waves.
 pub fn check(species: &SpeciesView<'_>) -> Result<()> {
-    if species.smooth_core.len() != species.knots.len() {
+    if species.smooth_core.len() != species.knots.len()
+        || species
+            .core_density
+            .is_some_and(|c| c.len() != species.knots.len())
+    {
         return Err(invalid(
-            "a PAW species' smooth core and radial knots disagree in size",
+            "a PAW species' core density and radial knots disagree in size",
         ));
     }
     if species

@@ -803,16 +803,18 @@ impl Operator {
             f(&heap)
         }
     }
-    /// Apply `self` to a sparse `(row, amplitude)` state vector, returning a sorted sparse
-    /// `(row, amplitude)` vector of nonzero entries.
-    pub(super) fn apply_sparse_state(
+    /// Apply `self` to a sparse `(row, amplitude)` state vector, writing sorted nonzero
+    /// `(row, amplitude)` entries into `out` (reusing its allocation).
+    pub(super) fn apply_sparse_state_into(
         &self,
         basis: &Basis,
         state: &[(usize, C64)],
-    ) -> Vec<(usize, C64)> {
+        out: &mut Vec<(usize, C64)>,
+    ) {
+        out.clear();
         if let Some(x) = self.single_mask() {
-            return self.with_phased(|phased| {
-                let mut out = Vec::with_capacity(state.len());
+            self.with_phased(|phased| {
+                out.reserve(state.len());
                 for &(col, amp) in state {
                     if amp == C64::default() {
                         continue;
@@ -826,8 +828,8 @@ impl Operator {
                     }
                 }
                 out.sort_unstable_by_key(|&(row, _)| row);
-                out
             });
+            return;
         }
         let mut map = BTreeMap::<usize, C64>::new();
         for &(col, amp) in state {
@@ -841,22 +843,22 @@ impl Operator {
                 }
             }
         }
-        map.into_iter()
-            .filter(|&(_, val)| val != C64::default())
-            .collect()
+        out.extend(map.into_iter().filter(|&(_, val)| val != C64::default()));
     }
     /// Apply the single-mask rotation `1 + linear G + quadratic G^2` to a sorted sparse
-    /// `(row, amplitude)` state vector, returning the updated sorted sparse state vector.
-    pub(super) fn rotate_sparse_state(
+    /// `(row, amplitude)` state vector, writing sorted nonzero entries into `out` (reusing its allocation).
+    pub(super) fn rotate_sparse_state_into(
         &self,
         basis: &Basis,
         x: u64,
         linear: f64,
         quadratic: f64,
         state: &[(usize, C64)],
-    ) -> Vec<(usize, C64)> {
+        out: &mut Vec<(usize, C64)>,
+    ) {
+        out.clear();
+        out.reserve(state.len().saturating_mul(2));
         self.with_phased(|phased| {
-            let mut out = Vec::with_capacity(state.len().saturating_mul(2));
             for &(r, old_r) in state {
                 let ket_r = Self::ket(basis, r);
                 let Some(c) = basis.index(ket_r ^ x) else {
@@ -881,8 +883,7 @@ impl Operator {
                 }
             }
             out.sort_unstable_by_key(|&(row, _)| row);
-            out
-        })
+        });
     }
     /// Whether the lockstep kernels ([`Self::rotate_gather`], [`Self::adjoint_step`]) run on this
     /// problem: a large action (the same threshold as the threaded overlap, whose block sums
@@ -1739,18 +1740,43 @@ impl Basis {
         })
     }
     pub fn new(ctx: &Context, encoding: &Encoding, sector: bool) -> Result<Self> {
+        Self::build_sector(ctx, encoding, sector, false)
+    }
+
+    /// Basis of all computational states with fixed total electron count `N_alpha + N_beta`
+    /// (`S_z` mixing allowed for relativistic spinor / GHF Hamiltonians).
+    pub fn total_number(ctx: &Context, encoding: &Encoding) -> Result<Self> {
+        Self::build_sector(ctx, encoding, true, true)
+    }
+
+    fn build_sector(
+        ctx: &Context,
+        encoding: &Encoding,
+        sector: bool,
+        spinor_total: bool,
+    ) -> Result<Self> {
         let n = encoding.n_qubits();
         let m = encoding.modes / 2;
-        let d = if sector {
+        let total_e = encoding.particles[0] + encoding.particles[1];
+        let d = if !sector {
+            1usize.checked_shl(n as u32).ok_or(Error::Overflow)?
+        } else if spinor_total {
+            choose(encoding.modes, total_e)?
+        } else {
             product(&[
                 choose(m, encoding.particles[0])?,
                 choose(m, encoding.particles[1])?,
             ])?
-        } else {
-            1usize.checked_shl(n as u32).ok_or(Error::Overflow)?
         };
         let mut indices = ctx.allocate(d)?;
-        if sector {
+        if sector && spinor_total {
+            let _temporary = ctx.reserve(product(&[d, 8])?)?;
+            let states = combinations(encoding.modes, total_e);
+            for (k, occ) in states.into_iter().enumerate() {
+                indices.as_mut_slice()[k] = encoding.encode(occ);
+            }
+            indices.as_mut_slice().sort_unstable();
+        } else if sector {
             let _temporary = ctx.reserve(product(&[
                 choose(m, encoding.particles[0])?
                     .checked_add(choose(m, encoding.particles[1])?)

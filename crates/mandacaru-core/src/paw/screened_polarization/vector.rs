@@ -84,11 +84,14 @@ impl Polarization {
 
     fn local(&self, sums: &[Vec<f64>; 4], smooth: bool) -> Local {
         let mut n0 = self.field(&sums[0], smooth);
-        if smooth {
+        let added = if smooth {
             // The grid's smooth core is part of the charge, never of the magnetization.
-            for (slot, core) in n0.iter_mut().zip(&self.smooth_core) {
-                *slot += core;
-            }
+            &self.smooth_core
+        } else {
+            &self.core_density
+        };
+        for (slot, core) in n0.iter_mut().zip(added) {
+            *slot += core;
         }
         let m: [Vec<f64>; 3] = std::array::from_fn(|a| self.field(&sums[a + 1], smooth));
         let nodes = n0.len();
@@ -195,9 +198,14 @@ impl Polarization {
             }
             out
         };
+        let core_energy = if self.has_core {
+            self.exchange(ctx, &self.core_density)?.energy
+        } else {
+            0.
+        };
         Ok(VectorTerms {
             energy,
-            unpolarized,
+            unpolarized: unpolarized - core_energy,
             operators: std::array::from_fn(|a| matrix(&potentials[a])),
         })
     }

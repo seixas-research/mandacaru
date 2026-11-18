@@ -878,7 +878,11 @@ pub fn bloch_spectral(
         }
     }
     let cells = supercell.orbital_cells(&integrals.basis)?;
-    let operators = supercell.bloch_operators(&cells, &mean_field.model_orbitals, kpoints)?;
+    let orbitals = model
+        .bloch_orbitals
+        .as_ref()
+        .unwrap_or(&mean_field.model_orbitals);
+    let operators = supercell.bloch_operators(&cells, orbitals, kpoints)?;
     let mut rows = Vec::with_capacity(kpoints.len() * cells.n_primitive);
     for w in &operators {
         for nu in 0..cells.n_primitive {
@@ -1002,5 +1006,348 @@ impl BlochSpectral {
             out.extend(crate::quantum::spectral::lorentzian(&parts, axis, eta)?);
         }
         Ok(out)
+    }
+}
+
+impl super::MeanField {
+    /// Builds the `k`-space Bloch [`Model`] and [`CrystalMomentum`] supporting both `rhf` and `uhf`
+    /// references as well as optional active-space JSON specifications and two-body representations.
+    pub fn bloch_model(
+        &self,
+        integrals: &MolecularIntegrals,
+        specification: Option<&str>,
+        representation: super::double_factorized::Representation,
+    ) -> Result<(
+        Arc<super::transform::Model>,
+        crate::quantum::CrystalMomentum,
+    )> {
+        use super::double_factorized::{DoubleFactorized, Representation};
+        use super::{scf, transform};
+        use serde_json::Value;
+
+        if !matches!(self.method.as_str(), "rhf" | "uhf") {
+            return Err(invalid(
+                "crystal_orbitals='k-space' requires a collinear (rhf or uhf) periodic reference",
+            ));
+        }
+        integrals.require_hartree_fock_core()?;
+        self.require_frame()?;
+        let supercell = integrals.supercell.as_ref().ok_or_else(|| {
+            invalid("crystal_orbitals='k-space' needs a periodic supercell calculation")
+        })?;
+        let m = integrals.m();
+        let cells = supercell.orbital_cells(&integrals.basis)?;
+        let np = cells.n_primitive;
+        let nk = supercell.n_cells();
+        let mesh = supercell.mesh;
+        if self.model_orbitals.shape() != (m, m)
+            || self.energies.is_empty()
+            || self.energies[0].len() != m
+        {
+            return Err(invalid("the mean field does not span the supercell basis"));
+        }
+        let translations = supercell.cell_translations();
+        let norm = 1. / (nk as f64).sqrt();
+        let mut u = DMatrix::<C64>::zeros(m, m);
+        let mut q_coords = Vec::with_capacity(nk);
+        for q0 in 0..mesh[0] {
+            for q1 in 0..mesh[1] {
+                for q2 in 0..mesh[2] {
+                    let q_idx = q_coords.len();
+                    q_coords.push([q0, q1, q2]);
+                    for mu in 0..m {
+                        let t = translations[cells.cell[mu]];
+                        let phase = 2.
+                            * PI
+                            * (q0 as f64 * t[0] / mesh[0] as f64
+                                + q1 as f64 * t[1] / mesh[1] as f64
+                                + q2 as f64 * t[2] / mesh[2] as f64);
+                        u[(mu, q_idx * np + cells.orbital[mu])] = C64::from_polar(norm, phase);
+                    }
+                }
+            }
+        }
+        let check_bloch_symmetry = |op_bloch: &DMatrix<C64>, label: &str| -> Result<()> {
+            for r in 0..m {
+                for col in 0..m {
+                    if r / np != col / np && op_bloch[(r, col)].norm() > 1e-6 {
+                        return Err(invalid(format!(
+                            "{label} breaks crystal translation symmetry across k-blocks"
+                        )));
+                    }
+                }
+            }
+            Ok(())
+        };
+        let op_bloch = if self.method == "uhf" {
+            if self.densities.len() != 2 {
+                return Err(invalid(
+                    "unrestricted Bloch model requires alpha and beta densities",
+                ));
+            }
+            let d_alpha = u.adjoint() * &self.densities[0] * &u;
+            let d_beta = u.adjoint() * &self.densities[1] * &u;
+            check_bloch_symmetry(&d_alpha, "unrestricted alpha density")?;
+            check_bloch_symmetry(&d_beta, "unrestricted beta density")?;
+            -(d_alpha + d_beta)
+        } else {
+            let diag = DMatrix::from_diagonal(&nalgebra::DVector::from_iterator(
+                m,
+                self.energies[0].iter().map(|v| C64::new(*v, 0.)),
+            ));
+            let f_low = &self.model_orbitals * diag * self.model_orbitals.adjoint();
+            let f_bloch = u.adjoint() * f_low * &u;
+            check_bloch_symmetry(&f_bloch, "mean-field Fock matrix")?;
+            f_bloch
+        };
+        let mut orbitals = Vec::with_capacity(m);
+        for (q_idx, &k) in q_coords.iter().enumerate() {
+            let block = op_bloch.view((q_idx * np, q_idx * np), (np, np));
+            let herm = (&block + block.adjoint()) * C64::new(0.5, 0.);
+            let (vals, vecs) = eigen(herm)?;
+            let full_vecs = u.columns(q_idx * np, np) * vecs;
+            for b in 0..np {
+                let col: Vec<C64> = (0..m).map(|row| full_vecs[(row, b)]).collect();
+                orbitals.push((vals[b], k, b, col));
+            }
+        }
+        orbitals.sort_by(|a, b| {
+            a.0.total_cmp(&b.0)
+                .then_with(|| a.1.cmp(&b.1))
+                .then_with(|| a.2.cmp(&b.2))
+        });
+        let mut c_bloch = DMatrix::<C64>::zeros(m, m);
+        let mut orbital_k = Vec::with_capacity(m);
+        let mut sorted_vals = Vec::with_capacity(m);
+        for (col_idx, (val, k, _, col)) in orbitals.into_iter().enumerate() {
+            sorted_vals.push(val);
+            orbital_k.push([k[0] as i64, k[1] as i64, k[2] as i64]);
+            for (row_idx, v) in col.into_iter().enumerate() {
+                c_bloch[(row_idx, col_idx)] = v;
+            }
+        }
+        let initial_reps = super::symmetry::periodic_representations(integrals, &c_bloch)?;
+        super::symmetry::symmetrize_degenerate_blocks(
+            &sorted_vals,
+            &mut c_bloch,
+            &initial_reps.matrices,
+        )?;
+        let reps = super::symmetry::periodic_representations(integrals, &c_bloch)?;
+        let attach_crystal_symmetry = |model: &mut super::transform::Model,
+                                       active_indices: &[usize]|
+         -> Result<()> {
+            let mut pos_of = vec![None; m];
+            for (local, &orig) in active_indices.iter().enumerate() {
+                pos_of[orig] = Some(local);
+            }
+            model.orbital_symmetry_sets = reps
+                .orbital_symmetry
+                .sets
+                .iter()
+                .filter_map(|set| {
+                    let mapped: Vec<usize> = set.iter().filter_map(|&idx| pos_of[idx]).collect();
+                    (!mapped.is_empty()).then_some(mapped)
+                })
+                .collect();
+            model.crystal_point_symmetry = super::symmetry::verified_point_symmetry(
+                &reps.labels,
+                &reps.matrices,
+                active_indices,
+                model,
+            )?;
+            Ok(())
+        };
+
+        if specification.is_none() && matches!(representation, Representation::Dense) {
+            let mut model = self.build_model_from_orbitals(integrals, &c_bloch)?;
+            let full_active: Vec<usize> = (0..m).collect();
+            attach_crystal_symmetry(&mut model, &full_active)?;
+            model.bloch_orbitals = Some(c_bloch);
+            let momentum = crate::quantum::CrystalMomentum::new(mesh, orbital_k)?;
+            return Ok((Arc::new(model), momentum));
+        }
+
+        let spec_str = specification.unwrap_or("{}");
+        let spec: Value = serde_json::from_str(spec_str).map_err(|e| invalid(e.to_string()))?;
+        let object = spec
+            .as_object()
+            .ok_or_else(|| invalid("active_space must be an object"))?;
+        if object
+            .keys()
+            .any(|k| !["method", "orbitals", "frozen", "symmetry"].contains(&k.as_str()))
+        {
+            return Err(invalid(
+                "crystal_orbitals='k-space' active_space accepts method, orbitals, frozen, and symmetry",
+            ));
+        }
+        if !spec["method"].is_null() && spec["method"].as_str() != Some("energy") {
+            return Err(crate::Error::Unsupported(
+                "crystal_orbitals='k-space' active spaces support method='energy'".into(),
+            ));
+        }
+        let symmetry = spec["symmetry"].as_bool().unwrap_or(false);
+        if !spec["symmetry"].is_null() && spec["symmetry"].as_bool().is_none() {
+            return Err(invalid("active-space symmetry must be a boolean"));
+        }
+        let occupied = self.particles[0].max(self.particles[1]);
+        let doubly = self.particles[0].min(self.particles[1]);
+        let frozen: Vec<usize> = match &spec["frozen"] {
+            Value::Null => vec![],
+            Value::String(s) if s == "auto" => vec![],
+            Value::Array(items) => {
+                let mut seen = vec![false; m];
+                let mut out = Vec::with_capacity(items.len());
+                for item in items {
+                    let i = item
+                        .as_u64()
+                        .and_then(|v| usize::try_from(v).ok())
+                        .filter(|&i| i < m)
+                        .ok_or_else(|| invalid("frozen orbital index out of range"))?;
+                    if seen[i] {
+                        return Err(invalid("duplicate frozen orbital index"));
+                    }
+                    seen[i] = true;
+                    out.push(i);
+                }
+                out
+            }
+            _ => {
+                return Err(invalid(
+                    "frozen must be a list of orbital indices or 'auto'",
+                ))
+            }
+        };
+        if frozen.iter().any(|&i| i >= doubly) {
+            return Err(invalid("frozen orbitals must be doubly occupied"));
+        }
+        let mut active: Vec<usize> = match &spec["orbitals"] {
+            Value::Null => (0..m).filter(|i| !frozen.contains(i)).collect(),
+            Value::Array(items) => {
+                let mut seen = vec![false; m];
+                let mut out = Vec::with_capacity(items.len());
+                for item in items {
+                    let i = item
+                        .as_u64()
+                        .and_then(|v| usize::try_from(v).ok())
+                        .filter(|&i| i < m)
+                        .ok_or_else(|| invalid("active orbital index out of range"))?;
+                    if seen[i] {
+                        return Err(invalid("duplicate active orbital index"));
+                    }
+                    seen[i] = true;
+                    out.push(i);
+                }
+                out.sort_unstable();
+                out
+            }
+            Value::Number(num) => {
+                let count = num
+                    .as_u64()
+                    .and_then(|v| usize::try_from(v).ok())
+                    .filter(|&n| n > 0 && n <= m - frozen.len())
+                    .ok_or_else(|| invalid("active orbital count is out of range"))?;
+                let mut selected: Vec<usize> =
+                    (0..occupied).filter(|i| !frozen.contains(i)).collect();
+                if selected.len() > count {
+                    return Err(invalid(
+                        "active orbital count must hold every unfrozen occupied orbital",
+                    ));
+                }
+                for virt in occupied..m {
+                    if selected.len() >= count {
+                        break;
+                    }
+                    if !frozen.contains(&virt) {
+                        selected.push(virt);
+                    }
+                }
+                selected
+            }
+            _ => {
+                return Err(invalid(
+                    "active orbitals must be a count or list of indices",
+                ))
+            }
+        };
+        if symmetry && !active.is_empty() {
+            let mut expanded = active.clone();
+            for &idx in &active {
+                let e = sorted_vals[idx];
+                if let Some(set) = reps.orbital_symmetry.sets.iter().find(|s| s.contains(&idx)) {
+                    for &j in set {
+                        if !frozen.contains(&j) && !expanded.contains(&j) {
+                            expanded.push(j);
+                        }
+                    }
+                }
+                for j in 0..m {
+                    if !frozen.contains(&j)
+                        && (sorted_vals[j] - e).abs() <= 1e-7
+                        && !expanded.contains(&j)
+                    {
+                        expanded.push(j);
+                    }
+                }
+            }
+            expanded.sort_unstable();
+            active = expanded;
+        }
+        if active.is_empty()
+            || active.iter().any(|i| frozen.contains(i))
+            || (0..occupied).any(|i| !frozen.contains(&i) && !active.contains(&i))
+        {
+            return Err(invalid(
+                "occupied orbitals must be frozen or active, and the Bloch active space must be nonempty",
+            ));
+        }
+
+        let ctx = &integrals.context;
+        let eri = integrals.eri()?;
+        let c_active = DMatrix::from_fn(m, active.len(), |r, c| c_bloch[(r, active[c])]);
+        let h_full = DMatrix::from_fn(m, m, |i, j| {
+            C64::new(integrals.one.as_slice()[i * m + j], 0.)
+        });
+        let mut effective = h_full.clone();
+        let mut constant = integrals.nuclear;
+        if !frozen.is_empty() {
+            let core = DMatrix::from_fn(m, frozen.len(), |r, c| c_bloch[(r, frozen[c])]);
+            let d_core = &core * core.adjoint();
+            let (j_mat, k_mat) = scf::jk(&eri, m, &d_core);
+            let potential = j_mat * C64::new(2., 0.) - k_mat;
+            constant += (d_core.clone() * (h_full * C64::new(2., 0.) + &potential))
+                .trace()
+                .re;
+            effective += potential;
+        }
+        let n = active.len();
+        let h_act = c_active.adjoint() * effective * &c_active;
+        let mut one = ctx.allocate::<C64>(product(&[n, n])?)?;
+        for i in 0..n {
+            for j in 0..n {
+                one.as_mut_slice()[i * n + j] = h_act[(i, j)];
+            }
+        }
+        let particles = [
+            self.particles[0] - frozen.len(),
+            self.particles[1] - frozen.len(),
+        ];
+        let mut model = match representation {
+            Representation::Dense => {
+                let two = transform::four(ctx, &eri, [&c_active; 4])?;
+                transform::Model::new(ctx, n, particles, one, two, constant, false)?
+            }
+            Representation::DoubleFactorized { truncation } => {
+                let factorized = DoubleFactorized::from_eri(ctx, &eri, &c_active, truncation)?;
+                transform::Model::double_factorized(ctx, particles, one, factorized, constant)?
+            }
+        };
+        model.orbital_indices = active.clone();
+        model.frozen_indices = frozen;
+        model.bloch_orbitals = Some(c_bloch);
+        model.exchange_madelung = integrals.exchange_madelung()?;
+        attach_crystal_symmetry(&mut model, &active)?;
+        let active_k: Vec<[i64; 3]> = active.iter().map(|&i| orbital_k[i]).collect();
+        let momentum = crate::quantum::CrystalMomentum::new(mesh, active_k)?;
+        Ok((Arc::new(model), momentum))
     }
 }

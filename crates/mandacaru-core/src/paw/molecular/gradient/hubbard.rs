@@ -119,6 +119,77 @@ pub fn imaginary_force(
             }
         }
     }
+    contract_gamma(setup, integrals, &gamma)
+}
+
+/// The DFT+U nuclear gradient `dE_U / dR` at fixed AO spinor density `d_ao` (`2*ao x 2*ao`),
+/// three components per atom; `None` for a molecule without DFT+U.
+pub fn spinor_force(
+    setup: &super::Setup,
+    integrals: &MolecularIntegrals,
+    d_ao: &DMatrix<C64>,
+) -> Result<Option<Vec<f64>>> {
+    let Some(hubbard) = integrals
+        .corrections
+        .as_ref()
+        .and_then(|c| c.hubbard.as_ref())
+    else {
+        return Ok(None);
+    };
+    let ao = setup.basis.orbitals.len();
+    if d_ao.shape() != (2 * ao, 2 * ao) {
+        return Err(crate::Error::Invalid(
+            "spinor Hubbard force needs a 2m x 2m AO-frame density".into(),
+        ));
+    }
+    let mut gamma: Vec<Vec<DVector<f64>>> = setup
+        .atoms
+        .iter()
+        .map(|&s| vec![DVector::zeros(setup.species_terms[s].projectors.len()); ao])
+        .collect();
+    for shell in &hubbard.shells {
+        let terms = &setup.species_terms[setup.atoms[shell.atom]];
+        let map = shell_projectors(terms, shell.l, &shell.weights);
+        let q = shell.q_ao.map(|v| C64::new(v, 0.));
+        let d_blocks: [DMatrix<C64>; 4] = std::array::from_fn(|k| {
+            let (s, t) = (k / 2, k % 2);
+            d_ao.view((s * ao, t * ao), (ao, ao)).into_owned()
+        });
+        let n_blocks: [DMatrix<C64>; 4] =
+            std::array::from_fn(|k| q.transpose() * &d_blocks[k] * &q);
+        let eval = hubbard.spinor_shell_response(&integrals.context, shell, &n_blocks)?;
+        let size = shell.size();
+        let side = 2 * size;
+        let v_slice = eval.potential.as_slice();
+        let mut field = DMatrix::<f64>::zeros(ao, size);
+        for s in 0..2 {
+            for t in 0..2 {
+                let v_st = DMatrix::from_fn(size, size, |a, b| {
+                    v_slice[(s * size + a) * side + t * size + b]
+                });
+                let contrib = &d_blocks[t * 2 + s] * &q * v_st;
+                for mu in 0..ao {
+                    for k in 0..size {
+                        field[(mu, k)] += 2. * contrib[(mu, k)].re;
+                    }
+                }
+            }
+        }
+        for mu in 0..ao {
+            for &(p, k, w) in &map {
+                gamma[shell.atom][mu][p] += w * field[(mu, k)];
+            }
+        }
+    }
+    contract_gamma(setup, integrals, &gamma)
+}
+
+fn contract_gamma(
+    setup: &super::Setup,
+    integrals: &MolecularIntegrals,
+    gamma: &[Vec<DVector<f64>>],
+) -> Result<Option<Vec<f64>>> {
+    let m = integrals.m();
     let basis: Vec<Occupied> = (0..m)
         .map(|mu| Occupied {
             spin: 0,
@@ -129,7 +200,5 @@ pub fn imaginary_force(
         })
         .collect();
     let samples = projections::derivative_samples(setup, integrals)?;
-    Ok(Some(projections::force(
-        integrals, &basis, &samples, &gamma,
-    )))
+    Ok(Some(projections::force(integrals, &basis, &samples, gamma)))
 }

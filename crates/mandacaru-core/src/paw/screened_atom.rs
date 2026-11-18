@@ -15,7 +15,7 @@ use super::{
     screened_polarization::Polarization,
 };
 use crate::{
-    math::{linalg::real_eigen, spline::simpson},
+    math::{linalg::real_eigen, spline::simpson_weights},
     product, Context, Result,
 };
 use nalgebra::DMatrix;
@@ -33,13 +33,11 @@ impl LongRange {
         let kernels = crate::paw::onecenter_radial::long_range_radial_kernel(
             ctx, &t.r, &t.r, &levels, omega, None,
         )?;
-        let weights = (0..POINTS)
-            .map(|i| {
-                let mut unit = vec![0.; POINTS];
-                unit[i] = 1.;
-                simpson(&t.r, &unit).map(|w| w * t.r[i] * t.r[i])
-            })
-            .collect::<Result<Vec<_>>>()?;
+        let weights: Vec<f64> = simpson_weights(&t.r)?
+            .into_iter()
+            .zip(&t.r)
+            .map(|(w, &r)| w * r * r)
+            .collect();
         let contract = |kernel: &[f64], pair: &[f64]| -> Vec<f64> {
             let weighted: Vec<f64> = pair.iter().zip(&weights).map(|(v, w)| v * w).collect();
             (0..POINTS)
@@ -83,10 +81,15 @@ pub struct ScreenedAtom {
     /// Low-rank factors of `Delta W^SR[(ab), (cd)]` in the projector layout.
     pub factors: Vec<DMatrix<f64>>,
     pub weights: Vec<f64>,
-    /// The frozen short-range semilocal exchange potential `V` of the reference
-    /// atom, `p x p` in the projector layout.
+    /// The one-body short-range potential `V` in the projector layout: frozen short-range
+    /// semilocal exchange minus the screened core-valence exact exchange `X_cv^SR(omega)`.
+    /// Since the hybrid adds `-a V . D` to the energy and `-a V` to the Fock matrix, `-X_cv^SR`
+    /// enters with `+a X_cv^SR`.
     pub v: DMatrix<f64>,
-    /// `X0 - V . D0`, summed over the channels.
+    /// Screened core-valence exact exchange `X_cv^SR(omega)` (`<= 0` diagonal entries) in the
+    /// projector layout; zeros when the species has no frozen core.
+    pub core_exchange: DMatrix<f64>,
+    /// `X0 - V_semilocal . D0`, summed over the channels.
     pub constant: f64,
     /// The spin-scaled remainder of the spheres' semilocal short-range exchange,
     /// which an open shell adds to the unpolarized linearization above.
@@ -134,6 +137,21 @@ pub fn screened(
             }
         }
     }
+    let mut core_exchange = DMatrix::zeros(p, p);
+    if let Some(core) = species.frozen_core {
+        let mut channel_blocks = Vec::with_capacity(species.channels.len());
+        for ch in &species.channels {
+            channel_blocks.push(core.screened_exchange(ctx, species.knots, ch.l, &ch.ae, omega)?);
+        }
+        for (a, pa) in projectors.iter().enumerate() {
+            for (b, pb) in projectors.iter().enumerate() {
+                if pa.channel == pb.channel && pa.m == pb.m {
+                    core_exchange[(a, b)] = channel_blocks[pa.channel][(pa.radial, pb.radial)];
+                }
+            }
+        }
+        v -= &core_exchange;
+    }
     Ok(ScreenedAtom {
         factors: keep
             .iter()
@@ -145,6 +163,7 @@ pub fn screened(
             .collect(),
         weights: keep.iter().map(|&k| values[k]).collect(),
         v,
+        core_exchange,
         constant,
         polarization,
     })
@@ -227,6 +246,7 @@ fn frozen_exchange(
     let (constant, blocks) = frozen_exchange_terms(
         ctx,
         grid,
+        species.core_density,
         species.smooth_core,
         &occupied,
         omega,

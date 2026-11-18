@@ -13,10 +13,9 @@ use std::collections::BTreeMap;
 use serde_json::{Map, Value};
 
 use super::json::*;
-use super::parts::{defects, nlcc, spin_orbit, subshells};
+use super::parts::{defects, nlcc, provenance, spin_orbit, subshells};
 use super::{
-    Array, Channel, CoreState, Family, PawDataset, CORE_SCHEMES, FORMAT_TAG, FORMAT_VERSION,
-    MAX_CORE_STATES,
+    Array, Channel, CoreState, Family, PawDataset, FORMAT_TAG, FORMAT_VERSION, MAX_CORE_STATES,
 };
 use crate::{Buffer, Context, Result};
 
@@ -325,20 +324,7 @@ pub(crate) fn assemble(
     let channels_value = take(&mut payload, "channels", what)?;
     // Every record carries its core states.
     let core_entries = Some(core_entries(take(&mut payload, "core_states", what)?)?);
-    // Optional, one of the named schemes.
-    let core_scheme = match payload.remove("core_scheme") {
-        None => None,
-        Some(value) => {
-            let name = string(value, "core_scheme")?;
-            if !CORE_SCHEMES.contains(&name.as_str()) {
-                return Err(fail(
-                    "core_scheme",
-                    format!("{name:?} is not one of {CORE_SCHEMES:?}"),
-                ));
-            }
-            Some(name)
-        }
-    };
+    let provenance = payload.remove("provenance").map(provenance).transpose()?;
     nothing_left(&payload, what)?;
 
     let r = grab(&mut tables, "r")?;
@@ -430,8 +416,8 @@ pub(crate) fn assemble(
         core_density,
         smooth_core_density,
         core_states,
-        core_scheme,
         defaults_applied,
+        provenance,
         _small: small,
     };
     for (name, values) in dataset.tables() {

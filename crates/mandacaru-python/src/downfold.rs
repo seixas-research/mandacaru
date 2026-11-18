@@ -28,10 +28,15 @@ impl PyDownfolded {
     fn functions(&self) -> Vec<(usize, [i64; 3])> {
         self.inner.problem.modes.clone()
     }
-    /// One channel for a restricted crystal, two (up, down) for a spin-polarized one.
+    /// One channel for a restricted or spinor crystal, two (up, down) for a spin-polarized one.
     #[getter]
     fn spins(&self) -> usize {
         self.inner.problem.spins
+    }
+    /// True when the downfolded modes are two-component spinor orbitals (spin-orbital integrals).
+    #[getter]
+    fn spinor(&self) -> bool {
+        self.inner.problem.spinor
     }
     #[getter]
     fn n_spatial_orbitals(&self) -> usize {

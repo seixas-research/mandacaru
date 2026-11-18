@@ -380,15 +380,7 @@ pub fn search_reviewed_logged(
     let mut built = usize::from(first.is_some());
     if options.mode == Mode::Keep {
         let first = first.expect("keep returns the error of its only construction");
-        return Ok(Searched {
-            generated: first,
-            index: 0,
-            label: FIRST.into(),
-            diagnosis: None,
-            tried: Vec::new(),
-            flagged: false,
-            built,
-        });
+        return Ok(selected(first, 0, FIRST.into(), None, Vec::new(), built));
     }
     let radii = match &first {
         Some(made) => radii_of(&made.dataset),
@@ -410,15 +402,14 @@ pub fn search_reviewed_logged(
         Some(first) => match judged(&first, &mut *cache) {
             Ok(diagnosis) => match Why::of(&diagnosis) {
                 None => {
-                    return Ok(Searched {
-                        generated: first,
-                        index: 0,
-                        label: FIRST.into(),
-                        diagnosis: Some(diagnosis),
+                    return Ok(selected(
+                        first,
+                        0,
+                        FIRST.into(),
+                        Some(diagnosis),
                         tried,
-                        flagged: false,
                         built,
-                    })
+                    ));
                 }
                 Some(why) => {
                     let acceptance_only =
@@ -495,15 +486,14 @@ pub fn search_reviewed_logged(
                 Err(diagnose::Error::Failed(error)) => return Err(Error::Failed(error)),
                 Ok(diagnosis) => match Why::of(&diagnosis) {
                     None => {
-                        return Ok(Searched {
-                            generated: made,
+                        return Ok(selected(
+                            made,
                             index,
-                            label: attempt.label,
-                            diagnosis: Some(diagnosis),
+                            attempt.label,
+                            Some(diagnosis),
                             tried,
-                            flagged: false,
                             built,
-                        })
+                        ));
                     }
                     Some(why) => {
                         if options.mode == Mode::Flag {
@@ -546,6 +536,32 @@ pub fn search_reviewed_logged(
     })
 }
 
+fn with_search(generated: &mut Generated, label: &str) {
+    if let Some(provenance) = &mut generated.dataset.provenance {
+        provenance.search = Some(label.to_string());
+    }
+}
+
+fn selected(
+    mut generated: Generated,
+    index: usize,
+    label: String,
+    diagnosis: Option<Diagnosis>,
+    tried: Vec<Tried>,
+    built: usize,
+) -> Searched {
+    with_search(&mut generated, &label);
+    Searched {
+        generated,
+        index,
+        label,
+        diagnosis,
+        tried,
+        flagged: false,
+        built,
+    }
+}
+
 fn flagged(
     mut generated: Generated,
     diagnosis: Diagnosis,
@@ -554,6 +570,7 @@ fn flagged(
     tried: Vec<Tried>,
     built: usize,
 ) -> Result<Searched, Error> {
+    with_search(&mut generated, &label);
     generated.dataset.defects = diagnosis.defects();
     // A flag without a record would be silent: every defect the criteria find has a key.
     if generated.dataset.defects == Defects::default() {

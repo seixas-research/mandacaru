@@ -101,8 +101,9 @@ What raises:
   `get_chern_number` or the Wannier charge-center flow of the [Berry guide](berry.md) instead. The
   check runs only for a spinor crystal without time-reversal symmetry, the only Hamiltonian that
   can give a subspace a Chern number, on every layer of every k plane the mesh resolves.
-- **A crystal loaded from a snapshot** raises `NotImplementedError`: the states on a full mesh
-  need the native periodic setup, which a snapshot does not hold.
+- **A crystal loaded from a snapshot** is rebuilt automatically from its `setup`/`sites`
+  block (including dataset paths and content digests), so Wannier localization and cRPA
+  downfolding work both in-memory and after `load_crystal`.
 
 ## What `downfold` returns
 
@@ -145,8 +146,10 @@ screening_bands=None, coulomb="supercell")`
   eight times the grid. A fragment whose charge reaches past the truncation radius meets its own
   periodic copies and a warning says so.
 
-A spinor crystal raises `NotImplementedError`. The crystal must come from a native setup (it
-carries the dataset description the transition densities are rebuilt from).
+Both collinear (`spins=1` or `2`) and spinor/noncollinear (`spinor=True`, yielding spin-orbital
+tensors) crystals are supported with a `"raw"` projector basis (`"dual"` projector basis is
+refused cleanly). Screening is static ($\omega = 0$) and drops dielectric wings
+($\mathbf{G} \neq \mathbf{0}, \mathbf{G}' = \mathbf{0}$).
 
 ## How it is built
 
@@ -179,7 +182,7 @@ axis, averaged; it scales the bare integrals' own `G = 0` term, and the wings ar
 - The functions of a fragment are the ones the localization returned: a different guess or window
   is a different model.
 - Absolute numbers of this implementation, the gates they pass and the literature ranges they are
-  compared with only as a sanity check are recorded in `dev_plan/CRPA_PLAN.md`.
+  compared with only as a sanity check are recorded in `dev_plan/PLAN5.md`.
 
 ## References
 

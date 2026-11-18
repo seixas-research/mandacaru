@@ -46,9 +46,6 @@ pub fn refuse(c: &Crystal) -> Result<()> {
         if c.screened_exchange()?.is_some() {
             return no("a DFT+U hybrid crystal");
         }
-        if c.spinor {
-            return no("a DFT+U spinor crystal");
-        }
     }
     if c.screened_exchange()?.is_some() && c.hybrid.is_none() {
         return no("a hybrid crystal without the PAW spheres of its sites block");
@@ -85,18 +82,25 @@ pub fn is_reduced(c: &Crystal) -> bool {
 /// its exact exchange rotates the states of the listed points, with the SU(2) factor of every
 /// operation for a spinor ([`crate::periodic::star`]). The cause names what to do.
 pub fn reduced_mesh(c: &Crystal) -> std::result::Result<(), String> {
-    if c.spinor && !c.time_reversal {
+    if let Some(note) = &c.description_unavailable {
+        return Err(format!(
+            "a k mesh reduced by space-group symmetry whose symmetry operations are unavailable ({note})"
+        ));
+    }
+    let has_magnetic_group = c.description.as_ref().is_some_and(|d| {
+        d.point_group.is_some()
+            && d.operations
+                .as_ref()
+                .and_then(|o| o.anti_unitary.as_ref())
+                .is_some_and(|f| f.len() == c.permutations.len() && !c.permutations.is_empty())
+    });
+    if c.spinor && !c.time_reversal && !has_magnetic_group {
         return Err(
             "a spin-orbit crystal on a k mesh reduced by space-group symmetry (it is magnetic: \
                     its magnetization would need the spin rotation of every operation; use \
                     symmetry=False)"
                 .into(),
         );
-    }
-    if let Some(note) = &c.description_unavailable {
-        return Err(format!(
-            "a k mesh reduced by space-group symmetry whose symmetry operations are unavailable ({note})"
-        ));
     }
     match c.description.as_ref() {
         None => Err(
@@ -338,7 +342,13 @@ pub fn rediagonalize(
     // diagonalization; the bands come back in that order, whatever the layout.
     let nk = c.points.len();
     let tasks = c.spins * nk;
-    let mut lanes = vec![(); c.context.lanes(crate::Level::Kpts, tasks)];
+    let per_lane = crate::product(&[c.m, c.m, 16, 4])?;
+    let lane_count = c.context.fit_lanes(
+        crate::Level::Kpts,
+        c.context.lanes(crate::Level::Kpts, tasks),
+        per_lane,
+    )?;
+    let mut lanes = vec![(); lane_count];
     let solved = c
         .context
         .map_tasks(crate::Level::Kpts, &mut lanes, tasks, |_, idx| {

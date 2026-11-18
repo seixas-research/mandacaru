@@ -19,7 +19,9 @@ mod spheres;
 mod spinor_screened;
 
 pub use densities::{DensityTerms, Forms};
-pub use hubbard::imaginary_force as hubbard_imaginary_force;
+pub use hubbard::{
+    imaginary_force as hubbard_imaginary_force, spinor_force as hubbard_spinor_force,
+};
 pub use radial::{core_slope, local_slope, long_range_slope, multipole_gradient, potential_slope};
 pub use screened::HybridResponse;
 pub use spinor_screened::{pseudo_index, SpinorExchange};
@@ -172,10 +174,13 @@ impl Response<'_> {
     /// Every part of the gradient that the caller does not contract on the grid
     /// orbitals: the projections, the short-range sphere, the compensation
     /// charges and the ionic potentials. `core` are what the partial core
-    /// density feels (see the caller), for its motion.
+    /// density feels (see the caller), for its motion. When `include_hubbard` is false, the
+    /// collinear DFT+U projection term is omitted (a spinor state evaluates its `2p x 2p` spinor
+    /// term itself via [`hubbard_spinor_force`]).
     pub fn contributions(
         &self,
         core: Option<(&[f64], Option<&[f64]>)>,
+        include_hubbard: bool,
     ) -> Result<Vec<Contribution>> {
         let (setup, integrals) = (self.setup, self.integrals);
         let nocc = self.occupied.len();
@@ -234,17 +239,19 @@ impl Response<'_> {
             name: "pairs_coulomb/projection",
             gradient: contract(&pi.coulomb),
         });
-        if let Some(pi) = hubbard::derivatives(
-            setup,
-            integrals,
-            self.occupied,
-            &self.projected,
-            self.unrestricted,
-        )? {
-            out.push(Contribution {
-                name: "hubbard/projection",
-                gradient: contract(&pi),
-            });
+        if include_hubbard {
+            if let Some(pi) = hubbard::derivatives(
+                setup,
+                integrals,
+                self.occupied,
+                &self.projected,
+                self.unrestricted,
+            )? {
+                out.push(Contribution {
+                    name: "hubbard/projection",
+                    gradient: contract(&pi),
+                });
+            }
         }
         out.push(Contribution {
             name: "projector_potential/local_sphere",

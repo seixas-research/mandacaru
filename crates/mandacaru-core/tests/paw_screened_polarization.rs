@@ -79,7 +79,9 @@ fn waves() -> Waves {
 fn view(w: &Waves) -> SpeciesView<'_> {
     SpeciesView {
         knots: &w.knots,
+        core_density: None,
         smooth_core: &w.core,
+        frozen_core: None,
         compensation_radius: RADIUS,
         channels: (0..2)
             .map(|l| ChannelView {

@@ -1723,6 +1723,12 @@ def append_record(path: str, title: str, view) -> None:
     _write_lines(path, ["", title] + _indent([f"{k}: {v}" for k, v in view.record]) + [_BANNER])
 
 
+def append_block(path: str, title: str, fields: dict) -> None:
+    """Append a generic key-value section ``title`` (``[HUBBARD RESPONSE]``) to ``path``."""
+    lines = [f"{k}: {v}" for k, v in fields.items() if v is not None]
+    _write_lines(path, ["", title] + _indent(lines) + [_BANNER])
+
+
 def _cell_parameters(cell: np.ndarray):
     """Return ``(a, b, c, alpha, beta, gamma)`` for a (3, 3) cell tensor.
 
@@ -1742,7 +1748,7 @@ _PERFORMANCE_COUNTS = ("step", "cpu_count", "qpu_jobs", "qpu_submissions")
 
 #: Section markers of the protocol, mapped to the key they fill (the step
 #: markers are handled separately: they open a new geometry step).
-_SECTIONS = {"[BASIS]": "basis", "[ACTIVE SPACE]": "active_space",
+_SECTIONS = {"[BASIS]": "basis", "[ACTIVE SPACE]": "active_space", "[SYMMETRY]": "symmetry",
              "[NESTED OTOC]": "nested_otoc",
              "[QUANTUM ECHOES]": "quantum_echoes",
              "[ELECTRONS]": "electrons", "[MEASUREMENT]": "measurement",
@@ -1753,6 +1759,7 @@ _SECTIONS = {"[BASIS]": "basis", "[ACTIVE SPACE]": "active_space",
              # keys as a variational run's, so a reader asks one question.
              "[SCF SETUP]": "setup", "[SCF SUMMARY]": "summary",
              "[SCF ITERATIONS]": "scf_iterations",
+             "[HUBBARD RESPONSE]": "hubbard_response",
              "[MARKOV CHAIN]": "markov_chain",
              "[FORCES]": "forces", "[PERFORMANCE]": "performance",
              "[EXCITED STATES]": "excited_states",
@@ -1854,7 +1861,7 @@ def parse_output(path: str) -> dict:
                 elif section == "performance":
                     table = None
                     step["performance"] = {"stages_s": {}}
-                elif section in ("electrons", "measurement", "energy_measurement",
+                elif section in ("electrons", "symmetry", "measurement", "energy_measurement",
                                  "gradient_measurement", "real_time", "dielectric_function"):
                     step[section] = {}
                 elif section in ("basis", "active_space", "excited_states"):
@@ -1969,7 +1976,7 @@ def parse_output(path: str) -> dict:
                 if len(fields) >= 4:
                     step["system"].setdefault("geometry", []).append(
                         [fields[0]] + [number(v) for v in fields[1:4]])
-            elif section in ("system", "setup", "electrons", "measurement", "energy_measurement",
+            elif section in ("system", "setup", "electrons", "symmetry", "measurement", "energy_measurement",
                              "gradient_measurement", "real_time", "dielectric_function") \
                     and ":" in stripped:
                 key, _, value = stripped.partition(":")

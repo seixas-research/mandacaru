@@ -36,6 +36,7 @@ pub struct Problem {
     /// The fragment's modes `(function, R)`.
     pub modes: Vec<(usize, [i64; 3])>,
     pub spins: usize,
+    pub spinor: bool,
     pub n: usize,
     pub kohn_sham: Vec<Matrix>,
     pub density_matrix: Vec<Matrix>,
@@ -98,11 +99,13 @@ pub fn assemble(
     gamma: Vec<Matrix>,
     num_particles: Option<[usize; 2]>,
     head: Option<f64>,
+    spinor: bool,
 ) -> Result<Problem> {
     let spins = kohn_sham.len();
     let n = modes.len();
     if spins == 0
         || spins > 2
+        || (spinor && spins != 1)
         || gamma.len() != spins
         || chemist.len() != spins
         || chemist.iter().any(|row| row.len() != spins)
@@ -116,7 +119,7 @@ pub fn assemble(
             "the blocks of a downfolded problem disagree in shape",
         ));
     }
-    // V^dc per spin channel.
+    // V^dc per channel.
     let mut double = Vec::with_capacity(spins);
     for s in 0..spins {
         let mut d = Matrix::zeros(n, n);
@@ -135,8 +138,9 @@ pub fn assemble(
             }
         }
         let c = &chemist[s][s];
-        // restricted: half the exchange of the total density; polarized: the channel's own
-        let weight = if spins == 1 { 0.5 } else { 1. };
+        // restricted spatial: half the exchange of the spin-summed density;
+        // unrestricted or spinor spin-orbitals: full channel exchange.
+        let weight = if spins == 1 && !spinor { 0.5 } else { 1. };
         for p in 0..n {
             for q in 0..n {
                 let mut exchange = C64::default();
@@ -198,6 +202,7 @@ pub fn assemble(
     Ok(Problem {
         modes,
         spins,
+        spinor,
         n,
         kohn_sham,
         density_matrix: gamma,

@@ -171,11 +171,12 @@ pub fn radial_transform(
     Ok(out)
 }
 
-/// `F_L(q)` of one shape on a uniform table, linearly interpolated.
+/// `F_L(q)` of one shape on a smooth C^2 not-a-knot cubic spline table.
 #[derive(Clone, Debug)]
 pub struct ShapeTable {
     pub q: Vec<f64>,
     pub f: Vec<f64>,
+    m: Vec<f64>,
 }
 
 static CACHED_SHAPE_TABLES: Mutex<Option<BTreeMap<(i64, usize), ShapeTable>>> = Mutex::new(None);
@@ -188,7 +189,17 @@ pub fn clear_shape_cache() {
     }
 }
 impl ShapeTable {
-    /// `np.interp`: clamped outside the table.
+    fn build(q: Vec<f64>, f: Vec<f64>) -> Self {
+        let n = q.len();
+        let mut m = vec![0.; n];
+        if n >= 4 {
+            let mut upper = vec![0.; n];
+            crate::math::spline::compute_not_a_knot_second_derivatives(&q, &f, &mut m, &mut upper);
+        }
+        Self { q, f, m }
+    }
+
+    /// Cubic spline value clamped outside the table.
     pub fn at(&self, x: f64) -> f64 {
         let n = self.q.len();
         if x <= self.q[0] {
@@ -197,20 +208,16 @@ impl ShapeTable {
         if x >= self.q[n - 1] {
             return self.f[n - 1];
         }
-        let j = self.q.partition_point(|v| *v <= x) - 1;
-        let slope = (self.f[j + 1] - self.f[j]) / (self.q[j + 1] - self.q[j]);
-        slope * (x - self.q[j]) + self.f[j]
+        crate::math::spline::eval_cubic(&self.q, &self.f, &self.m, x).0
     }
-    /// `d at / dx`: the slope of the linear piece [`ShapeTable::at`] reads, the right-hand one
-    /// on a node and zero outside the table. Piecewise constant, discontinuous at every node:
-    /// the derivative of the interpolant, not of the radial transform it tabulates.
+    /// `d at / dx`: the smooth C^1 derivative of the cubic spline inside the table
+    /// (zero outside `[q[0], q[n - 1]]`).
     pub fn slope(&self, x: f64) -> f64 {
         let n = self.q.len();
         if x <= self.q[0] || x >= self.q[n - 1] {
             return 0.;
         }
-        let j = self.q.partition_point(|v| *v <= x) - 1;
-        (self.f[j + 1] - self.f[j]) / (self.q[j + 1] - self.q[j])
+        crate::math::spline::eval_cubic(&self.q, &self.f, &self.m, x).1
     }
 }
 
@@ -248,7 +255,10 @@ impl Shapes {
                 .checked_add(crate::product(&[q.len(), 16])?)
                 .ok_or(crate::Error::Overflow)?;
             top = top.min(*q.last().unwrap());
-            if tables.insert(key(radius, l), ShapeTable { q, f }).is_some() {
+            if tables
+                .insert(key(radius, l), ShapeTable::build(q, f))
+                .is_some()
+            {
                 return Err(invalid("duplicate compensation shape table"));
             }
         }
@@ -309,7 +319,7 @@ impl Shapes {
                 let r = linspace(0., radius, SHAPE_POINTS);
                 let shape = shape_function(&r, radius, l)?;
                 let f = radial_transform(ctx, &r, &shape, l, &q, Transient::of(ctx).radial_bytes)?;
-                let table = ShapeTable { q: q.clone(), f };
+                let table = ShapeTable::build(q.clone(), f);
                 newly_computed.push((key(radius, l), table));
             }
             if let Ok(mut cache_guard) = CACHED_SHAPE_TABLES.lock() {

@@ -3,7 +3,7 @@
 use super::{
     invalid,
     molecular::data::{self, Arrays},
-    pair_tables::shape,
+    multipole::shape_at,
 };
 use crate::{
     math::{angular, radial::validate, spline::simpson},
@@ -346,7 +346,7 @@ impl Atom {
                         .iter()
                         .map(|r| {
                             r * r
-                                * shape(*r, self.compensation_radius, level.l)
+                                * shape_at(*r, self.compensation_radius, level.l)
                                 * mandacaru_kernels::two_center::spherical_bessel(
                                     level.l as i32,
                                     q * r,

@@ -1,13 +1,14 @@
 //! Hamiltonian factor-graph and excitation descriptors for learned proposals.
 use crate::{
     product,
-    quantum::{Encoding, QuantumProblem, C64},
+    quantum::{CrystalMomentum, CrystalPointSymmetry, Encoding, QuantumProblem, C64},
     Context, Error, Reservation, Result,
 };
 use nalgebra::DMatrix;
 use serde_json::Value;
 pub type Matrix = DMatrix<f64>;
 pub struct BipartiteGraph {
+    /// Qubit node features (`n x 8`: `[ref, coord, z_diag, deg_log, qx, qy, qz, is_bloch]`).
     pub qubit: Matrix,
     pub term: Matrix,
     pub incidence: [Matrix; 3],
@@ -96,7 +97,40 @@ impl BipartiteGraph {
             .iter()
             .map(|v| terms(v, n))
             .collect::<Result<Vec<_>>>()?;
-        Self::new(context, n, encoding.reference(), &h, &pool)
+        let mut graph = Self::new(context, n, encoding.reference(), &h, &pool)?;
+        if let Some(mom) = value.get("momentum").filter(|v| !v.is_null()) {
+            let mesh_arr = mom["mesh"]
+                .as_array()
+                .filter(|a| a.len() == 3)
+                .ok_or_else(|| invalid("model momentum needs a 3-element mesh"))?;
+            let mesh = [
+                usize::try_from(mesh_arr[0].as_u64().unwrap_or(0))
+                    .map_err(|_| invalid("invalid mesh"))?,
+                usize::try_from(mesh_arr[1].as_u64().unwrap_or(0))
+                    .map_err(|_| invalid("invalid mesh"))?,
+                usize::try_from(mesh_arr[2].as_u64().unwrap_or(0))
+                    .map_err(|_| invalid("invalid mesh"))?,
+            ];
+            let orb_k = mom["orbital_k"]
+                .as_array()
+                .ok_or_else(|| invalid("model momentum needs orbital_k entries"))?
+                .iter()
+                .map(|row| {
+                    let r = row
+                        .as_array()
+                        .filter(|a| a.len() == 3)
+                        .ok_or_else(|| invalid("orbital_k entries need 3 integers"))?;
+                    Ok([
+                        r[0].as_i64().ok_or_else(|| invalid("invalid orbital_k"))?,
+                        r[1].as_i64().ok_or_else(|| invalid("invalid orbital_k"))?,
+                        r[2].as_i64().ok_or_else(|| invalid("invalid orbital_k"))?,
+                    ])
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let momentum = CrystalMomentum::new(mesh, orb_k)?;
+            graph = graph.with_momentum(&momentum);
+        }
+        Ok(graph)
     }
     pub fn from_problem(problem: &QuantumProblem) -> Result<Self> {
         let _temporary = problem.context.reserve(product(&[
@@ -113,13 +147,60 @@ impl BipartiteGraph {
             .iter()
             .map(|g| g.operator.labels())
             .collect::<Vec<_>>();
-        Self::new(
+        let mut graph = Self::new(
             &problem.context,
             problem.hamiltonian.n,
             problem.encoding.reference(),
             &problem.hamiltonian.labels(),
             &pool,
-        )
+        )?;
+        if let Some(momentum) = &problem.momentum {
+            graph = graph.with_momentum(momentum);
+        } else if let Some(point_symmetry) = &problem.point_symmetry {
+            graph = graph.with_point_symmetry(point_symmetry);
+        }
+        Ok(graph)
+    }
+    /// Annotates qubit vertices with up to three real point-symmetry characters in columns
+    /// `4..8` (`[chi_0, chi_1, chi_2, 1.0]`) when crystal momentum is absent.
+    pub fn with_point_symmetry(mut self, symmetry: &CrystalPointSymmetry) -> Self {
+        let n = self.qubit.nrows();
+        let m = symmetry.n_orbitals();
+        if m == 0 || symmetry.characters.is_empty() {
+            return self;
+        }
+        for i in 0..n {
+            for axis in 0..symmetry.characters.len().min(3) {
+                self.qubit[(i, 4 + axis)] = symmetry.characters[axis][i % m].re;
+            }
+            self.qubit[(i, 7)] = 1.;
+        }
+        self
+    }
+    /// Annotates qubit vertices with crystal momentum directly in columns `4..8` (`[qx, qy, qz, 1.0]`).
+    pub fn with_momentum(mut self, momentum: &CrystalMomentum) -> Self {
+        let n = self.qubit.nrows();
+        let m = momentum.orbital_k.len();
+        if m == 0 {
+            return self;
+        }
+        let wrap = |q: i64, size: usize| -> f64 {
+            let s = size.max(1) as f64;
+            let f = (q.rem_euclid(size as i64)) as f64 / s;
+            if f > 0.5 {
+                f - 1.
+            } else {
+                f
+            }
+        };
+        for i in 0..n {
+            let k = momentum.orbital_k[i % m];
+            for axis in 0..3 {
+                self.qubit[(i, 4 + axis)] = wrap(k[axis], momentum.mesh[axis]);
+            }
+            self.qubit[(i, 7)] = 1.;
+        }
+        self
     }
     pub fn new(
         context: &Context,
@@ -141,7 +222,7 @@ impl BipartiteGraph {
             product(&[p, n, 3])?,
             product(&[p, p])?,
             product(&[t, 8])?,
-            product(&[n, 6])?,
+            product(&[n, 8])?,
             product(&[p, 4])?,
             3,
         ];
@@ -158,7 +239,7 @@ impl BipartiteGraph {
         let mut pool_edges = std::array::from_fn(|_| Matrix::zeros(p, n));
         let mut descriptors = Matrix::zeros(p, 4);
         let mut term = Matrix::zeros(t, 6);
-        let mut qubit = Matrix::zeros(n, 4);
+        let mut qubit = Matrix::zeros(n, 8);
         let scale = h.iter().map(|(_, c)| c.norm()).fold(0., f64::max);
         let scale = if scale > 0. { scale } else { 1. };
         let mut reference_energy = 0.;
@@ -376,5 +457,33 @@ impl Candidates {
             sequence_overlap,
             _memory: memory,
         })
+    }
+
+    /// Unified 12-feature candidate rows: `[descriptors(9), sequence_overlap, compressed_curvature, norm_pos]`.
+    pub fn edit_features(
+        &self,
+        curvatures: Option<&[f64]>,
+        positions: Option<&[usize]>,
+    ) -> Vec<[f64; 12]> {
+        let n_rows = self.operators.len();
+        let length = self.descriptors.get((0, 8)).copied().unwrap_or(0.).max(1.);
+        (0..n_rows)
+            .map(|r| {
+                let mut row = [0.; 12];
+                for c in 0..9 {
+                    row[c] = self.descriptors[(r, c)];
+                }
+                row[9] = self.sequence_overlap[r];
+                row[10] = curvatures
+                    .and_then(|c| c.get(self.operators[r]).copied())
+                    .map(compress)
+                    .unwrap_or(0.);
+                let pos = positions
+                    .and_then(|p| p.get(r).copied())
+                    .unwrap_or(self.descriptors[(r, 8)] as usize) as f64;
+                row[11] = pos / length;
+                row
+            })
+            .collect()
     }
 }

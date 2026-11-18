@@ -1,885 +1,885 @@
 {
- "about": "Forces of PAW-LCAO molecules from the analytic gradient of the calculator, re-frozen on 2026-11-16 against the regenerated PAW library (the earlier numbers, from the retired finite-difference route, were frozen on the 2026-11-03 library). The analytic force is checked against reconverged finite differences at a fixed grid by the Rust slow tier paw_forces_dataset; a central difference of get_potential_energy is not that oracle: it equals the analytic force less the mean force over the atoms (measured on LiH and water to 1e-6 eV/Angstrom), the default grid moving with the geometry. test_native_molecular_forces.py holds later changes of the code to these numbers.",
- "units": {
-  "forces": "eV/Angstrom",
-  "energy": "eV"
- },
- "options_common": {
-  "project_translation": false,
-  "scf_options": {
-   "tolerance": 1e-11
+  "about": "Forces of PAW-LCAO molecules from the analytic gradient of the calculator, re-frozen on 2026-11-16 against the regenerated PAW library (the earlier numbers, from the retired finite-difference route, were frozen on the 2026-11-03 library). The analytic force is checked against reconverged finite differences at a fixed grid by the Rust slow tier paw_forces_dataset; a central difference of get_potential_energy is not that oracle: it equals the analytic force less the mean force over the atoms (measured on LiH and water to 1e-6 eV/Angstrom), the default grid moving with the geometry. test_native_molecular_forces.py holds later changes of the code to these numbers.",
+  "units": {
+    "forces": "eV/Angstrom",
+    "energy": "eV"
+  },
+  "options_common": {
+    "project_translation": false,
+    "scf_options": {
+      "tolerance": 1e-11
+    }
+  },
+  "cases": {
+    "h2_pbe": {
+      "atoms": {
+        "symbols": "H2",
+        "positions_angstrom": [
+          [
+            2.5,
+            2.5,
+            2.1
+          ],
+          [
+            2.57,
+            2.5,
+            2.9
+          ]
+        ],
+        "cell_angstrom": [
+          5,
+          5,
+          5
+        ],
+        "magmoms": null
+      },
+      "options": {
+        "method": "dft",
+        "xc": "pbe",
+        "basis": {
+          "name": "PAW-LCAO",
+          "size": "SZ"
+        },
+        "grid_spacing": 0.4
+      },
+      "energy_ev": -30.202157605634042,
+      "forces_ev_angstrom": [
+        [
+          -0.22213509795433542,
+          1.6639561111057497e-15,
+          -2.4945670471878585
+        ],
+        [
+          0.2221350979543654,
+          -8.152802474339171e-17,
+          2.4945670471879158
+        ]
+      ],
+      "stationarity": 3.885780586188048e-16
+    },
+    "h2_rhf": {
+      "atoms": {
+        "symbols": "H2",
+        "positions_angstrom": [
+          [
+            2.5,
+            2.5,
+            2.1
+          ],
+          [
+            2.57,
+            2.5,
+            2.9
+          ]
+        ],
+        "cell_angstrom": [
+          5,
+          5,
+          5
+        ],
+        "magmoms": null
+      },
+      "options": {
+        "method": "rhf",
+        "basis": {
+          "name": "PAW-LCAO",
+          "size": "SZ"
+        },
+        "grid_spacing": 0.4
+      },
+      "energy_ev": -29.095993528190995,
+      "forces_ev_angstrom": [
+        [
+          -0.22300401779453194,
+          3.2437700464869226e-15,
+          -2.5789213382100677
+        ],
+        [
+          0.2230040177944834,
+          9.47074367904541e-15,
+          2.5789213382100793
+        ]
+      ],
+      "stationarity": 5.551115123125783e-16
+    },
+    "lih_rhf": {
+      "atoms": {
+        "symbols": "LiH",
+        "positions_angstrom": [
+          [
+            2.5,
+            2.5,
+            1.85
+          ],
+          [
+            2.6,
+            2.5,
+            3.45
+          ]
+        ],
+        "cell_angstrom": [
+          5,
+          5,
+          5
+        ],
+        "magmoms": null
+      },
+      "options": {
+        "method": "rhf",
+        "basis": {
+          "name": "PAW-LCAO",
+          "size": "SZ"
+        },
+        "grid_spacing": 0.4
+      },
+      "energy_ev": -20.047753997126975,
+      "forces_ev_angstrom": [
+        [
+          -0.022443882071637132,
+          3.4078013154575792e-15,
+          -0.7247687820826664
+        ],
+        [
+          0.04447717841458974,
+          1.5881969086149445e-15,
+          1.0711813492580036
+        ]
+      ],
+      "stationarity": 3.7719827261639693e-14
+    },
+    "lih_pbe": {
+      "atoms": {
+        "symbols": "LiH",
+        "positions_angstrom": [
+          [
+            2.5,
+            2.5,
+            1.85
+          ],
+          [
+            2.6,
+            2.5,
+            3.45
+          ]
+        ],
+        "cell_angstrom": [
+          5,
+          5,
+          5
+        ],
+        "magmoms": null
+      },
+      "options": {
+        "method": "dft",
+        "xc": "pbe",
+        "basis": {
+          "name": "PAW-LCAO",
+          "size": "SZ"
+        },
+        "grid_spacing": 0.4
+      },
+      "energy_ev": -21.164143196739758,
+      "forces_ev_angstrom": [
+        [
+          0.06215697565631092,
+          4.463011556915571e-15,
+          -0.6070331274473955
+        ],
+        [
+          0.07326880859592287,
+          8.674511864803438e-15,
+          1.265999650853944
+        ]
+      ],
+      "stationarity": 2.2745694217007895e-14
+    },
+    "h2o_pbe": {
+      "atoms": {
+        "symbols": "OH2",
+        "positions_angstrom": [
+          [
+            3.0,
+            3.0,
+            3.0
+          ],
+          [
+            3.76,
+            3.0,
+            3.59
+          ],
+          [
+            2.24,
+            3.0,
+            3.59
+          ]
+        ],
+        "cell_angstrom": [
+          6,
+          6,
+          6
+        ],
+        "magmoms": null
+      },
+      "options": {
+        "method": "dft",
+        "xc": "pbe",
+        "basis": {
+          "name": "PAW-LCAO",
+          "size": "DZP"
+        },
+        "grid_spacing": 0.3
+      },
+      "energy_ev": -466.23656620495177,
+      "forces_ev_angstrom": [
+        [
+          -8.170616749952863e-13,
+          -2.108313024423276e-13,
+          -1.8988941326519795
+        ],
+        [
+          1.032831235533428,
+          1.3164240869872288e-13,
+          0.8556303344092637
+        ],
+        [
+          -1.032831235532937,
+          -1.0493562267865412e-13,
+          0.8556303344086357
+        ]
+      ],
+      "stationarity": 7.033817972512679e-13
+    },
+    "h2o_rhf": {
+      "atoms": {
+        "symbols": "OH2",
+        "positions_angstrom": [
+          [
+            3.0,
+            3.0,
+            3.0
+          ],
+          [
+            3.76,
+            3.0,
+            3.59
+          ],
+          [
+            2.24,
+            3.0,
+            3.59
+          ]
+        ],
+        "cell_angstrom": [
+          6,
+          6,
+          6
+        ],
+        "magmoms": null
+      },
+      "options": {
+        "method": "rhf",
+        "basis": {
+          "name": "PAW-LCAO",
+          "size": "DZP"
+        },
+        "grid_spacing": 0.3
+      },
+      "energy_ev": -459.1345317641712,
+      "forces_ev_angstrom": [
+        [
+          -2.8238331555238373e-12,
+          1.0962556896584266e-13,
+          0.27505884251410667
+        ],
+        [
+          -0.23810003441508,
+          -9.53353532762578e-15,
+          -0.19716460114837417
+        ],
+        [
+          0.23810003441758051,
+          -1.1845294975585868e-13,
+          -0.1971646011512972
+        ]
+      ],
+      "stationarity": 1.6797674362578618e-13
+    },
+    "oh_upbe": {
+      "atoms": {
+        "symbols": "OH",
+        "positions_angstrom": [
+          [
+            3.0,
+            3.0,
+            3.0
+          ],
+          [
+            3.0,
+            3.1,
+            3.97
+          ]
+        ],
+        "cell_angstrom": [
+          6,
+          6,
+          6
+        ],
+        "magmoms": [
+          1,
+          0
+        ]
+      },
+      "options": {
+        "method": "dft",
+        "xc": "pbe",
+        "unrestricted": true,
+        "basis": {
+          "name": "PAW-LCAO",
+          "size": "DZP"
+        },
+        "grid_spacing": 0.3
+      },
+      "energy_ev": -447.398476405114,
+      "forces_ev_angstrom": [
+        [
+          -8.245185990518676e-13,
+          -0.5357102501044251,
+          -1.5913360359557556
+        ],
+        [
+          -4.1536401398356566e-14,
+          0.16180564038972475,
+          1.4810836740188122
+        ]
+      ],
+      "stationarity": 2.4621850568119113e-13
+    },
+    "h2o_r2scan": {
+      "atoms": {
+        "symbols": "OH2",
+        "positions_angstrom": [
+          [
+            3.0,
+            3.0,
+            3.0
+          ],
+          [
+            3.76,
+            3.0,
+            3.59
+          ],
+          [
+            2.24,
+            3.0,
+            3.59
+          ]
+        ],
+        "cell_angstrom": [
+          6,
+          6,
+          6
+        ],
+        "magmoms": null
+      },
+      "options": {
+        "method": "dft",
+        "xc": "r2scan",
+        "basis": {
+          "name": "PAW-LCAO",
+          "size": "DZP"
+        },
+        "grid_spacing": 0.3
+      },
+      "energy_ev": -466.22858050332843,
+      "forces_ev_angstrom": [
+        [
+          -3.2924783680188213e-13,
+          -1.5538410726792255e-13,
+          -0.7492111483636658
+        ],
+        [
+          0.8023799420863404,
+          1.1211808111481212e-13,
+          0.7527575147962554
+        ],
+        [
+          -0.8023799420860321,
+          -1.1490103223765356e-13,
+          0.7527575147957873
+        ]
+      ],
+      "stationarity": 1.1601830607332886e-14
+    },
+    "h2o_hse06": {
+      "atoms": {
+        "symbols": "OH2",
+        "positions_angstrom": [
+          [
+            3.0,
+            3.0,
+            3.0
+          ],
+          [
+            3.76,
+            3.0,
+            3.59
+          ],
+          [
+            2.24,
+            3.0,
+            3.59
+          ]
+        ],
+        "cell_angstrom": [
+          6,
+          6,
+          6
+        ],
+        "magmoms": null
+      },
+      "options": {
+        "method": "dft",
+        "xc": "hse06",
+        "basis": {
+          "name": "PAW-LCAO",
+          "size": "DZP"
+        },
+        "grid_spacing": 0.3
+      },
+      "energy_ev": -465.7679969943756,
+      "forces_ev_angstrom": [
+        [
+          1.1807029952262668e-14,
+          -2.290174853104815e-13,
+          -1.1424087674073393
+        ],
+        [
+          0.6217296156707407,
+          3.449114001970518e-14,
+          0.5147102733642541
+        ],
+        [
+          -0.6217296156694734,
+          3.067593598862257e-14,
+          0.5147102733633406
+        ]
+      ],
+      "stationarity": 1.5487611193520934e-13
+    }
+  },
+  "stamp": {
+    "date": "2026-11-16",
+    "route": "analytic",
+    "extension_sha256": "980f3c88baed2784d4665d743e0cdb7fd0e5ce5a8acdb51b0dbb3bed011e9b84",
+    "library_sha256": {
+      "lda-sr/H.parquet": "730c4c02d4e037486da2fec5651469ed3206903e6a0da98df8138b11d9fd99a9",
+      "lda-sr/Li.parquet": "9e72ab810917f2fbace211a5a34f1a9fb8949ba8d409a101295572b7ded4d713",
+      "lda-sr/O.parquet": "bc52e9b75d5a1bd64b4fca4d214802af3075cd02d2ff5dc81630cd34d647584e",
+      "pbe-sr/H.parquet": "8f08e5ab434c6cc5f6a15cdd3a0f5ce2d0840bb9c8547ec79da77910aaba9cf6",
+      "pbe-sr/Li.parquet": "5f91f636779f4a31636e1b37b9b91fabb789afea171846f8f63b26f95d37bedb",
+      "pbe-sr/O.parquet": "17424877612e7946f31d83c5111201c8d2e85c26e5396a6970bd4c67aae39ceb"
+    },
+    "reproducibility": "two independent runs bit-identical (max difference 0.0 eV/Angstrom)"
+  },
+  "refrozen": {
+    "h2_pbe": [
+      {
+        "reason": "2026-11-16: the local-potential sphere of every atom has a radial panel edge on each corner of the potential (local cutoff, compensation radius, projector radii, partial-core radius, start of the ionic tail), 64 nodes per panel, instead of one edge at the local radius. The old rule's error, LiH pbe-sr (this file's lih_pbe): energy -21.164451371 eV with it, -21.164143197 with the new rule, -21.164142851 with 512 nodes per panel; Li z force -0.6065306742 / -0.6070331274 / -0.6070330110 eV/Angstrom (old error 5.0e-4, new 1.2e-7). The old layout (a scratch hook on the current sources) reproduces the previous records of every case bit for bit (DECISIONS 2026-11-16 arthur quadrature panels)",
+        "old": {
+          "energy_ev": -30.20215652488686,
+          "forces_ev_angstrom": [
+            [
+              -0.22213517002757918,
+              2.1919714081713152e-15,
+              -2.494567900162012
+            ],
+            [
+              0.2221351700275974,
+              3.8152176923489265e-15,
+              2.4945679001620777
+            ]
+          ],
+          "stationarity": 4.440892098500626e-16
+        },
+        "new": {
+          "energy_ev": -30.202157605634042,
+          "forces_ev_angstrom": [
+            [
+              -0.22213509795433542,
+              1.6639561111057497e-15,
+              -2.4945670471878585
+            ],
+            [
+              0.2221350979543654,
+              -8.152802474339171e-17,
+              2.4945670471879158
+            ]
+          ],
+          "stationarity": 3.885780586188048e-16
+        }
+      }
+    ],
+    "h2_rhf": [
+      {
+        "reason": "2026-11-16: the local-potential sphere of every atom has a radial panel edge on each corner of the potential (local cutoff, compensation radius, projector radii, partial-core radius, start of the ionic tail), 64 nodes per panel, instead of one edge at the local radius. The old rule's error, LiH pbe-sr (this file's lih_pbe): energy -21.164451371 eV with it, -21.164143197 with the new rule, -21.164142851 with 512 nodes per panel; Li z force -0.6065306742 / -0.6070331274 / -0.6070330110 eV/Angstrom (old error 5.0e-4, new 1.2e-7). The old layout (a scratch hook on the current sources) reproduces the previous records of every case bit for bit (DECISIONS 2026-11-16 arthur quadrature panels)",
+        "old": {
+          "energy_ev": -29.095993536088255,
+          "forces_ev_angstrom": [
+            [
+              -0.22300401411802392,
+              3.2774373414748693e-15,
+              -2.578921355086977
+            ],
+            [
+              0.22300401411800252,
+              7.456112331937138e-15,
+              2.578921355087017
+            ]
+          ],
+          "stationarity": 3.885780586188048e-16
+        },
+        "new": {
+          "energy_ev": -29.095993528190995,
+          "forces_ev_angstrom": [
+            [
+              -0.22300401779453194,
+              3.2437700464869226e-15,
+              -2.5789213382100677
+            ],
+            [
+              0.2230040177944834,
+              9.47074367904541e-15,
+              2.5789213382100793
+            ]
+          ],
+          "stationarity": 5.551115123125783e-16
+        }
+      }
+    ],
+    "lih_rhf": [
+      {
+        "reason": "2026-11-16: the local-potential sphere of every atom has a radial panel edge on each corner of the potential (local cutoff, compensation radius, projector radii, partial-core radius, start of the ionic tail), 64 nodes per panel, instead of one edge at the local radius. The old rule's error, LiH pbe-sr (this file's lih_pbe): energy -21.164451371 eV with it, -21.164143197 with the new rule, -21.164142851 with 512 nodes per panel; Li z force -0.6065306742 / -0.6070331274 / -0.6070330110 eV/Angstrom (old error 5.0e-4, new 1.2e-7). The old layout (a scratch hook on the current sources) reproduces the previous records of every case bit for bit (DECISIONS 2026-11-16 arthur quadrature panels)",
+        "old": {
+          "energy_ev": -20.04775374761505,
+          "forces_ev_angstrom": [
+            [
+              -0.022443910140423007,
+              2.935530111874622e-15,
+              -0.7247692306425549
+            ],
+            [
+              0.04447720521771494,
+              1.0304786459211417e-14,
+              1.071181767964826
+            ]
+          ],
+          "stationarity": 3.4140190674492032e-12
+        },
+        "new": {
+          "energy_ev": -20.047753997126975,
+          "forces_ev_angstrom": [
+            [
+              -0.022443882071637132,
+              3.4078013154575792e-15,
+              -0.7247687820826664
+            ],
+            [
+              0.04447717841458974,
+              1.5881969086149445e-15,
+              1.0711813492580036
+            ]
+          ],
+          "stationarity": 3.7719827261639693e-14
+        }
+      }
+    ],
+    "lih_pbe": [
+      {
+        "reason": "2026-11-16: the local-potential sphere of every atom has a radial panel edge on each corner of the potential (local cutoff, compensation radius, projector radii, partial-core radius, start of the ionic tail), 64 nodes per panel, instead of one edge at the local radius. The old rule's error, LiH pbe-sr (this file's lih_pbe): energy -21.164451371 eV with it, -21.164143197 with the new rule, -21.164142851 with 512 nodes per panel; Li z force -0.6065306742 / -0.6070331274 / -0.6070330110 eV/Angstrom (old error 5.0e-4, new 1.2e-7). The old layout (a scratch hook on the current sources) reproduces the previous records of every case bit for bit (DECISIONS 2026-11-16 arthur quadrature panels)",
+        "old": {
+          "energy_ev": -21.164451371403565,
+          "forces_ev_angstrom": [
+            [
+              0.06218923204010991,
+              3.0049285416324186e-15,
+              -0.6065306742030476
+            ],
+            [
+              0.07323794249975665,
+              7.328443345682179e-15,
+              1.2655260208716543
+            ]
+          ],
+          "stationarity": 1.3725132141928498e-14
+        },
+        "new": {
+          "energy_ev": -21.164143196739758,
+          "forces_ev_angstrom": [
+            [
+              0.06215697565631092,
+              4.463011556915571e-15,
+              -0.6070331274473955
+            ],
+            [
+              0.07326880859592287,
+              8.674511864803438e-15,
+              1.265999650853944
+            ]
+          ],
+          "stationarity": 2.2745694217007895e-14
+        }
+      }
+    ],
+    "h2o_pbe": [
+      {
+        "reason": "2026-11-16: the local-potential sphere of every atom has a radial panel edge on each corner of the potential (local cutoff, compensation radius, projector radii, partial-core radius, start of the ionic tail), 64 nodes per panel, instead of one edge at the local radius. The old rule's error, LiH pbe-sr (this file's lih_pbe): energy -21.164451371 eV with it, -21.164143197 with the new rule, -21.164142851 with 512 nodes per panel; Li z force -0.6065306742 / -0.6070331274 / -0.6070330110 eV/Angstrom (old error 5.0e-4, new 1.2e-7). The old layout (a scratch hook on the current sources) reproduces the previous records of every case bit for bit (DECISIONS 2026-11-16 arthur quadrature panels)",
+        "old": {
+          "energy_ev": -466.2364475269642,
+          "forces_ev_angstrom": [
+            [
+              -1.3483693781118887e-12,
+              -2.3719042211728946e-13,
+              -1.898929802248963
+            ],
+            [
+              1.0328534531710702,
+              1.2518885579765884e-13,
+              0.8556481190122158
+            ],
+            [
+              -1.0328534531689921,
+              -1.8544884346848406e-13,
+              0.8556481190106515
+            ]
+          ],
+          "stationarity": 2.25208740545213e-12
+        },
+        "new": {
+          "energy_ev": -466.23656620495177,
+          "forces_ev_angstrom": [
+            [
+              -8.170616749952863e-13,
+              -2.108313024423276e-13,
+              -1.8988941326519795
+            ],
+            [
+              1.032831235533428,
+              1.3164240869872288e-13,
+              0.8556303344092637
+            ],
+            [
+              -1.032831235532937,
+              -1.0493562267865412e-13,
+              0.8556303344086357
+            ]
+          ],
+          "stationarity": 7.033817972512679e-13
+        }
+      }
+    ],
+    "h2o_rhf": [
+      {
+        "reason": "2026-11-16: the local-potential sphere of every atom has a radial panel edge on each corner of the potential (local cutoff, compensation radius, projector radii, partial-core radius, start of the ionic tail), 64 nodes per panel, instead of one edge at the local radius. The old rule's error, LiH pbe-sr (this file's lih_pbe): energy -21.164451371 eV with it, -21.164143197 with the new rule, -21.164142851 with 512 nodes per panel; Li z force -0.6065306742 / -0.6070331274 / -0.6070330110 eV/Angstrom (old error 5.0e-4, new 1.2e-7). The old layout (a scratch hook on the current sources) reproduces the previous records of every case bit for bit (DECISIONS 2026-11-16 arthur quadrature panels)",
+        "old": {
+          "energy_ev": -459.1345316880587,
+          "forces_ev_angstrom": [
+            [
+              -2.192106454429571e-12,
+              -2.4839846555696803e-13,
+              0.2750587286527193
+            ],
+            [
+              -0.23809996720545257,
+              1.3550285739840163e-13,
+              -0.19716454434406624
+            ],
+            [
+              0.23809996720602347,
+              -1.1317215108492775e-13,
+              -0.1971645443456876
+            ]
+          ],
+          "stationarity": 1.67615921142783e-13
+        },
+        "new": {
+          "energy_ev": -459.1345317641712,
+          "forces_ev_angstrom": [
+            [
+              -2.8238331555238373e-12,
+              1.0962556896584266e-13,
+              0.27505884251410667
+            ],
+            [
+              -0.23810003441508,
+              -9.53353532762578e-15,
+              -0.19716460114837417
+            ],
+            [
+              0.23810003441758051,
+              -1.1845294975585868e-13,
+              -0.1971646011512972
+            ]
+          ],
+          "stationarity": 1.6797674362578618e-13
+        }
+      }
+    ],
+    "oh_upbe": [
+      {
+        "reason": "2026-11-16: the local-potential sphere of every atom has a radial panel edge on each corner of the potential (local cutoff, compensation radius, projector radii, partial-core radius, start of the ionic tail), 64 nodes per panel, instead of one edge at the local radius. The old rule's error, LiH pbe-sr (this file's lih_pbe): energy -21.164451371 eV with it, -21.164143197 with the new rule, -21.164142851 with 512 nodes per panel; Li z force -0.6065306742 / -0.6070331274 / -0.6070330110 eV/Angstrom (old error 5.0e-4, new 1.2e-7). The old layout (a scratch hook on the current sources) reproduces the previous records of every case bit for bit (DECISIONS 2026-11-16 arthur quadrature panels)",
+        "old": {
+          "energy_ev": -447.3983752216811,
+          "forces_ev_angstrom": [
+            [
+              3.6548327448303635e-13,
+              -0.5357132534846402,
+              -1.5913643856380462
+            ],
+            [
+              -5.170802859363875e-14,
+              0.1618085646510963,
+              1.4811119022040242
+            ]
+          ],
+          "stationarity": 2.458325258028934e-13
+        },
+        "new": {
+          "energy_ev": -447.398476405114,
+          "forces_ev_angstrom": [
+            [
+              -8.245185990518676e-13,
+              -0.5357102501044251,
+              -1.5913360359557556
+            ],
+            [
+              -4.1536401398356566e-14,
+              0.16180564038972475,
+              1.4810836740188122
+            ]
+          ],
+          "stationarity": 2.4621850568119113e-13
+        }
+      }
+    ],
+    "h2o_r2scan": [
+      {
+        "reason": "2026-11-16: the local-potential sphere of every atom has a radial panel edge on each corner of the potential (local cutoff, compensation radius, projector radii, partial-core radius, start of the ionic tail), 64 nodes per panel, instead of one edge at the local radius. The old rule's error, LiH pbe-sr (this file's lih_pbe): energy -21.164451371 eV with it, -21.164143197 with the new rule, -21.164142851 with 512 nodes per panel; Li z force -0.6065306742 / -0.6070331274 / -0.6070330110 eV/Angstrom (old error 5.0e-4, new 1.2e-7). The old layout (a scratch hook on the current sources) reproduces the previous records of every case bit for bit (DECISIONS 2026-11-16 arthur quadrature panels)",
+        "old": {
+          "energy_ev": -466.2284615702139,
+          "forces_ev_angstrom": [
+            [
+              -1.6382254206824302e-12,
+              -3.050254435436807e-14,
+              -0.7492458956057253
+            ],
+            [
+              0.802402165563007,
+              1.0675147226533055e-13,
+              0.7527752029834625
+            ],
+            [
+              -0.802402165561694,
+              -1.0297101729660773e-13,
+              0.752775202982766
+            ]
+          ],
+          "stationarity": 5.333461536999318e-14
+        },
+        "new": {
+          "energy_ev": -466.22858050332843,
+          "forces_ev_angstrom": [
+            [
+              -3.2924783680188213e-13,
+              -1.5538410726792255e-13,
+              -0.7492111483636658
+            ],
+            [
+              0.8023799420863404,
+              1.1211808111481212e-13,
+              0.7527575147962554
+            ],
+            [
+              -0.8023799420860321,
+              -1.1490103223765356e-13,
+              0.7527575147957873
+            ]
+          ],
+          "stationarity": 1.1601830607332886e-14
+        }
+      }
+    ],
+    "h2o_hse06": [
+      {
+        "reason": "2026-11-16: the local-potential sphere of every atom has a radial panel edge on each corner of the potential (local cutoff, compensation radius, projector radii, partial-core radius, start of the ionic tail), 64 nodes per panel, instead of one edge at the local radius. The old rule's error, LiH pbe-sr (this file's lih_pbe): energy -21.164451371 eV with it, -21.164143197 with the new rule, -21.164142851 with 512 nodes per panel; Li z force -0.6065306742 / -0.6070331274 / -0.6070330110 eV/Angstrom (old error 5.0e-4, new 1.2e-7). The old layout (a scratch hook on the current sources) reproduces the previous records of every case bit for bit (DECISIONS 2026-11-16 arthur quadrature panels)",
+        "old": {
+          "energy_ev": -465.8649757615497,
+          "forces_ev_angstrom": [
+            [
+              -2.579211638544307e-12,
+              -3.307296385401185e-13,
+              -1.1527349792703543
+            ],
+            [
+              0.6496624304388127,
+              1.3176885057143728e-13,
+              0.5198133465305018
+            ],
+            [
+              -0.6496624304371342,
+              -7.090316522275093e-14,
+              0.5198133465287093
+            ]
+          ],
+          "stationarity": 2.4520385721871207e-12
+        },
+        "new": {
+          "energy_ev": -465.86509485545486,
+          "forces_ev_angstrom": [
+            [
+              -3.305624441534634e-13,
+              -3.5370751708203033e-13,
+              -1.152699802366011
+            ],
+            [
+              0.6496402389293514,
+              1.544803343889575e-13,
+              0.5197956887800437
+            ],
+            [
+              -0.6496402389288718,
+              -8.049808946201205e-14,
+              0.5197956887793244
+            ]
+          ],
+          "stationarity": 1.412741451600752e-12
+        }
+      }
+    ]
+  },
+  "quadrature_refreeze": {
+    "date": "2026-11-16",
+    "cases": [
+      "h2_pbe",
+      "h2_rhf",
+      "lih_rhf",
+      "lih_pbe",
+      "h2o_pbe",
+      "h2o_rhf",
+      "oh_upbe",
+      "h2o_r2scan",
+      "h2o_hse06"
+    ],
+    "why": "2026-11-16: the local-potential sphere of every atom has a radial panel edge on each corner of the potential (local cutoff, compensation radius, projector radii, partial-core radius, start of the ionic tail), 64 nodes per panel, instead of one edge at the local radius. The old rule's error, LiH pbe-sr (this file's lih_pbe): energy -21.164451371 eV with it, -21.164143197 with the new rule, -21.164142851 with 512 nodes per panel; Li z force -0.6065306742 / -0.6070331274 / -0.6070330110 eV/Angstrom (old error 5.0e-4, new 1.2e-7). The old layout (a scratch hook on the current sources) reproduces the previous records of every case bit for bit (DECISIONS 2026-11-16 arthur quadrature panels)",
+    "route": "analytic, through Mandacaru + ASE as the test builds each case",
+    "extension_sha256": "984e94bc9d211ae18237a9f5c1d5862b15aa3e91e36fae7b766b4fd887720143",
+    "library_sha256": {
+      "lda-sr/H.parquet": "730c4c02d4e037486da2fec5651469ed3206903e6a0da98df8138b11d9fd99a9",
+      "lda-sr/Li.parquet": "9e72ab810917f2fbace211a5a34f1a9fb8949ba8d409a101295572b7ded4d713",
+      "lda-sr/O.parquet": "bc52e9b75d5a1bd64b4fca4d214802af3075cd02d2ff5dc81630cd34d647584e",
+      "pbe-sr/H.parquet": "8f08e5ab434c6cc5f6a15cdd3a0f5ce2d0840bb9c8547ec79da77910aaba9cf6",
+      "pbe-sr/Li.parquet": "5f91f636779f4a31636e1b37b9b91fabb789afea171846f8f63b26f95d37bedb",
+      "pbe-sr/O.parquet": "17424877612e7946f31d83c5111201c8d2e85c26e5396a6970bd4c67aae39ceb"
+    },
+    "reproducibility": "two independent runs bit-identical (max difference 0.0 eV/Angstrom)"
   }
- },
- "cases": {
-  "h2_pbe": {
-   "atoms": {
-    "symbols": "H2",
-    "positions_angstrom": [
-     [
-      2.5,
-      2.5,
-      2.1
-     ],
-     [
-      2.57,
-      2.5,
-      2.9
-     ]
-    ],
-    "cell_angstrom": [
-     5,
-     5,
-     5
-    ],
-    "magmoms": null
-   },
-   "options": {
-    "method": "dft",
-    "xc": "pbe",
-    "basis": {
-     "name": "PAW-LCAO",
-     "size": "SZ"
-    },
-    "grid_spacing": 0.4
-   },
-   "energy_ev": -30.202157605634042,
-   "forces_ev_angstrom": [
-    [
-     -0.22213509795433542,
-     1.6639561111057497e-15,
-     -2.4945670471878585
-    ],
-    [
-     0.2221350979543654,
-     -8.152802474339171e-17,
-     2.4945670471879158
-    ]
-   ],
-   "stationarity": 3.885780586188048e-16
-  },
-  "h2_rhf": {
-   "atoms": {
-    "symbols": "H2",
-    "positions_angstrom": [
-     [
-      2.5,
-      2.5,
-      2.1
-     ],
-     [
-      2.57,
-      2.5,
-      2.9
-     ]
-    ],
-    "cell_angstrom": [
-     5,
-     5,
-     5
-    ],
-    "magmoms": null
-   },
-   "options": {
-    "method": "rhf",
-    "basis": {
-     "name": "PAW-LCAO",
-     "size": "SZ"
-    },
-    "grid_spacing": 0.4
-   },
-   "energy_ev": -29.095993528190995,
-   "forces_ev_angstrom": [
-    [
-     -0.22300401779453194,
-     3.2437700464869226e-15,
-     -2.5789213382100677
-    ],
-    [
-     0.2230040177944834,
-     9.47074367904541e-15,
-     2.5789213382100793
-    ]
-   ],
-   "stationarity": 5.551115123125783e-16
-  },
-  "lih_rhf": {
-   "atoms": {
-    "symbols": "LiH",
-    "positions_angstrom": [
-     [
-      2.5,
-      2.5,
-      1.85
-     ],
-     [
-      2.6,
-      2.5,
-      3.45
-     ]
-    ],
-    "cell_angstrom": [
-     5,
-     5,
-     5
-    ],
-    "magmoms": null
-   },
-   "options": {
-    "method": "rhf",
-    "basis": {
-     "name": "PAW-LCAO",
-     "size": "SZ"
-    },
-    "grid_spacing": 0.4
-   },
-   "energy_ev": -20.047753997126975,
-   "forces_ev_angstrom": [
-    [
-     -0.022443882071637132,
-     3.4078013154575792e-15,
-     -0.7247687820826664
-    ],
-    [
-     0.04447717841458974,
-     1.5881969086149445e-15,
-     1.0711813492580036
-    ]
-   ],
-   "stationarity": 3.7719827261639693e-14
-  },
-  "lih_pbe": {
-   "atoms": {
-    "symbols": "LiH",
-    "positions_angstrom": [
-     [
-      2.5,
-      2.5,
-      1.85
-     ],
-     [
-      2.6,
-      2.5,
-      3.45
-     ]
-    ],
-    "cell_angstrom": [
-     5,
-     5,
-     5
-    ],
-    "magmoms": null
-   },
-   "options": {
-    "method": "dft",
-    "xc": "pbe",
-    "basis": {
-     "name": "PAW-LCAO",
-     "size": "SZ"
-    },
-    "grid_spacing": 0.4
-   },
-   "energy_ev": -21.164143196739758,
-   "forces_ev_angstrom": [
-    [
-     0.06215697565631092,
-     4.463011556915571e-15,
-     -0.6070331274473955
-    ],
-    [
-     0.07326880859592287,
-     8.674511864803438e-15,
-     1.265999650853944
-    ]
-   ],
-   "stationarity": 2.2745694217007895e-14
-  },
-  "h2o_pbe": {
-   "atoms": {
-    "symbols": "OH2",
-    "positions_angstrom": [
-     [
-      3.0,
-      3.0,
-      3.0
-     ],
-     [
-      3.76,
-      3.0,
-      3.59
-     ],
-     [
-      2.24,
-      3.0,
-      3.59
-     ]
-    ],
-    "cell_angstrom": [
-     6,
-     6,
-     6
-    ],
-    "magmoms": null
-   },
-   "options": {
-    "method": "dft",
-    "xc": "pbe",
-    "basis": {
-     "name": "PAW-LCAO",
-     "size": "DZP"
-    },
-    "grid_spacing": 0.3
-   },
-   "energy_ev": -466.23656620495177,
-   "forces_ev_angstrom": [
-    [
-     -8.170616749952863e-13,
-     -2.108313024423276e-13,
-     -1.8988941326519795
-    ],
-    [
-     1.032831235533428,
-     1.3164240869872288e-13,
-     0.8556303344092637
-    ],
-    [
-     -1.032831235532937,
-     -1.0493562267865412e-13,
-     0.8556303344086357
-    ]
-   ],
-   "stationarity": 7.033817972512679e-13
-  },
-  "h2o_rhf": {
-   "atoms": {
-    "symbols": "OH2",
-    "positions_angstrom": [
-     [
-      3.0,
-      3.0,
-      3.0
-     ],
-     [
-      3.76,
-      3.0,
-      3.59
-     ],
-     [
-      2.24,
-      3.0,
-      3.59
-     ]
-    ],
-    "cell_angstrom": [
-     6,
-     6,
-     6
-    ],
-    "magmoms": null
-   },
-   "options": {
-    "method": "rhf",
-    "basis": {
-     "name": "PAW-LCAO",
-     "size": "DZP"
-    },
-    "grid_spacing": 0.3
-   },
-   "energy_ev": -459.1345317641712,
-   "forces_ev_angstrom": [
-    [
-     -2.8238331555238373e-12,
-     1.0962556896584266e-13,
-     0.27505884251410667
-    ],
-    [
-     -0.23810003441508,
-     -9.53353532762578e-15,
-     -0.19716460114837417
-    ],
-    [
-     0.23810003441758051,
-     -1.1845294975585868e-13,
-     -0.1971646011512972
-    ]
-   ],
-   "stationarity": 1.6797674362578618e-13
-  },
-  "oh_upbe": {
-   "atoms": {
-    "symbols": "OH",
-    "positions_angstrom": [
-     [
-      3.0,
-      3.0,
-      3.0
-     ],
-     [
-      3.0,
-      3.1,
-      3.97
-     ]
-    ],
-    "cell_angstrom": [
-     6,
-     6,
-     6
-    ],
-    "magmoms": [
-     1,
-     0
-    ]
-   },
-   "options": {
-    "method": "dft",
-    "xc": "pbe",
-    "unrestricted": true,
-    "basis": {
-     "name": "PAW-LCAO",
-     "size": "DZP"
-    },
-    "grid_spacing": 0.3
-   },
-   "energy_ev": -447.398476405114,
-   "forces_ev_angstrom": [
-    [
-     -8.245185990518676e-13,
-     -0.5357102501044251,
-     -1.5913360359557556
-    ],
-    [
-     -4.1536401398356566e-14,
-     0.16180564038972475,
-     1.4810836740188122
-    ]
-   ],
-   "stationarity": 2.4621850568119113e-13
-  },
-  "h2o_r2scan": {
-   "atoms": {
-    "symbols": "OH2",
-    "positions_angstrom": [
-     [
-      3.0,
-      3.0,
-      3.0
-     ],
-     [
-      3.76,
-      3.0,
-      3.59
-     ],
-     [
-      2.24,
-      3.0,
-      3.59
-     ]
-    ],
-    "cell_angstrom": [
-     6,
-     6,
-     6
-    ],
-    "magmoms": null
-   },
-   "options": {
-    "method": "dft",
-    "xc": "r2scan",
-    "basis": {
-     "name": "PAW-LCAO",
-     "size": "DZP"
-    },
-    "grid_spacing": 0.3
-   },
-   "energy_ev": -466.22858050332843,
-   "forces_ev_angstrom": [
-    [
-     -3.2924783680188213e-13,
-     -1.5538410726792255e-13,
-     -0.7492111483636658
-    ],
-    [
-     0.8023799420863404,
-     1.1211808111481212e-13,
-     0.7527575147962554
-    ],
-    [
-     -0.8023799420860321,
-     -1.1490103223765356e-13,
-     0.7527575147957873
-    ]
-   ],
-   "stationarity": 1.1601830607332886e-14
-  },
-  "h2o_hse06": {
-   "atoms": {
-    "symbols": "OH2",
-    "positions_angstrom": [
-     [
-      3.0,
-      3.0,
-      3.0
-     ],
-     [
-      3.76,
-      3.0,
-      3.59
-     ],
-     [
-      2.24,
-      3.0,
-      3.59
-     ]
-    ],
-    "cell_angstrom": [
-     6,
-     6,
-     6
-    ],
-    "magmoms": null
-   },
-   "options": {
-    "method": "dft",
-    "xc": "hse06",
-    "basis": {
-     "name": "PAW-LCAO",
-     "size": "DZP"
-    },
-    "grid_spacing": 0.3
-   },
-   "energy_ev": -465.86509485545486,
-   "forces_ev_angstrom": [
-    [
-     -3.305624441534634e-13,
-     -3.5370751708203033e-13,
-     -1.152699802366011
-    ],
-    [
-     0.6496402389293514,
-     1.544803343889575e-13,
-     0.5197956887800437
-    ],
-    [
-     -0.6496402389288718,
-     -8.049808946201205e-14,
-     0.5197956887793244
-    ]
-   ],
-   "stationarity": 1.412741451600752e-12
-  }
- },
- "stamp": {
-  "date": "2026-11-16",
-  "route": "analytic",
-  "extension_sha256": "980f3c88baed2784d4665d743e0cdb7fd0e5ce5a8acdb51b0dbb3bed011e9b84",
-  "library_sha256": {
-   "lda-sr/H.parquet": "730c4c02d4e037486da2fec5651469ed3206903e6a0da98df8138b11d9fd99a9",
-   "lda-sr/Li.parquet": "9e72ab810917f2fbace211a5a34f1a9fb8949ba8d409a101295572b7ded4d713",
-   "lda-sr/O.parquet": "bc52e9b75d5a1bd64b4fca4d214802af3075cd02d2ff5dc81630cd34d647584e",
-   "pbe-sr/H.parquet": "8f08e5ab434c6cc5f6a15cdd3a0f5ce2d0840bb9c8547ec79da77910aaba9cf6",
-   "pbe-sr/Li.parquet": "5f91f636779f4a31636e1b37b9b91fabb789afea171846f8f63b26f95d37bedb",
-   "pbe-sr/O.parquet": "17424877612e7946f31d83c5111201c8d2e85c26e5396a6970bd4c67aae39ceb"
-  },
-  "reproducibility": "two independent runs bit-identical (max difference 0.0 eV/Angstrom)"
- },
- "refrozen": {
-  "h2_pbe": [
-   {
-    "reason": "2026-11-16: the local-potential sphere of every atom has a radial panel edge on each corner of the potential (local cutoff, compensation radius, projector radii, partial-core radius, start of the ionic tail), 64 nodes per panel, instead of one edge at the local radius. The old rule's error, LiH pbe-sr (this file's lih_pbe): energy -21.164451371 eV with it, -21.164143197 with the new rule, -21.164142851 with 512 nodes per panel; Li z force -0.6065306742 / -0.6070331274 / -0.6070330110 eV/Angstrom (old error 5.0e-4, new 1.2e-7). The old layout (a scratch hook on the current sources) reproduces the previous records of every case bit for bit (DECISIONS 2026-11-16 arthur quadrature panels)",
-    "old": {
-     "energy_ev": -30.20215652488686,
-     "forces_ev_angstrom": [
-      [
-       -0.22213517002757918,
-       2.1919714081713152e-15,
-       -2.494567900162012
-      ],
-      [
-       0.2221351700275974,
-       3.8152176923489265e-15,
-       2.4945679001620777
-      ]
-     ],
-     "stationarity": 4.440892098500626e-16
-    },
-    "new": {
-     "energy_ev": -30.202157605634042,
-     "forces_ev_angstrom": [
-      [
-       -0.22213509795433542,
-       1.6639561111057497e-15,
-       -2.4945670471878585
-      ],
-      [
-       0.2221350979543654,
-       -8.152802474339171e-17,
-       2.4945670471879158
-      ]
-     ],
-     "stationarity": 3.885780586188048e-16
-    }
-   }
-  ],
-  "h2_rhf": [
-   {
-    "reason": "2026-11-16: the local-potential sphere of every atom has a radial panel edge on each corner of the potential (local cutoff, compensation radius, projector radii, partial-core radius, start of the ionic tail), 64 nodes per panel, instead of one edge at the local radius. The old rule's error, LiH pbe-sr (this file's lih_pbe): energy -21.164451371 eV with it, -21.164143197 with the new rule, -21.164142851 with 512 nodes per panel; Li z force -0.6065306742 / -0.6070331274 / -0.6070330110 eV/Angstrom (old error 5.0e-4, new 1.2e-7). The old layout (a scratch hook on the current sources) reproduces the previous records of every case bit for bit (DECISIONS 2026-11-16 arthur quadrature panels)",
-    "old": {
-     "energy_ev": -29.095993536088255,
-     "forces_ev_angstrom": [
-      [
-       -0.22300401411802392,
-       3.2774373414748693e-15,
-       -2.578921355086977
-      ],
-      [
-       0.22300401411800252,
-       7.456112331937138e-15,
-       2.578921355087017
-      ]
-     ],
-     "stationarity": 3.885780586188048e-16
-    },
-    "new": {
-     "energy_ev": -29.095993528190995,
-     "forces_ev_angstrom": [
-      [
-       -0.22300401779453194,
-       3.2437700464869226e-15,
-       -2.5789213382100677
-      ],
-      [
-       0.2230040177944834,
-       9.47074367904541e-15,
-       2.5789213382100793
-      ]
-     ],
-     "stationarity": 5.551115123125783e-16
-    }
-   }
-  ],
-  "lih_rhf": [
-   {
-    "reason": "2026-11-16: the local-potential sphere of every atom has a radial panel edge on each corner of the potential (local cutoff, compensation radius, projector radii, partial-core radius, start of the ionic tail), 64 nodes per panel, instead of one edge at the local radius. The old rule's error, LiH pbe-sr (this file's lih_pbe): energy -21.164451371 eV with it, -21.164143197 with the new rule, -21.164142851 with 512 nodes per panel; Li z force -0.6065306742 / -0.6070331274 / -0.6070330110 eV/Angstrom (old error 5.0e-4, new 1.2e-7). The old layout (a scratch hook on the current sources) reproduces the previous records of every case bit for bit (DECISIONS 2026-11-16 arthur quadrature panels)",
-    "old": {
-     "energy_ev": -20.04775374761505,
-     "forces_ev_angstrom": [
-      [
-       -0.022443910140423007,
-       2.935530111874622e-15,
-       -0.7247692306425549
-      ],
-      [
-       0.04447720521771494,
-       1.0304786459211417e-14,
-       1.071181767964826
-      ]
-     ],
-     "stationarity": 3.4140190674492032e-12
-    },
-    "new": {
-     "energy_ev": -20.047753997126975,
-     "forces_ev_angstrom": [
-      [
-       -0.022443882071637132,
-       3.4078013154575792e-15,
-       -0.7247687820826664
-      ],
-      [
-       0.04447717841458974,
-       1.5881969086149445e-15,
-       1.0711813492580036
-      ]
-     ],
-     "stationarity": 3.7719827261639693e-14
-    }
-   }
-  ],
-  "lih_pbe": [
-   {
-    "reason": "2026-11-16: the local-potential sphere of every atom has a radial panel edge on each corner of the potential (local cutoff, compensation radius, projector radii, partial-core radius, start of the ionic tail), 64 nodes per panel, instead of one edge at the local radius. The old rule's error, LiH pbe-sr (this file's lih_pbe): energy -21.164451371 eV with it, -21.164143197 with the new rule, -21.164142851 with 512 nodes per panel; Li z force -0.6065306742 / -0.6070331274 / -0.6070330110 eV/Angstrom (old error 5.0e-4, new 1.2e-7). The old layout (a scratch hook on the current sources) reproduces the previous records of every case bit for bit (DECISIONS 2026-11-16 arthur quadrature panels)",
-    "old": {
-     "energy_ev": -21.164451371403565,
-     "forces_ev_angstrom": [
-      [
-       0.06218923204010991,
-       3.0049285416324186e-15,
-       -0.6065306742030476
-      ],
-      [
-       0.07323794249975665,
-       7.328443345682179e-15,
-       1.2655260208716543
-      ]
-     ],
-     "stationarity": 1.3725132141928498e-14
-    },
-    "new": {
-     "energy_ev": -21.164143196739758,
-     "forces_ev_angstrom": [
-      [
-       0.06215697565631092,
-       4.463011556915571e-15,
-       -0.6070331274473955
-      ],
-      [
-       0.07326880859592287,
-       8.674511864803438e-15,
-       1.265999650853944
-      ]
-     ],
-     "stationarity": 2.2745694217007895e-14
-    }
-   }
-  ],
-  "h2o_pbe": [
-   {
-    "reason": "2026-11-16: the local-potential sphere of every atom has a radial panel edge on each corner of the potential (local cutoff, compensation radius, projector radii, partial-core radius, start of the ionic tail), 64 nodes per panel, instead of one edge at the local radius. The old rule's error, LiH pbe-sr (this file's lih_pbe): energy -21.164451371 eV with it, -21.164143197 with the new rule, -21.164142851 with 512 nodes per panel; Li z force -0.6065306742 / -0.6070331274 / -0.6070330110 eV/Angstrom (old error 5.0e-4, new 1.2e-7). The old layout (a scratch hook on the current sources) reproduces the previous records of every case bit for bit (DECISIONS 2026-11-16 arthur quadrature panels)",
-    "old": {
-     "energy_ev": -466.2364475269642,
-     "forces_ev_angstrom": [
-      [
-       -1.3483693781118887e-12,
-       -2.3719042211728946e-13,
-       -1.898929802248963
-      ],
-      [
-       1.0328534531710702,
-       1.2518885579765884e-13,
-       0.8556481190122158
-      ],
-      [
-       -1.0328534531689921,
-       -1.8544884346848406e-13,
-       0.8556481190106515
-      ]
-     ],
-     "stationarity": 2.25208740545213e-12
-    },
-    "new": {
-     "energy_ev": -466.23656620495177,
-     "forces_ev_angstrom": [
-      [
-       -8.170616749952863e-13,
-       -2.108313024423276e-13,
-       -1.8988941326519795
-      ],
-      [
-       1.032831235533428,
-       1.3164240869872288e-13,
-       0.8556303344092637
-      ],
-      [
-       -1.032831235532937,
-       -1.0493562267865412e-13,
-       0.8556303344086357
-      ]
-     ],
-     "stationarity": 7.033817972512679e-13
-    }
-   }
-  ],
-  "h2o_rhf": [
-   {
-    "reason": "2026-11-16: the local-potential sphere of every atom has a radial panel edge on each corner of the potential (local cutoff, compensation radius, projector radii, partial-core radius, start of the ionic tail), 64 nodes per panel, instead of one edge at the local radius. The old rule's error, LiH pbe-sr (this file's lih_pbe): energy -21.164451371 eV with it, -21.164143197 with the new rule, -21.164142851 with 512 nodes per panel; Li z force -0.6065306742 / -0.6070331274 / -0.6070330110 eV/Angstrom (old error 5.0e-4, new 1.2e-7). The old layout (a scratch hook on the current sources) reproduces the previous records of every case bit for bit (DECISIONS 2026-11-16 arthur quadrature panels)",
-    "old": {
-     "energy_ev": -459.1345316880587,
-     "forces_ev_angstrom": [
-      [
-       -2.192106454429571e-12,
-       -2.4839846555696803e-13,
-       0.2750587286527193
-      ],
-      [
-       -0.23809996720545257,
-       1.3550285739840163e-13,
-       -0.19716454434406624
-      ],
-      [
-       0.23809996720602347,
-       -1.1317215108492775e-13,
-       -0.1971645443456876
-      ]
-     ],
-     "stationarity": 1.67615921142783e-13
-    },
-    "new": {
-     "energy_ev": -459.1345317641712,
-     "forces_ev_angstrom": [
-      [
-       -2.8238331555238373e-12,
-       1.0962556896584266e-13,
-       0.27505884251410667
-      ],
-      [
-       -0.23810003441508,
-       -9.53353532762578e-15,
-       -0.19716460114837417
-      ],
-      [
-       0.23810003441758051,
-       -1.1845294975585868e-13,
-       -0.1971646011512972
-      ]
-     ],
-     "stationarity": 1.6797674362578618e-13
-    }
-   }
-  ],
-  "oh_upbe": [
-   {
-    "reason": "2026-11-16: the local-potential sphere of every atom has a radial panel edge on each corner of the potential (local cutoff, compensation radius, projector radii, partial-core radius, start of the ionic tail), 64 nodes per panel, instead of one edge at the local radius. The old rule's error, LiH pbe-sr (this file's lih_pbe): energy -21.164451371 eV with it, -21.164143197 with the new rule, -21.164142851 with 512 nodes per panel; Li z force -0.6065306742 / -0.6070331274 / -0.6070330110 eV/Angstrom (old error 5.0e-4, new 1.2e-7). The old layout (a scratch hook on the current sources) reproduces the previous records of every case bit for bit (DECISIONS 2026-11-16 arthur quadrature panels)",
-    "old": {
-     "energy_ev": -447.3983752216811,
-     "forces_ev_angstrom": [
-      [
-       3.6548327448303635e-13,
-       -0.5357132534846402,
-       -1.5913643856380462
-      ],
-      [
-       -5.170802859363875e-14,
-       0.1618085646510963,
-       1.4811119022040242
-      ]
-     ],
-     "stationarity": 2.458325258028934e-13
-    },
-    "new": {
-     "energy_ev": -447.398476405114,
-     "forces_ev_angstrom": [
-      [
-       -8.245185990518676e-13,
-       -0.5357102501044251,
-       -1.5913360359557556
-      ],
-      [
-       -4.1536401398356566e-14,
-       0.16180564038972475,
-       1.4810836740188122
-      ]
-     ],
-     "stationarity": 2.4621850568119113e-13
-    }
-   }
-  ],
-  "h2o_r2scan": [
-   {
-    "reason": "2026-11-16: the local-potential sphere of every atom has a radial panel edge on each corner of the potential (local cutoff, compensation radius, projector radii, partial-core radius, start of the ionic tail), 64 nodes per panel, instead of one edge at the local radius. The old rule's error, LiH pbe-sr (this file's lih_pbe): energy -21.164451371 eV with it, -21.164143197 with the new rule, -21.164142851 with 512 nodes per panel; Li z force -0.6065306742 / -0.6070331274 / -0.6070330110 eV/Angstrom (old error 5.0e-4, new 1.2e-7). The old layout (a scratch hook on the current sources) reproduces the previous records of every case bit for bit (DECISIONS 2026-11-16 arthur quadrature panels)",
-    "old": {
-     "energy_ev": -466.2284615702139,
-     "forces_ev_angstrom": [
-      [
-       -1.6382254206824302e-12,
-       -3.050254435436807e-14,
-       -0.7492458956057253
-      ],
-      [
-       0.802402165563007,
-       1.0675147226533055e-13,
-       0.7527752029834625
-      ],
-      [
-       -0.802402165561694,
-       -1.0297101729660773e-13,
-       0.752775202982766
-      ]
-     ],
-     "stationarity": 5.333461536999318e-14
-    },
-    "new": {
-     "energy_ev": -466.22858050332843,
-     "forces_ev_angstrom": [
-      [
-       -3.2924783680188213e-13,
-       -1.5538410726792255e-13,
-       -0.7492111483636658
-      ],
-      [
-       0.8023799420863404,
-       1.1211808111481212e-13,
-       0.7527575147962554
-      ],
-      [
-       -0.8023799420860321,
-       -1.1490103223765356e-13,
-       0.7527575147957873
-      ]
-     ],
-     "stationarity": 1.1601830607332886e-14
-    }
-   }
-  ],
-  "h2o_hse06": [
-   {
-    "reason": "2026-11-16: the local-potential sphere of every atom has a radial panel edge on each corner of the potential (local cutoff, compensation radius, projector radii, partial-core radius, start of the ionic tail), 64 nodes per panel, instead of one edge at the local radius. The old rule's error, LiH pbe-sr (this file's lih_pbe): energy -21.164451371 eV with it, -21.164143197 with the new rule, -21.164142851 with 512 nodes per panel; Li z force -0.6065306742 / -0.6070331274 / -0.6070330110 eV/Angstrom (old error 5.0e-4, new 1.2e-7). The old layout (a scratch hook on the current sources) reproduces the previous records of every case bit for bit (DECISIONS 2026-11-16 arthur quadrature panels)",
-    "old": {
-     "energy_ev": -465.8649757615497,
-     "forces_ev_angstrom": [
-      [
-       -2.579211638544307e-12,
-       -3.307296385401185e-13,
-       -1.1527349792703543
-      ],
-      [
-       0.6496624304388127,
-       1.3176885057143728e-13,
-       0.5198133465305018
-      ],
-      [
-       -0.6496624304371342,
-       -7.090316522275093e-14,
-       0.5198133465287093
-      ]
-     ],
-     "stationarity": 2.4520385721871207e-12
-    },
-    "new": {
-     "energy_ev": -465.86509485545486,
-     "forces_ev_angstrom": [
-      [
-       -3.305624441534634e-13,
-       -3.5370751708203033e-13,
-       -1.152699802366011
-      ],
-      [
-       0.6496402389293514,
-       1.544803343889575e-13,
-       0.5197956887800437
-      ],
-      [
-       -0.6496402389288718,
-       -8.049808946201205e-14,
-       0.5197956887793244
-      ]
-     ],
-     "stationarity": 1.412741451600752e-12
-    }
-   }
-  ]
- },
- "quadrature_refreeze": {
-  "date": "2026-11-16",
-  "cases": [
-   "h2_pbe",
-   "h2_rhf",
-   "lih_rhf",
-   "lih_pbe",
-   "h2o_pbe",
-   "h2o_rhf",
-   "oh_upbe",
-   "h2o_r2scan",
-   "h2o_hse06"
-  ],
-  "why": "2026-11-16: the local-potential sphere of every atom has a radial panel edge on each corner of the potential (local cutoff, compensation radius, projector radii, partial-core radius, start of the ionic tail), 64 nodes per panel, instead of one edge at the local radius. The old rule's error, LiH pbe-sr (this file's lih_pbe): energy -21.164451371 eV with it, -21.164143197 with the new rule, -21.164142851 with 512 nodes per panel; Li z force -0.6065306742 / -0.6070331274 / -0.6070330110 eV/Angstrom (old error 5.0e-4, new 1.2e-7). The old layout (a scratch hook on the current sources) reproduces the previous records of every case bit for bit (DECISIONS 2026-11-16 arthur quadrature panels)",
-  "route": "analytic, through Mandacaru + ASE as the test builds each case",
-  "extension_sha256": "984e94bc9d211ae18237a9f5c1d5862b15aa3e91e36fae7b766b4fd887720143",
-  "library_sha256": {
-   "lda-sr/H.parquet": "730c4c02d4e037486da2fec5651469ed3206903e6a0da98df8138b11d9fd99a9",
-   "lda-sr/Li.parquet": "9e72ab810917f2fbace211a5a34f1a9fb8949ba8d409a101295572b7ded4d713",
-   "lda-sr/O.parquet": "bc52e9b75d5a1bd64b4fca4d214802af3075cd02d2ff5dc81630cd34d647584e",
-   "pbe-sr/H.parquet": "8f08e5ab434c6cc5f6a15cdd3a0f5ce2d0840bb9c8547ec79da77910aaba9cf6",
-   "pbe-sr/Li.parquet": "5f91f636779f4a31636e1b37b9b91fabb789afea171846f8f63b26f95d37bedb",
-   "pbe-sr/O.parquet": "17424877612e7946f31d83c5111201c8d2e85c26e5396a6970bd4c67aae39ceb"
-  },
-  "reproducibility": "two independent runs bit-identical (max difference 0.0 eV/Angstrom)"
- }
 }

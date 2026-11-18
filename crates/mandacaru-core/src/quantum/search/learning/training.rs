@@ -7,7 +7,7 @@
 //! none passing, the model keeps the last kind requested and is not ready.
 use super::{
     data::{Dataset, EditDataset, EditKind, EditState, State},
-    graph::{compress, BipartiteGraph, Candidates, Matrix},
+    graph::{BipartiteGraph, Candidates, Matrix},
     network::{self, Parameters},
     ranker::{PairwiseRanker, PairwiseSample, Ranker, Sample, DESCRIPTORS},
 };
@@ -194,15 +194,33 @@ impl Model {
         self
     }
 
-    /// True if an attached [`EditModel`] places nonzero weight on diagonal pool curvatures (`row[10]`).
+    /// True if an attached [`EditModel`] or GNN curvature weights are active.
     pub fn uses_curvatures(&self) -> bool {
-        let Some(edit) = &self.edit else {
-            return false;
-        };
-        [&edit.insert, &edit.delete, &edit.replace]
-            .into_iter()
-            .flatten()
-            .any(|head| head.weights[10] != 0.)
+        let edit_curv = self.edit.as_ref().is_some_and(|edit| {
+            [&edit.insert, &edit.delete, &edit.replace]
+                .into_iter()
+                .flatten()
+                .any(|head| head.weights[10] != 0.)
+        });
+        let gnn_curv = self.parameters.as_ref().is_some_and(|p| {
+            p.values["w1"]
+                .row(network::GRAPH_WIDTH + 10)
+                .iter()
+                .any(|&v| v != 0.)
+                || p.values["w_desc"][(10, 0)] != 0.
+                || p.values["w_delete_desc"][(10, 0)] != 0.
+        });
+        edit_curv || gnn_curv
+    }
+
+    /// True if this model scores deletions via either GNN delete heads or `EditModel::delete`.
+    pub fn uses_delete(&self) -> bool {
+        let gnn_delete = self.kind == Kind::Graph
+            && self.parameters.as_ref().is_some_and(|p| {
+                p.values["w_delete_head"].iter().any(|&v| v != 0.)
+                    || p.values["w_delete_desc"].iter().any(|&v| v != 0.)
+            });
+        gnn_delete || self.edit.as_ref().is_some_and(|e| e.delete.is_some())
     }
 
     pub fn scores(
@@ -214,14 +232,26 @@ impl Model {
         self.scores_with_curvatures(context, graph, rows, None)
     }
 
-    /// Scores candidate insertion/replacement operators, optionally folding in exact pool
-    /// curvatures (`BG4`) and multi-move `EditModel` sequence-overlap / position signals.
+    /// Scores candidate operators for `EditKind::Insert` with exact pool curvatures (`BG4`).
     pub fn scores_with_curvatures(
         &self,
         context: &Context,
         graph: &BipartiteGraph,
         rows: &Candidates,
         curvatures: Option<&[f64]>,
+    ) -> Result<Vec<f64>> {
+        self.score_move(context, graph, rows, curvatures, None, EditKind::Insert)
+    }
+
+    /// Scores candidate operators for `move_kind` (`Insert` or `Replace`) with optional `curvatures`/`positions`.
+    pub fn score_move(
+        &self,
+        context: &Context,
+        graph: &BipartiteGraph,
+        rows: &Candidates,
+        curvatures: Option<&[f64]>,
+        positions: Option<&[usize]>,
+        move_kind: EditKind,
     ) -> Result<Vec<f64>> {
         let n_rows = rows.operators.len();
         let mut values = if self.kind == Kind::Ranker {
@@ -230,30 +260,28 @@ impl Model {
                     .iter()
                     .map(|row| ranker.score(row))
                     .collect(),
-                None if self.edit.as_ref().and_then(|e| e.insert.as_ref()).is_some() => {
-                    vec![0.; n_rows]
-                }
+                None if self.edit.is_some() => vec![0.; n_rows],
                 None => return Err(invalid("a ranker model holds no ranker")),
             }
         } else if let Some(parameters) = &self.parameters {
             let mut tape = Tape::new(context);
             let variables = parameters.variables(&mut tape)?;
-            let scores =
-                network::scores(&mut tape, &variables, graph, rows, &self.mean, &self.std)?;
+            let scores = network::scores(
+                &mut tape, &variables, graph, rows, &self.mean, &self.std, curvatures, positions,
+                move_kind,
+            )?;
             tape.value(scores).as_slice().to_vec()
-        } else if self.edit.as_ref().and_then(|e| e.insert.as_ref()).is_some() {
+        } else if self.edit.is_some() {
             vec![0.; n_rows]
         } else {
             return Err(invalid("a graph model holds no network"));
         };
-        if let Some(insert_head) = self.edit.as_ref().and_then(|e| e.insert.as_ref()) {
-            let positions =
-                vec![rows.descriptors.get((0, 8)).copied().unwrap_or(0.) as usize; n_rows];
+        if let Some(head) = self.edit.as_ref().and_then(|e| e.for_kind(move_kind)) {
             for (slot, edit_row) in values
                 .iter_mut()
-                .zip(edit_rows_for(rows, &positions, curvatures))
+                .zip(rows.edit_features(curvatures, positions))
             {
-                *slot += insert_head.score(&edit_row);
+                *slot += head.score(&edit_row);
             }
         }
         if values.iter().any(|v| !v.is_finite()) {
@@ -263,7 +291,7 @@ impl Model {
     }
 
     /// Scores each occupied position `0..sequence.len()` for removal (`EditKind::Delete`),
-    /// returning `Ok(None)` when no `delete` edit head is present on this model.
+    /// returning `Ok(None)` when neither GNN delete weights nor `EditModel::delete` is trained.
     pub fn removal_scores(
         &self,
         context: &Context,
@@ -273,10 +301,7 @@ impl Model {
         curvatures: Option<&[f64]>,
         energy_above_reference: f64,
     ) -> Result<Option<Vec<f64>>> {
-        let Some(delete_head) = self.edit.as_ref().and_then(|e| e.delete.as_ref()) else {
-            return Ok(None);
-        };
-        if sequence.is_empty() {
+        if sequence.is_empty() || !self.uses_delete() {
             return Ok(None);
         }
         let rows = Candidates::new(
@@ -288,10 +313,26 @@ impl Model {
             energy_above_reference,
         )?;
         let positions: Vec<usize> = (0..sequence.len()).collect();
-        let scores: Vec<f64> = edit_rows_for(&rows, &positions, curvatures)
-            .iter()
-            .map(|row| delete_head.score(row))
-            .collect();
+        let scores = if self.kind == Kind::Graph && self.parameters.is_some() {
+            self.score_move(
+                context,
+                graph,
+                &rows,
+                curvatures,
+                Some(&positions),
+                EditKind::Delete,
+            )?
+        } else {
+            let delete_head = self
+                .edit
+                .as_ref()
+                .and_then(|e| e.delete.as_ref())
+                .expect("checked");
+            rows.edit_features(curvatures, Some(&positions))
+                .iter()
+                .map(|row| delete_head.score(row))
+                .collect()
+        };
         if scores.iter().any(|v| !v.is_finite()) {
             return Err(invalid("learned removal scores overflow"));
         }
@@ -480,6 +521,8 @@ fn decay(name: &str) -> bool {
     name == "w1"
         || name == "w2"
         || name == "qubit_in"
+        || name == "w_delete_head"
+        || name == "w_replace_head"
         || name == "term_in"
         || [
             "to_term.",
@@ -497,6 +540,46 @@ fn shuffle<T>(values: &mut [T], random: &mut Rng) {
         values.swap(i, j);
     }
 }
+fn adam_update_map(
+    weights_map: &mut BTreeMap<String, Matrix>,
+    first_map: &mut BTreeMap<String, Matrix>,
+    second_map: &mut BTreeMap<String, Matrix>,
+    grad_map: &BTreeMap<String, Matrix>,
+    step: usize,
+    options: &Options,
+    filter: impl Fn(&str) -> bool,
+) -> Result<()> {
+    let b1 = 1. - 0.9f64.powf(step as f64);
+    let b2 = 1. - 0.999f64.powf(step as f64);
+    for (name, weights) in weights_map {
+        if !filter(name) {
+            continue;
+        }
+        let (Some(first), Some(second)) = (first_map.get_mut(name), second_map.get_mut(name))
+        else {
+            return Err(Error::Invalid(format!(
+                "missing Adam moment state for parameter {name}"
+            )));
+        };
+        let gradient = &grad_map[name];
+        for i in 0..weights.len() {
+            let g = gradient[i]
+                + if decay(name) {
+                    2. * options.weight_decay * weights[i]
+                } else {
+                    0.
+                };
+            first[i] = 0.9 * first[i] + 0.1 * g;
+            second[i] = 0.999 * second[i] + 0.001 * g * g;
+            weights[i] -=
+                options.learning_rate * (first[i] / b1) / ((second[i] / b2).sqrt() + 1e-8);
+            if !weights[i].is_finite() {
+                return Err(invalid("proposal training produced nonfinite weights"));
+            }
+        }
+    }
+    Ok(())
+}
 pub fn train(context: &Context, states: &[&State], options: &Options) -> Result<Model> {
     options.validate()?;
     let mut parameters = Parameters::new(context, options.seed)?;
@@ -511,9 +594,7 @@ pub fn train(context: &Context, states: &[&State], options: &Options) -> Result<
                 .map(|(k, v)| (k.clone(), Matrix::zeros(v.nrows(), v.ncols())))
                 .collect::<BTreeMap<_, _>>()
         };
-        let mut first = zeros();
-        let mut second = zeros();
-        let mut gradient = zeros();
+        let (mut first, mut second, mut gradient) = (zeros(), zeros(), zeros());
         let mut random = Rng(options.seed);
         let mut order: Vec<_> = (0..states.len()).collect();
         let steps = options
@@ -536,9 +617,18 @@ pub fn train(context: &Context, states: &[&State], options: &Options) -> Result<
                     embeddings.insert(identity, pair);
                     pair
                 };
-                let output =
-                    network::head(&mut tape, &variables, zh, za, &state.rows, &mean, &std)?;
-                // The gradient softmax aids the first stage of the training only.
+                let output = network::head(
+                    &mut tape,
+                    &variables,
+                    zh,
+                    za,
+                    &state.rows,
+                    &mean,
+                    &std,
+                    None,
+                    None,
+                    EditKind::Insert,
+                )?;
                 let weight =
                     teacher_weight(options.mixing, options.mixing_fraction, step - 1, steps);
                 let teacher = crate::quantum::search::kernel::softmax(&state.gradients, 1.)?;
@@ -559,27 +649,20 @@ pub fn train(context: &Context, states: &[&State], options: &Options) -> Result<
                 sum.copy_from(tape.gradient(variables[name]));
             }
             drop(tape);
-            for (name, weights) in &mut parameters.values {
-                let first = first.get_mut(name).unwrap();
-                let second = second.get_mut(name).unwrap();
-                let gradient = &gradient[name];
-                for i in 0..weights.len() {
-                    let g = gradient[i]
-                        + if decay(name) {
-                            2. * options.weight_decay * weights[i]
-                        } else {
-                            0.
-                        };
-                    first[i] = 0.9 * first[i] + 0.1 * g;
-                    second[i] = 0.999 * second[i] + 0.001 * g * g;
-                    weights[i] -= options.learning_rate
-                        * (first[i] / (1. - 0.9f64.powf(step as f64)))
-                        / ((second[i] / (1. - 0.999f64.powf(step as f64))).sqrt() + 1e-8);
-                    if !weights[i].is_finite() {
-                        return Err(invalid("proposal training produced nonfinite weights"));
-                    }
-                }
-            }
+            adam_update_map(
+                &mut parameters.values,
+                &mut first,
+                &mut second,
+                &gradient,
+                step,
+                options,
+                |k| {
+                    !matches!(
+                        k,
+                        "w_delete_head" | "w_delete_desc" | "w_replace_head" | "w_replace_desc"
+                    )
+                },
+            )?;
         }
     }
     Ok(Model {
@@ -844,6 +927,96 @@ pub fn fit(context: &Context, dataset: &Dataset, options: &Options) -> Result<Mo
     Ok(model)
 }
 
+fn train_edit_gnn(
+    context: &Context,
+    parameters: &mut Parameters,
+    mean: &[f64; 9],
+    std: &[f64; 9],
+    edit_data: &EditDataset,
+    options: &Options,
+) -> Result<()> {
+    let subset: Vec<&EditState> = edit_data
+        .states
+        .iter()
+        .filter(|s| matches!(s.kind, EditKind::Delete | EditKind::Replace) && s.targets.len() >= 2)
+        .collect();
+    if subset.is_empty() {
+        return Ok(());
+    }
+    let zeros = || {
+        parameters
+            .values
+            .iter()
+            .map(|(k, v)| (k.clone(), Matrix::zeros(v.nrows(), v.ncols())))
+            .collect::<BTreeMap<_, _>>()
+    };
+    let (mut first, mut second, mut grad) = (zeros(), zeros(), zeros());
+    let mut random = Rng(options.seed ^ 0x9e37_79b9);
+    let mut order: Vec<usize> = (0..subset.len()).collect();
+    let steps = options
+        .min_steps
+        .min(200)
+        .max(options.epochs.min(40))
+        .max(10);
+    for step in 1..=steps {
+        shuffle(&mut order, &mut random);
+        let selected = &order[..options.batch.min(order.len())];
+        let mut tape = Tape::new(context);
+        let variables = parameters.variables(&mut tape)?;
+        let mut embeddings = BTreeMap::new();
+        let mut outputs = Vec::new();
+        for &idx in selected {
+            let state = subset[idx];
+            let id_ptr = std::sync::Arc::as_ptr(&state.graph) as usize;
+            let (zh, za) = if let Some(pair) = embeddings.get(&id_ptr) {
+                *pair
+            } else {
+                let pair = network::embed(&mut tape, &variables, &state.graph)?;
+                embeddings.insert(id_ptr, pair);
+                pair
+            };
+            let output = network::head(
+                &mut tape,
+                &variables,
+                zh,
+                za,
+                &state.rows,
+                mean,
+                std,
+                state.curvatures.as_deref(),
+                Some(&state.positions),
+                state.kind,
+            )?;
+            let scale = options.label_temperature.max(1e-3);
+            let (_, adjoint) = first_choice(tape.value(output).as_slice(), &state.targets, scale)?;
+            outputs.push((
+                output,
+                Matrix::from_column_slice(adjoint.len(), 1, &adjoint) / selected.len() as f64,
+            ));
+        }
+        tape.backward_many(&outputs)?;
+        for (name, sum) in &mut grad {
+            sum.copy_from(tape.gradient(variables[name]));
+        }
+        drop(tape);
+        adam_update_map(
+            &mut parameters.values,
+            &mut first,
+            &mut second,
+            &grad,
+            step,
+            options,
+            |k| {
+                matches!(
+                    k,
+                    "w_delete_head" | "w_delete_desc" | "w_replace_head" | "w_replace_desc"
+                )
+            },
+        )?;
+    }
+    Ok(())
+}
+
 pub fn fit_json(
     context: &Context,
     data: &str,
@@ -852,7 +1025,33 @@ pub fn fit_json(
 ) -> Result<String> {
     context.run(|| {
         let dataset = Dataset::from_json(context, data, group_by)?;
-        let model = fit(context, &dataset, options)?;
+        let mut model = fit(context, &dataset, options)?;
+        if let Ok(edit_data) = EditDataset::from_json(
+            context,
+            data,
+            group_by,
+            &[EditKind::Insert, EditKind::Delete, EditKind::Replace],
+        ) {
+            let has_edit_or_curvature = edit_data.counts[1] > 0
+                || edit_data.counts[2] > 0
+                || edit_data.states.iter().any(|s| s.curvatures.is_some());
+            if has_edit_or_curvature {
+                if let Some(params) = model.parameters.as_mut() {
+                    train_edit_gnn(
+                        context,
+                        params,
+                        &model.mean,
+                        &model.std,
+                        &edit_data,
+                        options,
+                    )?;
+                }
+                let edit = fit_edit_model(&edit_data, options.l2)?;
+                if edit.insert.is_some() || edit.delete.is_some() || edit.replace.is_some() {
+                    model = model.with_edit(edit);
+                }
+            }
+        }
         serde_json::to_string(&model.as_json()).map_err(|e| invalid(&e.to_string()))
     })
 }
@@ -862,37 +1061,11 @@ pub fn fit_json(
 /// position (`BG1`).
 pub const EDIT_FEATURES: usize = DESCRIPTORS + 3;
 
-/// Builds `EDIT_FEATURES`-column feature rows from `Candidates`, edit `positions`, and
-/// optional second-order diagonal pool `curvatures`.
-pub fn edit_rows_for(
-    rows: &Candidates,
-    positions: &[usize],
-    curvatures: Option<&[f64]>,
-) -> Vec<[f64; EDIT_FEATURES]> {
-    let n_rows = rows.operators.len();
-    let mut out = Vec::with_capacity(n_rows);
-    for r in 0..n_rows {
-        let mut row = [0.; EDIT_FEATURES];
-        for c in 0..DESCRIPTORS {
-            row[c] = rows.descriptors[(r, c)];
-        }
-        row[9] = rows.sequence_overlap[r];
-        let op = rows.operators[r];
-        row[10] = curvatures
-            .and_then(|curv| curv.get(op).copied())
-            .map(compress)
-            .unwrap_or(0.);
-        let length = rows.descriptors[(r, 8)].max(1.);
-        let pos = positions.get(r).copied().unwrap_or(0) as f64;
-        row[11] = pos / length;
-        out.push(row);
-    }
-    out
-}
-
 /// Builds `EDIT_FEATURES`-column feature rows for one multi-move [`EditState`].
 pub fn edit_feature_rows(state: &EditState) -> Vec<[f64; EDIT_FEATURES]> {
-    edit_rows_for(&state.rows, &state.positions, state.curvatures.as_deref())
+    state
+        .rows
+        .edit_features(state.curvatures.as_deref(), Some(&state.positions))
 }
 
 /// Multi-move pairwise proposal heads trained over [`EditDataset`] (`BG1` + `BG3` + `BG4`).

@@ -316,8 +316,9 @@ time reversal, `A(Rk) = A(k)` and `A(-k) = A(k)`
 
 - band paths between mesh points (the correlated spectral function is resolved at the mesh points only);
 - a PAW-LCAO supercell;
-- stress (`NotImplementedError`) and analytic forces (the forces are finite differences);
-- a correlated band between mesh points;
-- a register per k-point (`crystal_orbitals="k-space"`).
+- stress (`NotImplementedError`) and analytic forces on HAO/Gaussian (the HAO forces are finite differences; PAW-LCAO supercell forces are analytic);
+- a correlated band between mesh points.
+
+Notice that the default `crystal_orbitals="k-space"` transforms the supercell orbitals into crystal-momentum Bloch orbitals (`MeanField.bloch_model`) and prunes momentum-violating excitations via `QuantumProblem.with_momentum`, while `crystal_orbitals="real-space"` solves the full Born-von Karman supercell directly in real orbitals.
 
 See [the not-yet-available table](#not-yet-available).

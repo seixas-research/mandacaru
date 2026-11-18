@@ -372,81 +372,12 @@ fn paw_quality<'py>(
 /// record through the engine's isolated-atom SCF (`paw::engine_spin_orbit`) next to the all-electron
 /// Dirac one of the record: a list of `{"l", "state", "engine", "dirac", "width", "passes"}`
 /// (Hartree; `width` (eV, optional) restricts the SCF to that one Fermi-Dirac width instead of the
-/// ladder; `engine` is `None` when the atom shows no pair of multiplets for the shell, `width`
-/// the Fermi-Dirac width in eV of the SCF). `passes` is gate G13 (2 percent or 10 meV).
-#[pyfunction]
-#[pyo3(signature = (context, payload, tables, *, width = None))]
-fn paw_spin_orbit_splittings<'py>(
-    context: PyRef<'_, PyContext>,
-    py: Python<'py>,
-    payload: &str,
-    tables: &Bound<'py, PyDict>,
-    width: Option<f64>,
-) -> PyResult<Vec<Bound<'py, PyDict>>> {
-    let ctx = &context.inner;
-    let dataset = paw_record::import(ctx, payload, tables)?;
-    let found = py
-        .detach(|| mandacaru_core::paw::engine_spin_orbit::splittings_from(ctx, &dataset, width))
-        .map_err(error)?;
-    found
-        .into_iter()
-        .map(|s| {
-            let row = PyDict::new(py);
-            row.set_item("l", s.l)?;
-            row.set_item("state", s.state)?;
-            row.set_item("engine", s.engine)?;
-            row.set_item("dirac", s.dirac)?;
-            row.set_item("width", s.width)?;
-            row.set_item("passes", s.passes())?;
-            Ok(row)
-        })
-        .collect()
-}
-
-/// The levels of the isolated atom of a record through the engine's own SCF (`paw::atom_scf`):
-/// `{"levels": [(energy in Hartree, occupation)] ascending, "width": the Fermi-Dirac width in eV of
-/// the converged SCF, "energy": the total energy of the cell in Hartree}`, in a cubic box of
-/// `box_edge` Angstrom. What gate G13 groups into `j` multiplets; two box edges give the energy per
-/// volume the dataset's constants put into a crystal.
-#[pyfunction]
-#[pyo3(signature = (context, payload, tables, *, box_edge = 10.0))]
-fn paw_atom_levels<'py>(
-    context: PyRef<'_, PyContext>,
-    py: Python<'py>,
-    payload: &str,
-    tables: &Bound<'py, PyDict>,
-    box_edge: f64,
-) -> PyResult<Bound<'py, PyDict>> {
-    let ctx = &context.inner;
-    let dataset = paw_record::import(ctx, payload, tables)?;
-    let controls = mandacaru_core::paw::atom_scf::Controls {
-        box_edge,
-        ..mandacaru_core::paw::atom_scf::Controls::default()
-    };
-    let atom = py
-        .detach(|| mandacaru_core::paw::atom_scf::levels(ctx, &dataset, &controls))
-        .map_err(error)?;
-    let out = PyDict::new(py);
-    out.set_item(
-        "levels",
-        atom.levels
-            .iter()
-            .map(|l| (l.energy, l.occupation))
-            .collect::<Vec<_>>(),
-    )?;
-    out.set_item("width", atom.width)?;
-    out.set_item("energy", atom.energy)?;
-    Ok(out)
-}
-
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_function(wrap_pyfunction!(paw_atom_levels, m)?)?;
     m.add_function(wrap_pyfunction!(paw_quality, m)?)?;
     m.add_function(wrap_pyfunction!(paw_diagnose, m)?)?;
     m.add_function(wrap_pyfunction!(paw_levels, m)?)?;
     m.add_function(wrap_pyfunction!(paw_ghost_levels, m)?)?;
     m.add_function(wrap_pyfunction!(paw_projector_radii, m)?)?;
-    m.add_function(wrap_pyfunction!(paw_spin_orbit_splittings, m)?)?;
     m.add_function(wrap_pyfunction!(paw_intruding_s_miss, m)?)?;
     m.add_function(wrap_pyfunction!(paw_spectrum_box, m)?)?;
     m.add_function(wrap_pyfunction!(paw_reference_atom, m)?)?;

@@ -84,6 +84,32 @@ pub(in crate::periodic) fn solve<T>(
         .collect()
 }
 
+/// Reindex `chi(-q)` to `chi(q)` using time-reversal symmetry `chi_{GG'}(q) = chi_{-G,-G'}(-q)^*`
+/// where `G' = -G - g_shift` accounts for reciprocal-lattice folding between `-q` and `q(-t)`.
+/// Returns `None` if the reciprocal sets do not match bijectively.
+pub(in crate::periodic) fn conjugate_polarizability(
+    chi: &DMatrix<C64>,
+    from_g: &[[i64; 3]],
+    to_g: &[[i64; 3]],
+    g_shift: [i64; 3],
+) -> Option<DMatrix<C64>> {
+    if from_g.len() != to_g.len() {
+        return None;
+    }
+    let map: std::collections::HashMap<[i64; 3], usize> =
+        from_g.iter().enumerate().map(|(i, &g)| (g, i)).collect();
+    let idx: Vec<usize> = to_g
+        .iter()
+        .map(|g| {
+            map.get(&[-g[0] - g_shift[0], -g[1] - g_shift[1], -g[2] - g_shift[2]])
+                .copied()
+        })
+        .collect::<Option<Vec<_>>>()?;
+    Some(DMatrix::from_fn(to_g.len(), to_g.len(), |i, j| {
+        chi[(idx[i], idx[j])].conj()
+    }))
+}
+
 /// `W(q)` of every mesh vector, in mesh order, from `states[s][k]` (channel `s`, mesh point `k`
 /// of `mesh`, Gamma-anchored), the cell `lattice` (columns, Bohr) and its `reciprocal`.
 pub fn screened(

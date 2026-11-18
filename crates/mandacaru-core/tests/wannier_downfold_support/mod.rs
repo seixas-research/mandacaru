@@ -32,9 +32,115 @@ pub fn chain_with(size: [usize; 3], moments: Option<[f64; 2]>) -> (Context, Wann
 
 /// [`chain_with`] on a context of `threads` workers.
 pub fn chain_on(size: [usize; 3], moments: Option<[f64; 2]>, threads: usize) -> (Context, Wannier) {
+    chain_build(size, moments, threads, "lda-sr", false)
+}
+
+/// Noncollinear/spinor chain (`spinor = true`) or restricted chain (`spinor = false`) on `dataset_set`.
+pub fn chain_set(size: [usize; 3], dataset_set: &str, spinor: bool) -> (Context, Wannier) {
+    chain_build(size, None, 2, dataset_set, spinor)
+}
+
+/// Spin-orbit-coupled HCl dimer in an 8x8x8 Bohr cell on `"lda-fr"` (`DZ` basis), localized
+/// onto the eight `H 1s + Cl 3p` spinor orbitals (leaving `Cl 3s` and `DZ` virtuals to screen).
+pub fn hcl_spinor(size: [usize; 3]) -> (Context, Wannier) {
+    let ctx = Context::new(Some(2), 2 << 30).unwrap();
+    let root =
+        std::path::PathBuf::from(std::env::var_os("MANDACARU_PAW_PATH").unwrap()).join("lda-fr");
+    let sha_ctx = mandacaru_core::Context::new(Some(1), 1 << 30).unwrap();
+    let files: Vec<(String, String)> = ["H", "Cl"]
+        .into_iter()
+        .map(|sym| {
+            let path = root.join(format!("{sym}.parquet"));
+            let digest =
+                mandacaru_core::paw::digest::dataset_content_sha256(&sha_ctx, &path).unwrap();
+            (path.to_string_lossy().into_owned(), digest)
+        })
+        .collect();
+    let cell = [8., 8., 8.];
+    let cl_x = 3.5;
+    let h_x = cl_x + 2.41;
+    let input = SetupInput {
+        mesh: None,
+        recipes: None,
+        projector_basis: "raw".into(),
+        lattice: Matrix3::from_diagonal(&nalgebra::Vector3::from(cell)),
+        grid_shape: [16, 16, 16],
+        atoms: vec![
+            AtomSpec {
+                species: 0,
+                symbol: "H".into(),
+                fractional: [h_x / cell[0], 0.5, 0.5],
+                moment: 0.,
+            },
+            AtomSpec {
+                species: 1,
+                symbol: "Cl".into(),
+                fractional: [cl_x / cell[0], 0.5, 0.5],
+                moment: 0.,
+            },
+        ],
+        kpoints_frac: vec![[0., 0., 0.]],
+        weights: vec![1.],
+        functional: "lda".into(),
+        precision: "float64".into(),
+        basis_size: "DZ".into(),
+        spinor: true,
+        spin: false,
+        symmetry: false,
+        filter_cutoff: None,
+        sigma: None,
+        dataset_files: Some(files),
+        hubbard_u: None,
+        charge: None,
+    };
+    let datasets = vec![
+        Arc::new(dataset(&ctx, "lda-fr", "H")),
+        Arc::new(dataset(&ctx, "lda-fr", "Cl")),
+    ];
+    let setup = Arc::new(create_setup(&ctx, input, datasets).unwrap());
+    let crystal = Arc::new(setup.build(&ctx).unwrap());
+    let state = Arc::new(
+        crystal
+            .solve(&Scf {
+                tolerance: 1e-8,
+                density_tolerance: 1e-6,
+                ..Scf::default()
+            })
+            .unwrap(),
+    );
+    assert!(state.converged);
+    let request = json!({
+        "size": size,
+        "bands": [2, 3, 4, 5, 6, 7, 8, 9],
+        "trials": [
+            {"center": [h_x, 4., 4.], "orbital": "s", "label": "H_s"},
+            {"center": [cl_x, 4., 4.], "orbital": "px", "label": "Cl_px"},
+            {"center": [cl_x, 4., 4.], "orbital": "py", "label": "Cl_py"},
+            {"center": [cl_x, 4., 4.], "orbital": "pz", "label": "Cl_pz"},
+        ],
+    });
+    let wannier = Wannier::build(
+        crystal,
+        state,
+        setup,
+        &request.to_string(),
+        &Options::default(),
+    )
+    .unwrap();
+    assert!(wannier.channels[0].localized.converged);
+    (ctx, wannier)
+}
+
+fn chain_build(
+    size: [usize; 3],
+    moments: Option<[f64; 2]>,
+    threads: usize,
+    dataset_set: &str,
+    spinor: bool,
+) -> (Context, Wannier) {
     let ctx = Context::new(Some(threads), 2 << 30).unwrap();
     let root =
-        std::path::PathBuf::from(std::env::var_os("MANDACARU_PAW_PATH").unwrap()).join("lda-sr");
+        std::path::PathBuf::from(std::env::var_os("MANDACARU_PAW_PATH").unwrap()).join(dataset_set);
     let path = root.join("H.parquet");
     let files = vec![(
         path.to_string_lossy().into_owned(),
@@ -66,7 +172,7 @@ pub fn chain_on(size: [usize; 3], moments: Option<[f64; 2]>, threads: usize) -> 
         functional: "lda".into(),
         precision: "float64".into(),
         basis_size: "SZ".into(),
-        spinor: false,
+        spinor,
         spin: moments.is_some(),
         symmetry: false,
         filter_cutoff: None,
@@ -75,7 +181,7 @@ pub fn chain_on(size: [usize; 3], moments: Option<[f64; 2]>, threads: usize) -> 
         hubbard_u: None,
         charge: None,
     };
-    let datasets = vec![Arc::new(dataset(&ctx, "lda-sr", "H"))];
+    let datasets = vec![Arc::new(dataset(&ctx, dataset_set, "H"))];
     let setup = Arc::new(create_setup(&ctx, input, datasets).unwrap());
     let crystal = Arc::new(setup.build(&ctx).unwrap());
     let state = Arc::new(

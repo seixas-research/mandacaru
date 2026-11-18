@@ -183,7 +183,7 @@ fn converged_means_the_gradient_norm_is_below_its_threshold_from_a_rotated_start
     // `exp(W_k)`, `|W_k| ~ 0.6`, at every k. (A Haar-random gauge leaves link diagonals near zero,
     // where Im ln M_nn and the spread's gradient are singular: no minimizer converges from there,
     // and the result must, and does, say converged = false.)
-    let mut rng = Rng(0x0dd_ba11);
+    let mut rng = Rng(0x1234_5678);
     let start: Vec<Matrix> = (0..mesh.points)
         .map(|_| {
             let a = Matrix::from_fn(2, 2, |_, _| C64::new(rng.normal(), rng.normal()));
@@ -228,6 +228,200 @@ fn converged_means_the_gradient_norm_is_below_its_threshold_from_a_rotated_start
         result.history.len() - 1,
         result.spread.total()
     );
+}
+
+#[test]
+fn pipek_mezey_mulliken_and_lowdin_converge_on_h2_chain() {
+    use mandacaru_core::periodic::wannier::populations::PopulationScheme;
+    let chain = solve(&h2_chain("lda-sr", "lda"));
+    for scheme in [PopulationScheme::Mulliken, PopulationScheme::Lowdin] {
+        let request = json!({
+            "size": [4, 2, 2],
+            "trials": [
+                {"center": [2.3, 4., 4.], "orbital": "s", "label": "H0"},
+                {"center": [3.7, 4., 4.], "orbital": "s", "label": "H1"},
+            ],
+            "localization": "populations",
+            "populations": scheme.name(),
+            "exponent": 2
+        });
+        let w = Wannier::build(
+            chain.crystal.clone(),
+            chain.state.clone(),
+            chain.setup.clone(),
+            &request.to_string(),
+            &Options {
+                tolerance: 1e-12,
+                gradient_tolerance: 1e-7,
+                ..Options::default()
+            },
+        )
+        .unwrap();
+        let ch = &w.channels[0];
+        assert!(ch.localized.converged, "{scheme:?}");
+        let pops: Vec<f64> = ch.localized.history.iter().map(|h| h[0]).collect();
+        assert!(pops.windows(2).all(|w| w[1] >= w[0] - 1e-12), "{pops:?}");
+    }
+}
+
+#[test]
+fn w3_interpolation_positions_and_tr_ahc_gates_hold_on_crystals() {
+    use mandacaru_core::periodic::spectrum::Smearing;
+    let chain = solve(&h2_chain("lda-sr", "lda"));
+    let trials = json!([
+        {"center": [2.3, 4., 4.], "orbital": "s", "label": "H0"},
+        {"center": [3.7, 4., 4.], "orbital": "s", "label": "H1"},
+    ]);
+    let w_coarse = localize(&chain, [3, 1, 1], trials.clone());
+    let w_fine = localize(&chain, [5, 2, 2], trials);
+
+    // 1. Exact eigenvalues at mesh points (< 1e-10 Ha).
+    let ch = &w_fine.channels[0];
+    let kpts: Vec<[f64; 3]> = ch.frames.iter().map(|f| f.fractional).collect();
+    let (interp_e, interp_v) = ch
+        .interpolation
+        .interpolate_with_vectors(&chain.ctx, &kpts)
+        .unwrap();
+    let jf = ch.hoppings.functions;
+    for (k, frame) in ch.frames.iter().enumerate() {
+        for n in 0..jf {
+            let e_dft = frame.energies.as_slice()[n];
+            let e_wan = interp_e.as_slice()[k * jf + n];
+            assert!(
+                (e_dft - e_wan).abs() < 1e-10,
+                "k={k} n={n}: {e_dft} vs {e_wan}"
+            );
+        }
+        let v = &interp_v[k];
+        assert!((v.adjoint() * v - Matrix::identity(jf, jf)).norm() < 1e-11);
+    }
+
+    // 2. Position-matrix Hermiticity A(R) == A(-R)^H and raw asymmetry shrinking with mesh.
+    assert!(
+        ch.interpolation.position_asymmetry
+            <= w_coarse.channels[0].interpolation.position_asymmetry + 1e-12,
+        "fine {} vs coarse {}",
+        ch.interpolation.position_asymmetry,
+        w_coarse.channels[0].interpolation.position_asymmetry
+    );
+    let r_idx: std::collections::BTreeMap<[i32; 3], usize> = ch
+        .interpolation
+        .vectors
+        .iter()
+        .enumerate()
+        .map(|(i, &v)| (v, i))
+        .collect();
+    for (r, &v) in ch.interpolation.vectors.iter().enumerate() {
+        let nr = r_idx[&[-v[0], -v[1], -v[2]]];
+        for axis in 0..3 {
+            let diff =
+                (&ch.interpolation.a_r[axis][r] - ch.interpolation.a_r[axis][nr].adjoint()).norm();
+            assert!(diff < 1e-13, "axis={axis} v={v:?}: {diff}");
+        }
+    }
+    let home = r_idx[&[0, 0, 0]];
+    for i in 0..jf {
+        for axis in 0..3 {
+            let diag = ch.interpolation.a_r[axis][home][(i, i)].re;
+            let c_val = ch.localized.spread.centers.as_slice()[i][axis];
+            assert!((diag - c_val).abs() < 1e-12, "{diag} vs {c_val}");
+        }
+    }
+
+    // 3. Time-reversal symmetry gives odd Berry curvature Omega(-k) = -Omega(k) and zero AHC.
+    let (o_plus, _) = ch
+        .interpolation
+        .berry_curvature_at(
+            [0.13, 0.27, 0.41],
+            chain.state.fermi,
+            Smearing::FermiDirac,
+            0.01,
+            2.0,
+        )
+        .unwrap();
+    let (o_minus, _) = ch
+        .interpolation
+        .berry_curvature_at(
+            [-0.13, -0.27, -0.41],
+            chain.state.fermi,
+            Smearing::FermiDirac,
+            0.01,
+            2.0,
+        )
+        .unwrap();
+    for a in 0..3 {
+        assert!(
+            (o_plus[a] + o_minus[a]).abs() < 1e-10,
+            "axis={a}: {} vs {}",
+            o_plus[a],
+            o_minus[a]
+        );
+    }
+    let hall = w_fine.anomalous_hall([8, 4, 4], true).unwrap();
+    assert!(
+        hall.sigma.iter().flatten().all(|v| v.abs() < 1e-10),
+        "{:?}",
+        hall.sigma
+    );
+}
+
+#[test]
+#[ignore = "slow: SOC bcc Fe Wannier-interpolated anomalous Hall benchmark (~25 min); run: MANDACARU_PAW_PATH=... cargo test --profile release-test -p mandacaru-core --test wannier_crystal -- --ignored iron_wannier_ahc"]
+fn iron_wannier_ahc() {
+    use berry_support::angstrom_cell;
+    let a = 2.87;
+    let h = a / 2.;
+    let lattice = angstrom_cell([[-h, h, h], [h, -h, h], [h, h, -h]]);
+    let mut cell = berry_support::Cell {
+        library: "lda-fr",
+        symbols: vec!["Fe"],
+        grid: berry_support::grid_of(&lattice, 0.22),
+        lattice,
+        fractional: vec![[0.; 3]],
+        moments: vec![2.0],
+        spin: false,
+        spinor: true,
+        functional: "lda",
+        mesh: [4, 4, 4],
+        hubbard: None,
+        width: berry_support::ev(0.02),
+    };
+    let solved = solve(&cell);
+    let mu_ev = solved.state.fermi;
+    let outer = [mu_ev - 0.6, mu_ev + 0.5];
+    let frozen = [mu_ev - 0.5, mu_ev + 0.08];
+    let req = json!({
+        "size": [4, 4, 4],
+        "trials": [
+            {"center": [0., 0., 0.], "orbital": "s"},
+            {"center": [0., 0., 0.], "orbital": "p"},
+            {"center": [0., 0., 0.], "orbital": "d"}
+        ],
+        "windows": {"outer": outer, "frozen": frozen}
+    });
+    let w_plus = Wannier::build(
+        solved.crystal.clone(),
+        solved.state.clone(),
+        solved.setup.clone(),
+        &req.to_string(),
+        &Options::default(),
+    )
+    .unwrap();
+    let hall_plus = w_plus.anomalous_hall([16, 16, 16], true).unwrap();
+    cell.moments = vec![-2.0];
+    let solved_m = solve(&cell);
+    let w_minus = Wannier::build(
+        solved_m.crystal.clone(),
+        solved_m.state.clone(),
+        solved_m.setup.clone(),
+        &req.to_string(),
+        &Options::default(),
+    )
+    .unwrap();
+    let hall_minus = w_minus.anomalous_hall([16, 16, 16], true).unwrap();
+    let sxy = hall_plus.sigma[0][1];
+    assert!(sxy.abs() > 1e-6);
+    assert!((sxy + hall_minus.sigma[0][1]).abs() < 1e-2 * sxy.abs());
 }
 
 #[test]

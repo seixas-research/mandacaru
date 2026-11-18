@@ -18,6 +18,7 @@ pub mod pulay;
 pub mod remainder;
 pub mod shapes;
 pub mod shells;
+pub mod snapshot;
 pub mod sphere_table;
 pub mod spheres;
 pub mod spin_orbit;
@@ -215,8 +216,25 @@ impl PeriodicSetup {
         let uion = couplings.u_ion;
         let eion = couplings.e_ion;
 
-        // 6. Ions terms
-        let ion_constant = ions::ion_constants(&sites)?;
+        let valence_sum: f64 = self
+            .atoms_species
+            .iter()
+            .map(|&s| self.datasets[s].valence_charge)
+            .sum();
+        let charge = self.charge.unwrap_or(0.0);
+        if !charge.is_finite() {
+            return Err(invalid("charged crystal requires a finite cell charge"));
+        }
+        let electrons = valence_sum - charge;
+        if electrons <= 0.0 {
+            return Err(invalid("charged crystal must have positive electron count"));
+        }
+
+        // 6. Ions terms (include the G = 0 neutralizing-jellium / Gaussian-ion background shift
+        // `-reference * Q_net` so total energies and stresses of charged cells remain independent
+        // of the ion-split width `sigma` while neutral cells `Q_net == 0` are untouched).
+        let reference = fields::reference(&sites);
+        let ion_constant = ions::ion_constants(&sites)? - reference * charge;
         let linear_vec = ions::linear(ctx, &sites, &self.potentials)?;
         let mut linear = ctx.allocate::<Complex64>(linear_vec.len())?;
         linear.as_mut_slice().copy_from_slice(&linear_vec);
@@ -293,7 +311,6 @@ impl PeriodicSetup {
 
         let kerker = fields::kerker(ctx, &self.grid)?;
         let phase = fields::phase(ctx, &self.grid)?;
-        let reference = fields::reference(&sites);
         let xc_wave = crate::math::reciprocal::symmetric_wavevectors(ctx, &self.grid)?;
 
         // The core offset belongs to the dataset's own functional and
@@ -339,16 +356,6 @@ impl PeriodicSetup {
                 sym.permutation(op, &mut perm);
                 permutations.push(perm);
             }
-        }
-
-        let valence_sum: f64 = self
-            .atoms_species
-            .iter()
-            .map(|&s| self.datasets[s].valence_charge)
-            .sum();
-        let electrons = valence_sum - self.charge.unwrap_or(0.0);
-        if electrons <= 0.0 {
-            return Err(invalid("charged crystal must have positive electron count"));
         }
 
         // The PAW spheres of a screened hybrid, built here from the same datasets, centers and

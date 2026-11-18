@@ -65,11 +65,13 @@ pub fn all_electron_count(
     Ok(nodes as i64 - ae.core_count(l) as i64)
 }
 
-/// `{l: eps_ps - eps_ae}` for every angular momentum *without* projectors (up to one above the
-/// highest channel) in which the screened local potential alone binds more states than the
-/// all-electron atom has valence states of that `l`. Both spectra are counted below zero in the
-/// same box, on the reference atom's uniform grid.
+/// `{l: eps}` for every angular momentum *without* projectors (up to one above the highest
+/// channel) in which the screened local potential alone binds more states below
+/// `-EXCITED_GHOST_MARGIN` than the scalar-relativistic all-electron atom has valence states of
+/// that `l`. Both counts use the same `-EXCITED_GHOST_MARGIN` threshold; the all-electron count
+/// uses [`all_electron_count`] (oscillation theorem under `ae.scalar_treatment()`).
 pub fn local_potential_ghosts(
+    ctx: &Context,
     smooth: &Smooth,
     ae: &AllElectron<'_>,
 ) -> Outcome<BTreeMap<usize, f64>> {
@@ -77,29 +79,22 @@ pub fn local_potential_ghosts(
     let local = interpolate_linear(r, smooth.r.as_slice(), smooth.v_local_screened.as_slice())?;
     let constructed = smooth.angular_momenta();
     let highest = constructed.iter().copied().max().unwrap_or(0);
-    let bound = |v: &[f64], what: &str, l: usize| -> Outcome<Vec<f64>> {
-        bound_levels(r, v, l, None, 0.).map_err(|e| {
-            Error::Unevaluated(format!(
-                "{}: {what} (l={l}) is not finite: {e}",
-                smooth.symbol
-            ))
-        })
-    };
     let mut out = BTreeMap::new();
     for l in 0..highest + 2 {
         if constructed.contains(&l) {
             continue;
         }
-        let ps = bound(&local, "the screened local potential", l)?;
-        let atom = bound(
-            ae.atom.effective.as_slice(),
-            "the all-electron potential",
-            l,
-        )?;
-        let allowed = atom.get(ae.core_count(l)..).unwrap_or(&[]);
-        if ps.len() > allowed.len() {
-            let reference = allowed.first().copied().unwrap_or(0.);
-            out.insert(l, ps[0] - reference);
+        let mut ps = bound_levels(r, &local, l, None, -EXCITED_GHOST_MARGIN).map_err(|e| {
+            Error::Unevaluated(format!(
+                "{}: the screened local potential (l={l}) is not finite: {e}",
+                smooth.symbol
+            ))
+        })?;
+        ps.sort_by(f64::total_cmp);
+        let allowed =
+            all_electron_count(ctx, smooth, ae, l, -EXCITED_GHOST_MARGIN)?.max(0) as usize;
+        if ps.len() > allowed {
+            out.insert(l, ps[allowed]);
         }
     }
     Ok(out)
@@ -176,7 +171,7 @@ pub fn ghost_errors(
         }
     }
     if let Some(ae) = ae {
-        out.extend(local_potential_ghosts(smooth, ae)?);
+        out.extend(local_potential_ghosts(ctx, smooth, ae)?);
     }
     Ok(out)
 }

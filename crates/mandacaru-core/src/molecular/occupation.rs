@@ -13,7 +13,7 @@
 //! at fixed occupations. For discrete levels the Kohn-Sham energy `E` of the fractional state
 //! is the zero-temperature estimate (its error is second order in the width, as `E` is
 //! stationary in the occupations at the zero-width point), while `F` is first order.
-use crate::periodic::spectrum::{fermi, Smearing};
+use crate::math::smearing::{fermi, Smearing};
 use crate::quantum::C64;
 use crate::Result;
 use nalgebra::DMatrix;

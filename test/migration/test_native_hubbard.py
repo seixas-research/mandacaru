@@ -109,7 +109,7 @@ def test_the_shell_table_is_the_one_the_fixture_defines(monkeypatch):
     weights are pinned in Rust (``tests/hubbard_table.rs``)."""
     crystal = crystal_of(monkeypatch, nio(), hubbard_u=NI_D, **NIO_OPTIONS)
     fixture = json.loads((FIXTURE / "nio_afm2.json").read_text())["hubbard"]
-    assert fixture["form"] == "dudarev-fll"
+    assert fixture["form"] == "dudarev"
     shells = crystal.hubbard
     assert len(shells) == len(fixture["shells"]) == 2
     for (atom, symbol, l, u, j), theirs in zip(shells, fixture["shells"]):
@@ -117,7 +117,7 @@ def test_the_shell_table_is_the_one_the_fixture_defines(monkeypatch):
         assert u == pytest.approx(3.0 / HARTREE_TO_EV, abs=1e-15) and j == 0.0
     assert crystal_of(monkeypatch, nio(), **NIO_OPTIONS).hubbard is None
     # the form field is part of the contract: naming the one form changes nothing
-    named = {"Ni": {**NI_D["Ni"], "form": "dudarev-fll"}}
+    named = {"Ni": {**NI_D["Ni"], "form": "dudarev"}}
     assert crystal_of(monkeypatch, nio(), hubbard_u=named, **NIO_OPTIONS).hubbard == shells
 
 

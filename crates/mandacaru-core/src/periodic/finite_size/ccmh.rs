@@ -388,8 +388,8 @@ pub fn structure_factor(
             }
 
             let val0 = buf[0];
-            m_tensor[0 * n_ao * n_ao + a * n_ao + b] = val0;
-            m_tensor[0 * n_ao * n_ao + b * n_ao + a] = val0.conj();
+            m_tensor[a * n_ao + b] = val0;
+            m_tensor[b * n_ao + a] = val0.conj();
 
             for (t_idx, &(ti, tj, tk)) in triples.iter().enumerate() {
                 let node_x = (ti.rem_euclid(nx as i64)) as usize;

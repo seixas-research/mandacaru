@@ -9,22 +9,31 @@ from . import kspace as _kspace
 class ASEProperties:
     def wannier(self, n_functions=None, *, guess="bonds", windows=None,
                 bands=None, kpts=None, max_iterations=2000, tolerance=1e-10,
-                step=0.5):
+                step=0.5, localization="spread", populations="mulliken",
+                exponent=2):
         """Localize periodic Bloch states with the native PAW Wannier solver.
 
+        ``localization`` chooses ``"spread"`` (Marzari-Vanderbilt quadratic
+        spread) or ``"populations"`` (periodic Pipek-Mezey atomic charges with
+        ``populations="mulliken"`` or ``"lowdin"`` and ``exponent=2`` or ``4``).
         Energy windows use eV on the ASE eigenvalue scale. Centers and
         spreads are returned in Angstrom and Angstrom squared. Raises
         ``ValueError`` for an unconverged SCF, a band group without
         ``windows=`` that is not isolated, or a magnetic spinor subspace with a
-        nonzero Chern number, and ``NotImplementedError`` for a crystal loaded
-        from a snapshot.
+        nonzero Chern number.
         """
         from .wannier import calculate
 
         return calculate(self._calculation_owner(), n_functions, guess=guess,
                          windows=windows, bands=bands, kpts=kpts,
                          max_iterations=max_iterations, tolerance=tolerance,
-                         step=step)
+                         step=step, localization=localization,
+                         populations=populations, exponent=exponent)
+
+    def get_partial_charges(self, method="bader", *, state=0, grid=None, interpolate=True):
+        """Atomic partial charges (``"bader"``, ``"hirshfeld"``, or ``"voronoi"``) in e."""
+        return np.asarray(self._calculation_owner().result.partial_charges(
+            method, state=state, grid=grid, interpolate=interpolate)["charges"], dtype=float)
 
     def get_berry_phase(self, direction, kpts=None, bands=None):
         """Berry phases of closed k-point strings along ``G_direction``
@@ -148,6 +157,49 @@ class ASEProperties:
         from .berry import anomalous_hall
 
         return anomalous_hall(self._calculation_owner(), kpts=kpts, stacklevel=3).sigma
+
+    def get_born_effective_charges(self, displacement=0.01, kpts=None, richardson=False,
+                                   acoustic_sum_rule="report"):
+        """Born effective charges :math:`Z^*` of an insulating crystal
+        (:class:`~mandacaru.analysis.berry.BornCharges`).
+
+        Computed by central finite differences of ``displacement`` (Angstrom, or Bohr when
+        ``atomic_units=True``) over perturbed self-consistent crystals using symmetry reduction
+        from the ground-state space group. ``kpts`` is the Berry string mesh (default: the
+        calculation's ``kpts`` size; at least 2 points per direction). With ``richardson=True``,
+        half-step Richardson extrapolation cancels the cubic step error. ``acoustic_sum_rule`` is
+        ``"report"`` (warn above 0.05 e) or ``"impose"`` (also populate ``corrected``).
+        """
+        from .berry import born_effective_charges
+
+        return born_effective_charges(
+            self._calculation_owner(),
+            displacement=displacement,
+            kpts=kpts,
+            richardson=richardson,
+            acoustic_sum_rule=acoustic_sum_rule,
+        )
+
+    def get_piezoelectric_tensor(self, strain=0.005, kpts=None, ions="clamped", richardson=False,
+                                 displacement=0.01):
+        """Proper piezoelectric tensor :math:`e_{i,v}` (C/m^2, Voigt) of an insulating crystal
+        (:class:`~mandacaru.analysis.berry.PiezoelectricTensor`).
+
+        ``ions="clamped"`` computes only the clamped-ion electronic and rigid-ion response to
+        Voigt ``strain`` perturbations. ``ions="relaxed"`` adds the internal-strain lattice
+        relaxation from analytic forces and symmetry-reduced Born charges / force constants
+        (refusing crystals with soft optical modes below 1e-4 Ha/Bohr^2).
+        """
+        from .berry import piezoelectric_tensor
+
+        return piezoelectric_tensor(
+            self._calculation_owner(),
+            strain=strain,
+            kpts=kpts,
+            ions=ions,
+            richardson=richardson,
+            displacement=displacement,
+        )
 
     def get_excitations(self, num_states=5, *, approximation="tda", spin=None,
                         kernel=None, tolerance=1e-5, max_iterations=200, **crystal):

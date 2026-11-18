@@ -11,5 +11,6 @@ and edit this manual is in [the contributing guide](../contributing_docs.md).
 
 architecture
 native_cutover
+paw_formulation
 history
 ```

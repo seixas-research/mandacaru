@@ -10,14 +10,14 @@ def configure(driver, *, transfer, transfer_threshold, transfer_steps,
         raise ValueError("transfer_threshold must be in [0,1]")
     if transfer_steps is not None and (type(transfer_steps) is not int or transfer_steps < 0):
         raise ValueError("transfer_steps must be a nonnegative integer or None")
-    search = ("vasqa", "valsqa", "subspace-vasqa", "subspace-valsqa")
-    if transfer and driver.method not in ("adapt-vqe",) + search:
+    solver = driver.capabilities.solver
+    if transfer and solver not in ("adapt", "search"):
         raise ValueError("molecular transfer requires ADAPT or an architecture search")
     if transfer and (resume is not None or driver._execute_circuits):
         raise ValueError("molecular transfer requires local native execution and a fresh geometry")
-    if transfer_steps is not None and (not transfer or driver.method not in search):
+    if transfer_steps is not None and (not transfer or solver != "search"):
         raise ValueError("transfer_steps requires an architecture search with transfer=True")
-    if update_between_geometries and driver.method not in ("valsqa", "subspace-valsqa"):
+    if update_between_geometries and not driver.capabilities.learned:
         raise ValueError("update_between_geometries requires valsqa or subspace-valsqa")
     driver._transfer, driver._transfer_threshold, driver._transfer_steps = transfer, transfer_threshold, transfer_steps
     driver._update_between_geometries, driver._transfer_seed, driver._transfer_info = update_between_geometries, None, None

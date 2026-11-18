@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use serde_json::Value;
 
 use super::json::*;
-use super::{Array, Defects, Nlcc, SpinOrbit};
+use super::{Array, Defects, Nlcc, Provenance, SpinOrbit};
 use crate::{Context, Result};
 
 const MAX_SPIN_ORBIT_PROJECTORS: usize = 64;
@@ -196,4 +196,37 @@ pub(crate) fn spin_orbit(
     };
     nothing_left(&map, &what)?;
     Ok(so)
+}
+
+pub(crate) fn provenance(value: Value) -> Result<Provenance> {
+    let what = "provenance";
+    let mut map = object(value, what)?;
+    let generator = string(take(&mut map, "generator", what)?, "provenance.generator")?;
+    let version = string(take(&mut map, "version", what)?, "provenance.version")?;
+    let xc_scheme = string(take(&mut map, "xc_scheme", what)?, "provenance.xc_scheme")?;
+    let rc_factor = number(&take(&mut map, "rc_factor", what)?, "provenance.rc_factor")?;
+    let local_factor = number(
+        &take(&mut map, "local_factor", what)?,
+        "provenance.local_factor",
+    )?;
+    let n_bessel_val = take(&mut map, "n_bessel", what)?;
+    let n_bessel_raw = n_bessel_val
+        .as_i64()
+        .ok_or_else(|| fail("provenance.n_bessel", "expected a non-negative integer"))?;
+    let n_bessel =
+        u32::try_from(n_bessel_raw).map_err(|_| fail("provenance.n_bessel", "out of u32 range"))?;
+    let search = map
+        .remove("search")
+        .map(|v| string(v, "provenance.search"))
+        .transpose()?;
+    nothing_left(&map, what)?;
+    Ok(Provenance {
+        generator,
+        version,
+        xc_scheme,
+        rc_factor,
+        local_factor,
+        n_bessel,
+        search,
+    })
 }

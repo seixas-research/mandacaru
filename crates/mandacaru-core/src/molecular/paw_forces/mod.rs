@@ -45,6 +45,9 @@ pub(crate) struct Frozen {
     /// contracts its own ([`MolecularIntegrals::spinor_exchange_terms`]): its pseudo-orbitals
     /// carry the charge, not the exchange pairs.
     pub exact_exchange: bool,
+    /// Whether the contraction includes the collinear DFT+U projection derivative. A spinor state
+    /// contracts its own `2p x 2p` term ([`crate::paw::molecular::gradient::hubbard_spinor_force`]).
+    pub hubbard: bool,
 }
 
 impl MolecularIntegrals {
@@ -196,6 +199,7 @@ impl MolecularIntegrals {
             orbitals: frame.orbitals,
             stationarity: frame.stationarity,
             exact_exchange: true,
+            hubbard: true,
         })
     }
 
@@ -220,6 +224,7 @@ impl MolecularIntegrals {
             functional: frozen_functional,
             unrestricted: frozen_unrestricted,
             exact_exchange,
+            hubbard: include_hubbard,
             ..
         } = frozen;
         let frame = frame::Frame {
@@ -369,7 +374,7 @@ impl MolecularIntegrals {
         let core_view = core
             .as_ref()
             .map(|(p, t)| (p.as_slice(), t.as_ref().map(|t| t.as_slice())));
-        for part in response.contributions(core_view)? {
+        for part in response.contributions(core_view, include_hubbard)? {
             terms.push((part.name, part.gradient));
         }
         if let Some(screened) = screened.as_ref() {

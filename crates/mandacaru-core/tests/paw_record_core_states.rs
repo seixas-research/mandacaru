@@ -9,7 +9,7 @@ mod paw_record_support;
 use mandacaru_core::parquet::{self, Codec, Table, WriteOptions};
 use mandacaru_core::paw::digest::dataset_content_sha256;
 use mandacaru_core::paw::record::{
-    PawDataset, WriteSpec, CORE_SCHEMES, FORMAT_VERSION, MAX_CORE_STATES, METADATA_KEY,
+    PawDataset, WriteSpec, FORMAT_VERSION, MAX_CORE_STATES, METADATA_KEY,
 };
 use mandacaru_core::{Context, Error};
 use paw_record_support::*;
@@ -78,18 +78,6 @@ fn the_content_digest_ignores_the_codec_and_the_core_scheme() {
     );
     assert_eq!(dataset_content_sha256(&ctx, &plain).unwrap(), before);
     assert_eq!(ds.content_sha256(&ctx).unwrap(), before);
-    // The radial scheme a record names is bookkeeping: it reads back, and the digest
-    // ignores it.
-    for scheme in CORE_SCHEMES {
-        let mut named = PawDataset::read(&ctx, &source).unwrap();
-        named.core_scheme = Some(scheme.to_string());
-        let path = dir.file(&format!("Li-{scheme}.parquet"));
-        named.write(&ctx, &path, &STORED).unwrap();
-        let back = PawDataset::read(&ctx, &path).unwrap();
-        assert_eq!(back.core_scheme.as_deref(), Some(scheme));
-        assert_eq!(back.content_sha256(&ctx).unwrap(), before);
-        drop((named, back));
-    }
     // One bit of one table, or one scalar of the payload, is another content.
     let mut changed = PawDataset::read(&ctx, &source).unwrap();
     let first = changed.v_local.as_slice()[0];
@@ -158,15 +146,9 @@ fn every_bound_of_the_core_states_is_refused_by_name() {
             format!("format version 2 is not supported: only format {FORMAT_VERSION} is read"),
         ),
         (
-            "a core scheme that is not one of the radial schemes",
+            "a legacy core_scheme field is refused as unknown",
             v3.clone(),
-            Box::new(|_, p| p["core_scheme"] = json!("hartree")),
-            "\"hartree\" is not one of".into(),
-        ),
-        (
-            "a core scheme that is not a string",
-            v3.clone(),
-            Box::new(|_, p| p["core_scheme"] = json!(1)),
+            Box::new(|_, p| p["core_scheme"] = json!("variational")),
             "core_scheme".into(),
         ),
         (

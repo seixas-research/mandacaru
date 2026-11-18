@@ -9,3 +9,6 @@ description = "Numerical sampling, radial and grid kernels for Mandacaru"
 
 [lib]
 crate-type = ["rlib"]
+
+[lints]
+workspace = true

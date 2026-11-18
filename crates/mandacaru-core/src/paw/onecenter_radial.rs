@@ -7,7 +7,7 @@ use super::{invalid, multipole::shape_function};
 use crate::{
     math::{
         radial::gauss_legendre,
-        spline::{simpson, Cubic},
+        spline::{simpson_weights, Cubic},
     },
     Context, Result,
 };
@@ -32,17 +32,22 @@ pub const SHAPE_TABLE_STEP: f64 = 0.02;
 /// wrapped into a smaller one by an integer conversion.
 pub const MAX_RADIAL_L: usize = 64;
 
-/// `int int rho_1(r) rho_2(r') r_<^L / r_>^(L+1) r^2 r'^2 dr dr'`: the inner
-/// integral is accumulated once (cumulative trapezoid), the outer one is Simpson.
-/// `L` is at most [`MAX_RADIAL_L`].
-pub fn radial_coulomb(r: &[f64], rho_1: &[f64], rho_2: &[f64], l: usize) -> Result<f64> {
+/// `int int rho_1(r) rho_2(r') r_<^L / r_>^(L+1) r^2 r'^2 dr dr'` using
+/// precomputed Simpson quadrature `weights` on `r`.
+pub fn radial_coulomb_weighted(
+    r: &[f64],
+    rho_1: &[f64],
+    rho_2: &[f64],
+    l: usize,
+    weights: &[f64],
+) -> Result<f64> {
     if l > MAX_RADIAL_L {
         return Err(invalid(format!(
             "the radial Coulomb integral is computed for L up to {MAX_RADIAL_L}, got {l}"
         )));
     }
     let n = r.len();
-    if rho_1.len() != n || rho_2.len() != n {
+    if rho_1.len() != n || rho_2.len() != n || weights.len() != n {
         return Err(invalid("radial Coulomb arrays differ in length"));
     }
     if n < 2 {
@@ -66,18 +71,43 @@ pub fn radial_coulomb(r: &[f64], rho_1: &[f64], rho_2: &[f64], l: usize) -> Resu
         above[i] = above[i - 1] + h * (weight_out(i - 1) + weight_out(i));
     }
     let total = above[n - 1];
-    let integrand = (0..n)
-        .map(|i| {
-            let tail = total - above[i];
-            let potential = if r[i] > 0. {
-                below[i] / r[i].powi(l + 1)
-            } else {
-                0.
-            } + r[i].powi(l) * tail;
-            rho_1[i] * potential * r[i] * r[i]
-        })
-        .collect::<Vec<_>>();
-    simpson(r, &integrand)
+    let mut sum = 0.0;
+    for i in 0..n {
+        let tail = total - above[i];
+        let potential = if r[i] > 0. {
+            below[i] / r[i].powi(l + 1)
+        } else {
+            0.
+        } + r[i].powi(l) * tail;
+        let sample = rho_1[i] * potential * r[i] * r[i];
+        if !sample.is_finite() {
+            return Err(invalid("quadrature samples must be finite"));
+        }
+        sum += weights[i] * sample;
+    }
+    Ok(sum)
+}
+
+/// `int int rho_1(r) rho_2(r') r_<^L / r_>^(L+1) r^2 r'^2 dr dr'`: the inner
+/// integral is accumulated once (cumulative trapezoid), the outer one is Simpson.
+/// `L` is at most [`MAX_RADIAL_L`].
+pub fn radial_coulomb(r: &[f64], rho_1: &[f64], rho_2: &[f64], l: usize) -> Result<f64> {
+    if l > MAX_RADIAL_L {
+        return Err(invalid(format!(
+            "the radial Coulomb integral is computed for L up to {MAX_RADIAL_L}, got {l}"
+        )));
+    }
+    let n = r.len();
+    if rho_1.len() != n || rho_2.len() != n {
+        return Err(invalid("radial Coulomb arrays differ in length"));
+    }
+    if n < 2 {
+        return Err(invalid(format!(
+            "the radial Coulomb integral needs at least two grid points, got {n}"
+        )));
+    }
+    let weights = simpson_weights(r)?;
+    radial_coulomb_weighted(r, rho_1, rho_2, l, &weights)
 }
 
 /// `P_L(x)` by the three-term recurrence.

@@ -309,7 +309,10 @@ impl CircuitExecution<'_> {
     ) -> Result<f64> {
         self.prepare_error_plan(problem)?;
         let requests = {
-            let (plan, positions) = self.error_plan.as_ref().unwrap();
+            let (plan, positions) = self
+                .error_plan
+                .as_ref()
+                .ok_or_else(|| invalid("missing sampled energy measurement plan"))?;
             plan.bases
                 .iter()
                 .zip(positions)
@@ -330,7 +333,10 @@ impl CircuitExecution<'_> {
                 Reading::State(_) => Err(invalid("a sampled energy needs Pauli expectations")),
             })
             .collect::<Result<Vec<_>>>()?;
-        let (plan, positions) = self.error_plan.as_ref().unwrap();
+        let (plan, positions) = self
+            .error_plan
+            .as_ref()
+            .ok_or_else(|| invalid("missing sampled energy measurement plan"))?;
         let (energy, error) = plan.energy(positions, &values, shots)?;
         if let Some(error) = error {
             self.errors.insert(energy.to_bits(), error);
@@ -551,7 +557,10 @@ impl CircuitExecution<'_> {
             // covariance (`energy_error`), so every energy carries its standard error.
             self.prepare_error_plan(problem)?;
             let requests = {
-                let (plan, positions) = self.error_plan.as_ref().unwrap();
+                let (plan, positions) = self
+                    .error_plan
+                    .as_ref()
+                    .ok_or_else(|| invalid("missing sampled energy measurement plan"))?;
                 let mut requests = Vec::with_capacity(circuits);
                 for angles in &variants {
                     let variant = shifted(angles);
@@ -565,7 +574,10 @@ impl CircuitExecution<'_> {
                 requests
             };
             let readings = self.call(problem, requests)?;
-            let (plan, positions) = self.error_plan.as_ref().unwrap();
+            let (plan, positions) = self
+                .error_plan
+                .as_ref()
+                .ok_or_else(|| invalid("missing sampled energy measurement plan"))?;
             let nb = plan.bases.len();
             let values = readings
                 .readings

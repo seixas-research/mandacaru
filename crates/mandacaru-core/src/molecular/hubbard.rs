@@ -1,7 +1,12 @@
 //! DFT+U on-site correction for molecular PAW-LCAO Kohn-Sham states.
 use super::invalid;
 use crate::{
-    models::hubbard::{self as model, Form, Hubbard, Spin},
+    models::{
+        hubbard::{self as model, Form, Hubbard, Spin},
+        hubbard_liechtenstein as liechtenstein_model,
+        hubbard_slater::{Basis, Ratios},
+        hubbard_spinor::{self as spinor_model, Layout as SpinorLayout, Occupation as SpinorOcc},
+    },
     Context, Result,
 };
 use nalgebra::DMatrix;
@@ -23,6 +28,7 @@ pub struct MolecularHubbardShell {
     pub u: f64,
     /// Hartree.
     pub j: f64,
+    pub ratios: Ratios,
     pub weights: Vec<f64>,
     /// Subspace projector in the AO basis, shape `(m, 2l+1)`.
     pub q_ao: DMatrix<f64>,
@@ -116,8 +122,7 @@ impl MolecularHubbard {
         channels: &[DMatrix<C64>],
     ) -> Result<(f64, Vec<DMatrix<C64>>)> {
         let p = shell.size();
-        let rotation =
-            (self.form == Form::LiechtensteinFll).then(|| unitary_real_to_complex(shell.l));
+        let rotation = (self.form == Form::Liechtenstein).then(|| unitary_real_to_complex(shell.l));
         let flat: Vec<Vec<C64>> = channels
             .iter()
             .map(|n| {
@@ -129,7 +134,19 @@ impl MolecularHubbard {
             })
             .collect();
         let refs: Vec<&[C64]> = flat.iter().map(|v| v.as_slice()).collect();
-        let eval = model::evaluate(ctx, &self.parameters(shell)?, shell.l, spin, &refs)?;
+        let eval = match self.form {
+            Form::Dudarev => model::evaluate(ctx, &self.parameters(shell)?, shell.l, spin, &refs)?,
+            Form::Liechtenstein => liechtenstein_model::evaluate_with_ratios(
+                ctx,
+                shell.u,
+                shell.j,
+                shell.l,
+                &shell.ratios,
+                Basis::Complex,
+                spin,
+                &refs,
+            )?,
+        };
         let potentials = eval
             .potentials
             .iter()
@@ -287,5 +304,102 @@ impl MolecularHubbard {
         }
 
         Ok((total_energy, delta_focks, reports))
+    }
+
+    /// Evaluates one spinor shell from its four `(p x p)` spin blocks `[uu, ud, du, dd]` in
+    /// the real-harmonic basis (`shell.q` / `shell.q_ao`): the shared evaluator for spinor Fock
+    /// matrices and analytic nuclear gradients.
+    pub fn spinor_shell_response(
+        &self,
+        ctx: &Context,
+        shell: &MolecularHubbardShell,
+        blocks: &[Matrix; 4],
+    ) -> Result<spinor_model::Evaluation> {
+        let p = shell.size();
+        let layout = SpinorLayout::new(shell.l, true)?;
+        let flat: [Vec<C64>; 4] =
+            std::array::from_fn(|k| (0..p * p).map(|i| blocks[k][(i / p, i % p)]).collect());
+        let refs = [&flat[0][..], &flat[1][..], &flat[2][..], &flat[3][..]];
+        let occ = SpinorOcc::from_blocks(ctx, layout, refs)?;
+        let hubbard = self.parameters(shell)?;
+        match self.form {
+            Form::Dudarev => spinor_model::evaluate(ctx, &hubbard, &occ),
+            Form::Liechtenstein => {
+                spinor_model::evaluate_liechtenstein_with_ratios(ctx, &hubbard, &shell.ratios, &occ)
+            }
+        }
+    }
+
+    /// First-order change `F_U(D + dD) - F_U(D) = F_U(dD) - F_U(0)` of the `2m x 2m` spinor
+    /// Hubbard Fock matrix under a Hermitian spinor perturbation `change` (exact because both
+    /// Dudarev and Liechtenstein spinor DFT+U functionals are quadratic in `n`).
+    pub fn spinor_linear(&self, ctx: &Context, change: &Matrix) -> Result<Matrix> {
+        let zeros = Matrix::zeros(change.nrows(), change.ncols());
+        let (_, origin, _) = self.evaluate_spinor(ctx, &zeros)?;
+        let (_, moved, _) = self.evaluate_spinor(ctx, change)?;
+        Ok(moved - origin)
+    }
+
+    /// Evaluates the Hubbard energy `E_U`, the `2m x 2m` spin-major Fock addition
+    /// `Delta F = Q_2 V Q_2^T`, and per-shell report data at the orthonormal spinor density `d`.
+    pub fn evaluate_spinor(
+        &self,
+        ctx: &Context,
+        d: &Matrix,
+    ) -> Result<(f64, Matrix, Vec<MolecularHubbardReport>)> {
+        let m = d.nrows() / 2;
+        if d.shape() != (2 * m, 2 * m) {
+            return Err(invalid("spinor Hubbard evaluation needs a 2m x 2m density"));
+        }
+        let mut total_energy = 0.0;
+        let mut delta_fock = Matrix::zeros(2 * m, 2 * m);
+        let mut reports = Vec::with_capacity(self.shells.len());
+
+        for shell in &self.shells {
+            let p = shell.size();
+            let q = shell.q.map(|v| C64::new(v, 0.0));
+            let blocks: [Matrix; 4] = std::array::from_fn(|k| {
+                let (s, t) = (k / 2, k % 2);
+                q.transpose() * d.view((s * m, t * m), (m, m)) * &q
+            });
+            let eval = self.spinor_shell_response(ctx, shell, &blocks)?;
+            if !eval.energy.is_finite() {
+                return Err(invalid("the spinor +U energy is not finite"));
+            }
+            total_energy += eval.energy;
+
+            let v_slice = eval.potential.as_slice();
+            let side = 2 * p;
+            for s in 0..2 {
+                for t in 0..2 {
+                    let v_st =
+                        Matrix::from_fn(p, p, |a, b| v_slice[(s * p + a) * side + t * p + b]);
+                    let added = &q * v_st * q.transpose();
+                    let mut target = delta_fock.view_mut((s * m, t * m), (m, m));
+                    target += &added;
+                }
+            }
+
+            let u_mat = unitary_real_to_complex(shell.l);
+            let n_up = &u_mat * &blocks[0] * u_mat.adjoint();
+            let n_dn = &u_mat * &blocks[3] * u_mat.adjoint();
+            let traces = vec![
+                (0..p).map(|i| n_up[(i, i)].re).sum(),
+                (0..p).map(|i| n_dn[(i, i)].re).sum(),
+            ];
+            reports.push(MolecularHubbardReport {
+                atom: shell.atom,
+                symbol: shell.symbol.clone(),
+                l: shell.l,
+                u_ha: shell.u,
+                j_ha: shell.j,
+                u_eff_ha: shell.u_eff(),
+                energy_ha: eval.energy,
+                trace: traces,
+                n: vec![n_up, n_dn],
+            });
+        }
+
+        Ok((total_energy, delta_fock, reports))
     }
 }

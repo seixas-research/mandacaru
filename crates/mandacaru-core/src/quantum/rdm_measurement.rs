@@ -107,10 +107,9 @@ fn group(strings: &[(u64, u64)]) -> Vec<Group> {
 /// The representative of the orbit of `(p, q, r, s)` under the symmetries of a real `Gamma`.
 fn canonical(index: [usize; 4]) -> [usize; 4] {
     let [p, q, r, s] = index;
-    *[[p, q, r, s], [q, p, s, r], [r, s, p, q], [s, r, q, p]]
-        .iter()
-        .min()
-        .unwrap()
+    [[p, q, r, s], [q, p, s, r], [r, s, p, q], [s, r, q, p]]
+        .into_iter()
+        .fold(index, |best, next| best.min(next))
 }
 
 impl RdmMeasurement {

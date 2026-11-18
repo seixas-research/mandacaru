@@ -72,16 +72,21 @@ fn what_is_not_differentiated_raises_with_the_cause() {
     assert!(unsupported(&data).contains("more than two spin channels"));
     data.crystal.spins = 1;
     data.crystal.hubbard = Some(Spec {
-        form: Form::DudarevFll,
+        form: Form::Dudarev,
         shells: vec![Shell {
             atom: 0,
             symbol: "Li".into(),
             l: 0,
             u: 0.1,
             j: 0.,
+            ratios: mandacaru_core::models::hubbard_slater::Ratios {
+                f4_f2: 0.625,
+                f6_f2: None,
+            },
             projectors: vec![0],
             weights: vec![1.],
             basis: None,
+            source: None,
             seed: Seed::Moment {
                 n_electrons: 1.,
                 moment: 0.,
@@ -89,7 +94,11 @@ fn what_is_not_differentiated_raises_with_the_cause() {
         }],
     });
     data.crystal.spinor = true;
-    assert!(unsupported(&data).contains("DFT+U"));
+    assert!(unsupported(&data).contains("spin-orbit projectors"));
+    data.crystal.hubbard.as_mut().unwrap().form = Form::Liechtenstein;
+    mandacaru_core::periodic::stress_terms::crystal::refuse(&data.crystal)
+        .expect("Liechtenstein DFT+U on a spinor crystal is accepted by the stress gate");
+    data.crystal.hubbard.as_mut().unwrap().form = Form::Dudarev;
     data.crystal.spinor = false;
     data.crystal.hubbard = None;
     data.crystal.permutations = vec![vec![0]];

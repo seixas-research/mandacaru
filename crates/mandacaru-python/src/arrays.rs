@@ -88,3 +88,20 @@ pub(crate) fn complex_array<'py>(
             .collect(),
     )
 }
+
+pub(crate) fn partial_charges_dict<'py>(
+    py: Python<'py>,
+    out: mandacaru_core::math::partial_charges::PartialCharges,
+) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
+    let n = out.charges.len();
+    let dict = pyo3::types::PyDict::new(py);
+    dict.set_item("method", out.method)?;
+    dict.set_item("charges", array(py, &[n], out.charges)?)?;
+    dict.set_item("populations", array(py, &[n], out.populations)?)?;
+    dict.set_item("total_electrons", out.total_electrons)?;
+    dict.set_item("net_charge", out.net_charge)?;
+    dict.set_item("grid_electrons", out.grid_electrons)?;
+    dict.set_item("augmentation", array(py, &[n], out.augmentation)?)?;
+    dict.set_item("interpolated", out.interpolated)?;
+    Ok(dict)
+}

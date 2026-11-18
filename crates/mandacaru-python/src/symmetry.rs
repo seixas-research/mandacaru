@@ -124,7 +124,226 @@ pub fn crystal_symmetry<'py>(
     Ok(dict)
 }
 
+fn length_scale(units: &str) -> PyResult<f64> {
+    if units.eq_ignore_ascii_case("angstrom") || units.eq_ignore_ascii_case("ang") {
+        Ok(mandacaru_core::units::ANGSTROM_TO_BOHR)
+    } else if units.eq_ignore_ascii_case("bohr") {
+        Ok(1.0)
+    } else {
+        Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "unsupported length unit in symmetry report: {units}"
+        )))
+    }
+}
+
+fn parse_moments<'py>(
+    moments: Option<&Bound<'py, PyAny>>,
+    vectors: Option<&Bound<'py, PyAny>>,
+    n_atoms: usize,
+) -> PyResult<(Option<Vec<[f64; 3]>>, bool)> {
+    if let Some(obj) = vectors {
+        if !obj.is_none() {
+            let arr2 = obj.extract::<PyReadonlyArray2<'py, f64>>()?;
+            layout(&arr2)?;
+            if arr2.shape() != [n_atoms, 3] {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "moment_vectors array must have shape (N, 3)",
+                ));
+            }
+            let s = arr2.as_slice()?;
+            let vecs: Vec<[f64; 3]> = (0..n_atoms)
+                .map(|i| [s[3 * i], s[3 * i + 1], s[3 * i + 2]])
+                .collect();
+            let nonzero = vecs.iter().flatten().any(|v| v.abs() > 1e-4);
+            return Ok((Some(vecs), nonzero));
+        }
+    }
+    let Some(obj) = moments else {
+        return Ok((None, false));
+    };
+    if obj.is_none() {
+        return Ok((None, false));
+    }
+    if let Ok(arr2) = obj.extract::<PyReadonlyArray2<'py, f64>>() {
+        layout(&arr2)?;
+        if arr2.shape() != [n_atoms, 3] {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "moments array must have shape (N, 3)",
+            ));
+        }
+        let s = arr2.as_slice()?;
+        let vecs: Vec<[f64; 3]> = (0..n_atoms)
+            .map(|i| [s[3 * i], s[3 * i + 1], s[3 * i + 2]])
+            .collect();
+        let nonzero = vecs.iter().flatten().any(|v| v.abs() > 1e-4);
+        return Ok((Some(vecs), nonzero));
+    }
+    if let Ok(arr1) = obj.extract::<PyReadonlyArray1<'py, f64>>() {
+        layout(&arr1)?;
+        if arr1.shape() != [n_atoms] {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "collinear moments array must have shape (N,)",
+            ));
+        }
+        let s = arr1.as_slice()?;
+        let vecs: Vec<[f64; 3]> = s.iter().map(|&mz| [0.0, 0.0, mz]).collect();
+        let nonzero = vecs.iter().flatten().any(|v| v.abs() > 1e-4);
+        return Ok((Some(vecs), nonzero));
+    }
+    Err(pyo3::exceptions::PyValueError::new_err(
+        "moments must be a 1D (N,) or 2D (N, 3) float64 array",
+    ))
+}
+
+#[pyfunction]
+#[pyo3(signature = (
+    positions,
+    numbers,
+    *,
+    units = "Angstrom",
+    cell = None,
+    pbc = None,
+    moments = None,
+    moment_vectors = None,
+    spins = 1,
+    num_particles = None,
+    unrestricted = false,
+    magnetization = None,
+    method = None,
+    magnetic = false,
+    spin_orbit = false,
+    time_reversal = true,
+    kmesh_reduced = false,
+    kept_operations = None,
+    context = None,
+))]
+pub fn symmetry_log_fields<'py>(
+    py: Python<'py>,
+    positions: PyReadonlyArray2<'py, f64>,
+    numbers: PyReadonlyArray1<'py, i64>,
+    units: &str,
+    cell: Option<PyReadonlyArray2<'py, f64>>,
+    pbc: Option<[bool; 3]>,
+    moments: Option<Bound<'py, PyAny>>,
+    moment_vectors: Option<Bound<'py, PyAny>>,
+    spins: usize,
+    num_particles: Option<[usize; 2]>,
+    unrestricted: bool,
+    magnetization: Option<f64>,
+    method: Option<&str>,
+    magnetic: bool,
+    spin_orbit: bool,
+    time_reversal: bool,
+    kmesh_reduced: bool,
+    kept_operations: Option<usize>,
+    context: Option<&Bound<'py, PyContext>>,
+) -> PyResult<Bound<'py, PyDict>> {
+    layout(&positions)?;
+    layout(&numbers)?;
+    let pos_shape = positions.shape();
+    if pos_shape.len() != 2 || pos_shape[1] != 3 {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "positions must have shape (N, 3)",
+        ));
+    }
+    let n_atoms = pos_shape[0];
+    if numbers.shape() != [n_atoms] {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "numbers length must match positions count",
+        ));
+    }
+    let scale = length_scale(units)?;
+    let pos_slice = positions.as_slice()?;
+    let positions_bohr: Vec<[f64; 3]> = (0..n_atoms)
+        .map(|i| {
+            [
+                pos_slice[3 * i] * scale,
+                pos_slice[3 * i + 1] * scale,
+                pos_slice[3 * i + 2] * scale,
+            ]
+        })
+        .collect();
+    let num_slice = numbers.as_slice()?;
+    let numbers_u8: Vec<u8> = num_slice
+        .iter()
+        .map(|&z| {
+            u8::try_from(z)
+                .map_err(|_| pyo3::exceptions::PyValueError::new_err("atomic number out of range"))
+        })
+        .collect::<PyResult<_>>()?;
+    let labels: Vec<u32> = numbers_u8.iter().map(|&z| u32::from(z)).collect();
+    let has_noncollinear = moment_vectors.as_ref().is_some_and(|v| !v.is_none());
+    let (moment_vecs, moments_nonzero) =
+        parse_moments(moments.as_ref(), moment_vectors.as_ref(), n_atoms)?;
+    let is_ghf = method.is_some_and(|m| m.eq_ignore_ascii_case("ghf"));
+    let spin_orbit = spin_orbit || is_ghf || has_noncollinear;
+    let magnetic = magnetic
+        || unrestricted
+        || spins > 1
+        || num_particles.is_some_and(|[a, b]| a != b)
+        || magnetization.is_some_and(|m| m.abs() > 1e-4)
+        || moments_nonzero;
+    let time_reversal = time_reversal && !(magnetic && spin_orbit);
+    let is_periodic = pbc.unwrap_or([false; 3]).iter().any(|&flag| flag);
+    let lattice_rows: Option<[[f64; 3]; 3]> = match cell {
+        Some(c) => {
+            layout(&c)?;
+            if c.shape() != [3, 3] {
+                return Err(pyo3::exceptions::PyValueError::new_err(
+                    "cell must have shape (3, 3)",
+                ));
+            }
+            let s = c.as_slice()?;
+            Some([
+                [s[0] * scale, s[1] * scale, s[2] * scale],
+                [s[3] * scale, s[4] * scale, s[5] * scale],
+                [s[6] * scale, s[7] * scale, s[8] * scale],
+            ])
+        }
+        None => None,
+    };
+    let ctx = match context {
+        Some(c) => c.borrow().inner.clone(),
+        None => mandacaru_core::Context::new(Some(1), usize::MAX).map_err(error)?,
+    };
+
+    let pairs = py
+        .detach(|| {
+            if is_periodic {
+                if let Some(rows) = lattice_rows {
+                    return mandacaru_core::periodic::space_group::report::crystal_symmetry_fields(
+                        &ctx,
+                        rows,
+                        &positions_bohr,
+                        &labels,
+                        moment_vecs.as_deref(),
+                        magnetic,
+                        spin_orbit,
+                        time_reversal,
+                        kmesh_reduced,
+                        kept_operations,
+                    );
+                }
+            }
+            mandacaru_core::molecular::symmetry::molecular_symmetry_fields(
+                &positions_bohr,
+                &numbers_u8,
+                moment_vecs.as_deref(),
+                magnetic,
+                spin_orbit,
+            )
+        })
+        .map_err(error)?;
+
+    let dict = PyDict::new(py);
+    for (k, v) in pairs {
+        dict.set_item(k, v)?;
+    }
+    Ok(dict)
+}
+
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(crystal_symmetry, m)?)?;
+    m.add_function(wrap_pyfunction!(symmetry_log_fields, m)?)?;
     Ok(())
 }

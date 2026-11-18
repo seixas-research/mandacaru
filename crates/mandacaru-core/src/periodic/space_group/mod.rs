@@ -2,7 +2,9 @@
 pub mod catalog;
 pub mod classify;
 pub mod closure;
+pub mod double_group;
 pub mod matching;
+pub mod report;
 pub mod search;
 pub mod shift;
 pub mod standard;

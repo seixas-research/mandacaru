@@ -10,8 +10,8 @@
 //!
 //! With `screening` the interaction is the static constrained or full RPA screened one
 //! ([`screened`]). With `coulomb="isolated"` the bare interaction is that of the fragment alone in a
-//! doubled supercell ([`isolated`]); the screening is the supercell's either way. Not available,
-//! and refused by name: a spinor crystal.
+//! doubled supercell ([`isolated`]); the screening is the supercell's either way. Both collinear
+//! and two-component spinor crystals are supported.
 pub mod basis;
 pub mod coulomb;
 pub mod functions;
@@ -191,13 +191,6 @@ impl Wannier {
             ));
         }
         let crystal = &*self.crystal;
-        if crystal.spinor {
-            return Err(Error::Unsupported(
-                "the downfolded problem of spinor Wannier functions is not built: its two-body \
-                 terms and spin-orbital layout are those of a spin-orbit Hamiltonian"
-                    .into(),
-            ));
-        }
         let description = response::description(crystal)?;
         if description.projector_basis != "raw" {
             return Err(Error::Unsupported(format!(
@@ -337,6 +330,7 @@ impl Wannier {
             gamma,
             request.num_particles,
             screened.as_ref().map(|(_, s)| s.head),
+            crystal.spinor,
         )?;
         let mut warnings = vec![];
         for channel in &self.channels {

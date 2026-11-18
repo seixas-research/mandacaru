@@ -55,7 +55,7 @@ def run_vasqa_simulation_set(store: Path) -> None:
         ("BeH2", (1.25, 1.35, 1.50), 2),
         ("H4", (0.85, 0.95, 1.10), 3),
     )
-    print("== 1. Running VASQA simulation set ==")
+    print("== 1. Running multi-system VASQA simulation set (molecules + Subspace-VASQA + Bloch k-space) ==")
     for symbols, distances, n_bonds in training_specs:
         for r in distances:
             atoms = linear_chain(symbols, [r] * n_bonds)
@@ -77,19 +77,66 @@ def run_vasqa_simulation_set(store: Path) -> None:
             evals = atoms.calc.result.num_evaluations
             print(f"  {symbols:5s} r={r:.2f} A  E={energy:11.6f} eV  ({evals:4d} evals)")
 
+    # Add a Subspace-VASQA trajectory (excited-state ensemble) and a periodic crystal k-space chain.
+    h2_sub = linear_chain("H2", [0.85])
+    h2_sub.calc = Mandacaru(
+        method="subspace-vasqa",
+        basis="HAO",
+        grid_spacing=0.35,
+        pool="qeb",
+        num_states=2,
+        weights=[0.7, 0.3],
+        max_steps=12,
+        max_length=4,
+        screen_insertions=4,
+        record=str(store),
+        seed=2,
+        trace=False,
+    )
+    print(f"  H2-subspace E0={h2_sub.get_potential_energy():11.6f} eV")
+
+    h2_crystal = Atoms(
+        "H2",
+        positions=[[0.0, 0.0, 0.0], [0.74, 0.0, 0.0]],
+        cell=np.diag([2.4, 5.0, 5.0]),
+        pbc=[True, False, False],
+    )
+    h2_crystal.calc = Mandacaru(
+        method="vasqa",
+        basis="HAO",
+        grid_spacing=0.45,
+        kpts={"size": (2, 1, 1), "gamma": True},
+        max_steps=12,
+        max_length=4,
+        screen_insertions=4,
+        record=str(store),
+        seed=3,
+        trace=False,
+    )
+    print(f"  H2-kspace   E ={h2_crystal.get_potential_energy():11.6f} eV")
+
 
 def summarize_bipartite_graphs(store: Path) -> None:
     """Summarize vertices and X/Y/Z incidence counts of the recorded bipartite graphs."""
     problems = sorted((store / "problems").glob("*.json"))
     chains = sorted((store / "chains").glob("*.jsonl"))
-    n_insert = 0
+    counts = {"insert": 0, "delete": 0, "replace": 0, "curvature_rows": 0}
     for path in chains:
         for line in path.read_text().splitlines():
-            if line.strip() and json.loads(line).get("move") == "insert":
-                n_insert += 1
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            move = row.get("move")
+            if move in counts:
+                counts[move] += 1
+            if row.get("source_curvatures") is not None:
+                counts["curvature_rows"] += 1
 
     print("\n== 2. Bipartite factor-graph dataset summary ==")
-    print(f"  Problems: {len(problems)}   Chain files: {len(chains)}   Insert rows: {n_insert}")
+    print(
+        f"  Problems: {len(problems)}   Chain files: {len(chains)}   "
+        f"Moves={counts['insert']}/{counts['delete']}/{counts['replace']} (curvature={counts['curvature_rows']})"
+    )
     for path in problems[:4]:
         meta = json.loads(path.read_text())
         n_q = meta["num_qubits"]

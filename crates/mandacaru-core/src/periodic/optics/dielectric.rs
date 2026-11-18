@@ -48,6 +48,7 @@ use super::{
     super::{
         berry::{Bands, Metal},
         bloch_mesh::{MeshIndex, Sampler},
+        hubbard::OpticalKernel,
         invalid,
         response::setup::Setup,
         screening::{
@@ -56,7 +57,9 @@ use super::{
         },
         setup::pulay::Mesh,
     },
-    momentum::{band_momenta, check_inversion_closed, one_center_momentum},
+    momentum::{
+        band_momenta_with_hubbard, check_inversion_closed, hubbard_operator, one_center_momentum,
+    },
 };
 use crate::{
     math::{gemm::complex_product, storage::Precision},
@@ -251,6 +254,10 @@ pub struct Pairs {
     pub vectors: Vec<[f64; 3]>,
     /// `sqrt(4 pi) / |G|` of each local-field vector.
     coulomb: Vec<f64>,
+    /// Adiabatic DFT+U finite-rank kernel `dV / dn`, when the crystal carries active DFT+U.
+    hubbard: Option<OpticalKernel>,
+    /// Band degeneracy `g` (`2` restricted, `1` spin-polarized/spinor).
+    degeneracy: f64,
     /// `g w_k / Omega`.
     scale: f64,
     pub mesh: [usize; 3],
@@ -275,13 +282,11 @@ fn check_crystal(sampler: &Sampler<'_>) -> Result<()> {
                 .into(),
         ));
     }
-    if crystal.hubbard.as_ref().is_some_and(|h| h.is_active())
-        || crate::models::functional(&crystal.functional)?.requires_tau
-    {
+    if crate::models::functional(&crystal.functional)?.requires_tau {
         return Err(Error::Unsupported(
-            "the dielectric function of a DFT+U or meta-GGA crystal is not offered: the velocity \
-             of its +U operator or of its v_tau kinetic term is not in the momentum matrix (and \
-             its static response is not the band sum); get_real_time propagates both"
+            "the dielectric function of a meta-GGA crystal is not offered: the velocity of its \
+             v_tau kinetic term is not in the momentum matrix (and its static response is not the \
+             band sum); get_real_time propagates it"
                 .into(),
         ));
     }
@@ -336,6 +341,8 @@ pub fn dielectric(
             &pairs.polarizability(z)?,
             &pairs.coulomb,
             alpha.unwrap_or(0.),
+            pairs.hubbard.as_ref(),
+            pairs.volume / pairs.degeneracy,
         )
     })?;
     let (tensor, last) = tensor.split_at(request.frequencies.len());
@@ -437,7 +444,15 @@ pub fn default_window(
         let fractional = mesh.point(point[s]);
         point[s] += 1;
         let k: [f64; 3] = (sampler.reciprocal * nalgebra::Vector3::from(fractional)).into();
-        let momenta = band_momenta(ctx, sampler.setup, &grid_mesh, &frame, k, &one_center)?;
+        let momenta = band_momenta_with_hubbard(
+            ctx,
+            sampler.setup,
+            &grid_mesh,
+            &frame,
+            k,
+            &one_center,
+            hubbard_operator(crystal, sampler.state, s),
+        )?;
         for v in 0..hi {
             for c in hi..bands {
                 let gap = levels[c] - levels[v] + scissor;
@@ -577,9 +592,20 @@ pub(super) fn columns(
     } else {
         vec![]
     };
+    let hubbard_kernel = if rpa {
+        crystal
+            .hubbard
+            .as_ref()
+            .filter(|h| h.is_active())
+            .map(|h| h.optical_kernel(crystal))
+            .transpose()?
+    } else {
+        None
+    };
+    let mu = hubbard_kernel.as_ref().map_or(0, |k| k.size);
     // The columns are reserved first, before any grid-sized work: a window above the budget is
     // refused at once, by name, with the largest that fits.
-    let rows = 3 + body.len();
+    let rows = 3 + body.len() + mu;
     let per_point: usize = window.iter().map(|(v, c)| v * c).sum();
     let total = product(&[per_point, mesh.points()])?;
     let stored = ctx.reserve(product(&[total, 2, rows, 16])?).map_err(|_| {
@@ -658,7 +684,15 @@ pub(super) fn columns(
         let fractional = mesh.point(point[s]);
         point[s] += 1;
         let k: [f64; 3] = (sampler.reciprocal * nalgebra::Vector3::from(fractional)).into();
-        let momenta = band_momenta(ctx, sampler.setup, &grid_mesh, frame, k, &one_center)?;
+        let momenta = band_momenta_with_hubbard(
+            ctx,
+            sampler.setup,
+            &grid_mesh,
+            frame,
+            k,
+            &one_center,
+            hubbard_operator(crystal, sampler.state, s),
+        )?;
         residual = residual.max(momenta.residual);
         let (valence, conduction) = window[s];
         let energies = frame.energies.as_slice();
@@ -704,6 +738,14 @@ pub(super) fn columns(
         };
         let mut forward = vec![C64::default(); body.len()];
         let at = |a: usize| offset + a;
+        let band_amps: Vec<Vec<Vec<C64>>> = match &hubbard_kernel {
+            Some(hk) => (0..valence + conduction)
+                .map(|a| hk.band_amplitudes(&frame.projections, held_bands, at(a)))
+                .collect(),
+            None => vec![],
+        };
+        let mut u_fwd = vec![C64::default(); mu];
+        let mut u_bwd = vec![C64::default(); mu];
         for v in 0..valence {
             for c in valence..valence + conduction {
                 let gap = energies[at(c)] - energies[at(v)];
@@ -730,6 +772,9 @@ pub(super) fn columns(
                     }
                 }
                 values.extend_from_slice(&head);
+                if let Some(hk) = &hubbard_kernel {
+                    hk.transition_rows(s, &band_amps[v], &band_amps[c], &mut u_fwd, &mut u_bwd);
+                }
                 if let (Some(engine), Some(scratch), Some(samples), Some(augmentation)) =
                     (&engine, scratch.as_mut(), &samples, &augmentation)
                 {
@@ -751,10 +796,14 @@ pub(super) fn columns(
                         augmentation.add(b, a, &mut backward);
                     }
                     values.extend_from_slice(&forward);
+                    values.extend_from_slice(&u_fwd);
                     values.extend(head.iter().map(|h| -h.conj()));
                     values.extend_from_slice(&backward);
+                    values.extend_from_slice(&u_bwd);
                 } else {
+                    values.extend_from_slice(&u_fwd);
                     values.extend(head.iter().map(|h| -h.conj()));
+                    values.extend_from_slice(&u_bwd);
                 }
                 transition_energies.push(shifted);
             }
@@ -794,6 +843,8 @@ pub(super) fn columns(
         energies: transition_energies,
         vectors,
         coulomb,
+        hubbard: hubbard_kernel,
+        degeneracy,
         scale: degeneracy * weight / volume,
         mesh: mesh.size,
         window,
@@ -808,7 +859,7 @@ pub(super) fn columns(
 
 impl Pairs {
     /// Column `2 t + 1` (`rho_cv`) of transition `t` with `backward`, else column `2 t`
-    /// (`rho_vc`): the three head rows, then the local-field vectors.
+    /// (`rho_vc`): the three head rows, then the local-field vectors, then the Hubbard rows.
     pub fn column(&self, t: usize, backward: bool) -> &[C64] {
         let first = (2 * t + usize::from(backward)) * self.rows;
         &self.values[first..first + self.rows]
@@ -817,19 +868,33 @@ impl Pairs {
     pub fn coulomb(&self) -> &[f64] {
         &self.coulomb
     }
+    /// Adiabatic DFT+U optical kernel, if active.
+    pub(super) fn hubbard(&self) -> Option<&OpticalKernel> {
+        self.hubbard.as_ref()
+    }
+    /// Band degeneracy `g`.
+    pub fn degeneracy(&self) -> f64 {
+        self.degeneracy
+    }
     /// `g w_k / Omega`, the weight of one transition in `chi0`.
     pub fn scale(&self) -> f64 {
         self.scale
     }
-    /// `chi0(z)` (rows and columns: the three head rows, then the local-field vectors; Bohr^-3
-    /// Hartree^-1, the head rows divided by `q`): `sum_t rho_t w_t(z) rho_t^dagger`, in chunks of
-    /// transitions in a fixed order.
+    /// `chi0(z)` (rows and columns: the three head rows, then the local-field vectors, then the
+    /// Hubbard rows; Bohr^-3 Hartree^-1 on head/local-field rows): `sum_t rho_t w_t(z) rho_t^dagger`.
     pub fn polarizability(&self, z: C64) -> Result<DMatrix<C64>> {
         polarizability(self, z, self.scale)
     }
-    /// `eps^{ab}(z)` (module documentation): the head alone without local-field rows.
+    /// `eps^{ab}(z)` (module documentation): the head alone without local-field rows (includes
+    /// the adiabatic Hubbard kernel when active).
     pub fn tensor(&self, z: C64) -> Result<[[C64; 3]; 3]> {
-        macroscopic(&self.polarizability(z)?, &self.coulomb, 0.)
+        macroscopic(
+            &self.polarizability(z)?,
+            &self.coulomb,
+            0.,
+            self.hubbard.as_ref(),
+            self.volume / self.degeneracy,
+        )
     }
 }
 
@@ -870,12 +935,19 @@ fn polarizability(columns: &Pairs, z: C64, scale: f64) -> Result<DMatrix<C64>> {
 /// (4 pi - alpha) / |G|^2` and the head's is `f_xc` alone (`v` has no macroscopic term), `-alpha`
 /// on the head rows (divided by `q`): `chi~ = (1 + alpha chibar)^-1 chibar`, isotropic in the head
 /// rows, so exact along the principal axes of a cubic crystal.
-fn macroscopic(chi: &DMatrix<C64>, coulomb: &[f64], alpha: f64) -> Result<[[C64; 3]; 3]> {
+fn macroscopic(
+    chi: &DMatrix<C64>,
+    coulomb: &[f64],
+    alpha: f64,
+    hubbard: Option<&OpticalKernel>,
+    hubbard_volume: f64,
+) -> Result<[[C64; 3]; 3]> {
     let nb = coulomb.len();
+    let mu = hubbard.map_or(0, |h| h.size);
     let shrink = (1. - alpha / (4. * PI)).sqrt();
     let coulomb: Vec<f64> = coulomb.iter().map(|c| c * shrink).collect();
     let mut bar = chi.view((0, 0), (3, 3)).into_owned();
-    if nb > 0 {
+    if mu == 0 && nb > 0 {
         // (1 - v^1/2 chi_body v^1/2) X = v^1/2 chi_{G, b}; chibar = chi_00 + chi_{a, G} v^1/2 X.
         let system = DMatrix::from_fn(nb, nb, |g, h| {
             C64::new(f64::from(g == h), 0.) - coulomb[g] * chi[(3 + g, 3 + h)] * coulomb[h]
@@ -892,6 +964,26 @@ fn macroscopic(chi: &DMatrix<C64>, coulomb: &[f64], alpha: f64) -> Result<[[C64;
                     .sum::<C64>();
             }
         }
+    } else if mu > 0 {
+        let rest = nb + mu;
+        let hk = hubbard.expect("checked mu > 0");
+        let chi_rest = chi.view((3, 3), (rest, rest));
+        let chi_rb = chi.view((3, 0), (rest, 3));
+        let mut kernel = DMatrix::<C64>::zeros(rest, rest);
+        for g in 0..nb {
+            kernel[(g, g)] = C64::new(coulomb[g] * coulomb[g], 0.);
+        }
+        kernel
+            .view_mut((nb, nb), (mu, mu))
+            .copy_from(&(&hk.singlet * C64::new(hubbard_volume, 0.)));
+        let system = DMatrix::<C64>::identity(rest, rest) - &kernel * chi_rest;
+        let wings = &kernel * chi_rb;
+        let solved = system
+            .lu()
+            .solve(&wings)
+            .ok_or_else(|| invalid("the local-field and Hubbard dielectric matrix is singular"))?;
+        let head_corr = chi.view((0, 3), (3, rest)) * solved;
+        bar += head_corr;
     }
     if alpha != 0. {
         let system = nalgebra::Matrix3::<C64>::identity()

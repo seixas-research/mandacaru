@@ -220,6 +220,16 @@ pub(in crate::molecular::excitations) fn state_gradient(
             spinors.plus.len()
         )));
     }
+    if integrals
+        .corrections
+        .as_ref()
+        .is_some_and(|c| c.hubbard.is_some())
+    {
+        return Err(crate::Error::Unsupported(
+            "analytic excited-state forces of a spinor DFT+U reference are not yet implemented"
+                .into(),
+        ));
+    }
     integrals.context.run(|| {
         let op = Spinor::new(integrals, reference)?;
         if op.spin_orbit && !op.kernel.unpolarized() {

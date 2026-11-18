@@ -34,7 +34,7 @@ use mandacaru_core::{
 };
 use nalgebra::{DMatrix, Matrix3};
 use std::f64::consts::PI;
-use wannier_downfold_support::{chain, rephase, request};
+use wannier_downfold_support::{chain, chain_set, rephase, request};
 
 fn at(n: usize, p: usize, q: usize, r: usize, s: usize) -> usize {
     ((p * n + q) * n + r) * n + s
@@ -520,4 +520,100 @@ fn the_isolated_box_keeps_the_sum_rules_and_agrees_with_the_supercell_for_a_comp
     );
     println!("U isolated {a:.4} eV, supercell {b:.4} eV");
     assert!((a - b).abs() < 0.8 && a > 14. && a < 22., "{a} against {b}");
+}
+
+#[test]
+fn spinor_bare_downfold_keeps_sum_rules_fock_identity_and_matches_restricted_zero_soc_limit() {
+    let (_ctx_r, restricted_w) = chain_set([2, 1, 1], "lda-sr", false);
+    let (_ctx_s, spinor_w) = chain_set([2, 1, 1], "lda-fr", true);
+
+    let restricted = restricted_w.downfold(&request(None)).unwrap();
+    let spinor = spinor_w.downfold(&request(None)).unwrap();
+
+    assert!(!restricted.problem.spinor);
+    assert!(spinor.problem.spinor);
+    assert_eq!(spinor.problem.n, 4);
+    assert_eq!(spinor.problem.spins, 1);
+
+    let eye = DMatrix::<C64>::identity(4, 4);
+    for (metric, charge) in &spinor.norms {
+        assert!((metric - &eye).norm() < 1e-8, "spinor overlap {metric}");
+        assert!((charge - &eye).norm() < 1e-8, "spinor charge {charge}");
+    }
+
+    // Generalized spin-orbital Fock identity (exchange weight = 1.0, not 0.5).
+    let p_s = &spinor.problem;
+    let n = p_s.n;
+    let g = &p_s.wannier.two_body[0];
+    let gamma = &p_s.density_matrix[0];
+    let mut fock = p_s.wannier.one_body[0].clone();
+    for p in 0..n {
+        for q in 0..n {
+            for r in 0..n {
+                for s in 0..n {
+                    fock[(p, q)] +=
+                        gamma[(r, s)] * (g[at(n, p, r, q, s)] - g[at(n, p, r, s, q)]);
+                }
+            }
+        }
+    }
+    assert!(
+        (&fock - &p_s.kohn_sham[0]).norm() < 1e-10,
+        "spinor Fock identity"
+    );
+
+    // Pair symmetries.
+    let scale = g.iter().map(|v| v.norm()).fold(0., f64::max);
+    for p in 0..n {
+        for q in 0..n {
+            for r in 0..n {
+                for s in 0..n {
+                    let v = g[at(n, p, q, r, s)];
+                    assert!((v - g[at(n, q, p, s, r)]).norm() < 1e-12 * scale);
+                    assert!((v - g[at(n, r, s, p, q)].conj()).norm() < 1e-12 * scale);
+                }
+            }
+        }
+    }
+
+    // Spin-up/down sectors match each other identically (zero H 1s SOC; trials are ordered
+    // `[H0:up, H0:down, H1:up, H1:down]`) and match scalar-rel H2 (`lda-sr`) closely.
+    let u_res = restricted.problem.wannier.two_body[0][0].re;
+    let u_spin_uu = g[at(n, 0, 0, 0, 0)].re;
+    let u_spin_dd = g[at(n, 1, 1, 1, 1)].re;
+    let u_spin_ud = g[at(n, 0, 1, 0, 1)].re;
+    assert!((u_spin_uu - u_spin_dd).abs() < 1e-10, "{u_spin_uu} vs {u_spin_dd}");
+    assert!((u_spin_uu - u_spin_ud).abs() < 1e-8, "{u_spin_uu} vs {u_spin_ud}");
+    assert!((u_spin_uu - u_res).abs() < 5e-3, "{u_spin_uu} vs {u_res}");
+
+    let mut eig_r: Vec<f64> = restricted
+        .problem
+        .kohn_sham[0]
+        .clone()
+        .symmetric_eigenvalues()
+        .as_slice()
+        .to_vec();
+    let mut eig_s: Vec<f64> = p_s
+        .kohn_sham[0]
+        .clone()
+        .symmetric_eigenvalues()
+        .as_slice()
+        .to_vec();
+    eig_r.sort_by(f64::total_cmp);
+    eig_s.sort_by(f64::total_cmp);
+    assert_eq!(eig_r.len() * 2, eig_s.len());
+    for i in 0..eig_r.len() {
+        assert!(
+            (eig_s[2 * i] - eig_s[2 * i + 1]).abs() < 1e-7,
+            "Kramers pair {i}: {} vs {}",
+            eig_s[2 * i],
+            eig_s[2 * i + 1]
+        );
+        assert!(
+            (eig_s[2 * i] - eig_r[i]).abs() < 5e-3,
+            "eig {i}: {} vs {}",
+            eig_s[2 * i],
+            eig_r[i]
+        );
+    }
 }

@@ -1705,3 +1705,74 @@ def test_the_difference_the_ratio_and_the_threshold_are_plain_arithmetic_once():
     assert _native.difference(0.3, 0.1) == 0.3 - 0.1
     assert _native.percent(0.375) == 100 * 0.375
     assert _native.at_most(1.0, 1.0) and not _native.at_most(1.0000001, 1.0)
+
+
+def test_symmetry_log_section_reports_material_magnetic_and_double_group(tmp_path):
+    from ase.build import bulk
+    from mandacaru import Mandacaru
+    from mandacaru.pseudopotentials import get_paw
+
+    # 1. Molecular closed-shell calculation: material point-group symmetry, no spin-orbit.
+    mol_log = str(tmp_path / "h2o.txt")
+    h2o = Atoms("OH2", positions=[[0, 0, 0], [0, 0.76, 0.59], [0, -0.76, 0.59]])
+    h2o.center(vacuum=3.0)
+    h2o.calc = Mandacaru(method="rhf", basis="HAO", grid_spacing=0.45, txt=mol_log)
+    h2o.get_potential_energy()
+    sym_mol = parse_output(mol_log)["symmetry"]
+    assert sym_mol["system_kind"] == "molecule"
+    assert sym_mol["point_group"] == "C2v"
+    assert "material_symmetry_discussion" in sym_mol
+    assert "magnetic_symmetry" not in sym_mol
+    assert "spin_orbit_double_group" not in sym_mol
+
+    # 2. Spin-polarized magnetic open-shell calculation: magnetic group section appears.
+    mag_log = str(tmp_path / "oh_mag.txt")
+    oh = Atoms("OH", positions=[[0, 0, 0], [0, 0, 0.97]], magmoms=[1.0, 0.0])
+    oh.center(vacuum=3.0)
+    oh.calc = Mandacaru(method="uhf", basis="HAO", grid_spacing=0.45, txt=mag_log)
+    oh.get_potential_energy()
+    sym_mag = parse_output(mag_log)["symmetry"]
+    assert sym_mag["magnetic_symmetry"] == "present"
+    assert "magnetic_group_type" in sym_mag
+    assert "magnetic_symmetry_discussion" in sym_mag
+
+    # 3. Spin-orbit calculation (-fr PAW dataset): SU(2) double group discussion appears.
+    try:
+        get_paw("Br", "pbe-fr")
+    except (FileNotFoundError, ValueError):
+        return
+    soc_log = str(tmp_path / "hbr_soc.txt")
+    hbr = Atoms("HBr", positions=[[0, 0, 0], [0, 0, 1.41]], cell=[6.0, 6.0, 7.0])
+    hbr.center()
+    hbr.calc = Mandacaru(
+        method="ghf",
+        basis={"name": "PAW-LCAO", "size": "SZ", "paw_dataset": "pbe-fr"},
+        grid_spacing=0.4,
+        txt=soc_log,
+    )
+    hbr.get_potential_energy()
+    sym_soc = parse_output(soc_log)["symmetry"]
+    assert "spin_orbit_double_group" in sym_soc
+    assert "SU(2)" in sym_soc["spin_orbit_double_group"]
+    assert "double_group_discussion" in sym_soc
+
+    # 4. Periodic spin-orbit crystal: crystallographic space group + SU(2) double group.
+    try:
+        get_paw("Si", "pbe-fr")
+    except (FileNotFoundError, ValueError):
+        return
+    crys_log = str(tmp_path / "si_soc.txt")
+    si = bulk("Si", "diamond", a=5.43)
+    si.calc = Mandacaru(
+        method="dft",
+        xc="pbe",
+        basis={"name": "PAW-LCAO", "size": "SZ", "paw_dataset": "pbe-fr"},
+        grid_spacing=0.45,
+        kpts=(1, 1, 1),
+        txt=crys_log,
+    )
+    si.get_potential_energy()
+    sym_crys = parse_output(crys_log)["symmetry"]
+    assert sym_crys["system_kind"] == "periodic crystal"
+    assert "Fd-3m" in sym_crys["space_group"]
+    assert "spin_orbit_double_group" in sym_crys and "bar_E" in sym_crys["double_group_discussion"]

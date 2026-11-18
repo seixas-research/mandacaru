@@ -11,11 +11,10 @@
 mod paw_diagnose_support;
 mod paw_spin_orbit_support;
 
-use mandacaru_core::models::xc_scheme::AtomSolver;
 use mandacaru_core::paw::diagnose::{
     ghosts::{branch_ghost_errors, ghost_errors, GHOST_TOLERANCE},
     kappa::{branches, level_errors, recovery_mismatch},
-    reference::{reference_atom_with, AeLogs, AllElectron},
+    reference::{reference_atom, AeLogs, AllElectron},
     scattering::scattering_errors,
     spectrum::branch_level_error,
     view::Key,
@@ -124,7 +123,7 @@ fn worst_branch_phase(
     ds: &mandacaru_core::paw::record::PawDataset,
     mutate: impl Fn(&mut mandacaru_core::paw::diagnose::view::Smooth),
 ) -> f64 {
-    let atom = reference_atom_with(ctx, ds, &AtomSolver).unwrap();
+    let atom = reference_atom(ctx, ds).unwrap();
     let mut set = branches(ctx, ds).unwrap();
     mutate(&mut set);
     let ae = AllElectron::new(&atom, ds.atomic_number as u8, &set.frozen, &set.semicore);
@@ -367,4 +366,43 @@ fn the_branch_levels_of_a_generated_dataset_are_the_recorded_ones_at_full_resolu
     }
     eprintln!("Na: full-resolution branch levels agree to {worst:.3e} Ha");
     assert!(worst <= FULL_RESOLUTION_GATE, "{worst:e}");
+}
+
+#[test]
+fn diagnosis_branch_phases_populate_for_dirac_datasets() {
+    use mandacaru_core::paw::diagnose::scattering::{PHASE_TOLERANCE, RESONANCE_TOLERANCE};
+    use mandacaru_core::paw::diagnose::Diagnosis;
+    let ctx = context();
+    for (set, element) in [("lda-fr", "Na"), ("lda-fr", "Fe")] {
+        let ds = read(&ctx, &dataset_path(set, element));
+        let atom = reference_atom(&ctx, &ds).unwrap();
+        let smooth = mandacaru_core::paw::diagnose::view::Smooth::scalar(&ctx, &ds).unwrap();
+        let ae = AllElectron::new(
+            &atom,
+            ds.atomic_number as u8,
+            &smooth.frozen,
+            &smooth.semicore,
+        );
+        let mut cache = AeLogs::new();
+        let diag = Diagnosis::run(&ctx, &smooth, &ae, &mut cache)
+            .unwrap()
+            .with_branches(&ctx, &ds)
+            .unwrap()
+            .with_branch_phases(&ctx, &ds, &ae, &mut cache)
+            .unwrap();
+        let branch = diag.branch_phases();
+        assert_eq!(branch.len(), 2 * ds.spin_orbit.len(), "{set}/{element}");
+        for (key, [near, far]) in &branch {
+            eprintln!(
+                "{set}/{element} l={} kappa={:?}: near={near:.3e}, far={far:.3e}",
+                key.l, key.kappa
+            );
+            assert!(
+                *near <= PHASE_TOLERANCE && *far <= RESONANCE_TOLERANCE,
+                "{set}/{element} l={} kappa={:?}: near={near:.3e}, far={far:.3e}",
+                key.l,
+                key.kappa
+            );
+        }
+    }
 }

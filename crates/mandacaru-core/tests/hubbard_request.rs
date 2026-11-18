@@ -16,12 +16,12 @@ fn message(text: &str) -> String {
 fn a_mapping_resolves_into_typed_entries_in_hartree() {
     let request = Request::parse(r#"{"Ni": {"l": "d", "U": 6.0, "J": 0.5}}"#).unwrap();
     let ni = request.entry("Ni").unwrap();
-    assert_eq!((ni.l, ni.letter(), ni.form), (2, 'd', Form::DudarevFll));
+    assert_eq!((ni.l, ni.letter(), ni.form), (2, 'd', Form::Dudarev));
     // Exact: the conversion is one division, the same one the Python constant is used in.
     assert_eq!(ni.u, 6.0 / HARTREE_TO_EV);
     assert_eq!(ni.j, 0.5 / HARTREE_TO_EV);
     assert_eq!(ni.u_eff(), 6.0 / HARTREE_TO_EV - 0.5 / HARTREE_TO_EV);
-    assert_eq!(request.form(), Form::DudarevFll);
+    assert_eq!(request.form(), Form::Dudarev);
 }
 
 #[test]
@@ -47,14 +47,47 @@ fn the_form_field_is_optional_and_names_a_form_the_engine_implements() {
         assert_eq!(Form::parse(form.name()).unwrap(), form);
     }
     let omitted = Request::parse(r#"{"Ni": {"l": "d", "U": 3.0}}"#).unwrap();
-    let explicit =
-        Request::parse(r#"{"Ni": {"l": "d", "U": 3.0, "form": "dudarev-fll"}}"#).unwrap();
+    let explicit = Request::parse(r#"{"Ni": {"l": "d", "U": 3.0, "form": "dudarev"}}"#).unwrap();
     assert_eq!(omitted, explicit);
-    let unknown = message(r#"{"Ni": {"l": "d", "U": 3.0, "form": "liechtenstein"}}"#);
-    for part in ["hubbard_u", "Ni", "liechtenstein", "dudarev-fll"] {
+    let unknown = message(r#"{"Ni": {"l": "d", "U": 3.0, "form": "amf"}}"#);
+    for part in ["hubbard_u", "Ni", "amf", "dudarev", "liechtenstein"] {
         assert!(unknown.contains(part), "{unknown}");
     }
     assert!(message(r#"{"Ni": {"l": "d", "U": 3.0, "form": 1}}"#).contains("form must be a string"));
+}
+
+#[test]
+fn slater_ratios_parse_for_liechtenstein_and_refuse_invalid_combinations() {
+    use mandacaru_core::models::hubbard_slater::Ratios;
+    let d_custom = Request::parse(
+        r#"{"Ni": {"l": "d", "U": 5.0, "J": 0.9, "form": "liechtenstein", "f4_f2": 0.7}}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        d_custom.entry("Ni").unwrap().ratios,
+        Ratios::new(2, Some(0.7), None).unwrap()
+    );
+    let f_custom = Request::parse(
+        r#"{"Gd": {"l": "f", "U": 6.0, "J": 0.7, "form": "liechtenstein", "f4_f2": 0.65, "f6_f2": 0.48}}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        f_custom.entry("Gd").unwrap().ratios,
+        Ratios::new(3, Some(0.65), Some(0.48)).unwrap()
+    );
+    assert!(message(r#"{"Ni": {"l": "d", "U": 5.0, "f4_f2": 0.7}}"#).contains("liechtenstein"));
+    assert!(
+        message(r#"{"Ni": {"l": "d", "U": 5.0, "form": "liechtenstein", "f6_f2": 0.5}}"#)
+            .contains("f6_f2")
+    );
+    assert!(
+        message(r#"{"Ni": {"l": "d", "U": 5.0, "form": "liechtenstein", "f4_f2": 1.2}}"#)
+            .contains("f4_f2")
+    );
+    assert!(
+        message(r#"{"Ni": {"l": "d", "U": 5.0, "form": "liechtenstein", "f4_f2": NaN}}"#)
+            .contains("finite number")
+    );
 }
 
 #[test]

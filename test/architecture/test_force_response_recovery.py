@@ -216,15 +216,47 @@ def test_lagrangian_correction_of_a_loose_adapt_lih_state_matches_the_converged_
     assert abs(force - tight_force) < 5 * details["z_vector_norm"] ** 2
 
 
-def test_search_methods_report_their_stationarity_and_subspace_forces_are_refused_by_name():
+def test_search_methods_report_stationarity_and_subspace_result_forces_with_root():
     _, _, details, _ = _h2_force({"method": "BFGS", "maxiter": 200, "tol": 1e-10}, method="vasqa")
     assert details["stationarity"] in {"stationary", "lagrangian"}
+
     atoms = Atoms("H2", positions=[[2.5, 2.5, 2.1], [2.5, 2.5, 2.9]], cell=[5.] * 3)
-    with Mandacaru(method="subspace-vqe", atoms=atoms, basis="HAO", grid_spacing=.5,
-                   parallelization={"threads": 1}) as calc:
-        calc.run()
-        with pytest.raises(ValueError, match="subspace method"):
-            calc.result.forces()
+    weights = [0.7, 0.3]
+    with Mandacaru(
+        method="subspace-vasqa",
+        atoms=atoms,
+        basis="PAW-LCAO",
+        grid_spacing=.4,
+        num_states=2,
+        weights=weights,
+        max_steps=12,
+        max_length=2,
+        seed=1,
+        early_reject=True,
+        strip_zero_operators=True,
+        carry_hessian=True,
+        parallelization={"threads": 1},
+    ) as calc:
+        atoms.calc = calc
+        ase_forces = atoms.get_forces()
+        f0 = calc.result.forces(root=0)
+        f1 = calc.result.forces(root=1)
+        assert f0.shape == (2, 3) and f1.shape == (2, 3)
+        assert np.allclose(ase_forces, f0, atol=1e-5)
+        assert np.allclose(f0.sum(axis=0), 0.0, atol=1e-4)
+        assert np.allclose(f1.sum(axis=0), 0.0, atol=1e-4)
+        assert calc.result.force_details["scheme"] == "analytic"
+        with pytest.raises(ValueError, match="invalid root"):
+            calc.result.forces(root=2)
+        with pytest.raises(ValueError, match="invalid root"):
+            calc.result.forces(root=-1)
+
+    with Mandacaru(method="vasqa", atoms=atoms, basis="PAW-LCAO", grid_spacing=.4,
+                   max_steps=4, max_length=2, seed=1,
+                   screen_hamiltonian_terms=4, parallelization={"threads": 1}) as single:
+        single.run()
+        with pytest.raises(ValueError, match="invalid root"):
+            single.result.forces(root=1)
 
 
 def test_subspace_quantum_gradient_and_fit_edit_proposal():

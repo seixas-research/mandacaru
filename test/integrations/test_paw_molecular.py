@@ -78,17 +78,39 @@ def test_hartree_fock_runs_over_a_multi_shell_core():
     assert np.isfinite(atoms.get_potential_energy())
 
 
-def test_a_hybrid_on_a_multi_shell_core_is_refused_by_name():
-    """HSE06 takes a fraction of exact exchange, which includes the valence's exchange with the
-    frozen core, which the screened one-center terms carry for an empty core or a single closed 1s
-    shell only: on SiH4 (a 1s 2s 2p core) it raises, naming the functional, while the semilocal
-    functional of the same molecule runs."""
-    def silane_with(xc):
-        atoms = silane()
-        atoms.calc = Mandacaru(method="dft", xc=xc, basis={"name": "PAW-LCAO", "size": "SZ"},
-                               grid_spacing=0.3)
-        return atoms
+def test_hybrid_runs_over_a_multi_shell_core():
+    """HSE06 includes screened core-valence exact exchange and consistent semilocal core subtraction
+    for multi-shell frozen cores (e.g. Si 1s 2s 2p), so hybrid DFT runs on SiH4 just as PBE and RHF do."""
+    atoms = silane()
+    atoms.calc = Mandacaru(method="dft", xc="hse06", basis={"name": "PAW-LCAO", "size": "SZ"},
+                           grid_spacing=0.3)
+    assert np.isfinite(atoms.get_potential_energy())
 
-    assert np.isfinite(silane_with("pbe").get_potential_energy())
-    with pytest.raises(ValueError, match="hse06 takes 0.25 of exact exchange.*screened core-valence exchange"):
-        silane_with("hse06").get_potential_energy()
+
+@pytest.mark.parametrize("collinear", ["rhf", "uhf"])
+def test_collinear_hf_refuses_spin_orbit_dataset(collinear):
+    atoms = Atoms("HBr", positions=[[0, 0, 0], [0, 0, 1.41]], cell=[6.0, 6.0, 7.0])
+    atoms.center()
+    atoms.calc = Mandacaru(
+        method=collinear,
+        basis={"name": "PAW-LCAO", "size": "SZ", "paw_dataset": "pbe-fr"},
+        grid_spacing=0.35,
+    )
+    with pytest.raises(NotImplementedError, match="spin-orbit"):
+        atoms.get_potential_energy()
+
+
+def test_spin_orbit_ghf_and_vqe_run_with_spinor_reference():
+    atoms = Atoms("HBr", positions=[[0, 0, 0], [0, 0, 1.41]], cell=[6.0, 6.0, 7.0])
+    atoms.center()
+    basis_fr = {"name": "PAW-LCAO", "size": "SZ", "paw_dataset": "pbe-fr"}
+    atoms.calc = Mandacaru(method="ghf", basis=basis_fr, grid_spacing=0.35)
+    e_ghf = atoms.get_potential_energy()
+    assert np.isfinite(e_ghf)
+    assert atoms.calc.result.hamiltonian is not None
+    for q_method in ("vqe", "adapt-vqe"):
+        atoms.calc = Mandacaru(method=q_method, basis=basis_fr, grid_spacing=0.35)
+        e_q = atoms.get_potential_energy()
+        assert np.isfinite(e_q)
+        assert e_q < e_ghf - 0.1
+

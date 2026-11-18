@@ -20,3 +20,6 @@ ruzstd.workspace = true
 [[bench]]
 name = "vasqa_bench"
 harness = false
+
+[lints]
+workspace = true

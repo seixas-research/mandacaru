@@ -52,7 +52,10 @@ pub(super) fn minimize<'p>(
             Some(f) => f,
             None => {
                 hessian = DMatrix::identity(n, n);
-                hessian.clone().cholesky().unwrap()
+                hessian
+                    .clone()
+                    .cholesky()
+                    .ok_or_else(|| Error::Kernel("identity Cholesky failed".into()))?
             }
         };
         let direction = factor.solve(&DVector::from_iterator(n, gradient.iter().map(|v| -v)));

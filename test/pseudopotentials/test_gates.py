@@ -78,3 +78,37 @@ def test_a_twin_with_another_partition_fails_the_partition_gate(lithium):
     report = _native.paw_validate(context(), payload, tables, twin=(json.dumps(other), tables))
     row, = [r for r in report["rows"] if r["gate"] == "G8" and "twin" in r["check"]]
     assert row["status"] == "FAIL" and not report["passed"]
+
+
+def test_provenance_survives_python_roundtrip_without_altering_content_digest(lithium):
+    import json
+    from mandacaru.pseudopotentials.record import dataset_from_record, record_of
+    path, answer = lithium
+    payload, tables = _native.paw_record_read(context(), path)
+    meta = json.loads(payload)
+    assert meta["provenance"]["generator"] == "mandacaru-core"
+    assert meta["provenance"]["xc_scheme"] == "variational"
+    assert meta["provenance"]["search"] == answer["label"]
+    pp = dataset_from_record(payload, tables, warn=False)
+    assert pp.provenance == meta["provenance"]
+    rt_payload, rt_tables = record_of(pp)
+    assert json.loads(rt_payload)["provenance"] == meta["provenance"]
+    digest_with = _native.paw_content_sha256(context(), path)
+    assert digest_with == _native.paw_content_sha256(context(), path)
+    assert _native.paw_validate(context(), rt_payload, rt_tables)["passed"]
+
+
+def test_dirac_build_reports_branch_phases_and_g3_rows(tmp_path):
+    path = str(tmp_path / "C.parquet")
+    answer = _native.paw_build(
+        context(),
+        "C",
+        {"family": "paw-lcao", "xc": "lda", "relativity": "dirac", "ghosts": "repair"},
+        path,
+        stride=STRIDE,
+        check=True,
+    )
+    assert answer["gates"]["passed"]
+    assert set(answer["diagnosis"]["branch_phases"]) == {"1:1", "1:-2"}
+    j_rows = [r for r in answer["gates"]["rows"] if r["gate"] == "G3" and "j-branch" in r["check"]]
+    assert len(j_rows) == 2 and all(r["status"] == "pass" for r in j_rows)

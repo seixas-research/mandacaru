@@ -879,6 +879,7 @@ impl PyQuantumProblem {
             "states",
             state_array(py, &[weights.len(), dimension], result.states)?,
         )?;
+        out.set_item("weights", weights)?;
         out.set_item("reference_indices", result.reference_indices)?;
         out.set_item("search_json", details)?;
         Ok(out)
@@ -939,6 +940,12 @@ impl PyQuantumProblem {
                 )?;
                 problem.precision = self.inner.precision;
                 problem.use_hva(layers, evolution, order, steps, seed_angle)?;
+                if let Some(momentum) = &self.inner.momentum {
+                    problem.restrict_momentum(momentum)?;
+                }
+                if let Some(point_symmetry) = &self.inner.point_symmetry {
+                    problem.restrict_point_symmetry(point_symmetry)?;
+                }
                 Ok::<_, mandacaru_core::Error>(problem)
             })
             .map_err(error)?;
@@ -1246,6 +1253,7 @@ impl PyQuantumProblem {
             "states",
             state_array(py, &[weights.len(), dimension], result.states)?,
         )?;
+        out.set_item("weights", weights)?;
         out.set_item("reference_ha", result.reference)?;
         out.set_item(
             "operators",
@@ -1287,6 +1295,53 @@ impl PyQuantumProblem {
                 self.inner.with_momentum(&momentum)
             })
             .map_err(error)?;
+        Ok(Self { inner })
+    }
+    /// Filter the operator pool to excitations conserving Abelian crystal point-/space-group characters.
+    fn with_point_symmetry(
+        &self,
+        py: Python<'_>,
+        labels: Vec<String>,
+        characters: Vec<Vec<(f64, f64)>>,
+    ) -> PyResult<Self> {
+        let chars: Vec<Vec<C64>> = characters
+            .into_iter()
+            .map(|row| row.into_iter().map(|(re, im)| C64::new(re, im)).collect())
+            .collect();
+        let inner = py
+            .detach(|| {
+                let symmetry = mandacaru_core::quantum::CrystalPointSymmetry::new(labels, chars)?;
+                self.inner.with_point_symmetry(&symmetry)
+            })
+            .map_err(error)?;
+        Ok(Self { inner })
+    }
+    /// Filter the operator pool to excitations conserving crystal momentum and Abelian point symmetry.
+    fn with_crystal_symmetry(
+        &self,
+        py: Python<'_>,
+        mesh: [usize; 3],
+        orbital_k: Vec<[i64; 3]>,
+        labels: Vec<String>,
+        characters: Vec<Vec<(f64, f64)>>,
+    ) -> PyResult<Self> {
+        let chars: Vec<Vec<C64>> = characters
+            .into_iter()
+            .map(|row| row.into_iter().map(|(re, im)| C64::new(re, im)).collect())
+            .collect();
+        let inner = py
+            .detach(|| {
+                let momentum = mandacaru_core::quantum::CrystalMomentum::new(mesh, orbital_k)?;
+                let symmetry = mandacaru_core::quantum::CrystalPointSymmetry::new(labels, chars)?;
+                self.inner
+                    .with_crystal_symmetry(Some(&momentum), Some(&symmetry))
+            })
+            .map_err(error)?;
+        Ok(Self { inner })
+    }
+    /// Return a Z2-tapered copy of this problem (preserving prior momentum/point-symmetry filtering).
+    fn with_taper(&self, py: Python<'_>) -> PyResult<Self> {
+        let inner = py.detach(|| self.inner.with_taper()).map_err(error)?;
         Ok(Self { inner })
     }
     #[getter]
@@ -1359,6 +1414,27 @@ impl PyQuantumProblem {
     #[getter]
     fn mapping(&self) -> String {
         self.inner.encoding.mapping.clone()
+    }
+    #[getter]
+    #[allow(clippy::type_complexity)]
+    fn momentum(&self) -> Option<([usize; 3], Vec<[i64; 3]>)> {
+        self.inner
+            .momentum
+            .as_ref()
+            .map(|m| (m.mesh, m.orbital_k.clone()))
+    }
+    #[getter]
+    #[allow(clippy::type_complexity)]
+    fn point_symmetry(&self) -> Option<(Vec<String>, Vec<Vec<(f64, f64)>>)> {
+        self.inner.point_symmetry.as_ref().map(|s| {
+            (
+                s.labels.clone(),
+                s.characters
+                    .iter()
+                    .map(|row| row.iter().map(|c| (c.re, c.im)).collect())
+                    .collect(),
+            )
+        })
     }
     #[getter]
     fn dimension(&self) -> PyResult<usize> {

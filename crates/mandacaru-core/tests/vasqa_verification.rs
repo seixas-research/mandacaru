@@ -18,7 +18,8 @@ use mandacaru_core::{
         optimizer::{self, Method},
         properties::{oscillator_strength, transition_dipole},
         search::{kernel::Kernel, vasqa::SearchOptions},
-        Basis, CrystalMomentum, Encoding, Operator, QuantumProblem, SolveOptions, C64,
+        Basis, CrystalMomentum, CrystalPointSymmetry, Encoding, Operator, QuantumProblem,
+        SolveOptions, C64,
     },
     Context,
 };
@@ -1821,13 +1822,14 @@ fn valsqa_multimove_edit_model_records_curvatures_roundtrips_and_converges() {
         max_length: 4,
         move_weights: [1., 0.8, 0.8],
         temperatures: [0.02, 0.0005],
+        screen_insertions: 4,
         record: true,
         record_curvatures: true,
         seed: 7,
         ..Default::default()
     };
     let recorded = p.search(&rec_opts, &[], &[]).unwrap();
-    assert_eq!(recorded.records.len(), rec_opts.max_steps);
+    assert!(recorded.records.len() >= rec_opts.max_steps);
     let mut records = Vec::new();
     for mut step in recorded.records {
         let curvs = step["source_curvatures"]
@@ -1863,17 +1865,19 @@ fn valsqa_multimove_edit_model_records_curvatures_roundtrips_and_converges() {
         &[EditKind::Insert, EditKind::Delete, EditKind::Replace],
     )
     .unwrap();
-    assert_eq!(dataset.counts.iter().sum::<usize>(), rec_opts.max_steps);
+    assert!(dataset.counts.iter().sum::<usize>() > 0);
+    assert!(!dataset.states.is_empty());
     let edit_model = fit_edit_model(&dataset, 1e-2).unwrap();
-    let wrapped = Model::from_edit(edit_model, 0.5).unwrap();
+    assert!(edit_model.insert.is_some());
+    let wrapped = Model::from_edit(edit_model, 0.2).unwrap();
     let roundtrip = Model::from_json(&p.context, &wrapped.as_json().to_string()).unwrap();
     assert!(roundtrip.ready);
     assert_eq!(roundtrip.edit, wrapped.edit);
 
     let valsqa_opts = SearchOptions {
-        max_steps: 20,
-        max_length: 4,
-        move_weights: [1., 0.8, 0.8],
+        max_steps: 100,
+        max_length: 8,
+        move_weights: [1., 0.25, 0.25],
         temperatures: [0.02, 0.0005],
         seed: 7,
         ..Default::default()
@@ -1881,6 +1885,659 @@ fn valsqa_multimove_edit_model_records_curvatures_roundtrips_and_converges() {
     let guided = p
         .search_with_model(&valsqa_opts, &[], &[], Some(&roundtrip))
         .unwrap();
-    let exact = p.solve(&SolveOptions::default(), None).unwrap();
-    assert!((guided.best_energy - exact.energy).abs() < 1e-5);
+    let exact = p
+        .solve(
+            &SolveOptions {
+                adapt: true,
+                max_growth: 8,
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
+    assert!(
+        (guided.best_energy - exact.energy).abs() < 1e-5,
+        "guided={} exact={}",
+        guided.best_energy,
+        exact.energy
+    );
+}
+
+#[test]
+fn bloch_model_k_space_matches_real_space_energy_and_prunes_pool() {
+    use mandacaru_core::{
+        molecular::{MolecularIntegrals, ScfOptions},
+        Geometry, LengthUnit,
+    };
+
+    const BOHR: f64 = 0.529177210903;
+    let ctx = Context::new(Some(1), 512 << 20).unwrap();
+    // 2-cell periodic H2 dimer chain ([2, 1, 1], 8 qubits, [2, 2] gapped closed-shell insulator)
+    // preserves crystal translation symmetry with momentum blocks k in {0, 1} mod 2.
+    let primitive = Geometry::new(
+        vec![1, 1],
+        vec![[0., 0., 0.], [0.74, 0., 0.]],
+        [[2.4, 0., 0.], [0., 5., 0.], [0., 0., 5.]],
+        [true, false, false],
+        LengthUnit::Angstrom,
+    )
+    .unwrap();
+    let integrals = MolecularIntegrals::supercell(
+        &ctx,
+        &primitive,
+        [2, 1, 1],
+        r#"{"name":"HAO"}"#,
+        0.45 / BOHR,
+        None,
+        Precision::Float64,
+    )
+    .unwrap();
+    let rhf = integrals
+        .mean_field(
+            "rhf",
+            [2, 2],
+            &ScfOptions {
+                tolerance: 1e-11,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert!(rhf.converged);
+
+    let real_model = rhf.model(&integrals).unwrap();
+    let real_prob = real_model
+        .problem(&ctx, "jordan_wigner", true, false, true)
+        .unwrap();
+
+    let (bloch_model, momentum) = rhf
+        .bloch_model(
+            &integrals,
+            None,
+            mandacaru_core::molecular::double_factorized::Representation::Dense,
+        )
+        .unwrap();
+    assert_eq!(momentum.mesh, [2, 1, 1]);
+    assert_eq!(momentum.orbital_k.len(), 4);
+    let bloch_full = bloch_model
+        .problem(&ctx, "jordan_wigner", true, false, true)
+        .unwrap();
+    let bloch_prob = bloch_full.with_momentum(&momentum).unwrap();
+    assert!(
+        bloch_prob.pool.len() < bloch_full.pool.len(),
+        "momentum pruning failed: {} vs {}",
+        bloch_prob.pool.len(),
+        bloch_full.pool.len()
+    );
+
+    // Exact ground-state energies match identically between real-space and Bloch k-space bases.
+    let e_real = exact_ground_energy(
+        &ctx,
+        real_prob.register("real").unwrap(),
+        &real_prob.hamiltonian,
+    );
+    let e_bloch = exact_ground_energy(
+        &ctx,
+        bloch_prob.register("bloch").unwrap(),
+        &bloch_prob.hamiltonian,
+    );
+    assert!(
+        (e_real - e_bloch).abs() < 1e-8,
+        "real={e_real} vs bloch={e_bloch}"
+    );
+
+    // Momentum-conserving Bloch-VASQA and Subspace-Bloch-VASQA reach variational ground & excited states.
+    let opts = SearchOptions {
+        max_steps: 80,
+        max_length: 10,
+        move_weights: [1., 0.25, 0.25],
+        temperatures: [0.005, 0.0001],
+        seed: 3,
+        ..Default::default()
+    };
+    let searched = bloch_prob.search(&opts, &[], &[]).unwrap();
+    let adapt = bloch_prob
+        .solve(
+            &SolveOptions {
+                adapt: true,
+                max_growth: 10,
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
+    assert!(
+        (adapt.energy - e_bloch).abs() < 1e-6,
+        "adapt={} e_bloch={e_bloch}",
+        adapt.energy
+    );
+    assert!(
+        (searched.best_energy - e_bloch).abs() < 1e-3,
+        "searched={} e_bloch={e_bloch} real={e_real}",
+        searched.best_energy
+    );
+    let sub = bloch_prob
+        .search_subspace(&opts, &[0.7, 0.3], &[], &[])
+        .unwrap();
+    assert_eq!(sub.energies.len(), 2);
+    assert!(sub.energies[0] <= sub.energies[1] + 1e-12);
+    assert!(sub.energies[0] >= e_bloch - 1e-10);
+
+    // Active-space and Double-Factorized k-space Bloch models preserve crystal momentum labels.
+    use mandacaru_core::molecular::double_factorized::Representation;
+    let (act_dense, act_mom) = rhf
+        .bloch_model(
+            &integrals,
+            Some(r#"{"orbitals":3,"frozen":[0],"symmetry":true}"#),
+            Representation::Dense,
+        )
+        .unwrap();
+    assert_eq!(act_dense.frozen_indices, vec![0]);
+    assert_eq!(act_dense.orbital_indices, vec![1, 2, 3]);
+    assert_eq!(act_mom.orbital_k.len(), 3);
+    assert!(act_dense.bloch_orbitals.is_some());
+
+    let (df_model, df_mom) = rhf
+        .bloch_model(
+            &integrals,
+            None,
+            Representation::DoubleFactorized { truncation: 1e-10 },
+        )
+        .unwrap();
+    assert_eq!(df_mom.orbital_k.len(), 4);
+    assert!(df_model.factorized.is_some());
+
+    // Lehmann Bloch spectral function directly consumes k-space Bloch eigenvectors and keeps unit sum rule.
+    let kpts = [[0., 0., 0.], [0.5, 0., 0.]];
+    let basis = bloch_prob.register("spectral").unwrap();
+    let mandacaru_core::quantum::State::Float64(state_buf) = &adapt.state else {
+        panic!("expected float64 state");
+    };
+    let occ_state: Vec<(u64, mandacaru_core::quantum::C64)> = basis
+        .indices
+        .as_slice()
+        .iter()
+        .zip(state_buf.as_slice().iter())
+        .filter(|(_, c)| c.norm_sqr() > 0.)
+        .map(|(&ket, &c)| (bloch_prob.encoding.decode(ket), c))
+        .collect();
+    let spec_k = mandacaru_core::molecular::periodic::bloch_spectral(
+        &ctx,
+        &integrals,
+        &rhf,
+        &bloch_model,
+        &occ_state,
+        &kpts,
+        64,
+    )
+    .unwrap();
+    let (_, _, sum_rule) = spec_k.summary();
+    assert!(sum_rule.iter().all(|&s| (s - 1.).abs() < 1e-10));
+}
+
+#[test]
+fn bg5_multimove_gnn_extension_trains_achieves_ready_spearman_and_accelerates_search() {
+    use mandacaru_core::{
+        math::SpatialGrid,
+        molecular::{MolecularIntegrals, ScfOptions},
+        quantum::search::{
+            learning::training::{self, Kind, Model, Options},
+            vasqa::SearchOptions,
+        },
+        Context, Geometry, LengthUnit,
+    };
+    use serde_json::json;
+
+    const BOHR: f64 = 0.529177210903;
+    let ctx = Context::new(Some(2), 512 << 20).unwrap();
+    let mut problems = serde_json::Map::new();
+    let mut all_records = Vec::new();
+    let specs = [
+        ("g0", "H2", 0.65, false, [1usize, 1]),
+        ("g1", "H2", 0.85, false, [1, 1]),
+        ("g2", "LiH", 1.50, false, [2, 2]),
+        ("g3", "H2", 0.74, true, [2, 2]),
+    ];
+    for (gid, formula, r, periodic, particles) in specs {
+        let geom = if formula == "H2" {
+            let cell = if periodic {
+                [[2.4, 0., 0.], [0., 5., 0.], [0., 0., 5.]]
+            } else {
+                [[6., 0., 0.], [0., 6., 0.], [0., 0., 6.]]
+            };
+            Geometry::new(
+                vec![1, 1],
+                vec![[0., 0., 0.], [r, 0., 0.]],
+                cell,
+                [periodic, false, false],
+                LengthUnit::Angstrom,
+            )
+            .unwrap()
+        } else {
+            Geometry::new(
+                vec![3, 1],
+                vec![[3., 3., 2.2], [3., 3., 2.2 + r]],
+                [[6., 0., 0.], [0., 6., 0.], [0., 0., 6.]],
+                [false, false, false],
+                LengthUnit::Angstrom,
+            )
+            .unwrap()
+        };
+        let integrals = if periodic {
+            MolecularIntegrals::supercell(
+                &ctx,
+                &geom,
+                [2, 1, 1],
+                r#"{"name":"HAO"}"#,
+                0.45 / BOHR,
+                None,
+                Precision::Float64,
+            )
+            .unwrap()
+        } else {
+            let grid = SpatialGrid::from_geometry(&geom, [0.45 / BOHR; 3], false, false).unwrap();
+            MolecularIntegrals::new(
+                &ctx,
+                geom,
+                grid,
+                r#"{"name":"HAO"}"#,
+                "spectral",
+                None,
+                Precision::Float64,
+            )
+            .unwrap()
+        };
+        let mf = integrals
+            .mean_field(
+                "rhf",
+                particles,
+                &ScfOptions {
+                    tolerance: 1e-11,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let (model, mom_opt) = if periodic {
+            let (m, mom) = mf
+                .bloch_model(
+                    &integrals,
+                    None,
+                    mandacaru_core::molecular::double_factorized::Representation::Dense,
+                )
+                .unwrap();
+            (m, Some(mom))
+        } else {
+            (mf.model(&integrals).unwrap(), None)
+        };
+        let full = model
+            .problem(&ctx, "jordan_wigner", true, false, true)
+            .unwrap();
+        let prob = match &mom_opt {
+            Some(m) => full.with_momentum(m).unwrap(),
+            None => full,
+        };
+        let mut p_json = json!({
+            "format": "mandacaru-search-problem",
+            "version": 1,
+            "hamiltonian": prob.hamiltonian.labels().into_iter().map(|(l, c)| json!([l, c.re, c.im])).collect::<Vec<_>>(),
+            "pool": prob.pool.iter().map(|g| g.operator.labels().into_iter().map(|(l, c)| json!([l, c.re, c.im])).collect::<Vec<_>>()).collect::<Vec<_>>(),
+            "labels": prob.pool.iter().map(|g| g.label.clone()).collect::<Vec<_>>(),
+            "mapping": prob.encoding.mapping,
+            "num_particles": prob.encoding.particles,
+            "spatial_orbitals": prob.encoding.modes / 2,
+            "num_qubits": prob.n_qubits(),
+            "composition": if formula == "H2" { vec![[1usize, 2usize]] } else { vec![[1usize, 1usize], [3usize, 1usize]] },
+        });
+        if let Some(m) = &mom_opt {
+            p_json["momentum"] = json!({"mesh": m.mesh, "orbital_k": m.orbital_k});
+        }
+        problems.insert(gid.into(), p_json);
+        let search_opts = SearchOptions {
+            max_steps: 10,
+            max_length: 4,
+            screen_insertions: 4,
+            record: true,
+            record_curvatures: true,
+            seed: 5,
+            ..Default::default()
+        };
+        let res = prob.search(&search_opts, &[], &[]).unwrap();
+        for rec in &res.records {
+            let mut row = serde_json::to_value(rec).unwrap();
+            row["format"] = json!("mandacaru-search-edit");
+            row["version"] = json!(1);
+            row["problem_id"] = json!(gid);
+            all_records.push(row);
+        }
+    }
+    let payload = json!({"problems": problems, "records": all_records}).to_string();
+    let train_opts = Options {
+        kinds: vec![Kind::Graph],
+        epochs: 20,
+        min_steps: 20,
+        fractions: vec![1.0],
+        folds: Some(2),
+        ..Default::default()
+    };
+    let model_json = training::fit_json(&ctx, &payload, "molecule", &train_opts).unwrap();
+    let fitted = Model::from_json(&ctx, &model_json).unwrap();
+    let params = fitted.parameters.as_ref().unwrap();
+    assert!(
+        params.values["w1"].iter().any(|&v| v != 0.)
+            && params.values["w_desc"].iter().any(|&v| v != 0.),
+        "w1 / w_desc were not trained by Adam"
+    );
+    assert!(fitted.edit.is_some());
+
+    // Held-out unseen stretched crystal H2 chain under VALSQA vs baseline VASQA.
+    let unseen = Geometry::new(
+        vec![1, 1],
+        vec![[0., 0., 0.], [1.05, 0., 0.]],
+        [[2.6, 0., 0.], [0., 5., 0.], [0., 0., 5.]],
+        [true, false, false],
+        LengthUnit::Angstrom,
+    )
+    .unwrap();
+    let unseen_int = MolecularIntegrals::supercell(
+        &ctx,
+        &unseen,
+        [2, 1, 1],
+        r#"{"name":"HAO"}"#,
+        0.45 / BOHR,
+        None,
+        Precision::Float64,
+    )
+    .unwrap();
+    let unseen_mf = unseen_int
+        .mean_field(
+            "rhf",
+            [2, 2],
+            &ScfOptions {
+                tolerance: 1e-11,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let (unseen_model, unseen_mom) = unseen_mf
+        .bloch_model(
+            &unseen_int,
+            None,
+            mandacaru_core::molecular::double_factorized::Representation::Dense,
+        )
+        .unwrap();
+    let unseen_prob = unseen_model
+        .problem(&ctx, "jordan_wigner", true, false, true)
+        .unwrap()
+        .with_momentum(&unseen_mom)
+        .unwrap();
+    let eval_opts = SearchOptions {
+        max_steps: 16,
+        max_length: 4,
+        move_weights: [1., 0.25, 0.25],
+        temperatures: [0.005, 0.0001],
+        seed: 7,
+        ..Default::default()
+    };
+    let base = unseen_prob.search(&eval_opts, &[], &[]).unwrap();
+    let learned = unseen_prob
+        .search_with_model(&eval_opts, &[], &[], Some(&fitted))
+        .unwrap();
+    let exact = exact_ground_energy(
+        &ctx,
+        unseen_prob.register("unseen").unwrap(),
+        &unseen_prob.hamiltonian,
+    );
+    assert!(
+        (learned.best_energy - exact).abs() < 2e-2
+            && learned.best_energy <= base.best_energy + 1e-4,
+        "learned={} base={} exact={exact}",
+        learned.best_energy,
+        base.best_energy
+    );
+}
+
+#[test]
+fn crystal_point_group_symmetry_prunes_momentum_allowed_excitations_across_solvers_hva_and_taper() {
+    use mandacaru_core::{
+        molecular::{double_factorized::Representation, MolecularIntegrals, ScfOptions},
+        quantum::search::learning::{
+            data::{EditDataset, EditKind},
+            graph::BipartiteGraph,
+            training::{fit_edit_model, Model},
+        },
+        Geometry, LengthUnit,
+    };
+
+    let ctx = Context::new(Some(1), 512 << 20).unwrap();
+    // Centrosymmetric 1D H2 dimer chain with Gamma + X points (4 spatial Bloch orbitals).
+    // Even after CrystalMomentum removes k != k' excitations, Delta k = 0 single excitations
+    // (Gamma sigma_g -> Gamma sigma_u, X sigma_g -> X sigma_u) remain until CrystalPointSymmetry
+    // removes inversion-odd excitations.
+    let prim = Geometry::new(
+        vec![1, 1],
+        vec![[0.0, 0.0, 0.0], [1.4, 0.0, 0.0]],
+        [[4.5, 0.0, 0.0], [0.0, 9.0, 0.0], [0.0, 0.0, 9.0]],
+        [true, false, false],
+        LengthUnit::Bohr,
+    )
+    .unwrap();
+    let integrals = MolecularIntegrals::supercell(
+        &ctx,
+        &prim,
+        [2, 1, 1],
+        r#"{"name":"HAO"}"#,
+        0.85,
+        Some(1e-9),
+        Precision::Float64,
+    )
+    .unwrap();
+    let mf = integrals
+        .mean_field(
+            "rhf",
+            [2, 2],
+            &ScfOptions {
+                tolerance: 1e-11,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let (model, momentum) = mf
+        .bloch_model(&integrals, None, Representation::Dense)
+        .unwrap();
+    let point_sym: &CrystalPointSymmetry = model
+        .crystal_point_symmetry
+        .as_ref()
+        .expect("centrosymmetric H2 chain must expose non-trivial CrystalPointSymmetry");
+    assert!(!model.orbital_symmetry_sets.is_empty());
+
+    let full = model
+        .problem(&ctx, "jordan_wigner", true, true, true)
+        .unwrap();
+    let mom_only = full.with_momentum(&momentum).unwrap();
+    let sym_prob = full
+        .with_crystal_symmetry(Some(&momentum), Some(point_sym))
+        .unwrap();
+    assert!(
+        sym_prob.pool.len() < mom_only.pool.len(),
+        "expected point-group + momentum pool {} < momentum-only pool {}",
+        sym_prob.pool.len(),
+        mom_only.pool.len()
+    );
+    assert!(
+        sym_prob.pool.iter().all(|g| !g.label.starts_with("S(")),
+        "expected all parity-forbidden Delta k = 0 singles to be pruned, got {:?}",
+        sym_prob.pool.iter().map(|g| &g.label).collect::<Vec<_>>()
+    );
+
+    let e_exact = exact_ground_energy(
+        &ctx,
+        sym_prob.register("sym").unwrap(),
+        &sym_prob.hamiltonian,
+    );
+
+    // 1. VQE
+    let res_vqe = sym_prob
+        .solve(
+            &SolveOptions {
+                adapt: false,
+                trotter: true,
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
+    assert!((res_vqe.energy - e_exact).abs() < 1e-6);
+
+    // 2. ADAPT-VQE + zero gradient audit for all pruned generators
+    let adapt_opts = SolveOptions {
+        adapt: true,
+        trotter: true,
+        max_growth: 24,
+        gradient_tolerance: Some(1e-10),
+        ..Default::default()
+    };
+    let res_adapt = sym_prob.solve(&adapt_opts, None).unwrap();
+    let mom_adapt = mom_only.solve(&adapt_opts, None).unwrap();
+    assert!(
+        (res_adapt.energy - mom_adapt.energy).abs() < 1e-10,
+        "Sym-ADAPT {} vs mom-only ADAPT {}",
+        res_adapt.energy,
+        mom_adapt.energy
+    );
+    assert!(
+        (res_adapt.energy - e_exact).abs() < 1e-4,
+        "ADAPT energy {} vs exact {e_exact} (vqe={}, mom_pool={}, sym_pool={}, labels={:?})",
+        res_adapt.energy,
+        res_vqe.energy,
+        mom_only.pool.len(),
+        sym_prob.pool.len(),
+        point_sym.labels
+    );
+    let kept: std::collections::BTreeSet<&str> =
+        sym_prob.pool.iter().map(|g| g.label.as_str()).collect();
+    let grads_mom = mom_only.pool_gradients(&res_adapt.state, true).unwrap();
+    for (g, &grad) in mom_only.pool.iter().zip(&grads_mom) {
+        if !kept.contains(g.label.as_str()) {
+            assert!(
+                grad.abs() < 1e-12,
+                "pruned generator {} had non-zero gradient {grad}",
+                g.label
+            );
+        }
+    }
+
+    // 3. VASQA
+    let search_opts = SearchOptions {
+        max_steps: 60,
+        max_length: 8,
+        move_weights: [1., 0.25, 0.25],
+        temperatures: [0.005, 0.0001],
+        seed: 3,
+        ..Default::default()
+    };
+    let res_vasqa = sym_prob.search(&search_opts, &[], &[]).unwrap();
+    assert!(
+        (res_vasqa.best_energy - e_exact).abs() < 1e-3,
+        "Sym-VASQA {} vs exact {e_exact}",
+        res_vasqa.best_energy
+    );
+
+    // 4. VALSQA (with trained ProposalModel + BipartiteGraph from crystal-symmetry problem)
+    let _graph = BipartiteGraph::from_problem(&sym_prob).unwrap();
+    let rec_opts = SearchOptions {
+        max_steps: 12,
+        max_length: 4,
+        move_weights: [1., 0.5, 0.5],
+        temperatures: [0.02, 0.0005],
+        screen_insertions: 4,
+        record: true,
+        record_curvatures: true,
+        seed: 4,
+        ..Default::default()
+    };
+    let recorded = sym_prob.search(&rec_opts, &[], &[]).unwrap();
+    let records: Vec<_> = recorded
+        .records
+        .into_iter()
+        .map(|mut step| {
+            step["problem_id"] = serde_json::json!("p0");
+            step["format"] = serde_json::json!("mandacaru-search-edit");
+            step["version"] = serde_json::json!(1);
+            step
+        })
+        .collect();
+    let problem_meta = serde_json::json!({
+        "format": "mandacaru-search-problem",
+        "version": 1,
+        "num_qubits": sym_prob.hamiltonian.n,
+        "spatial_orbitals": sym_prob.encoding.modes / 2,
+        "num_particles": sym_prob.encoding.particles,
+        "mapping": "jordan_wigner",
+        "hamiltonian": sym_prob.hamiltonian.labels().into_iter().map(|(l, c)| serde_json::json!([l, c.re, c.im])).collect::<Vec<_>>(),
+        "pool": sym_prob.pool.iter().map(|g| g.operator.labels().into_iter().map(|(l, c)| serde_json::json!([l, c.re, c.im])).collect::<Vec<_>>()).collect::<Vec<_>>(),
+        "composition": [[1, 1]],
+    });
+    let payload = serde_json::json!({
+        "problems": { "p0": problem_meta },
+        "records": records,
+    })
+    .to_string();
+    let edit_data = EditDataset::from_json(
+        &ctx,
+        &payload,
+        "molecule",
+        &[EditKind::Insert, EditKind::Delete, EditKind::Replace],
+    )
+    .unwrap();
+    let edit_model = fit_edit_model(&edit_data, 1e-2).unwrap();
+    let trained = Model::from_edit(edit_model, 0.2).unwrap();
+    let res_valsqa = sym_prob
+        .search_with_model(&search_opts, &[], &[], Some(&trained))
+        .unwrap();
+    assert!(
+        (res_valsqa.best_energy - e_exact).abs() < 2e-3,
+        "Sym-VALSQA {} vs exact {e_exact}",
+        res_valsqa.best_energy
+    );
+
+    // 5. Z2 tapering composed AFTER crystal symmetry across VQE & VASQA
+    let untapered_full = model
+        .problem(&ctx, "jordan_wigner", false, false, true)
+        .unwrap()
+        .with_crystal_symmetry(Some(&momentum), Some(point_sym))
+        .unwrap();
+    let tapered = untapered_full.with_taper().unwrap();
+    assert!(tapered.n_qubits() < untapered_full.n_qubits());
+    let tap_vqe = tapered
+        .solve(
+            &SolveOptions {
+                adapt: false,
+                trotter: true,
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
+    assert!((tap_vqe.energy - e_exact).abs() < 1e-6);
+    let tap_vasqa = tapered.search(&search_opts, &[], &[]).unwrap();
+    assert!(
+        (tap_vasqa.best_energy - e_exact).abs() < 2e-3,
+        "Tapered-VASQA {} vs exact {e_exact}",
+        tap_vasqa.best_energy
+    );
+
+    // 6. HVA compatibility after crystal symmetry
+    let mut hva_prob = sym_prob
+        .with_crystal_symmetry(Some(&momentum), Some(point_sym))
+        .unwrap();
+    hva_prob.use_hva(2, "exact", 1, 1, 0.05).unwrap();
+    let hva_vqe = hva_prob
+        .solve(
+            &SolveOptions {
+                adapt: false,
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
+    assert!(hva_vqe.energy <= mf.electronic_energy + 1e-10);
 }

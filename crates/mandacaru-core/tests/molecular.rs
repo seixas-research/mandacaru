@@ -289,10 +289,12 @@ fn open_shell_and_spinor_mean_fields_have_consistent_energies() {
         assert!((result.electronic_energy + integrals.nuclear + 0.9371240086056045).abs() < 1e-12);
         if method == "ghf" {
             assert!(result.kramers_pairing < 1e-10);
-            assert!(result
-                .model(&integrals)
-                .unwrap()
+            let spinor_model = result.model(&integrals).unwrap();
+            assert!(spinor_model
                 .problem(&ctx, "jordan_wigner", true, false, true)
+                .is_ok());
+            assert!(spinor_model
+                .problem(&ctx, "parity_reduced", true, false, true)
                 .is_err());
         }
     }

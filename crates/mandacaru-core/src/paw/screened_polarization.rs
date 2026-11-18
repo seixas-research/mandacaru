@@ -64,6 +64,9 @@ pub struct Polarization {
     tables: Vec<PairTable>,
     entries: Vec<Entry>,
     size: usize,
+    /// The all-electron core density on `r`, added to the all-electron density (half to each spin).
+    core_density: Vec<f64>,
+    has_core: bool,
     /// The smooth core on `r`, added to the smooth density (half to each spin).
     smooth_core: Vec<f64>,
 }
@@ -165,6 +168,10 @@ impl Polarization {
             tables,
             entries,
             size: layout.len(),
+            core_density: species
+                .core_density
+                .map_or_else(|| vec![0.; upto], |c| c[..upto].to_vec()),
+            has_core: species.core_density.is_some(),
             smooth_core: species.smooth_core[..upto].to_vec(),
         })
     }
@@ -194,8 +201,13 @@ impl Polarization {
                 *slot += sum * value / (4. * PI);
             }
         }
-        if smooth && core {
-            for (slot, core) in out.iter_mut().zip(&self.smooth_core) {
+        if core {
+            let added = if smooth {
+                &self.smooth_core
+            } else {
+                &self.core_density
+            };
+            for (slot, core) in out.iter_mut().zip(added) {
                 *slot += 0.5 * core;
             }
         }
@@ -520,9 +532,14 @@ impl Polarization {
             }
             out
         };
+        let core_energy = if self.has_core {
+            self.exchange(ctx, &self.core_density)?.energy
+        } else {
+            0.
+        };
         Ok(PolarizationTerms {
             energy,
-            unpolarized,
+            unpolarized: unpolarized - core_energy,
             up: matrix(&potentials[0]),
             down: matrix(&potentials[1]),
         })

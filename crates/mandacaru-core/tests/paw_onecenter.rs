@@ -459,6 +459,7 @@ fn identical_smooth_and_all_electron_waves_freeze_nothing() {
     let (constant, blocks) = frozen_exchange_terms(
         &ctx,
         &s.r,
+        None,
         &vec![0.; s.r.len()],
         &channels,
         0.11,
@@ -1108,4 +1109,108 @@ fn the_exact_channels_reserve_the_stack_and_the_scratch() {
         ));
         assert_eq!(small.memory_used(), 0);
     }
+}
+
+#[test]
+fn the_two_one_center_tensor_paths_agree_across_bare_and_screened_terms() {
+    use mandacaru_core::paw::{
+        pair_tables::{coulomb, layout, pair_tensor, ChannelView, SpeciesView, Tables},
+        screened_atom::screened,
+    };
+    let ctx = context();
+    let smooth = Synthetic::new(|r| 0.5 * (-0.3 * r * r).exp());
+    let p_ae = smooth.ae.clone();
+    let p_ps: Vec<f64> = smooth.ps.iter().map(|v| 0.9 * v).collect();
+    let grid = smooth.r.len();
+    for l in 0..=2 {
+        let a = radial_coulomb(&smooth.r[..600], &smooth.ae[..600], &p_ae[..600], l).unwrap();
+        let b = coulomb(&smooth.r[..600], &smooth.ae[..600], &p_ae[..600], l);
+        assert!((a - b).abs() < 1e-15, "L={l}: {a} vs {b}");
+    }
+    let zeros_n = vec![0.0; grid];
+    let eye1 = DMatrix::identity(1, 1);
+    let ae = [smooth.ae.clone(), p_ae.clone()].concat();
+    let ps = [smooth.ps.clone(), p_ps.clone()].concat();
+    let sphere = Sphere {
+        r: &smooth.r,
+        channels: [0usize, 1]
+            .map(|l| Channel {
+                l,
+                waves: 1,
+                ae: &ae[l * grid..(l + 1) * grid],
+                ps: &ps[l * grid..(l + 1) * grid],
+                vanderbilt: &smooth.vanderbilt,
+                r_cut: 1.5,
+            })
+            .to_vec(),
+        compensation_radius: 1.2,
+    };
+    let view = SpeciesView {
+        knots: &smooth.r,
+        core_density: None,
+        smooth_core: &zeros_n,
+        frozen_core: None,
+        compensation_radius: 1.2,
+        channels: vec![
+            ChannelView {
+                l: 0,
+                radius: 1.5,
+                ae: vec![&smooth.ae],
+                ps: vec![&smooth.ps],
+                reference: &eye1,
+            },
+            ChannelView {
+                l: 1,
+                radius: 1.5,
+                ae: vec![&p_ae],
+                ps: vec![&p_ps],
+                reference: &eye1,
+            },
+        ],
+    };
+    let pt_projectors = layout(&view);
+    let oc_projectors: Vec<Projector> = pt_projectors
+        .iter()
+        .map(|p| Projector {
+            l: p.l,
+            m: p.m,
+            index: p.radial,
+            real: true,
+        })
+        .collect();
+    let n = oc_projectors.len();
+    let oc_bare = one_center_tensor(&ctx, &sphere, Basis::Dual, &oc_projectors, 0.0)
+        .unwrap()
+        .exchange_symmetrized();
+    let pt_bare = pair_tensor(&Tables::new(&view, &pt_projectors).unwrap(), None).unwrap();
+    let mut max_bare_diff = 0.0f64;
+    for ab in 0..n * n {
+        for cd in 0..n * n {
+            max_bare_diff =
+                max_bare_diff.max((oc_bare.data[ab * (n * n) + cd].re - pt_bare[(ab, cd)]).abs());
+        }
+    }
+    assert!(max_bare_diff < 1e-12, "bare DeltaW diff {max_bare_diff:e}");
+
+    let omega = 0.35;
+    let oc_sr = one_center_tensor(&ctx, &sphere, Basis::Dual, &oc_projectors, omega)
+        .unwrap()
+        .exchange_symmetrized();
+    let atom = screened(&ctx, &view, &pt_projectors, omega).unwrap();
+    let mut rebuilt = DMatrix::<f64>::zeros(n * n, n * n);
+    for (f, w) in atom.factors.iter().zip(&atom.weights) {
+        let row_major: Vec<f64> = (0..n)
+            .flat_map(|a| (0..n).map(move |b| f[(a, b)]))
+            .collect();
+        let v = nalgebra::DVector::from_vec(row_major);
+        rebuilt += &v * v.transpose() * *w;
+    }
+    let mut max_sr_diff = 0.0f64;
+    for ab in 0..n * n {
+        for cd in 0..n * n {
+            max_sr_diff =
+                max_sr_diff.max((oc_sr.data[ab * (n * n) + cd].re - rebuilt[(ab, cd)]).abs());
+        }
+    }
+    assert!(max_sr_diff < 1e-11, "screened DeltaW diff {max_sr_diff:e}");
 }

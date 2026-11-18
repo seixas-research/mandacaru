@@ -26,7 +26,7 @@ use crate::{
             dyson,
             interaction::solve,
             medium::{within, Medium, Paw},
-            transitions::{Augmentation, Engine, Remainders},
+            transitions::{components_of, Augmentation, Engine, Remainders},
         },
         wannier::{model::Channel, sampling::Frame, setup::Wannier},
         Crystal,
@@ -84,7 +84,7 @@ fn view<'a>(frame: &'a Frame, target: Vec<f64>, bands: usize, points: usize) -> 
         samples: &frame.samples,
         projections: Some(&frame.projections),
         points,
-        components: 1,
+        components: frame.components,
     }
 }
 
@@ -215,18 +215,26 @@ impl<'a> Rest<'a> {
         let augmentation =
             Augmentation::new(paw.crystal, paw.setup, paw.remainders, &engine.vectors)?;
         let n = state.points;
-        let samples = state.samples.read_range(ctx, 0, state.bands() * n)?;
-        let mut out = DMatrix::<C64>::zeros(state.bands(), state.bands());
+        let components = state.components;
+        let bands = state.bands();
+        let samples = state.samples.read_range(ctx, 0, components * bands * n)?;
+        let mut out = DMatrix::<C64>::zeros(bands, bands);
         let mut density = [C64::default()];
-        for a in 0..state.bands() {
-            for b in 0..state.bands() {
-                engine.smooth(
+        for a in 0..bands {
+            for b in 0..bands {
+                engine.smooth_components(
                     &mut scratch,
-                    &samples[a * n..(a + 1) * n],
-                    &samples[b * n..(b + 1) * n],
+                    &components_of(&samples, bands, n, components, a),
+                    &components_of(&samples, bands, n, components, b),
                     &mut density,
                 )?;
-                augmentation.add(&state.projection(a), &state.projection(b), &mut density);
+                for c in 0..components {
+                    augmentation.add(
+                        &state.component_projection(a, c),
+                        &state.component_projection(b, c),
+                        &mut density,
+                    );
+                }
                 out[(a, b)] = density[0];
             }
         }
@@ -241,10 +249,84 @@ impl<'a> Rest<'a> {
         let mut origin: Option<(usize, usize)> = None;
         // The mesh points one after another through the shared loop of
         // `periodic::screening::interaction`, which keeps the lanes out of the medium's pool.
+        // When the crystal is time-reversal invariant and the constrained target weights keep
+        // `p_a(-k) = p_a(k)`, pair `(q, -q)` via `chi_{GG'}(-q)^* = chi_{-G,-G'}(q)`.
+        let can_reduce_q = self.wannier.crystal.time_reversal
+            && (!self.medium.constrained
+                || (0..cell.cells).all(|k| {
+                    let k_vec = cell.cell_vector(k);
+                    let neg_k_vec =
+                        std::array::from_fn(|a| (-k_vec[a]).rem_euclid(cell.size[a] as i64));
+                    let neg_k = partner(0, neg_k_vec, cell.size);
+                    self.weights.iter().all(|ch| {
+                        ch[k]
+                            .iter()
+                            .zip(&ch[neg_k])
+                            .all(|(a, b)| (a - b).abs() < 1e-10)
+                    })
+                }));
+        let reciprocal = 2.0
+            * std::f64::consts::PI
+            * cell
+                .lattice
+                .try_inverse()
+                .ok_or_else(|| invalid("degenerate cell lattice in screened downfolding"))?
+                .transpose();
+        let tr_cache: std::cell::RefCell<
+            std::collections::HashMap<usize, (DMatrix<C64>, Vec<[i64; 3]>)>,
+        > = std::cell::RefCell::new(std::collections::HashMap::new());
         let solved = solve(
             ctx,
             cell.cells,
-            |t| self.polarizability(cell.cell_vector(t)),
+            |t| {
+                let q_cell = cell.cell_vector(t);
+                if can_reduce_q {
+                    let neg_q_cell =
+                        std::array::from_fn(|a| (-q_cell[a]).rem_euclid(cell.size[a] as i64));
+                    let neg_t = partner(0, neg_q_cell, cell.size);
+                    if neg_t < t {
+                        if let Some((neg_chi, neg_g)) = tr_cache.borrow_mut().remove(&t) {
+                            let q_phys = cell.vector(q_cell);
+                            let g = crate::periodic::screening::medium::within(
+                                &cell.lattice,
+                                q_phys,
+                                self.cutoff,
+                            );
+                            let g_shift = std::array::from_fn(|a| {
+                                (q_cell[a] + neg_q_cell[a]) / cell.size[a] as i64
+                            });
+                            if let Some(chi) =
+                                crate::periodic::screening::interaction::conjugate_polarizability(
+                                    &neg_chi, &neg_g, &g, g_shift,
+                                )
+                            {
+                                let vectors: Vec<[f64; 3]> = g
+                                    .iter()
+                                    .map(|gi| {
+                                        let g_cart = reciprocal
+                                            * nalgebra::Vector3::new(
+                                                gi[0] as f64,
+                                                gi[1] as f64,
+                                                gi[2] as f64,
+                                            );
+                                        [
+                                            q_phys[0] + g_cart[0],
+                                            q_phys[1] + g_cart[1],
+                                            q_phys[2] + g_cart[2],
+                                        ]
+                                    })
+                                    .collect();
+                                return Ok((chi, vectors, g));
+                            }
+                        }
+                    } else if t < neg_t {
+                        let (chi, vectors, g) = self.polarizability(q_cell)?;
+                        tr_cache.borrow_mut().insert(neg_t, (chi.clone(), g.clone()));
+                        return Ok((chi, vectors, g));
+                    }
+                }
+                self.polarizability(q_cell)
+            },
             |_, solution, _, g| Ok((solution.correction, g)),
         )?;
         for (t, (correction, g)) in solved.into_iter().enumerate() {

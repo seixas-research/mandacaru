@@ -61,16 +61,20 @@ pub struct Species {
     pub channels: Vec<Channel>,
     pub xc_core: Cubic,
     pub xc_core_tau: Cubic,
+    /// All-electron frozen core density on `ionic.knots`, when `core_charge > 1e-6`.
+    pub core_density: Option<Vec<f64>>,
+    /// Closed frozen-core subshells for core-valence exact exchange, when available.
+    pub frozen_core: Option<FrozenCore>,
     pub dft_constant: f64,
     pub relativistic_exchange: bool,
-    /// Why this species' frozen core has no Hartree-Fock exchange operator (its record carries no
-    /// core states, or a subshell is partially filled, or the states do not reproduce the stored
-    /// core density), naming the element; `None` for an empty core and for a core whose
-    /// core-valence exchange is in `Channel::core_exchange`. Kohn-Sham never reads it.
+    /// Why this species' frozen core has no Hartree-Fock / screened-hybrid exchange operator (its
+    /// record carries no core states, or a subshell is partially filled, or the states do not
+    /// reproduce the stored core density), naming the element; `None` for an empty core and for a
+    /// core whose core-valence exchange is in `Channel::core_exchange` and `ScreenedAtom::core_exchange`.
+    /// Semilocal Kohn-Sham never reads it.
     pub core_refusal: Option<String>,
-    /// Whether a screened hybrid is available: the core is empty or a single closed 1s shell, the
-    /// only cores whose hybrid the molecule has been validated for (the screened one-center
-    /// terms carry no core-valence exchange of their own).
+    /// Whether a screened hybrid is available: empty core or a valid closed `FrozenCore`
+    /// (`core_refusal.is_none()`).
     pub hybrid_core_supported: bool,
     /// The spin-orbit channels of a fully relativistic dataset (empty unless the molecule was
     /// built with spin-orbit allowed): read as the crystal reads them
@@ -124,28 +128,25 @@ fn core_support(
             hybrid: true,
         };
     }
-    let hybrid = states.is_some_and(|s| {
-        s.len() == 1 && (s[0].n, s[0].l) == (1, 0) && (s[0].occupation - 2.).abs() < 1e-9
-    });
     let electrons = atomic_number as f64 - charge;
     match states.map(|s| FrozenCore::from_states(symbol, r, density, electrons, s)) {
         Some(Ok(core)) => CoreSupport {
             frozen: Some(core),
             refusal: None,
-            hybrid,
+            hybrid: true,
         },
         Some(Err(reason)) => CoreSupport {
             frozen: None,
             refusal: Some(reason),
-            hybrid,
+            hybrid: false,
         },
         None => CoreSupport {
             frozen: None,
             refusal: Some(format!(
                 "{symbol}: the dataset carries no core states, which the core-valence exchange \
-                 of Hartree-Fock needs"
+                 of Hartree-Fock and screened hybrids needs"
             )),
-            hybrid,
+            hybrid: false,
         },
     }
 }
@@ -156,7 +157,7 @@ impl Species {
         if r > knots[knots.len() - 1] {
             -self.charge / r
         } else {
-            self.ionic.value_slope(r.max(knots[0])).0
+            self.ionic.value_slope_regular(r, 0).0
         }
     }
     pub fn parse(ctx: &Context, v: &Value, arrays: &mut Arrays, raw: bool) -> Result<Self> {
@@ -499,6 +500,8 @@ impl Species {
             channels,
             xc_core,
             xc_core_tau,
+            core_density: (core_charge > 1e-6).then(|| core_slice.to_vec()),
+            frozen_core: support.frozen,
             dft_constant,
             relativistic_exchange: ds.relativistic_exchange,
             core_refusal: support.refusal,
@@ -823,6 +826,8 @@ impl Species {
             channels,
             xc_core,
             xc_core_tau,
+            core_density: (core_charge > 1e-6).then(|| core.as_slice().to_vec()),
+            frozen_core: support.frozen,
             dft_constant,
             relativistic_exchange: relativistic,
             core_refusal: support.refusal,

@@ -408,9 +408,21 @@ fn write_and_check(
     if !moved.is_empty() {
         return Err(Error::Reload(moved));
     }
-    let (diagnosis, unprojected_missing) =
+    let (mut diagnosis, unprojected_missing) =
         diagnose::diagnose_record_with_unprojected_on(ctx, &loaded, atom, logs)
             .map_err(|error| Error::Failed(error.into_core()))?;
+    if how.phases && !loaded.spin_orbit.is_empty() {
+        let smooth = diagnose::view::Smooth::scalar(ctx, &loaded)?;
+        let ae = diagnose::reference::AllElectron::new(
+            atom,
+            smooth.atomic_number,
+            &smooth.frozen,
+            &smooth.semicore,
+        );
+        diagnosis = diagnosis
+            .with_branch_phases(ctx, &loaded, &ae, logs)
+            .map_err(|error| Error::Failed(error.into_core()))?;
+    }
     let measured = Measured {
         diagnosis,
         unprojected_missing,

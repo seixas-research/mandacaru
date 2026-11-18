@@ -215,6 +215,94 @@ fn validate_response_setup<'a>(
 }
 
 #[allow(clippy::too_many_arguments)]
+fn lift_bloch_rdms(
+    integrals: &MolecularIntegrals,
+    reference: &MeanField,
+    model: &Model,
+    c_bloch: &Matrix,
+    m: usize,
+    t1: &[C64],
+    t2: &[C64],
+) -> Result<(Vec<f64>, Vec<f64>, Model)> {
+    let m_full = integrals.m();
+    let f = model.frozen_indices.len();
+    let t = f + m;
+    let mut one_t = vec![C64::default(); t * t];
+    let mut two_t = vec![C64::default(); t * t * t * t];
+    let at_t = |p: usize, q: usize, r: usize, s: usize| ((p * t + q) * t + r) * t + s;
+    for i in 0..f {
+        one_t[i * t + i] = C64::new(2., 0.);
+        for j in 0..f {
+            two_t[at_t(i, j, i, j)] += C64::new(4., 0.);
+            two_t[at_t(i, j, j, i)] -= C64::new(2., 0.);
+        }
+    }
+    for p in 0..m {
+        for q in 0..m {
+            let v = t1[p * m + q];
+            one_t[(f + p) * t + (f + q)] = v;
+            for i in 0..f {
+                two_t[at_t(i, f + p, i, f + q)] += v * C64::new(2., 0.);
+                two_t[at_t(f + p, i, f + q, i)] += v * C64::new(2., 0.);
+                two_t[at_t(i, f + p, f + q, i)] -= v;
+                two_t[at_t(f + p, i, i, f + q)] -= v;
+            }
+            for r in 0..m {
+                for s in 0..m {
+                    two_t[at_t(f + p, f + q, f + r, f + s)] = t2[((p * m + q) * m + r) * m + s];
+                }
+            }
+        }
+    }
+    let t_indices: Vec<usize> = model
+        .frozen_indices
+        .iter()
+        .chain(&model.orbital_indices)
+        .copied()
+        .collect();
+    if t_indices.len() != t || t_indices.iter().any(|&i| i >= c_bloch.ncols()) {
+        return Err(invalid("Bloch orbital indices out of range for gradient"));
+    }
+    let c_sel = Matrix::from_fn(m_full, t, |r, c| c_bloch[(r, t_indices[c])]);
+    let rt = reference.model_orbitals.adjoint() * c_sel;
+    let gamma_t = Matrix::from_row_slice(t, t, &one_t);
+    let gamma_ref = rt.conjugate() * gamma_t * rt.transpose();
+    let mut current = two_t;
+    let mut shape = [t; 4];
+    for axis in 0..4 {
+        let old = shape;
+        shape[axis] = m_full;
+        let mut next = vec![C64::default(); shape.iter().product()];
+        for (flat, out) in next.iter_mut().enumerate() {
+            let mut idx = [0usize; 4];
+            let mut rest = flat;
+            for a in (0..4).rev() {
+                idx[a] = rest % shape[a];
+                rest /= shape[a];
+            }
+            let target = idx[axis];
+            let mut acc = C64::default();
+            for source in 0..t {
+                idx[axis] = source;
+                let o_flat = ((idx[0] * old[1] + idx[1]) * old[2] + idx[2]) * old[3] + idx[3];
+                let factor = if axis < 2 {
+                    rt[(target, source)].conj()
+                } else {
+                    rt[(target, source)]
+                };
+                acc += factor * current[o_flat];
+            }
+            *out = acc;
+        }
+        current = next;
+    }
+    let one = real(gamma_ref.transpose().as_slice(), "one-body Bloch densities")?;
+    let two = real(&current, "two-body Bloch densities")?;
+    let canonical = Model::canonical_view(&integrals.context, m_full, reference.particles)?;
+    Ok((one, two, canonical))
+}
+
+#[allow(clippy::too_many_arguments)]
 fn finish_analytic_gradient(
     integrals: &MolecularIntegrals,
     reference: &MeanField,
@@ -229,22 +317,30 @@ fn finish_analytic_gradient(
     stationarity: Stationarity,
 ) -> Result<Gradient> {
     let ctx = &integrals.context;
-    let one = real(
-        &(0..m * m)
-            .map(|k| 0.5 * (t1[k] + t1[(k % m) * m + k / m].conj()))
-            .collect::<Vec<_>>(),
-        "one-body density matrices",
-    )?;
-    let two = real(
-        &(0..m.pow(4))
-            .map(|k| {
-                let (p, q, r, s) = (k / (m * m * m), (k / (m * m)) % m, (k / m) % m, k % m);
-                0.5 * (t2[k] + t2[((r * m + s) * m + p) * m + q].conj())
-            })
-            .collect::<Vec<_>>(),
-        "two-body density matrices",
-    )?;
-    let relaxed = variational_gradient::relaxed_densities(integrals, reference, model, &one, &two)?;
+    let h1: Vec<C64> = (0..m * m)
+        .map(|k| 0.5 * (t1[k] + t1[(k % m) * m + k / m].conj()))
+        .collect();
+    let h2: Vec<C64> = (0..m.pow(4))
+        .map(|k| {
+            let (p, q, r, s) = (k / (m * m * m), (k / (m * m)) % m, (k / m) % m, k % m);
+            0.5 * (t2[k] + t2[((r * m + s) * m + p) * m + q].conj())
+        })
+        .collect();
+    let (relaxed, _canonical) = if let Some(c_bloch) = &model.bloch_orbitals {
+        let (one, two, canonical) =
+            lift_bloch_rdms(integrals, reference, model, c_bloch, m, &h1, &h2)?;
+        (
+            variational_gradient::relaxed_densities(integrals, reference, &canonical, &one, &two)?,
+            Some(canonical),
+        )
+    } else {
+        let one = real(&h1, "one-body density matrices")?;
+        let two = real(&h2, "two-body density matrices")?;
+        (
+            variational_gradient::relaxed_densities(integrals, reference, model, &one, &two)?,
+            None,
+        )
+    };
     if (relaxed.energy - expected).abs() > 1e-7 {
         return Err(invalid(
             "the force RDMs and molecular orbitals do not reconstruct the variational Hamiltonian energy",
@@ -527,14 +623,24 @@ pub fn device_gradient(
     internal: bool,
 ) -> Result<DeviceGradient> {
     model.require_dense("an analytic variational force")?;
-    if integrals.kind() == super::periodic::paw::HamiltonianKind::PawSupercell {
-        return Err(crate::Error::Unsupported(
-            "the device force of a PAW-LCAO supercell is not implemented: its measured \
-             densities have no gated route (the state-vector force is analytic)"
-                .into(),
-        ));
-    }
     require_analytic_forces(integrals)?;
+    let supercell = integrals.kind() == super::periodic::paw::HamiltonianKind::PawSupercell;
+    if supercell {
+        super::periodic::paw::require_gap(reference)?;
+        if internal {
+            return Err(crate::Error::Unsupported(
+                "rigid rotations are not a symmetry of a crystal: the force of a PAW-LCAO \
+                 supercell is Cartesian (internal=False)"
+                    .into(),
+            ));
+        }
+        if model.bloch_orbitals.is_some() {
+            return Err(crate::Error::Unsupported(
+                "measured device forces use real supercell orbitals rather than complex Bloch orbitals"
+                    .into(),
+            ));
+        }
+    }
     reference.require_unsplit(integrals, model, "an analytic variational force")?;
     let m = model.m;
     let (m2, m4) = (m * m, m.pow(4));
@@ -589,7 +695,6 @@ pub fn device_gradient(
                 var_two[k] += weight * weight * square(d.two_error, k);
             }
         }
-        let size = 3 * integrals.geometry.numbers().len();
         let projector = if internal {
             let q = rigid::internal(ctx, integrals.geometry.positions())?.matrix;
             Some((&q * q.transpose(), q.ncols()))
@@ -605,9 +710,17 @@ pub fn device_gradient(
         let force = |one: &[f64], two: &[f64]| -> Result<(Vec<f64>, variational_gradient::VariationalDensities)> {
             let relaxed = variational_gradient::relaxed_densities(integrals, reference, model, one, two)?;
             let g = integrals.fixed_density_gradient(&relaxed.densities)?;
-            Ok((project(g.total.as_slice()), relaxed))
+            let projected = if supercell {
+                super::periodic::paw::per_cell(integrals, g.total.as_slice())?
+                    .as_slice()
+                    .to_vec()
+            } else {
+                project(g.total.as_slice())
+            };
+            Ok((projected, relaxed))
         };
         let (total, relaxed) = force(&one, &two)?;
+        let rows = total.len();
         // The orbits of the real-RDM symmetries with a nonzero variance.
         let mut orbits: Vec<(bool, Vec<usize>, f64)> = Vec::new();
         for p in 0..m {
@@ -699,13 +812,13 @@ pub fn device_gradient(
                 *v = sum.max(0.);
             }
         }
-        let mut gradient = ctx.allocate::<f64>(size)?;
+        let mut gradient = ctx.allocate::<f64>(rows)?;
         gradient.as_mut_slice().copy_from_slice(&total);
-        let mut error = ctx.allocate::<f64>(size)?;
+        let mut error = ctx.allocate::<f64>(rows)?;
         for (e, (v, vz)) in error.as_mut_slice().iter_mut().zip(variance.iter().zip(&z_variance)) {
             *e = (v + vz).sqrt();
         }
-        let mut z_vector_error = ctx.allocate::<f64>(size)?;
+        let mut z_vector_error = ctx.allocate::<f64>(rows)?;
         for (e, v) in z_vector_error.as_mut_slice().iter_mut().zip(&z_variance) {
             *e = v.sqrt();
         }
@@ -714,7 +827,7 @@ pub fn device_gradient(
             error,
             z_vector_error,
             elements: orbits.len(),
-            directions: projector.as_ref().map_or(size, |(_, k)| *k),
+            directions: projector.as_ref().map_or(rows, |(_, k)| *k),
             reference_stationarity: relaxed.stationarity,
             cphf_residual: relaxed.cphf_residual,
         })

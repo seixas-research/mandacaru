@@ -1,136 +1,8 @@
 //! Metallic occupations, reciprocal meshes and spectral observables.
 use super::invalid;
+pub use crate::math::smearing::{fermi, Smearing};
 use crate::{finite, product, Buffer, Context, Reservation, Result};
 use std::{collections::HashMap, f64::consts::PI};
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Smearing {
-    FermiDirac,
-    Gaussian,
-    MethfesselPaxton,
-}
-impl Smearing {
-    pub fn parse(name: &str) -> Result<Self> {
-        match name {
-            "fermi-dirac" | "fd" | "fermi" => Ok(Self::FermiDirac),
-            "gaussian" => Ok(Self::Gaussian),
-            "methfessel-paxton" | "mp" => Ok(Self::MethfesselPaxton),
-            _ => Err(invalid("unknown smearing method")),
-        }
-    }
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::FermiDirac => "fermi-dirac",
-            Self::Gaussian => "gaussian",
-            Self::MethfesselPaxton => "methfessel-paxton",
-        }
-    }
-    pub fn occupation(self, x: f64) -> f64 {
-        match self {
-            Self::FermiDirac => 0.5 * (1. - (0.5 * x).tanh()),
-            Self::Gaussian => 0.5 * libm::erfc(x),
-            Self::MethfesselPaxton => 0.5 * libm::erfc(x) - x * (-x * x).exp() / (2. * PI.sqrt()),
-        }
-    }
-    /// Derivative with respect to the dimensionless energy argument.
-    pub fn slope(self, x: f64) -> f64 {
-        match self {
-            Self::FermiDirac => 0.25 * ((0.5 * x).tanh().powi(2) - 1.),
-            Self::Gaussian if x.abs() <= 40. => -(-x * x).exp() / PI.sqrt(),
-            Self::MethfesselPaxton if x.abs() <= 40. => (x * x - 1.5) * (-x * x).exp() / PI.sqrt(),
-            _ => 0.,
-        }
-    }
-    pub fn entropy(self, x: f64) -> f64 {
-        match self {
-            Self::FermiDirac => {
-                let f = self.occupation(x);
-                let term = |x: f64| if x > 0. { x * x.ln() } else { 0. };
-                -term(f) - term(1. - f)
-            }
-            Self::Gaussian => (-x * x).exp() / (2. * PI.sqrt()),
-            Self::MethfesselPaxton => -(2. * x * x - 1.) * (-x * x).exp() / (4. * PI.sqrt()),
-        }
-    }
-}
-// Pairwise eight-lane reduction avoids moving a saturated insulating Fermi
-// bracket merely by changing the nesting of k-point and band summations.
-fn occupation_sum(mut values: impl Iterator<Item = f64>, length: usize) -> f64 {
-    if length < 8 {
-        return values.sum();
-    }
-    let mut lanes = std::array::from_fn::<_, 8, _>(|_| values.next().unwrap());
-    for _ in 0..(length / 8 - 1) {
-        for lane in &mut lanes {
-            *lane += values.next().unwrap();
-        }
-    }
-    let sum = ((lanes[0] + lanes[1]) + (lanes[2] + lanes[3]))
-        + ((lanes[4] + lanes[5]) + (lanes[6] + lanes[7]));
-    values.fold(sum, |a, b| a + b)
-}
-pub fn fermi(
-    eps: &[Vec<f64>],
-    weights: &[f64],
-    electrons: f64,
-    method: Smearing,
-    width: f64,
-    degeneracy: f64,
-) -> Result<f64> {
-    if eps.is_empty()
-        || eps.len() != weights.len()
-        || eps
-            .iter()
-            .any(|v| v.is_empty() || v.iter().any(|x| !x.is_finite()))
-        || weights.iter().any(|w| !w.is_finite() || *w < 0.)
-        || !width.is_finite()
-        || width <= 0.
-        || !electrons.is_finite()
-        || electrons < 0.
-        || !degeneracy.is_finite()
-        || degeneracy <= 0.
-    {
-        return Err(invalid(
-            "invalid Fermi-level dimensions, energies, electron count or smearing width",
-        ));
-    }
-    let capacity = degeneracy
-        * eps
-            .iter()
-            .zip(weights)
-            .map(|(e, w)| e.len() as f64 * w)
-            .sum::<f64>();
-    if electrons > capacity + 1e-9 || capacity <= 0. {
-        return Err(invalid("electron count exceeds the band capacity"));
-    }
-    let mut lo = eps.iter().flatten().copied().fold(f64::INFINITY, f64::min) - 60. * width;
-    let mut hi = eps
-        .iter()
-        .flatten()
-        .copied()
-        .fold(f64::NEG_INFINITY, f64::max)
-        + 60. * width;
-    for _ in 0..200 {
-        let mid = 0.5 * (lo + hi);
-        let length = eps.iter().map(Vec::len).sum();
-        let count = degeneracy
-            * occupation_sum(
-                eps.iter().zip(weights).flat_map(|(e, w)| {
-                    e.iter()
-                        .map(move |e| w * method.occupation((e - mid) / width))
-                }),
-                length,
-            );
-        if count < electrons {
-            lo = mid;
-        } else {
-            hi = mid;
-        }
-        if hi - lo < 1e-13 {
-            break;
-        }
-    }
-    Ok(0.5 * (lo + hi))
-}
 pub struct Mesh {
     pub full: Vec<[f64; 3]>,
     pub points: Vec<[f64; 3]>,
@@ -155,10 +27,33 @@ pub fn mesh(
     operations: &[[i32; 9]],
     time_reversal: bool,
 ) -> Result<Mesh> {
+    let signed: Vec<([i32; 9], bool)> = operations.iter().map(|&op| (op, false)).collect();
+    mesh_signed(ctx, size, gamma, &signed, time_reversal)
+}
+
+/// Reduces a Monkhorst-Pack mesh by magnetic operations `(W, anti_unitary)` without assuming
+/// global time reversal: `anti_unitary = false` maps `k -> k W`, `anti_unitary = true` maps
+/// `k -> -k W`.
+pub fn magnetic_mesh(
+    ctx: &Context,
+    size: [usize; 3],
+    gamma: bool,
+    operations: &[([i32; 9], bool)],
+) -> Result<Mesh> {
+    mesh_signed(ctx, size, gamma, operations, false)
+}
+
+fn mesh_signed(
+    ctx: &Context,
+    size: [usize; 3],
+    gamma: bool,
+    operations: &[([i32; 9], bool)],
+    time_reversal: bool,
+) -> Result<Mesh> {
     if size.contains(&0) {
         return Err(invalid("k-mesh dimensions must be positive"));
     }
-    for operation in operations {
+    for (operation, _) in operations {
         let a = nalgebra::Matrix3::from_row_slice(&operation.map(|v| v as f64));
         if (a.determinant().abs() - 1.).abs() > 1e-6 {
             return Err(invalid(
@@ -189,9 +84,13 @@ pub fn mesh(
     let lookup: HashMap<_, _> = full.iter().enumerate().map(|(i, p)| (key(*p), i)).collect();
     let mut parent: Vec<_> = (0..n).collect();
     for (i, p) in full.iter().enumerate() {
-        for operation in operations {
-            let transformed =
-                std::array::from_fn(|a| (0..3).map(|b| p[b] * operation[3 * b + a] as f64).sum());
+        for (operation, anti_unitary) in operations {
+            let sign = if *anti_unitary { -1. } else { 1. };
+            let transformed = std::array::from_fn(|a| {
+                sign * (0..3)
+                    .map(|b| p[b] * operation[3 * b + a] as f64)
+                    .sum::<f64>()
+            });
             let &j = lookup.get(&key(transformed)).ok_or_else(|| {
                 invalid("a supplied symmetry operation does not preserve the k-mesh")
             })?;

@@ -33,6 +33,12 @@ pub trait Scalar: Copy + Default + Send + Sync + 'static {
     fn encode(self, bytes: &mut [u8]);
     fn decode(bytes: &[u8]) -> Self;
 }
+fn copy_array<const N: usize>(bytes: &[u8]) -> [u8; N] {
+    let mut buf = [0u8; N];
+    buf.copy_from_slice(bytes);
+    buf
+}
+
 impl Scalar for Complex64 {
     const BYTES: usize = 16;
     const TAG: [u8; 4] = *b"CF64";
@@ -42,8 +48,8 @@ impl Scalar for Complex64 {
     }
     fn decode(bytes: &[u8]) -> Self {
         Self::new(
-            f64::from_le_bytes(bytes[..8].try_into().unwrap()),
-            f64::from_le_bytes(bytes[8..].try_into().unwrap()),
+            f64::from_le_bytes(copy_array(&bytes[..8])),
+            f64::from_le_bytes(copy_array(&bytes[8..])),
         )
     }
 }
@@ -56,8 +62,8 @@ impl Scalar for Complex32 {
     }
     fn decode(bytes: &[u8]) -> Self {
         Self::new(
-            f32::from_le_bytes(bytes[..4].try_into().unwrap()),
-            f32::from_le_bytes(bytes[4..].try_into().unwrap()),
+            f32::from_le_bytes(copy_array(&bytes[..4])),
+            f32::from_le_bytes(copy_array(&bytes[4..])),
         )
     }
 }
@@ -68,7 +74,7 @@ impl Scalar for f64 {
         bytes.copy_from_slice(&self.to_le_bytes());
     }
     fn decode(bytes: &[u8]) -> Self {
-        f64::from_le_bytes(bytes.try_into().unwrap())
+        f64::from_le_bytes(copy_array(bytes))
     }
 }
 impl Scalar for f32 {
@@ -78,7 +84,7 @@ impl Scalar for f32 {
         bytes.copy_from_slice(&self.to_le_bytes());
     }
     fn decode(bytes: &[u8]) -> Self {
-        f32::from_le_bytes(bytes.try_into().unwrap())
+        f32::from_le_bytes(copy_array(bytes))
     }
 }
 impl Scalar for u64 {
@@ -88,7 +94,7 @@ impl Scalar for u64 {
         bytes.copy_from_slice(&self.to_le_bytes());
     }
     fn decode(bytes: &[u8]) -> Self {
-        u64::from_le_bytes(bytes.try_into().unwrap())
+        u64::from_le_bytes(copy_array(bytes))
     }
 }
 impl Scalar for u8 {

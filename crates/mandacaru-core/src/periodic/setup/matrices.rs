@@ -407,9 +407,11 @@ pub fn kpoint_matrices(ctx: &Context, assembly: &MatrixAssembly<'_>) -> Result<V
         }
     }
 
-    let mut kpoints = Vec::with_capacity(nk);
+    let all_c = all_c_buf.as_slice();
+    let all_v_sr_slice = all_v_sr.as_slice();
+    let so_slice = so_buffer.as_ref().map(|b| b.as_slice());
 
-    for k_idx in 0..nk {
+    let build_kpoint = |k_idx: usize| -> Result<KPoint> {
         let k = assembly.kpoints_cart[k_idx];
         let frac = assembly.kpoints_frac[k_idx];
         let weight = assembly.weights[k_idx];
@@ -430,7 +432,7 @@ pub fn kpoint_matrices(ctx: &Context, assembly: &MatrixAssembly<'_>) -> Result<V
 
         // 2. Projections C of basis onto augmentation projectors: (m, p)
         let c_stride = m * p;
-        let c_slice = &all_c_buf.as_slice()[k_idx * c_stride..(k_idx + 1) * c_stride];
+        let c_slice = &all_c[k_idx * c_stride..(k_idx + 1) * c_stride];
         let c_mat = DMatrix::from_row_slice(m, p, c_slice);
 
         // 3. Grid overlap S_grid = dV * sum_x conj(psi_mu(x)) psi_nu(x)
@@ -502,7 +504,7 @@ pub fn kpoint_matrices(ctx: &Context, assembly: &MatrixAssembly<'_>) -> Result<V
 
         // 5. Short-range local potential matrix V_sr summed over atoms
         let v_stride = m * m;
-        let v_slice = &all_v_sr.as_slice()[k_idx * v_stride..(k_idx + 1) * v_stride];
+        let v_slice = &all_v_sr_slice[k_idx * v_stride..(k_idx + 1) * v_stride];
         let v_sr = DMatrix::from_row_slice(m, m, v_slice);
 
         // 6. Nonlocal ionic term C @ D_ion @ C^H
@@ -511,15 +513,15 @@ pub fn kpoint_matrices(ctx: &Context, assembly: &MatrixAssembly<'_>) -> Result<V
         fixed = (&fixed + fixed.adjoint()) * Complex64::new(0.5, 0.);
 
         // 7. Spin-orbit matrix if present
-        let spin_orbit = if let Some(ref so_buf) = so_buffer {
+        let spin_orbit = if let Some(all_so) = so_slice {
             let stride = 4 * m * m;
-            let so_slice = &so_buf.as_slice()[k_idx * stride..(k_idx + 1) * stride];
-            Some(DMatrix::from_row_slice(2 * m, 2 * m, so_slice))
+            let s = &all_so[k_idx * stride..(k_idx + 1) * stride];
+            Some(DMatrix::from_row_slice(2 * m, 2 * m, s))
         } else {
             None
         };
 
-        kpoints.push(KPoint {
+        Ok(KPoint {
             k,
             fractional: frac,
             weight,
@@ -529,8 +531,29 @@ pub fn kpoint_matrices(ctx: &Context, assembly: &MatrixAssembly<'_>) -> Result<V
             projections: c_mat,
             lowdin,
             spin_orbit,
-        });
+        })
+    };
+
+    if nk <= 1 {
+        let mut kpoints = Vec::with_capacity(nk);
+        if nk == 1 {
+            kpoints.push(build_kpoint(0)?);
+        }
+        return Ok(kpoints);
     }
 
-    Ok(kpoints)
+    let level = if ctx.layout().kpts > 1 || ctx.auto_layout() {
+        crate::Level::Kpts
+    } else {
+        crate::Level::Threads
+    };
+    let lane_count = if level == crate::Level::Kpts {
+        let per_lane = product(&[m.saturating_mul(2).max(1), n_points, 16])?;
+        ctx.fit_lanes(level, ctx.lanes(level, nk), per_lane)?
+    } else {
+        ctx.lanes(level, nk)
+    };
+    ctx.map_tasks(level, &mut vec![(); lane_count], nk, |_, k_idx| {
+        build_kpoint(k_idx)
+    })
 }

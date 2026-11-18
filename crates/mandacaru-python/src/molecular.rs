@@ -750,39 +750,8 @@ impl PyMeanField {
         index: usize,
         component: &str,
     ) -> PyResult<Bound<'py, PyDict>> {
-        let m = self.integrals.m();
-        let (active, frozen, rotation) = if let Some(model) = model {
-            if active.is_some() || !frozen.is_empty() {
-                return Err(PyValueError::new_err(
-                    "choose a native orbital model or explicit active/frozen indices",
-                ));
-            }
-            (
-                model.inner().orbital_indices.clone(),
-                model.inner().frozen_indices.clone(),
-                model.inner().orbital_rotation.clone(),
-            )
-        } else {
-            (
-                active.unwrap_or_else(|| (0..m).filter(|p| !frozen.contains(p)).collect()),
-                frozen,
-                None,
-            )
-        };
-        let gamma = if let Some(gamma) = gamma {
-            let n = active
-                .len()
-                .checked_mul(2)
-                .ok_or_else(|| error(mandacaru_core::Error::Overflow))?;
-            if gamma.shape() != [n, n] {
-                return Err(PyValueError::new_err(
-                    "one-particle RDM shape must match the active spin orbitals",
-                ));
-            }
-            Some(copy(&self.integrals.context, &gamma)?)
-        } else {
-            None
-        };
+        let (active, frozen, rotation, gamma) =
+            self.prepare_active_density(gamma, active, frozen, model)?;
         let grid = grid.map_or(&self.integrals.grid, |grid| &grid.inner);
         let (analysis, field) = py
             .detach(|| {
@@ -809,6 +778,7 @@ impl PyMeanField {
                 Ok::<_, mandacaru_core::Error>((analysis, field))
             })
             .map_err(error)?;
+        let m = self.integrals.m();
         let out = PyDict::new(py);
         out.set_item("occupations", array(py, &[m], analysis.occupations)?)?;
         out.set_item("coefficients", matrix(py, &analysis.coefficients)?)?;
@@ -863,6 +833,43 @@ impl PyMeanField {
             out.set_item("positions", self.integrals.geometry.positions().to_vec())?;
         }
         Ok(out)
+    }
+
+    #[pyo3(signature=(method="bader", *, gamma=None, active=None, frozen=Vec::new(), model=None, grid=None, interpolate=true))]
+    fn partial_charges<'py>(
+        &self,
+        py: Python<'py>,
+        method: &str,
+        gamma: Option<PyReadonlyArray2<'py, C64>>,
+        active: Option<Vec<usize>>,
+        frozen: Vec<usize>,
+        model: Option<&PyModel>,
+        grid: Option<&PySpatialGrid>,
+        interpolate: bool,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let (active, frozen, rotation, gamma) =
+            self.prepare_active_density(gamma, active, frozen, model)?;
+        let grid_ref = grid.map(|g| &g.inner);
+        let out = py
+            .detach(|| {
+                use mandacaru_core::molecular::observables::{self, ActiveDensity};
+                let input = gamma.as_ref().map(|(values, _)| ActiveDensity {
+                    gamma: values,
+                    active: &active,
+                    frozen: &frozen,
+                    rotation: rotation.as_ref().map(|r| &r.matrix),
+                });
+                observables::partial_charges(
+                    &self.integrals,
+                    &self.inner,
+                    input,
+                    method,
+                    grid_ref,
+                    interpolate,
+                )
+            })
+            .map_err(error)?;
+        crate::arrays::partial_charges_dict(py, out)
     }
     #[getter]
     fn n_iterations(&self) -> usize {
@@ -949,6 +956,33 @@ impl PyMeanField {
     #[getter]
     fn occupation(&self) -> String {
         self.inner.occupation_label()
+    }
+    /// Evaluates linear-response Hubbard U parameters on this converged molecular DFT state.
+    #[pyo3(signature=(functional, *, alphas=None, energy_scale=1.0, unit="Ha"))]
+    fn hubbard_response(
+        &self,
+        py: Python<'_>,
+        functional: &str,
+        alphas: Option<Vec<f64>>,
+        energy_scale: f64,
+        unit: &str,
+    ) -> PyResult<super::hubbard::PyHubbardResponse> {
+        let alphas = alphas.unwrap_or_else(|| vec![0.001837466, 0.003674932]);
+        let res = py
+            .detach(|| {
+                mandacaru_core::molecular::hubbard_response::hubbard_response(
+                    &self.integrals,
+                    &self.inner,
+                    functional,
+                    &alphas,
+                )
+            })
+            .map_err(error)?;
+        Ok(super::hubbard::PyHubbardResponse::from_molecular(
+            res,
+            energy_scale,
+            unit.to_string(),
+        ))
     }
     #[getter]
     fn hubbard_energy(&self) -> Option<f64> {
@@ -1040,6 +1074,36 @@ impl PyMeanField {
             source: model,
         })
     }
+
+    #[allow(clippy::type_complexity)]
+    #[pyo3(signature=(spec=None, *, representation="dense", truncation=None))]
+    fn bloch_model(
+        &self,
+        py: Python<'_>,
+        spec: Option<&str>,
+        representation: &str,
+        truncation: Option<f64>,
+    ) -> PyResult<(PyModel, [usize; 3], Vec<[i64; 3]>)> {
+        let representation = mandacaru_core::molecular::double_factorized::Representation::parse(
+            representation,
+            truncation,
+        )
+        .map_err(error)?;
+        let (model, momentum) = py
+            .detach(|| {
+                self.inner
+                    .bloch_model(&self.integrals, spec, representation)
+            })
+            .map_err(error)?;
+        Ok((
+            PyModel {
+                context: self.integrals.context.clone(),
+                source: model,
+            },
+            momentum.mesh,
+            momentum.orbital_k,
+        ))
+    }
     #[pyo3(signature=(*,include_hamiltonian=false))]
     fn snapshot<'py>(
         &self,
@@ -1127,6 +1191,64 @@ impl PyMeanField {
         Ok(out)
     }
 }
+
+type ActiveDensityInputs = (
+    Vec<usize>,
+    Vec<usize>,
+    Option<Arc<mandacaru_core::molecular::transform::OrbitalRotation>>,
+    Option<(Vec<C64>, mandacaru_core::Reservation)>,
+);
+
+impl PyMeanField {
+    fn prepare_active_density(
+        &self,
+        gamma: Option<PyReadonlyArray2<'_, C64>>,
+        active: Option<Vec<usize>>,
+        frozen: Vec<usize>,
+        model: Option<&PyModel>,
+    ) -> PyResult<ActiveDensityInputs> {
+        let m = self.integrals.m();
+        let (active, frozen, rotation) = if let Some(model) = model {
+            if active.is_some() || !frozen.is_empty() {
+                return Err(PyValueError::new_err(
+                    "choose a native orbital model or explicit active/frozen indices",
+                ));
+            }
+            (
+                model.inner().orbital_indices.clone(),
+                model.inner().frozen_indices.clone(),
+                model.inner().orbital_rotation.clone(),
+            )
+        } else {
+            (
+                active.unwrap_or_else(|| (0..m).filter(|p| !frozen.contains(p)).collect()),
+                frozen,
+                None,
+            )
+        };
+        let gamma = if let Some(gamma) = gamma {
+            let is_spinor = model.is_some_and(|m| m.inner().spinor)
+                || (model.is_none() && self.inner.method == "ghf");
+            let n = if is_spinor {
+                active.len()
+            } else {
+                active
+                    .len()
+                    .checked_mul(2)
+                    .ok_or_else(|| error(mandacaru_core::Error::Overflow))?
+            };
+            if gamma.shape() != [n, n] {
+                return Err(PyValueError::new_err(
+                    "one-particle RDM shape must match the active spin orbitals",
+                ));
+            }
+            Some(copy(&self.integrals.context, &gamma)?)
+        } else {
+            None
+        };
+        Ok((active, frozen, rotation, gamma))
+    }
+}
 /// The canonical name of a two-body representation, or `ValueError` for a name or truncation
 /// (Hartree) it does not take (`molecular::double_factorized::Representation::parse`).
 #[pyfunction]
@@ -1155,6 +1277,19 @@ impl PyModel {
     #[getter]
     fn orbital_symmetry_sets(&self) -> Vec<Vec<usize>> {
         self.inner().orbital_symmetry_sets.clone()
+    }
+    #[getter]
+    #[allow(clippy::type_complexity)]
+    fn crystal_point_symmetry(&self) -> Option<(Vec<String>, Vec<Vec<(f64, f64)>>)> {
+        self.inner().crystal_point_symmetry.as_ref().map(|s| {
+            (
+                s.labels.clone(),
+                s.characters
+                    .iter()
+                    .map(|row| row.iter().map(|c| (c.re, c.im)).collect())
+                    .collect(),
+            )
+        })
     }
     #[getter]
     fn one_body<'py>(&self, py: Python<'py>) -> PyResult<Array<'py, C64>> {
@@ -1322,7 +1457,8 @@ impl PyModel {
             inner,
         })
     }
-    #[pyo3(signature=(*,mapping="jordan_wigner",sector=true,dense=false,include_singles=true,sparse=false,pool="fermionic",precision="float64",taper=false,register_free=false,measurement="qwc"))]
+    #[pyo3(signature=(*,mapping="jordan_wigner",sector=true,dense=false,include_singles=true,sparse=false,pool="fermionic",precision="float64",taper=false,register_free=false,measurement="qwc",bloch_momentum=None))]
+    #[allow(clippy::too_many_arguments, clippy::type_complexity)]
     fn problem(
         &self,
         py: Python<'_>,
@@ -1336,6 +1472,7 @@ impl PyModel {
         taper: bool,
         register_free: bool,
         measurement: &str,
+        bloch_momentum: Option<([usize; 3], Vec<[i64; 3]>)>,
     ) -> PyResult<PyQuantumProblem> {
         let factorized = match measurement {
             "qwc" => false,
@@ -1377,6 +1514,17 @@ impl PyModel {
             py.detach(|| {
                 let plan = self.inner().factorized_measurement(&self.context)?;
                 inner.factorize(plan)
+            })
+            .map_err(error)?;
+        }
+        if let Some((mesh, orbital_k)) = bloch_momentum {
+            py.detach(|| {
+                let momentum = mandacaru_core::quantum::CrystalMomentum::new(mesh, orbital_k)?;
+                inner = inner.with_crystal_symmetry(
+                    Some(&momentum),
+                    self.inner().crystal_point_symmetry.as_ref(),
+                )?;
+                Ok::<_, mandacaru_core::Error>(())
             })
             .map_err(error)?;
         }

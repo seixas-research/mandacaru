@@ -101,12 +101,44 @@ class TestTheOptionChecks:
         assert atoms.calc.integrals.grid.periodic
 
     @pytest.mark.parametrize("method", ["vqe", "adapt-vqe", "vasqa", "valsqa"])
-    def test_k_space_orbitals_are_not_implemented_yet(self, method):
-        atoms = chain()
-        atoms.calc = Mandacaru(method=method, basis="HAO", grid_spacing=0.35, trace=False)
-        assert atoms.calc._crystal_orbitals == "k-space"
-        with pytest.raises(NotImplementedError, match="crystal_orbitals='real-space'"):
-            atoms.get_potential_energy()
+    def test_k_space_orbitals_run_and_match_real_space(self, method):
+        atoms = Atoms("H2", positions=[[0.0, 0.0, 0.0], [0.74, 0.0, 0.0]],
+                      cell=np.diag([2.4, 5.0, 5.0]), pbc=[True, False, False])
+        extra = {"max_steps": 16, "max_length": 4, "seed": 2} if method in ("vasqa", "valsqa") else {}
+        calc_k = Mandacaru(method=method, basis="HAO", grid_spacing=0.45, kpts=GAMMA2,
+                           optimizer=SLSQP, trace=False, **extra)
+        assert calc_k._crystal_orbitals == "k-space"
+        atoms.calc = calc_k
+        e_k = atoms.get_potential_energy()
+        spectral = calc_k.get_spectral_function(eta=0.1)
+        assert np.allclose(spectral.sum_rule, 1.0, atol=1e-10)
+
+        atoms_real = atoms.copy()
+        atoms_real.calc = Mandacaru(method=method, basis="HAO", grid_spacing=0.45, kpts=GAMMA2,
+                                    optimizer=SLSQP, trace=False, **REAL, **extra)
+        e_real = atoms_real.get_potential_energy()
+        assert len(calc_k.problem.pool_labels) < len(atoms_real.calc.problem.pool_labels)
+        tol = 5e-2 if method in ("vasqa", "valsqa") else 1e-6
+        assert e_k == pytest.approx(e_real, abs=tol)
+
+    def test_k_space_active_space_and_double_factorized_run(self):
+        atoms = Atoms("H2", positions=[[0.0, 0.0, 0.0], [0.74, 0.0, 0.0]],
+                      cell=np.diag([2.4, 5.0, 5.0]), pbc=[True, False, False])
+        atoms.calc = Mandacaru(
+            method="vasqa",
+            basis="HAO",
+            grid_spacing=0.45,
+            kpts=GAMMA2,
+            active_space={"orbitals": 3, "frozen": [0], "symmetry": True},
+            two_body={"representation": "double-factorized", "truncation": 1e-8},
+            max_steps=8,
+            max_length=4,
+            seed=1,
+            trace=False,
+        )
+        e = atoms.get_potential_energy()
+        assert np.isfinite(e)
+        assert atoms.calc.problem.n_spatial_orbitals == 3
 
     def test_an_unknown_crystal_orbitals_value_raises(self):
         with pytest.raises(ValueError, match="crystal_orbitals"):
@@ -251,6 +283,35 @@ class TestTheArchitectureSearches:
         assert r2.energy_hartree == pytest.approx(r_full.energy_hartree, abs=1e-12)
         assert r2.final_energy == pytest.approx(r_full.final_energy, abs=1e-12)
         assert r2.operators == r_full.operators
+
+    def test_native_bloch_model_k_space_matches_real_space_and_prunes_pool(self):
+        atoms = Atoms("H2", positions=[[0.0, 0.0, 0.0], [0.74, 0.0, 0.0]],
+                      cell=np.diag([2.4, 5.0, 5.0]), pbc=[True, False, False])
+        with Mandacaru(
+            method="vasqa",
+            basis="HAO",
+            grid_spacing=0.45,
+            mapping="jordan_wigner",
+            kpts=GAMMA2,
+            max_steps=16,
+            max_length=4,
+            seed=1,
+            trace=False,
+            **REAL,
+        ) as calc:
+            atoms.calc = calc
+            atoms.get_potential_energy()
+            real_prob = calc.result._problem
+            bloch_model, mesh, orbital_k = calc.native_reference.bloch_model()
+            assert tuple(mesh) == (2, 1, 1)
+            assert len(orbital_k) == 4
+            bloch_full = bloch_model.problem(
+                mapping="jordan_wigner", sparse=False, include_singles=True
+            )
+            bloch_prob = bloch_full.with_momentum(mesh, orbital_k)
+            assert len(bloch_prob.pool_labels) < len(real_prob.pool_labels)
+            res_bloch = bloch_prob.search(max_steps=16, max_length=4, seed=3)
+            assert res_bloch["energy_ha"] == pytest.approx(calc.result.energy_hartree, abs=5e-3)
 
 
 class TestTheUnfoldedMeanField:
@@ -517,3 +578,86 @@ class TestThePawLcaoSupercell:
         hao = atoms.get_forces()
         print(f"H2 chain bond force F_x(H 1): PAW-LCAO {paw[1][0]:+.6f}, HAO {hao[1][0]:+.6f} eV/A")
         assert (paw[1][0] > 0) == (hao[1][0] > 0)
+
+
+class TestCrystalSymmetryIntegration:
+    """Crystal point-/space-group symmetry + CrystalMomentum across VQE, ADAPT-VQE, VASQA, VALSQA,
+    HVA, and Z2 tapering."""
+
+    @pytest.mark.parametrize("method", ["vqe", "adapt-vqe", "vasqa", "valsqa"])
+    def test_point_symmetry_prunes_below_momentum_alone_and_preserves_energy(self, method):
+        atoms = Atoms("H2", positions=[[0.0, 0.0, 0.0], [0.74, 0.0, 0.0]],
+                      cell=np.diag([2.4, 5.0, 5.0]), pbc=[True, False, False])
+        extra = {"max_steps": 40, "max_length": 6, "seed": 2} if method in ("vasqa", "valsqa") else {}
+        calc = Mandacaru(method=method, basis="HAO", grid_spacing=0.45,
+                         kpts=GAMMA2, optimizer=SLSQP, trace=False, **extra)
+        atoms.calc = calc
+        energy = atoms.get_potential_energy()
+
+        model, mesh, orbital_k = calc.native_reference.bloch_model()
+        assert model.crystal_point_symmetry is not None
+        labels, _ = model.crystal_point_symmetry
+        assert len(labels) >= 1
+        assert calc.problem.point_symmetry is not None
+
+        mom_only = model.problem(
+            mapping="jordan_wigner", sector=True, include_singles=True, pool=calc._pool
+        ).with_momentum(mesh, orbital_k)
+        assert len(calc.problem.pool_labels) < len(mom_only.pool_labels)
+        assert all("S(" not in lbl for lbl in calc.problem.pool_labels)
+        tol = 5e-2 if method in ("vasqa", "valsqa") else 1e-5
+        assert energy == pytest.approx(exact_per_cell(calc, 4, 2), abs=tol)
+
+    @pytest.mark.parametrize("method", ["vqe", "adapt-vqe"])
+    def test_k_space_crystal_symmetry_composes_with_z2_tapering(self, method):
+        atoms = Atoms("H2", positions=[[0.0, 0.0, 0.0], [0.74, 0.0, 0.0]],
+                      cell=np.diag([2.4, 5.0, 5.0]), pbc=[True, False, False])
+        calc_tap = Mandacaru(method=method, basis="HAO", grid_spacing=0.45,
+                             kpts=GAMMA2, taper=True, optimizer=SLSQP, trace=False)
+        atoms.calc = calc_tap
+        e_tap = atoms.get_potential_energy()
+        assert calc_tap.problem.taper is not None
+        assert calc_tap.problem.num_qubits < 8
+
+        atoms_ref = atoms.copy()
+        atoms_ref.calc = Mandacaru(method="vqe", basis="HAO", grid_spacing=0.45,
+                                   kpts=GAMMA2, optimizer=SLSQP, trace=False)
+        e_ref = atoms_ref.get_potential_energy()
+        assert e_tap == pytest.approx(e_ref, abs=1e-5)
+
+    def test_hva_runs_with_k_space_crystal_symmetry(self):
+        atoms = Atoms("H2", positions=[[0.0, 0.0, 0.0], [0.74, 0.0, 0.0]],
+                      cell=np.diag([2.4, 5.0, 5.0]), pbc=[True, False, False])
+        atoms.calc = Mandacaru(method="vqe", ansatz={"name": "hva", "layers": 2},
+                               basis="HAO", grid_spacing=0.45, kpts=GAMMA2,
+                               optimizer=SLSQP, trace=False)
+        e_hva = atoms.get_potential_energy()
+        assert np.isfinite(e_hva)
+        assert atoms.calc.problem.momentum is not None
+        assert atoms.calc.problem.point_symmetry is not None
+
+    def test_native_periodic_double_group_band_irreps_kpath_and_dipole_selection(self):
+        atoms = Atoms("H2", positions=[[0.0, 0.0, 0.0], [0.74, 0.0, 0.0]],
+                      cell=np.diag([3.0, 6.0, 6.0]), pbc=[True, False, False])
+        atoms.calc = Mandacaru(method="dft", xc="pbe", basis="PAW-LCAO", grid_spacing=0.25,
+                               kpts={"size": (2, 1, 1), "gamma": True}, trace=False)
+        e = atoms.get_potential_energy()
+        assert np.isfinite(e)
+        per = atoms.calc.result.periodic
+        gamma_rep = per.band_irreps(0, degeneracy_tol=1e-4)
+        assert gamma_rep["overlap_residual"] < 1e-6
+        assert gamma_rep["max_unitarity_error"] < 1e-6
+        assert len(gamma_rep["clusters"]) >= 1
+
+        off_mesh = per.band_irreps_at([0.5, 0.0, 0.0], degeneracy_tol=1e-4)
+        assert off_mesh["overlap_residual"] < 1e-6
+
+        kpath = per.band_path_irreps([[0.0, 0.0, 0.0], [0.25, 0.0, 0.0], [0.5, 0.0, 0.0]],
+                                     degeneracy_tol=1e-4)
+        assert len(kpath) == 3
+        assert all(w > 0.7 for _, _, w in kpath[1]["links_from_prev"])
+
+        dip = per.dipole_selection(0, degeneracy_tol=1e-4)
+        assert len(dip["allowed"]) == dip["n_valence"] * dip["n_conduction"]
+        dip_x = per.dipole_selection_at([0.5, 0.0, 0.0], degeneracy_tol=1e-4)
+        assert len(dip_x["allowed_axes"]) == 3

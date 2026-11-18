@@ -80,6 +80,8 @@ pub enum Quantity {
     Volume,
     /// 1/Bohr to 1/Angstrom (a wavenumber: a kick strength, a momentum with `hbar = 1`).
     Wavenumber,
+    /// Hartree/Bohr^2 to eV/Angstrom^2 (force constants).
+    ForceConstant,
     /// e/(Bohr^2 atomic time) to e/(Angstrom^2 fs) (a macroscopic current density).
     CurrentDensity,
 }
@@ -90,6 +92,7 @@ impl Quantity {
             "energy" => Self::Energy,
             "length" => Self::Length,
             "force" => Self::Force,
+            "force_constant" => Self::ForceConstant,
             "gradient_to_force" => Self::GradientToForce,
             "stress" => Self::Stress,
             "area" => Self::Area,
@@ -102,9 +105,9 @@ impl Quantity {
             "current_density" => Self::CurrentDensity,
             _ => {
                 return Err(Error::Invalid(
-                    "quantity must be 'energy', 'length', 'force', 'gradient_to_force', 'stress', \
-                     'area', 'inverse_energy', 'polarization', 'conductivity', 'time', 'volume', \
-                     'wavenumber' or 'current_density'"
+                    "quantity must be 'energy', 'length', 'force', 'force_constant', \
+                     'gradient_to_force', 'stress', 'area', 'inverse_energy', 'polarization', \
+                     'conductivity', 'time', 'volume', 'wavenumber' or 'current_density'"
                         .into(),
                 ))
             }
@@ -125,6 +128,7 @@ impl Quantity {
             Self::Energy => HARTREE_TO_EV,
             Self::Length => BOHR_TO_ANGSTROM,
             Self::Force | Self::GradientToForce => HARTREE_TO_EV / BOHR_TO_ANGSTROM,
+            Self::ForceConstant => HARTREE_TO_EV / (BOHR_TO_ANGSTROM * BOHR_TO_ANGSTROM),
             Self::Stress => HARTREE_TO_EV / BOHR_TO_ANGSTROM.powf(3.),
             Self::Area => BOHR_TO_ANGSTROM * BOHR_TO_ANGSTROM,
             Self::InverseEnergy => 1.0 / HARTREE_TO_EV,

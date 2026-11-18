@@ -150,6 +150,20 @@ pub struct Response {
     limit: f64,
 }
 
+/// How a shell column `j` in the linear-response matrix is obtained.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ColumnSource {
+    /// Perturb shell `j` directly (`+-alpha` probes per spin channel).
+    Direct,
+    /// Map shell `j` from representative shell `rep` already measured via `Direct`.
+    /// For each shell index `i`, `rows[i] = (src_shell, flip_spin)` specifies where row `i`
+    /// of the new column comes from in the `rep` column(s).
+    Mapped {
+        rep: usize,
+        rows: Vec<(usize, bool)>,
+    },
+}
+
 #[derive(Clone, Copy)]
 enum Pass {
     Frozen,
@@ -170,40 +184,78 @@ fn relative(numerator: f64, scale: f64) -> f64 {
     }
 }
 
-/// `D(a)` for every alpha: column `J` is `(N(+a e_J) - N(-a e_J)) / 2a`.
+/// `D(a)` for every alpha using symmetry-reduced columns where provided.
 fn quotients(
     probe: &mut dyn Probe,
     pass: Pass,
     alphas: &[f64],
-    n: usize,
+    shells: usize,
+    channels: usize,
+    sources: &[ColumnSource],
     calls: &mut usize,
 ) -> Result<Vec<DMatrix<f64>>> {
+    let n = shells * channels;
     let mut out = Vec::with_capacity(alphas.len());
     for &alpha in alphas {
         let mut d = DMatrix::zeros(n, n);
-        for j in 0..n {
-            let mut shifts = vec![0.; n];
-            let mut columns = Vec::with_capacity(2);
-            for sign in [1., -1.] {
-                shifts[j] = sign * alpha;
-                let occupations = match pass {
-                    Pass::Frozen => probe.frozen(&shifts)?,
-                    Pass::Scf => probe.scf(&shifts)?,
-                };
-                *calls += 1;
-                if occupations.len() != n {
-                    return Err(invalid(format!(
-                        "the probe returned {} occupations for {n} shell-channel pairs",
-                        occupations.len()
-                    )));
+        let mut computed = vec![false; shells];
+        for (shell_j, source) in sources.iter().enumerate() {
+            let ColumnSource::Direct = source else {
+                continue;
+            };
+            for ch in 0..channels {
+                let j = shell_j * channels + ch;
+                let mut shifts = vec![0.; n];
+                let mut columns = Vec::with_capacity(2);
+                for sign in [1., -1.] {
+                    shifts[j] = sign * alpha;
+                    let occupations = match pass {
+                        Pass::Frozen => probe.frozen(&shifts)?,
+                        Pass::Scf => probe.scf(&shifts)?,
+                    };
+                    *calls += 1;
+                    if occupations.len() != n {
+                        return Err(invalid(format!(
+                            "the probe returned {} occupations for {n} shell-channel pairs",
+                            occupations.len()
+                        )));
+                    }
+                    if occupations.iter().any(|x| !x.is_finite()) {
+                        return Err(invalid("the probe returned a non-finite occupation"));
+                    }
+                    columns.push(occupations);
                 }
-                if occupations.iter().any(|x| !x.is_finite()) {
-                    return Err(invalid("the probe returned a non-finite occupation"));
+                for i in 0..n {
+                    d[(i, j)] = (columns[0][i] - columns[1][i]) / (2. * alpha);
                 }
-                columns.push(occupations);
             }
-            for i in 0..n {
-                d[(i, j)] = (columns[0][i] - columns[1][i]) / (2. * alpha);
+            computed[shell_j] = true;
+        }
+        for (shell_j, source) in sources.iter().enumerate() {
+            let ColumnSource::Mapped { rep, rows } = source else {
+                continue;
+            };
+            if *rep >= shells || !computed[*rep] || rows.len() != shells {
+                return Err(invalid(
+                    "symmetry-reduced response column references an uncomputed or invalid representative",
+                ));
+            }
+            let self_flip = rows[shell_j].1;
+            for ch in 0..channels {
+                let dst_col = shell_j * channels + ch;
+                let src_ch = if self_flip && channels == 2 { 1 - ch } else { ch };
+                let src_col = rep * channels + src_ch;
+                for (dst_row_shell, &(src_row_shell, flip_row)) in rows.iter().enumerate() {
+                    for row_ch in 0..channels {
+                        let dst_row = dst_row_shell * channels + row_ch;
+                        let src_row_ch = if flip_row && channels == 2 {
+                            1 - row_ch
+                        } else {
+                            row_ch
+                        };
+                        d[(dst_row, dst_col)] = d[(src_row_shell * channels + src_row_ch, src_col)];
+                    }
+                }
             }
         }
         out.push(d);
@@ -277,6 +329,17 @@ pub fn checked_inverse(
 /// Measures `chi0`, `chi` and `U` with `probe`. The matrices are reserved from `ctx`
 /// before the first probe call.
 pub fn measure(ctx: &Context, probe: &mut dyn Probe, options: &Options) -> Result<Response> {
+    let sources = vec![ColumnSource::Direct; probe.shells()];
+    measure_with_symmetry(ctx, probe, options, &sources)
+}
+
+/// Measures `chi0`, `chi` and `U` with symmetry-reduced perturbation columns (`sources`).
+pub fn measure_with_symmetry(
+    ctx: &Context,
+    probe: &mut dyn Probe,
+    options: &Options,
+    sources: &[ColumnSource],
+) -> Result<Response> {
     options.validate()?;
     let (shells, channels) = (probe.shells(), probe.channels());
     if shells == 0 || !(1..=2).contains(&channels) {
@@ -284,12 +347,18 @@ pub fn measure(ctx: &Context, probe: &mut dyn Probe, options: &Options) -> Resul
             "a response needs at least one shell and one or two spin channels, got {shells} and {channels}"
         )));
     }
+    if sources.len() != shells {
+        return Err(invalid(format!(
+            "symmetry column map length {} does not match {shells} shells",
+            sources.len()
+        )));
+    }
     let n = shells * channels;
     let copies = 2 * options.alphas.len() + 14;
     let _reservation = ctx.reserve(product(&[n, n, size_of::<f64>(), copies])?)?;
     let mut calls = 0;
-    let q0 = quotients(probe, Pass::Frozen, &options.alphas, n, &mut calls)?;
-    let q = quotients(probe, Pass::Scf, &options.alphas, n, &mut calls)?;
+    let q0 = quotients(probe, Pass::Frozen, &options.alphas, shells, channels, sources, &mut calls)?;
+    let q = quotients(probe, Pass::Scf, &options.alphas, shells, channels, sources, &mut calls)?;
     let nonlinearity = match (drift(&q0), drift(&q)) {
         (Some(a), Some(b)) => Some(a.max(b)),
         _ => None,

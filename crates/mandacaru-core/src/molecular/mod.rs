@@ -10,6 +10,7 @@ pub mod forces;
 pub mod frame;
 mod growing_rows;
 pub mod hubbard;
+pub mod hubbard_response;
 pub mod integrals;
 pub mod local_correlation;
 pub mod multipoles;

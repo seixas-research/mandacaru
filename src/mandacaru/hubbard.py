@@ -90,7 +90,8 @@ def check_atoms(spec, context, atoms, paw, xc):
 
     Loads the dataset of each distinct element (cached, and read again by the calculation) from
     the set of the functional ``xc`` unless the basis names a folder, and
-    hands its file and reference occupations to Rust, which refuses a spin-orbit dataset, an
+    hands its file and reference occupations to Rust, which accepts spin-orbit datasets for both
+    ``dudarev`` and ``liechtenstein`` on crystals and refuses an
     element the option names that ``atoms`` lacks, a dataset without the shell and a shell
     with no occupied reference wave. What needs the assembled crystal (a symmetry table the
     shells cannot be completed over) is refused at the first calculation, before any SCF.

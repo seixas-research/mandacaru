@@ -4,19 +4,25 @@
 //! a converged run are read from the owned `Report`. Nothing is decided or computed here.
 use super::{array, copy, error, PyContext};
 use mandacaru_core::{
-    models::{hubbard::shell_letter, hubbard_request::Request},
+    models::{
+        hubbard::{shell_letter, Form},
+        hubbard_response::{Kernel, Response},
+        hubbard_request::Request,
+    },
     periodic::{
+        hubbard_response::ResponseResult as PeriodicResponseResult,
         hubbard_table::{
             build, check_datasets, check_loaded as check_table, ChannelData, Dataset, Layout,
             Projector, Species,
         },
         Crystal, PeriodicResult,
     },
+    molecular::hubbard_response::ResponseResult as MolecularResponseResult,
     product, Error, Reservation,
 };
 use numpy::{Complex64, PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods};
 use pyo3::{
-    exceptions::{PyRuntimeError, PyValueError},
+    exceptions::{PyKeyError, PyRuntimeError, PyValueError},
     prelude::*,
     types::{PyDict, PyList},
 };
@@ -227,7 +233,8 @@ pub(crate) fn view<'py>(
     let out = PyList::empty(py);
     for (index, shell) in spec.shells.iter().enumerate() {
         let p = shell.size();
-        let count = product(&[crystal.spins, p, p]).map_err(error)?;
+        let d = if crystal.spinor { 2 * p } else { p };
+        let count = product(&[crystal.spins, d, d]).map_err(error)?;
         // The matrices (16 bytes per entry) and the traces are reserved before they are built.
         let matrices = product(&[count, 16]).map_err(error)?;
         let trace_bytes = product(&[crystal.spins, 8]).map_err(error)?;
@@ -253,13 +260,373 @@ pub(crate) fn view<'py>(
         item.set_item("u_eff_ha", shell.u_eff())?;
         item.set_item("energy_ha", energies[index])?;
         item.set_item("trace", traces)?;
-        item.set_item("n", array(py, &[crystal.spins, p, p], values)?)?;
+        item.set_item("n", array(py, &[crystal.spins, d, d], values)?)?;
+        if let Some(source) = &shell.source {
+            item.set_item("U_source", source)?;
+        }
         out.append(item)?;
     }
     Ok(Some(out))
 }
 
+pub(crate) fn parse_kernel(name: &str) -> PyResult<Kernel> {
+    match name.to_ascii_lowercase().as_str() {
+        "spin-summed" | "spin_summed" => Ok(Kernel::SpinSummed),
+        "charge" => Ok(Kernel::Charge),
+        "same-spin" | "same_spin" => Ok(Kernel::SameSpin),
+        other => Err(PyValueError::new_err(format!(
+            "unknown response kernel {other:?}; choose 'spin-summed', 'charge', or 'same-spin'"
+        ))),
+    }
+}
+
+fn parse_form(name: &str) -> PyResult<Form> {
+    Form::parse(name).map_err(error)
+}
+
+fn matrix_to_py<'py>(
+    py: Python<'py>,
+    m: &nalgebra::DMatrix<f64>,
+    scale: f64,
+) -> PyResult<super::Array<'py, f64>> {
+    let rows = m.nrows();
+    let cols = m.ncols();
+    let data: Vec<f64> = (0..rows)
+        .flat_map(|r| (0..cols).map(move |c| m[(r, c)] * scale))
+        .collect();
+    array(py, &[rows, cols], data)
+}
+
+/// Native linear-response Hubbard U view (for crystals and molecules).
+#[pyclass(name = "HubbardResponse", module = "mandacaru._native", frozen)]
+pub struct PyHubbardResponse {
+    u_matrix: nalgebra::DMatrix<f64>,
+    u_charge: nalgebra::DMatrix<f64>,
+    u_cross: Option<nalgebra::DMatrix<f64>>,
+    chi0: nalgebra::DMatrix<f64>,
+    chi: nalgebra::DMatrix<f64>,
+    alphas: Vec<f64>,
+    j_response: Option<Vec<f64>>,
+    symbols: Vec<String>,
+    self_consistent: bool,
+    response: Response,
+    energy_scale: f64,
+    unit_name: String,
+}
+
+impl PyHubbardResponse {
+    pub(crate) fn from_periodic(
+        res: PeriodicResponseResult,
+        energy_scale: f64,
+        unit_name: String,
+    ) -> Self {
+        let u_cross = res.u_cross();
+        Self {
+            u_matrix: res.u_matrix,
+            u_charge: res.u_charge,
+            u_cross,
+            chi0: res.chi0,
+            chi: res.chi,
+            alphas: res.alphas,
+            j_response: res.j_response,
+            symbols: res.symbols,
+            self_consistent: res.self_consistent,
+            response: res.response,
+            energy_scale,
+            unit_name,
+        }
+    }
+
+    pub(crate) fn from_molecular(
+        res: MolecularResponseResult,
+        energy_scale: f64,
+        unit_name: String,
+    ) -> Self {
+        let u_cross = res.u_cross();
+        Self {
+            u_matrix: res.u_matrix,
+            u_charge: res.u_charge,
+            u_cross,
+            chi0: res.chi0,
+            chi: res.chi,
+            alphas: res.alphas,
+            j_response: res.j_response,
+            symbols: res.symbols,
+            self_consistent: false,
+            response: res.response,
+            energy_scale,
+            unit_name,
+        }
+    }
+}
+
+#[pymethods]
+impl PyHubbardResponse {
+    #[getter]
+    fn u_matrix<'py>(&self, py: Python<'py>) -> PyResult<super::Array<'py, f64>> {
+        matrix_to_py(py, &self.u_matrix, self.energy_scale)
+    }
+    #[getter]
+    fn u_charge<'py>(&self, py: Python<'py>) -> PyResult<super::Array<'py, f64>> {
+        matrix_to_py(py, &self.u_charge, self.energy_scale)
+    }
+    #[getter]
+    fn u_cross<'py>(&self, py: Python<'py>) -> PyResult<Option<super::Array<'py, f64>>> {
+        self.u_cross
+            .as_ref()
+            .map(|m| matrix_to_py(py, m, self.energy_scale))
+            .transpose()
+    }
+    #[getter]
+    fn chi0<'py>(&self, py: Python<'py>) -> PyResult<super::Array<'py, f64>> {
+        matrix_to_py(py, &self.chi0, 1.0 / self.energy_scale)
+    }
+    #[getter]
+    fn chi<'py>(&self, py: Python<'py>) -> PyResult<super::Array<'py, f64>> {
+        matrix_to_py(py, &self.chi, 1.0 / self.energy_scale)
+    }
+    #[getter]
+    fn alphas(&self) -> Vec<f64> {
+        self.alphas.iter().map(|a| a * self.energy_scale).collect()
+    }
+    #[getter]
+    fn j_response(&self) -> Option<Vec<f64>> {
+        self.j_response
+            .as_ref()
+            .map(|jv| jv.iter().map(|j| j * self.energy_scale).collect())
+    }
+    #[getter]
+    fn shells(&self) -> usize {
+        self.response.shells
+    }
+    #[getter]
+    fn channels(&self) -> usize {
+        self.response.channels
+    }
+    #[getter]
+    fn symbols(&self) -> Vec<String> {
+        self.symbols.clone()
+    }
+    #[getter]
+    fn self_consistent(&self) -> bool {
+        self.self_consistent
+    }
+    #[getter]
+    fn nonlinearity(&self) -> Option<f64> {
+        self.response.nonlinearity
+    }
+    #[getter]
+    fn asymmetry(&self) -> f64 {
+        self.response.asymmetry
+    }
+    #[getter]
+    fn floor(&self) -> f64 {
+        self.response.sum_rule
+    }
+    #[getter]
+    fn condition_chi0(&self) -> f64 {
+        self.response.condition_chi0
+    }
+    #[getter]
+    fn condition_chi(&self) -> f64 {
+        self.response.condition_chi
+    }
+    #[getter]
+    fn condition(&self) -> f64 {
+        self.response.condition_chi0.max(self.response.condition_chi)
+    }
+    #[getter]
+    fn energy_unit(&self) -> String {
+        self.unit_name.clone()
+    }
+
+    /// Groups shells by element and validates spread tolerance in native Rust.
+    #[pyo3(signature=(*, form="dudarev", kernel="spin-summed", j=None, tolerance=0.5))]
+    fn hubbard_u<'py>(
+        &self,
+        py: Python<'py>,
+        form: &str,
+        kernel: &str,
+        j: Option<f64>,
+        tolerance: f64,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let form = parse_form(form)?;
+        let kernel = parse_kernel(kernel)?;
+        let tol_ha = tolerance / self.energy_scale;
+        let j_ha = j.map(|v| v / self.energy_scale);
+        if let Some(jv) = j_ha {
+            if !jv.is_finite() || jv < 0. {
+                return Err(PyValueError::new_err("Hubbard J must be finite and non-negative"));
+            }
+        }
+        let keys: Vec<&str> = self.symbols.iter().map(String::as_str).collect();
+        let groups = self
+            .response
+            .hubbard_u(kernel, &keys, tol_ha)
+            .map_err(error)?;
+        let j_vec = self.j_response.as_deref();
+        let out = PyDict::new(py);
+        for g in groups {
+            let j_val = match (form, j_ha) {
+                (Form::Dudarev, _) => j_ha.unwrap_or(0.0),
+                (Form::Liechtenstein, Some(jv)) => jv,
+                (Form::Liechtenstein, None) => match j_vec {
+                    Some(jv) => {
+                        let vals: Vec<f64> = g.shells.iter().map(|&s| jv[s].max(0.0)).collect();
+                        vals.iter().sum::<f64>() / vals.len() as f64
+                    }
+                    None => 0.0,
+                },
+            };
+            if j_val > g.u.max(0.0) {
+                return Err(PyValueError::new_err(format!(
+                    "Hubbard J ({:.4} {}) exceeds extracted U ({:.4} {}) for {:?}",
+                    j_val * self.energy_scale,
+                    self.unit_name,
+                    g.u * self.energy_scale,
+                    self.unit_name,
+                    g.key
+                )));
+            }
+            let entry = PyDict::new(py);
+            entry.set_item("U", g.u * self.energy_scale)?;
+            entry.set_item("J", j_val * self.energy_scale)?;
+            entry.set_item("U_eff", (g.u - j_val) * self.energy_scale)?;
+            entry.set_item("spread", g.spread * self.energy_scale)?;
+            entry.set_item("shells", g.shells)?;
+            entry.set_item("form", form.name())?;
+            entry.set_item("U_source", if self.self_consistent { "lr-scf" } else { "linear-response" })?;
+            out.set_item(g.key, entry)?;
+        }
+        Ok(out)
+    }
+
+    fn to_dict<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let out = PyDict::new(py);
+        out.set_item("u_matrix", self.u_matrix(py)?)?;
+        out.set_item("u_charge", self.u_charge(py)?)?;
+        if let Some(uc) = self.u_cross(py)? {
+            out.set_item("u_cross", uc)?;
+        }
+        out.set_item("chi0", self.chi0(py)?)?;
+        out.set_item("chi", self.chi(py)?)?;
+        out.set_item("alphas", self.alphas())?;
+        if let Some(j) = self.j_response() {
+            out.set_item("j_response", j)?;
+        }
+        out.set_item("shells", self.shells())?;
+        out.set_item("channels", self.channels())?;
+        out.set_item("symbols", self.symbols())?;
+        out.set_item("self_consistent", self.self_consistent())?;
+        out.set_item("nonlinearity", self.nonlinearity())?;
+        out.set_item("asymmetry", self.asymmetry())?;
+        out.set_item("floor", self.floor())?;
+        out.set_item("condition_chi0", self.condition_chi0())?;
+        out.set_item("condition_chi", self.condition_chi())?;
+        out.set_item("condition", self.condition())?;
+        out.set_item("energy_unit", self.energy_unit())?;
+        Ok(out)
+    }
+
+    fn to_json(&self) -> PyResult<String> {
+        let mat_vec = |m: &nalgebra::DMatrix<f64>, scale: f64| -> Vec<Vec<f64>> {
+            (0..m.nrows())
+                .map(|r| (0..m.ncols()).map(|c| m[(r, c)] * scale).collect())
+                .collect()
+        };
+        let payload = serde_json::json!({
+            "energy_unit": self.unit_name,
+            "shells": self.response.shells,
+            "channels": self.response.channels,
+            "symbols": self.symbols,
+            "self_consistent": self.self_consistent,
+            "alphas": self.alphas(),
+            "u_matrix": mat_vec(&self.u_matrix, self.energy_scale),
+            "u_charge": mat_vec(&self.u_charge, self.energy_scale),
+            "u_cross": self.u_cross.as_ref().map(|m| mat_vec(m, self.energy_scale)),
+            "j_response": self.j_response(),
+            "chi0": mat_vec(&self.chi0, 1.0 / self.energy_scale),
+            "chi": mat_vec(&self.chi, 1.0 / self.energy_scale),
+            "nonlinearity": self.response.nonlinearity,
+            "asymmetry": self.response.asymmetry,
+            "floor": self.response.sum_rule,
+            "condition_chi0": self.response.condition_chi0,
+            "condition_chi": self.response.condition_chi,
+            "condition": self.condition(),
+        });
+        serde_json::to_string(&payload).map_err(|e| PyRuntimeError::new_err(e.to_string()))
+    }
+
+    fn keys(&self) -> Vec<&'static str> {
+        let mut keys = vec![
+            "u_matrix",
+            "u_charge",
+            "chi0",
+            "chi",
+            "alphas",
+            "shells",
+            "channels",
+            "symbols",
+            "self_consistent",
+            "nonlinearity",
+            "asymmetry",
+            "floor",
+            "condition_chi0",
+            "condition_chi",
+            "condition",
+            "energy_unit",
+        ];
+        if self.u_cross.is_some() {
+            keys.push("u_cross");
+        }
+        if self.j_response.is_some() {
+            keys.push("j_response");
+        }
+        keys
+    }
+
+    fn __contains__(&self, key: &str) -> bool {
+        match key {
+            "u_matrix" | "u_charge" | "chi0" | "chi" | "alphas" | "shells" | "channels"
+            | "symbols" | "self_consistent" | "nonlinearity" | "asymmetry" | "floor"
+            | "condition_chi0" | "condition_chi" | "condition" | "energy_unit" => true,
+            "u_cross" => self.u_cross.is_some(),
+            "j_response" => self.j_response.is_some(),
+            _ => false,
+        }
+    }
+
+    #[pyo3(signature=(key, default=None))]
+    fn get<'py>(
+        &self,
+        py: Python<'py>,
+        key: &str,
+        default: Option<Py<PyAny>>,
+    ) -> PyResult<Py<PyAny>> {
+        match self.__getitem__(py, key) {
+            Ok(v) => Ok(v),
+            Err(_) => Ok(default.unwrap_or_else(|| py.None())),
+        }
+    }
+
+    fn __getitem__<'py>(&self, py: Python<'py>, key: &str) -> PyResult<Py<PyAny>> {
+        let dict = self.to_dict(py)?;
+        match dict.get_item(key)? {
+            Some(item) => Ok(item.unbind()),
+            None => Err(PyKeyError::new_err(format!("{key:?}"))),
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "HubbardResponse(shells={}, channels={}, self_consistent={}, unit={:?})",
+            self.response.shells, self.response.channels, self.self_consistent, self.unit_name
+        )
+    }
+}
+
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_class::<PyHubbardResponse>()?;
     m.add_function(wrap_pyfunction!(hubbard_validate, m)?)?;
     m.add_function(wrap_pyfunction!(hubbard_check_atoms, m)?)?;
     m.add_function(wrap_pyfunction!(hubbard_table, m)?)?;

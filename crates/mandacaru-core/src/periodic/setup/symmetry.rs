@@ -52,10 +52,54 @@ pub struct Symmetry {
     /// Indices into `ops` of the kept operations, ascending.
     kept: Vec<usize>,
     shifts: Vec<[i64; 3]>,
+    /// For a magnetic spinor crystal: whether each kept operation includes time reversal `T`.
+    anti_unitary: Option<Vec<bool>>,
     /// Grid matrix of each distinct rotation, `None` when the grid does not carry it.
     scales: Vec<Option<[[i64; 3]; 3]>>,
     /// `T^L` of each distinct rotation that has a kept operation, `L = 0..=max_l`.
     harmonics: Vec<Option<Vec<DMatrix<Complex64>>>>,
+}
+
+/// Classifies an operation `r = L W L^-1` against initial collinear axial moments along `+z`:
+/// returns `Some(false)` if unitary `(det R) R` maps `m` onto `m[s(a)]`, `Some(true)` if
+/// anti-unitary `- (det R) R` does, or `None` if neither preserves `(species, moments)`.
+fn classify_magnetic_spinor(
+    r: &Matrix3<f64>,
+    image: &[usize],
+    species: &[u32],
+    moments: &[f64],
+) -> Option<bool> {
+    const MOMENT_TOL: f64 = 1e-6;
+    const AXIS_TOL: f64 = 1e-6;
+    for (a, &b) in image.iter().enumerate() {
+        if species[b] != species[a] {
+            return None;
+        }
+    }
+    if moments.iter().all(|m| m.abs() <= MOMENT_TOL) {
+        return None;
+    }
+    let det = r.determinant();
+    let z_image = Vector3::new(r[(0, 2)], r[(1, 2)], r[(2, 2)]) * det;
+    if z_image[0].abs() > AXIS_TOL
+        || z_image[1].abs() > AXIS_TOL
+        || (z_image[2].abs() - 1.).abs() > AXIS_TOL
+    {
+        return None;
+    }
+    let sign_unitary = z_image[2].signum();
+    let unitary_ok = image
+        .iter()
+        .enumerate()
+        .all(|(a, &b)| (moments[b] - sign_unitary * moments[a]).abs() <= MOMENT_TOL);
+    if unitary_ok {
+        return Some(false);
+    }
+    let anti_ok = image
+        .iter()
+        .enumerate()
+        .all(|(a, &b)| (moments[b] + sign_unitary * moments[a]).abs() <= MOMENT_TOL);
+    anti_ok.then_some(true)
 }
 
 impl Symmetry {
@@ -70,8 +114,32 @@ impl Symmetry {
         Self::from_operations(find(&cell, geometry.symprec)?, geometry)
     }
 
+    /// Search the space group of `geometry` and filter it for a magnetic spinor crystal with
+    /// initial collinear `moments` along `z`, classifying each kept operation as unitary
+    /// (`anti_unitary = false`) or anti-unitary (`T * g`, `anti_unitary = true`).
+    pub fn new_magnetic_spinor(geometry: &Geometry, moments: &[f64]) -> Result<Self> {
+        check(geometry)?;
+        if moments.len() != geometry.fractional.len() {
+            return Err(invalid("moments and atoms must have the same length"));
+        }
+        let cell = Cell {
+            lattice: geometry.lattice.transpose(),
+            fractional: geometry.fractional,
+            labels: geometry.species,
+        };
+        Self::build(find(&cell, geometry.symprec)?, geometry, Some(moments))
+    }
+
     /// Filter already found operations (found for the same cell).
     pub fn from_operations(ops: Operations, geometry: &Geometry) -> Result<Self> {
+        Self::build(ops, geometry, None)
+    }
+
+    fn build(
+        ops: Operations,
+        geometry: &Geometry,
+        magnetic_moments: Option<&[f64]>,
+    ) -> Result<Self> {
         check(geometry)?;
         let n = geometry.fractional.len();
         let grid = geometry.grid.map(|v| v as i64);
@@ -80,20 +148,38 @@ impl Symmetry {
             rep_rotation[r] = ops.rotations[s];
         }
         let scales: Vec<_> = rep_rotation.iter().map(|w| grid_matrix(w, grid)).collect();
-        let (mut kept, mut shifts) = (vec![], vec![]);
+        let inv_lattice = geometry
+            .lattice
+            .try_inverse()
+            .ok_or_else(|| invalid("the lattice must be nonsingular"))?;
+        let cartesian_of = |w: &Matrix3<i32>| geometry.lattice * w.map(f64::from) * inv_lattice;
+        let mut kept = vec![];
+        let mut shifts = vec![];
+        let mut anti_flags = magnetic_moments.map(|_| Vec::new());
         let mut image = vec![0; n];
-        'ops: for s in 0..ops.len() {
-            let Some(_) = scales[ops.op_factors[s].0] else {
+        for s in 0..ops.len() {
+            if scales[ops.op_factors[s].0].is_none() {
                 continue;
-            };
+            }
             let Some(shift) = grid_shift(&ops.translations[s], geometry) else {
                 continue;
             };
             ops.atom_map(s, &mut image);
-            for (a, &b) in image.iter().enumerate() {
-                if geometry.labels[b] != geometry.labels[a] {
-                    continue 'ops;
+            if let Some(moments) = magnetic_moments {
+                let r = cartesian_of(&ops.rotations[s]);
+                let Some(anti) = classify_magnetic_spinor(&r, &image, geometry.species, moments)
+                else {
+                    continue;
+                };
+                if let Some(flags) = &mut anti_flags {
+                    flags.push(anti);
                 }
+            } else if image
+                .iter()
+                .enumerate()
+                .any(|(a, &b)| geometry.labels[b] != geometry.labels[a])
+            {
+                continue;
             }
             kept.push(s);
             shifts.push(shift);
@@ -105,12 +191,7 @@ impl Symmetry {
         for &s in &kept {
             let r = ops.op_factors[s].0;
             if harmonics[r].is_none() {
-                let cartesian = geometry.lattice
-                    * rep_rotation[r].map(f64::from)
-                    * geometry
-                        .lattice
-                        .try_inverse()
-                        .ok_or_else(|| invalid("the lattice must be nonsingular"))?;
+                let cartesian = cartesian_of(&rep_rotation[r]);
                 let bound = 10. * geometry.symprec / shortest + 1e-12;
                 harmonics[r] = Some(rotation_tables(&cartesian, geometry.max_l, bound)?);
             }
@@ -122,9 +203,15 @@ impl Symmetry {
             ops,
             kept,
             shifts,
+            anti_unitary: anti_flags,
             scales,
             harmonics,
         })
+    }
+
+    /// For a magnetic spinor symmetry: per kept operation flag (`true` if `T * g`, `false` if `g`).
+    pub fn anti_unitary_flags(&self) -> Option<&[bool]> {
+        self.anti_unitary.as_deref()
     }
 
     /// Number of kept operations.
@@ -197,33 +284,51 @@ impl Symmetry {
     }
 
     /// Drop the operations whose rotation does not map the Monkhorst-Pack mesh
-    /// onto itself (the mesh of `spectrum::mesh`, `k' = k W`).
+    /// onto itself (the mesh of `spectrum::mesh`, `k' = +- k W`).
     pub fn keeping_mesh(mut self, size: [usize; 3], gamma: bool) -> Result<Self> {
         let points = MeshIntegers::new(size, gamma)?;
-        let mut verdict: HashMap<usize, bool> = HashMap::new();
-        let mut index = 0;
+        let mut verdict: HashMap<(usize, bool), bool> = HashMap::new();
         let (mut kept, mut shifts) = (vec![], vec![]);
-        for &s in &self.kept {
+        let mut kept_flags = self.anti_unitary.as_ref().map(|_| vec![]);
+        for (index, &s) in self.kept.iter().enumerate() {
             let r = self.ops.op_factors[s].0;
+            let anti = self.anti_unitary.as_ref().is_some_and(|flags| flags[index]);
             let keep = *verdict
-                .entry(r)
-                .or_insert_with(|| points.preserved_by(&self.ops.rotations[s]));
+                .entry((r, anti))
+                .or_insert_with(|| points.preserved_by_signed(&self.ops.rotations[s], anti));
             if keep {
                 kept.push(s);
                 shifts.push(self.shifts[index]);
+                if let Some(flags) = &mut kept_flags {
+                    flags.push(anti);
+                }
             }
-            index += 1;
         }
         self.kept = kept;
         self.shifts = shifts;
+        self.anti_unitary = kept_flags;
         Ok(self)
     }
 
-    /// The irreducible mesh under the kept operations and time reversal: only the
-    /// distinct rotations reach the reduction, a pure translation moves no k.
-    /// Call [`Self::keeping_mesh`] first; a rotation that breaks the mesh raises.
+    /// The irreducible mesh under the kept operations (and time reversal when nonmagnetic):
+    /// a pure translation moves no k. Call [`Self::keeping_mesh`] first.
     pub fn mesh(&self, ctx: &Context, size: [usize; 3], gamma: bool) -> Result<Mesh> {
-        spectrum::mesh(ctx, size, gamma, &self.distinct_rotations(), true)
+        match &self.anti_unitary {
+            Some(flags) => {
+                let mut seen = HashSet::new();
+                let mut ops = Vec::new();
+                for (index, &s) in self.kept.iter().enumerate() {
+                    let anti = flags[index];
+                    if seen.insert((self.ops.op_factors[s].0, anti)) {
+                        let w = &self.ops.rotations[s];
+                        let mat = std::array::from_fn(|i| w[(i / 3, i % 3)]);
+                        ops.push((mat, anti));
+                    }
+                }
+                spectrum::magnetic_mesh(ctx, size, gamma, &ops)
+            }
+            None => spectrum::mesh(ctx, size, gamma, &self.distinct_rotations(), true),
+        }
     }
 
     /// `1/n_ops sum_s T^L(s)` over the channels: the average that sends the
@@ -392,19 +497,26 @@ impl MeshIntegers {
     }
     /// Whether `k -> k W` sends every mesh point to a mesh point (modulo a reciprocal vector).
     pub(crate) fn preserved_by(&self, w: &Matrix3<i32>) -> bool {
+        self.preserved_by_signed(w, false)
+    }
+
+    /// Whether `k -> +- k W` sends every mesh point to a mesh point (modulo a reciprocal vector).
+    pub(crate) fn preserved_by_signed(&self, w: &Matrix3<i32>, anti_unitary: bool) -> bool {
         let n = self.size;
         let common = n.iter().fold(1i128, |l, &v| lcm(l, v as i128));
+        let sign = if anti_unitary { -1i128 } else { 1i128 };
         self.points.iter().all(|q| {
             let mut image = [0i64; 3];
             for a in 0..3 {
-                let total: i128 = (0..3)
-                    .map(|b| {
-                        i128::from(q[b])
-                            * i128::from(w[(b, a)])
-                            * i128::from(n[a])
-                            * (common / n[b] as i128)
-                    })
-                    .sum();
+                let total: i128 = sign
+                    * (0..3)
+                        .map(|b| {
+                            i128::from(q[b])
+                                * i128::from(w[(b, a)])
+                                * i128::from(n[a])
+                                * (common / n[b] as i128)
+                        })
+                        .sum::<i128>();
                 if total % common != 0 {
                     return false;
                 }

@@ -26,9 +26,13 @@ fn the_local_potential_reproduces_a_cubic_exactly_and_has_the_ionic_tail() {
         assert!((potential.value(r) - poly(r)).abs() < 1e-8, "value at {r}");
         assert!((potential.slope(r) - slope(r)).abs() < 1e-7, "slope at {r}");
     }
-    // Flat below the first point, the ionic tail beyond the last.
-    assert_eq!(potential.value(0.5 * r0), poly(r0));
-    assert_eq!(potential.slope(0.5 * r0), 0.0);
+    // Smooth C^1 even continuation a + b r^2 below the first point, ionic tail beyond the last.
+    let h = 0.5 * r0;
+    let t = h / r0;
+    let y0p = slope(r0);
+    assert!((potential.value(h) - (poly(r0) - 0.5 * r0 * y0p * (1. - t * t))).abs() < 1e-8);
+    assert!((potential.slope(h) - y0p * t).abs() < 1e-7);
+    assert_eq!(potential.slope(0.0), 0.0);
     assert_eq!(potential.value(2.0 * rmax), -z / (2.0 * rmax));
     assert_eq!(potential.slope(2.0 * rmax), z / (4.0 * rmax * rmax));
     drop(potential);

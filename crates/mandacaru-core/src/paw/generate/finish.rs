@@ -26,7 +26,7 @@ use crate::{
         invalid,
         pseudize::snap,
         radial::shape,
-        record::{Array, Channel, CoreState, Defects, Nlcc, PawDataset, SpinOrbit},
+        record::{Array, Channel, CoreState, Defects, Nlcc, PawDataset, Provenance, SpinOrbit},
     },
     product, Buffer, Context, Result,
 };
@@ -369,8 +369,16 @@ pub fn finish(
         core_density: table(&core)?,
         smooth_core_density: table(&smooth_core)?,
         core_states: Some(core_states),
-        core_scheme: None,
         defaults_applied: Vec::new(),
+        provenance: Some(Provenance {
+            generator: "mandacaru-core".to_string(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            xc_scheme: source.name().to_string(),
+            rc_factor: recipe.rc_factor,
+            local_factor: recipe.local_factor,
+            n_bessel: recipe.n_bessel as u32,
+            search: None,
+        }),
         _small: ctx.reserve(1 << 20)?,
     })
 }

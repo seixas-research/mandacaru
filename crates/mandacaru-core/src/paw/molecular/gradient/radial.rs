@@ -3,39 +3,29 @@
 //! potential and the partial core densities. Each slope is the derivative of
 //! the exact function the setup evaluates, branch by branch.
 use super::super::data::Species;
-use crate::{math::spline::Cubic, paw::pair_tables::potential};
+use crate::{math::spline::Cubic, paw::multipole::shape_potential_parts};
 use std::f64::consts::PI;
 
-/// `potential(r, radius, l)` and its derivative with respect to `r`. The
+/// `shape_potential_at(r, radius, l)` and its derivative with respect to `r`. The
 /// potential is the sum of an interior part `in` (the charge inside `r`) and an
 /// exterior part `out`; the shape function's own terms cancel in the slope,
 /// which is `(-(l + 1) in + l out) / r`. Below `1e-12 radius` the slope of the
 /// limit at that radius is returned (a p potential has a finite slope at the
 /// center, every other one has none).
 pub fn potential_slope(r: f64, radius: f64, l: usize) -> (f64, f64) {
-    let prefactor = 4. * PI / (2 * l + 1) as f64;
+    let (inner, outer) = shape_potential_parts(r, radius, l);
     if r >= radius {
-        let value = prefactor / r.powi((l + 1) as i32);
-        return (value, -((l + 1) as f64) * value / r);
+        return (inner, -((l + 1) as f64) * inner / r);
     }
     let r_eff = r.max(1e-12 * radius);
-    let x = r_eff / radius;
-    let norm = 1.
-        / (radius.powi((2 * l + 3) as i32)
-            * (1. / (2 * l + 3) as f64 - 3. / (2 * l + 5) as f64 + 3. / (2 * l + 7) as f64
-                - 1. / (2 * l + 9) as f64));
-    let (mut enclosed, mut tail) = (0., 0.);
-    for (k, c) in [1., -3., 3., -1.].into_iter().enumerate() {
-        let power = (2 * l + 3 + 2 * k) as i32;
-        enclosed += c * x.powi(power) / power as f64;
-        tail += c * (1. - x.powi((2 * k + 2) as i32)) / (2 * k + 2) as f64;
-    }
-    let inner =
-        prefactor * norm * radius.powi((2 * l + 3) as i32) * enclosed / r_eff.powi((l + 1) as i32);
-    let outer = prefactor * norm * r_eff.powi(l as i32) * radius * radius * tail;
+    let (inner_eff, outer_eff) = if r == r_eff {
+        (inner, outer)
+    } else {
+        shape_potential_parts(r_eff, radius, l)
+    };
     (
-        potential(r, radius, l),
-        (-((l + 1) as f64) * inner + l as f64 * outer) / r_eff,
+        inner + outer,
+        (-((l + 1) as f64) * inner_eff + l as f64 * outer_eff) / r_eff,
     )
 }
 
@@ -92,25 +82,22 @@ pub fn local_slope(species: &Species, r: f64) -> f64 {
     let knots = species.ionic.knots.as_slice();
     if r > knots[knots.len() - 1] {
         species.charge / (r * r)
-    } else if r < knots[0] {
-        0.
     } else {
-        species.ionic.value_slope(r).1
+        species.ionic.value_slope_regular(r, 0).1
     }
 }
 
 /// The partial-core table as the grid sums it, and its slope: zero past the
-/// last node, constant below the first and wherever the value is clipped at 0.
+/// last node, regular $a + b r^2$ continuation below the first and zero wherever
+/// the value is clipped at 0.
 pub fn core_slope(table: &Cubic, r: f64) -> (f64, f64) {
     let knots = table.knots.as_slice();
     if r > knots[knots.len() - 1] {
         return (0., 0.);
     }
-    let (value, slope) = table.value_slope(r.max(knots[0]));
+    let (value, slope) = table.value_slope_regular(r, 0);
     if value <= 0. {
         (0., 0.)
-    } else if r < knots[0] {
-        (value, 0.)
     } else {
         (value, slope)
     }

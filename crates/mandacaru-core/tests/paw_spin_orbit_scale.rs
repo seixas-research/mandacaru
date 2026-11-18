@@ -282,3 +282,76 @@ fn an_open_shell_that_was_only_measured_at_another_width_is_given_up_without_a_f
     assert!(d.given_up && d.factor == 1., "{d:?}");
     assert!(scales.iter().find(|s| s.l == 1).unwrap().factor > 1.);
 }
+
+/// E6-1 benchmark/verdict check on shipped 6p elements (`pbe-fr/Bi`, `pbe-fr/Pb`):
+/// `(2j + 1)`-weighted branch averages (`so.average_screened`, `so.overlap_average`) recover the
+/// scalar `p` reference level and channel spectrum closely without needing separate j-averaged
+/// projectors, while `spin_orbit_scale` calibrates `so.coupling` above `-2/(2l+1) * difference` to
+/// compensate the relativistic `6p1/2` radial contraction against a spin-free metric.
+#[test]
+fn the_6p_j_average_of_shipped_bi_and_pb_recovers_the_scalar_channel() {
+    use mandacaru_core::paw::generate::spin_orbit::{lowest_level, weights};
+    let ctx = Context::new(Some(2), 2 << 30).unwrap();
+    let root = std::env::var("MANDACARU_PAW_PATH")
+        .expect("MANDACARU_PAW_PATH names the library with a pbe-fr set");
+    for symbol in ["Bi", "Pb"] {
+        let path = std::path::Path::new(&root)
+            .join("pbe-fr")
+            .join(format!("{symbol}.parquet"));
+        let ds = PawDataset::read(&ctx, &path).unwrap();
+        let ch = &ds.channels[&1];
+        let so = &ds.spin_orbit[&1];
+        let [w_down, w_up] = weights(1);
+        let count = so.reference_energies.shape()[1];
+        let e = so.reference_energies.data();
+        let split_lowest = e[count] - e[0];
+        let split_valence = e[2 * count - 1] - e[count - 1];
+        let mean_lowest = (w_down * e[0] + w_up * e[count]) / (w_down + w_up);
+        let mean_valence = (w_down * e[count - 1] + w_up * e[2 * count - 1]) / (w_down + w_up);
+        let scalar_lowest = ch.reference_energies.data()[0];
+        let scalar_valence = ch.reference_energies.data()[count - 1];
+        let avg_tables: Vec<&[f64]> = so.projectors.iter().map(|p| p.as_slice()).collect();
+        let ch_tables: Vec<&[f64]> = ch.projectors.iter().map(|p| p.as_slice()).collect();
+        let average_level = lowest_level(
+            &ctx,
+            ds.r.as_slice(),
+            ds.v_local_screened.as_slice(),
+            1,
+            &avg_tables,
+            so.average_screened.data(),
+            so.overlap_average.data(),
+        )
+        .unwrap();
+        let scalar_level = lowest_level(
+            &ctx,
+            ds.r.as_slice(),
+            ds.v_local_screened.as_slice(),
+            1,
+            &ch_tables,
+            ch.coupling_screened.data(),
+            ch.overlap_correction.data(),
+        )
+        .unwrap();
+        let ref_ratio = (mean_valence - scalar_valence).abs() / split_valence.abs();
+        let lvl_ratio = (average_level - scalar_level).abs() / split_lowest.abs();
+        eprintln!(
+            "{symbol} p (count={count}): lowest centroid miss {:.3e} / split {split_lowest:.4} Ha, valence ref_ratio={ref_ratio:.3e}, lvl_ratio={lvl_ratio:.3e}",
+            (mean_lowest - scalar_lowest).abs() / split_lowest.abs(),
+        );
+        // For Z=82..83 (6p), the Dirac vs Koelling-Harmon centroid shifts by ~10% of the valence
+        // splitting while the smooth (2j+1)-averaged operator still recovers the scalar level
+        // within a few percent, and `spin_orbit_scale` closes the engine splitting via `so.coupling`.
+        assert!(ref_ratio < 0.15, "{symbol} 6p ref_ratio={ref_ratio}");
+        assert!(lvl_ratio < 0.08, "{symbol} lowest p lvl_ratio={lvl_ratio}");
+        // Bi 6p calibrated `so.coupling` was scaled above uncalibrated `so.coupling_screened` block.
+        if symbol == "Bi" {
+            let max_raw = so
+                .coupling_screened
+                .data()
+                .iter()
+                .fold(0f64, |m, x| m.max(x.abs()));
+            let max_cal = so.coupling.data().iter().fold(0f64, |m, x| m.max(x.abs()));
+            assert!(max_cal > max_raw);
+        }
+    }
+}

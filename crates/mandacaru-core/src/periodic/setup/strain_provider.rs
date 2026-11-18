@@ -103,6 +103,9 @@ pub struct StrainSetup<'a> {
     directions: Directions,
     /// The image-resolved projections, shared with the force provider of the same setup.
     projections: Arc<SetupTables>,
+    /// Net cell charge `sum Z_A - N_e` (`0` for neutral crystals) for the `-reference * Q_net`
+    /// neutralizing-background strain derivative `+reference * Q_net delta_ab`.
+    net_charge: f64,
 }
 
 impl<'a> StrainSetup<'a> {
@@ -143,7 +146,14 @@ impl<'a> StrainSetup<'a> {
             dense_vectors: None,
             directions: Directions::invariant(None)?,
             projections: Arc::new(SetupTables::new()),
+            net_charge: 0.0,
         })
+    }
+
+    /// Sets the net cell charge `sum Z_A - N_e` for neutralizing-jellium background stress.
+    pub fn with_net_charge(mut self, net_charge: f64) -> Self {
+        self.net_charge = net_charge;
+        self
     }
 
     /// Contracts along the strain directions invariant under the operations a symmetry-reduced
@@ -359,7 +369,14 @@ impl Strain for StrainSetup<'_> {
     }
 
     fn constants(&self) -> Result<Tensor<f64>> {
-        ion_constants_strain(&self.inputs.sites)
+        let mut out = ion_constants_strain(&self.inputs.sites)?;
+        if self.net_charge != 0.0 {
+            let diag = self.layout.reference * self.net_charge;
+            for a in 0..3 {
+                out[a][a] += diag;
+            }
+        }
+        Ok(out)
     }
 
     fn spin_orbit(&self) -> Result<&SpinOrbit> {

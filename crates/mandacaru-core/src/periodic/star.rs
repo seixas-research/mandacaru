@@ -28,7 +28,7 @@
 //! same for every listed point (a mesh that is not the group's reduction is refused).
 use super::{invalid, screened_augmentation::Augmentation, Crystal};
 use crate::{periodic::setup::symmetry::rotation_tables, quantum::C64, Buffer, Result};
-use nalgebra::{DMatrix, Matrix3, Rotation3, UnitQuaternion, Vector3};
+use nalgebra::{DMatrix, Matrix3, Vector3};
 
 type Matrix = DMatrix<C64>;
 
@@ -82,17 +82,27 @@ impl Reduction {
         let operations = description.operations.as_ref().ok_or_else(|| {
             invalid("the setup block lists no symmetry operations for the reduced mesh")
         })?;
-        // The stars include the time-reversed image of every operation. Time reversal is a symmetry
-        // of a collinear crystal for each spin channel (its Hamiltonian is real per channel, a
-        // moment included) and of a spinor crystal without a magnetization (`time_reversal`).
-        if c.spinor && !c.time_reversal {
-            return Err(crate::Error::Unsupported(
-                "the stars of a reduced k mesh include the time-reversed image of every operation, \
-                 and a magnetic spin-orbit crystal is not time-reversal symmetric (its states at \
-                 -k are not the partners of those at k): use symmetry=False"
-                    .into(),
-            ));
-        }
+        // The stars include the time-reversed image of every operation when nonmagnetic
+        // (`anti_unitary = None`). A magnetic spin-orbit crystal needs the explicit per-operation
+        // unitary/anti-unitary flags from its magnetic little group.
+        let anti_unitary = if c.spinor && !c.time_reversal {
+            let Some(flags) = operations.anti_unitary.as_ref() else {
+                return Err(crate::Error::Unsupported(
+                    "the stars of a reduced k mesh include the time-reversed image of every operation, \
+                     and a magnetic spin-orbit crystal is not time-reversal symmetric (its states at \
+                     -k are not the partners of those at k): use symmetry=False"
+                        .into(),
+                ));
+            };
+            if flags.len() != operations.rotations.len() {
+                return Err(invalid(
+                    "the setup block's magnetic anti_unitary flags must match its operations",
+                ));
+            }
+            Some(flags.as_slice())
+        } else {
+            None
+        };
         if operations.rotations.len() != c.permutations.len() {
             return Err(invalid(
                 "the setup block's operations are not the snapshot's node permutations",
@@ -159,11 +169,16 @@ impl Reduction {
             spin,
             projectors: description.projectors.clone(),
         };
-        reduction.stars = reduction.build_stars(c, &lattice)?;
+        reduction.stars = reduction.build_stars(c, &lattice, anti_unitary)?;
         Ok(reduction)
     }
 
-    fn build_stars(&self, c: &Crystal, lattice: &Matrix3<f64>) -> Result<Vec<Vec<Image>>> {
+    fn build_stars(
+        &self,
+        c: &Crystal,
+        lattice: &Matrix3<f64>,
+        anti_unitary: Option<&[bool]>,
+    ) -> Result<Vec<Vec<Image>>> {
         let fractional = |k: &Vector3<f64>| lattice.transpose() * k / (2. * std::f64::consts::PI);
         let same = |a: &Vector3<f64>, b: &Vector3<f64>| {
             (0..3).all(|i| {
@@ -178,7 +193,17 @@ impl Reduction {
             let mut images: Vec<Image> = Vec::new();
             let mut seen: Vec<Vector3<f64>> = Vec::new();
             for (op, r) in self.cartesian.iter().enumerate() {
-                for reversed in [false, true] {
+                let reversals: &[bool] = match anti_unitary {
+                    Some(flags) => {
+                        if flags[op] {
+                            &[true]
+                        } else {
+                            &[false]
+                        }
+                    }
+                    None => &[false, true],
+                };
+                for &reversed in reversals {
                     let moved = r * k * if reversed { -1. } else { 1. };
                     let f = fractional(&moved);
                     if seen.iter().any(|g| same(g, &f)) {
@@ -541,16 +566,7 @@ impl Reduction {
     }
 }
 
-/// The SU(2) matrix of the rotation of an operation, `psi'_s = sum_t U_st psi_t`: its proper part
-/// (an improper operation acts on the spin as `-R` does, the inversion trivially), the unit
-/// quaternion `(w, x, y, z)` as `U = w - i (x sigma_x + y sigma_y + z sigma_z)`.
+/// The SU(2) matrix of the rotation of an operation (`super::space_group::double_group::su2`).
 fn su2(r: &Matrix3<f64>) -> [[C64; 2]; 2] {
-    let proper = if r.determinant() < 0. { -r } else { *r };
-    let q = UnitQuaternion::from_rotation_matrix(&Rotation3::from_matrix_unchecked(proper));
-    let (w, x, y, z) = (q.w, q.i, q.j, q.k);
-    let i = C64::i();
-    [
-        [C64::new(w, 0.) - i * z, -i * x - C64::new(y, 0.)],
-        [-i * x + C64::new(y, 0.), C64::new(w, 0.) + i * z],
-    ]
+    super::space_group::double_group::su2(r)
 }

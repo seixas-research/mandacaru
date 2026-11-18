@@ -10,16 +10,18 @@
 //! of the coupled matrix that the setup uses to build its pair factors is a
 //! rewriting of this form and is never differentiated.
 use super::{
-    super::{
-        distance, harmonic, onecenter::Multipole, potential, shape, sphere, Setup, ELECTROSTATIC,
-        IONIC,
-    },
+    super::{distance, harmonic, onecenter::Multipole, sphere, Setup, ELECTROSTATIC, IONIC},
     radial::{local_slope, potential_slope, radial_gradient},
     Occupied,
 };
 use crate::{
-    math::spline::Cubic, molecular::MolecularIntegrals,
-    paw::onecenter_radial::long_range_shape_spline, product, Result,
+    math::spline::Cubic,
+    molecular::MolecularIntegrals,
+    paw::{
+        multipole::{shape_at, shape_potential_at},
+        onecenter_radial::long_range_shape_spline,
+    },
+    product, Result,
 };
 use nalgebra::{DMatrix, DVector};
 use std::sync::Arc;
@@ -116,8 +118,8 @@ impl Channel<'_> {
     pub fn field(&self, delta: [f64; 3]) -> f64 {
         let r = distance(delta, [0.; 3]);
         let value = match &self.long_range {
-            Some(long) => potential(r, self.radius, self.l) - long.value_slope(r).0,
-            None => potential(r, self.radius, self.l),
+            Some(long) => shape_potential_at(r, self.radius, self.l) - long.value_slope(r).0,
+            None => shape_potential_at(r, self.radius, self.l),
         };
         value * harmonic(self.l, self.m, delta)
     }
@@ -252,7 +254,7 @@ pub(super) fn moments(
                     let point: [f64; 3] = std::array::from_fn(|i| positions[b][i] + offset[i]);
                     for (j, cj) in channels.iter().enumerate().filter(|(_, c)| c.atom == b) {
                         let density =
-                            shape(r, radius, cj.l) * harmonic(cj.l, cj.m, offset) * weight;
+                            shape_at(r, radius, cj.l) * harmonic(cj.l, cj.m, offset) * weight;
                         for (i, ci) in channels.iter().enumerate() {
                             let delta = std::array::from_fn(|k| point[k] - positions[ci.atom][k]);
                             u[(i, j)] += ci.field(delta) * density;
@@ -277,8 +279,10 @@ pub(super) fn moments(
                         .map(|(a, &sa)| setup.species[sa].local(distance(point, positions[a])))
                         .sum();
                     for (i, ch) in channels.iter().enumerate().filter(|(_, c)| c.atom == b) {
-                        ionic[i] +=
-                            weight * value * shape(r, radius, ch.l) * harmonic(ch.l, ch.m, offset);
+                        ionic[i] += weight
+                            * value
+                            * shape_at(r, radius, ch.l)
+                            * harmonic(ch.l, ch.m, offset);
                     }
                     Ok(())
                 },
@@ -373,7 +377,7 @@ pub(super) fn electrostatic_force(
             |offset, r, weight| {
                 let mut any_non_zero = false;
                 for (idx, &(_, l, m)) in b_channels.iter().enumerate() {
-                    let val = shape(r, radius, l) * harmonic(l, m, offset) * weight;
+                    let val = shape_at(r, radius, l) * harmonic(l, m, offset) * weight;
                     a_j[idx] = val;
                     if val != 0. {
                         any_non_zero = true;
@@ -464,7 +468,10 @@ pub(super) fn ionic_force(
                     .enumerate()
                     .filter(|(_, c)| c.atom == b)
                     .map(|(i, c)| {
-                        coefficient[i] * shape(r, radius, c.l) * harmonic(c.l, c.m, offset) * weight
+                        coefficient[i]
+                            * shape_at(r, radius, c.l)
+                            * harmonic(c.l, c.m, offset)
+                            * weight
                     })
                     .sum();
                 if source == 0. {

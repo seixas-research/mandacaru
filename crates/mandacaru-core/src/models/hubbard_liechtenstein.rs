@@ -350,7 +350,7 @@ pub fn evaluate(
     channels: &[&[C64]],
 ) -> Result<Evaluation> {
     check_shell(l)?;
-    if h.form != Form::LiechtensteinFll {
+    if h.form != Form::Liechtenstein {
         return Err(invalid(format!(
             "expected Liechtenstein functional, got {:?}",
             h.form

@@ -12,6 +12,7 @@ pub mod digest;
 pub mod engine_spin_orbit;
 pub mod fields;
 pub mod generate;
+mod lebedev;
 pub mod local_split;
 pub mod molecular;
 pub mod momentum;

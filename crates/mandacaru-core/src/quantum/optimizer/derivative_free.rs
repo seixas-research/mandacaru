@@ -34,7 +34,10 @@ pub(super) fn minimize<'p>(
     ])?)?;
     let _history = ctx.reserve(product(&[options.max_evaluations, 8])?)?;
     let mut history = Vec::new();
-    let first = evaluate(initial.to_vec(), options, &mut history, &mut objective)?.unwrap();
+    let first =
+        evaluate(initial.to_vec(), options, &mut history, &mut objective)?.ok_or_else(|| {
+            Error::Invalid("evaluation budget exhausted before initial sample".into())
+        })?;
     if n == 0 || options.max_iterations == 0 {
         return Ok(Outcome {
             parameters: first.x,
@@ -155,10 +158,16 @@ pub(super) fn minimize<'p>(
             let replace = if improvement > 0. {
                 n
             } else if let Some(c) = coefficients {
-                (0..n)
-                    .max_by(|&a, &b| c[a].abs().total_cmp(&c[b].abs()))
-                    .unwrap()
-                    + 1
+                (0..n).fold(
+                    0,
+                    |best, i| {
+                        if c[i].abs() > c[best].abs() {
+                            i
+                        } else {
+                            best
+                        }
+                    },
+                ) + 1
             } else {
                 n
             };
@@ -215,7 +224,7 @@ pub(super) fn minimize<'p>(
                     &mut history,
                     &mut objective,
                 )?;
-                if contracted.as_ref().is_some_and(|c| {
+                if let Some(c) = contracted.filter(|c| {
                     c.value
                         < if outside {
                             reflected.value
@@ -223,7 +232,7 @@ pub(super) fn minimize<'p>(
                             simplex[n].value
                         }
                 }) {
-                    simplex[n] = contracted.unwrap();
+                    simplex[n] = c;
                 } else {
                     let best = simplex[0].x.clone();
                     for point in simplex.iter_mut().skip(1) {

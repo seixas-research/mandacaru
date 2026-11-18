@@ -8,7 +8,8 @@ use mandacaru_core::{
     math::spline::Cubic,
     paw::{
         molecular::gradient::{core_slope, long_range_slope, multipole_gradient, potential_slope},
-        pair_tables::{harmonic, potential},
+        multipole::shape_potential_at as potential,
+        pair_tables::harmonic,
     },
     Context,
 };
@@ -179,18 +180,20 @@ fn the_partial_core_slope_follows_the_clipped_table_the_grid_sums() {
         if r > 3. {
             0.
         } else {
-            table.value_slope(r.max(0.05)).0.max(0.)
+            table.value_slope_regular(r, 0).0.max(0.)
         }
     };
     let mut worst = 0f64;
-    for r in [0.2, 0.7, 1.4, 2.2, 2.9] {
+    for r in [0.02, 0.2, 0.7, 1.4, 2.2, 2.9] {
         let (value, slope) = core_slope(&table, r);
         assert!((value - clipped(r)).abs() < 1e-14);
         worst = worst.max((slope - central(1e-4, clipped, r)).abs());
     }
-    // Below the first node the table is held constant, past the last it is zero,
-    // and where the value is clipped at zero the slope is zero.
-    assert_eq!(core_slope(&table, 0.01), (table.value_slope(0.05).0, 0.));
+    // Below the first node the table continues smoothly as a + b r^2, past the last it is zero.
+    let (v01, s01) = core_slope(&table, 0.01);
+    let (y0, y0p) = table.value_slope(0.05);
+    assert!((v01 - (y0 - 0.5 * 0.05 * y0p * (1. - (0.01 / 0.05_f64).powi(2)))).abs() < 1e-13);
+    assert!((s01 - y0p * (0.01 / 0.05)).abs() < 1e-13);
     assert_eq!(core_slope(&table, 3.5), (0., 0.));
     println!("partial core slope: worst miss {worst:.2e}");
     assert!(worst < 1e-8, "{worst:.2e}");

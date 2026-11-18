@@ -31,9 +31,10 @@
 //! [`require_fixed_atoms`] lets the response run on a reduced mesh only when no kept operation
 //! moves a +U atom.
 use super::{
-    hubbard::Spec, invalid, point_group::PointGroup, setup::symmetry::rotation_tables, Crystal,
+    hubbard::Spec, invalid, point_group::PointGroup, setup::symmetry::rotation_tables,
+    space_group::double_group::su2, Crystal,
 };
-use crate::{quantum::C64, Result};
+use crate::{models::hubbard_spinor::Layout as SpinorLayout, quantum::C64, Result};
 use nalgebra::DMatrix;
 use std::collections::HashMap;
 
@@ -49,15 +50,18 @@ const SEED_TOLERANCE: f64 = 1e-8;
 
 /// What the occupations of a crystal are completed with.
 pub struct Averager {
+    spinor: bool,
     time_reversal: bool,
     operations: Vec<Operation>,
 }
 
-/// One kept operation: the shell it sends each shell to, and `T^l` for `l = 0..=MAX_L`, held
-/// once per operation (a table with 4096 shells holds no more rotation matrices than one shell).
+/// One kept operation: the shell it sends each shell to, `T^l` for `l = 0..=MAX_L`,
+/// `SU(2)` spinor matrix (`su2(R)`), and whether the operation is anti-unitary (`Theta * g`).
 struct Operation {
     images: Vec<usize>,
     tables: Vec<Matrix>,
+    spin: [[C64; 2]; 2],
+    anti_unitary: bool,
 }
 
 /// Whether the k-points hold, for each `k`, its time-reversal partner `-k` (modulo a reciprocal
@@ -85,13 +89,32 @@ impl Averager {
     /// identity) and time reversal `time_reversal`. Raises, naming the cause, when the shell
     /// table is not closed under an operation.
     pub fn new(spec: &Spec, group: Option<&PointGroup>, time_reversal: bool) -> Result<Self> {
+        Self::with_mode(spec, group, time_reversal, false, None)
+    }
+
+    fn with_mode(
+        spec: &Spec,
+        group: Option<&PointGroup>,
+        time_reversal: bool,
+        spinor: bool,
+        anti_unitary: Option<&[bool]>,
+    ) -> Result<Self> {
         let mut operations = Vec::new();
         if let Some(group) = group {
+            if let Some(flags) = anti_unitary {
+                if flags.len() != group.rotations().len() {
+                    return Err(invalid(
+                        "DFT+U magnetic symmetrization needs one anti_unitary flag per operation",
+                    ));
+                }
+            }
             let mut by_atom: HashMap<(usize, usize), usize> = HashMap::new();
             for (index, shell) in spec.shells.iter().enumerate() {
                 by_atom.insert((shell.atom, shell.l), index);
             }
-            for (rotation, map) in group.rotations().iter().zip(group.atom_maps()) {
+            for (op_idx, (rotation, map)) in
+                group.rotations().iter().zip(group.atom_maps()).enumerate()
+            {
                 let tables = rotation_tables(rotation, MAX_L, ORTHOGONALITY)?;
                 let mut images = Vec::with_capacity(spec.shells.len());
                 for shell in &spec.shells {
@@ -119,10 +142,16 @@ impl Averager {
                     }
                     images.push(image);
                 }
-                operations.push(Operation { images, tables });
+                operations.push(Operation {
+                    images,
+                    tables,
+                    spin: su2(rotation),
+                    anti_unitary: anti_unitary.is_some_and(|flags| flags[op_idx]),
+                });
             }
         }
         Ok(Self {
+            spinor,
             time_reversal,
             operations,
         })
@@ -151,15 +180,39 @@ impl Averager {
         } else {
             None
         };
-        let time_reversal = !c.spinor && (reduced || !closed_under_time_reversal(c));
+        let anti_unitary = if c.spinor && !c.time_reversal && reduced {
+            let flags = c
+                .description
+                .as_ref()
+                .and_then(|d| d.operations.as_ref())
+                .and_then(|o| o.anti_unitary.as_deref())
+                .ok_or_else(|| {
+                    invalid(
+                        "DFT+U on a magnetic spinor reduced mesh needs anti_unitary operation flags",
+                    )
+                })?;
+            Some(flags)
+        } else {
+            None
+        };
+        let time_reversal = if c.spinor {
+            c.time_reversal && (reduced || !closed_under_time_reversal(c))
+        } else {
+            reduced || !closed_under_time_reversal(c)
+        };
         if group.is_none() && !time_reversal {
             return Ok(None);
         }
-        Self::new(spec, group, time_reversal).map(Some)
+        Self::with_mode(spec, group, time_reversal, c.spinor, anti_unitary).map(Some)
     }
 
-    /// Completes `n` (`[spin * shells + shell]`, each `(2l+1)^2` row-major) in place.
+    /// Completes `n` (`[spin * shells + shell]` `(2l+1)^2` collinear, or `[shell]` `(2(2l+1))^2`
+    /// spinor) in place.
     pub fn apply(&self, spec: &Spec, n: &mut [Vec<C64>]) {
+        if self.spinor {
+            self.apply_spinor(spec, n);
+            return;
+        }
         let shells = spec.shells.len();
         let blocks: Vec<Matrix> = n
             .iter()
@@ -194,6 +247,76 @@ impl Averager {
             };
             for (a, to) in out.iter_mut().enumerate() {
                 *to = matrix[(a / p, a % p)];
+            }
+        }
+    }
+
+    fn apply_spinor(&self, spec: &Spec, n: &mut [Vec<C64>]) {
+        let theta = |l: usize, m: &Matrix| -> Matrix {
+            let layout = SpinorLayout::new(l, false).expect("valid Hubbard shell l");
+            let d = layout.size();
+            let mut rev = Matrix::zeros(d, d);
+            for j in 0..d {
+                let (ij, sj) = layout.time_reversal_image(j);
+                for k in 0..d {
+                    let (ik, sk) = layout.time_reversal_image(k);
+                    rev[(ij, ik)] = m[(j, k)].conj() * (sj * sk);
+                }
+            }
+            rev
+        };
+        let blocks: Vec<Matrix> = n
+            .iter()
+            .enumerate()
+            .map(|(shell, flat)| {
+                let l = spec.shells[shell].l;
+                let d = 2 * (2 * l + 1);
+                let plain = Matrix::from_fn(d, d, |a, b| flat[a * d + b]);
+                if self.time_reversal {
+                    (&plain + theta(l, &plain)) * C64::new(0.5, 0.)
+                } else {
+                    plain
+                }
+            })
+            .collect();
+        for (shell, out) in n.iter_mut().enumerate() {
+            let l = spec.shells[shell].l;
+            let p = 2 * l + 1;
+            let d = 2 * p;
+            let matrix = if self.operations.is_empty() {
+                blocks[shell].clone()
+            } else {
+                let mut sum = Matrix::zeros(d, d);
+                for operation in &self.operations {
+                    let table = &operation.tables[l];
+                    let image = &blocks[operation.images[shell]];
+                    let source = if operation.anti_unitary {
+                        theta(l, image)
+                    } else {
+                        image.clone()
+                    };
+                    let u = &operation.spin;
+                    // `(U^dagger x T) source (U x T^dagger)` pulls the rotated image back to `shell`.
+                    let t_adj = table.adjoint();
+                    for s in 0..2 {
+                        for t in 0..2 {
+                            let mut acc = Matrix::zeros(p, p);
+                            for sp in 0..2 {
+                                for tp in 0..2 {
+                                    let factor = u[sp][s].conj() * u[tp][t];
+                                    let blk = source.view((sp * p, tp * p), (p, p)).into_owned();
+                                    acc += (table * blk * &t_adj) * factor;
+                                }
+                            }
+                            let mut dst = sum.view_mut((s * p, t * p), (p, p));
+                            dst += acc;
+                        }
+                    }
+                }
+                sum * C64::new(1. / self.operations.len() as f64, 0.)
+            };
+            for (idx, to) in out.iter_mut().enumerate() {
+                *to = matrix[(idx / d, idx % d)];
             }
         }
     }

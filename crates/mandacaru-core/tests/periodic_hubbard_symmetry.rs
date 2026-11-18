@@ -48,9 +48,11 @@ fn dummy_shell(atom: usize) -> Shell {
         l: 2,
         u: 0.1,
         j: 0.,
+        ratios: mandacaru_core::models::hubbard_slater::Ratios::default_for(2).unwrap(),
         projectors: (0..5).map(|m| 5 * atom + m).collect(),
         weights: vec![1.],
         basis: None,
+        source: None,
         seed: Seed::Moment {
             n_electrons: 8.,
             moment: 0.,
@@ -82,7 +84,7 @@ fn hermitian(seed: u64) -> Vec<C64> {
 
 fn spec(atoms: usize) -> Spec {
     Spec {
-        form: mandacaru_core::models::hubbard::Form::DudarevFll,
+        form: mandacaru_core::models::hubbard::Form::Dudarev,
         shells: (0..atoms).map(dummy_shell).collect(),
     }
 }
@@ -238,7 +240,7 @@ fn nickel_fcc_spin_polarized_wedge_equals_the_whole_mesh() {
 #[test]
 #[ignore = "slow: 10 s (measured 2026-11-10); run: cargo test --profile release-test -p mandacaru-core --test periodic_hubbard_symmetry -- --ignored the_liechtenstein_form_on_the_wedge_equals_the_whole_mesh"]
 fn the_liechtenstein_form_on_the_wedge_equals_the_whole_mesh() {
-    let form = json!({"Ni": {"l": "d", "U": 5., "J": 0.8, "form": "liechtenstein-fll"}});
+    let form = json!({"Ni": {"l": "d", "U": 5., "J": 0.8, "form": "liechtenstein"}});
     compare(&nickel_fcc(), form, true, [3, 3, 3], CUBIC);
 }
 

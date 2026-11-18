@@ -609,7 +609,11 @@ impl QuantumProblem {
                         }
                         break;
                     }
-                    let selected = selected.unwrap();
+                    let Some(selected) = selected else {
+                        return Err(Error::Invalid(
+                            "subspace selection missed a screenable pool operator".into(),
+                        ));
+                    };
                     let members: Vec<_> = self.growth_members[selected]
                         .iter()
                         .copied()

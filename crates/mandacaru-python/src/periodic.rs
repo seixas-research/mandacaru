@@ -12,6 +12,103 @@ use mandacaru_core::{
 use numpy::{PyReadonlyArray1, PyReadonlyArray2, PyReadonlyArrayDyn, PyUntypedArrayMethods};
 use pyo3::{prelude::*, types::PyDict};
 use std::sync::Arc;
+fn corep_label(
+    corep: mandacaru_core::periodic::space_group::double_group::CorepKind,
+) -> &'static str {
+    use mandacaru_core::periodic::space_group::double_group::CorepKind;
+    match corep {
+        CorepKind::UnitaryOnly => "unitary",
+        CorepKind::TypeA => "a",
+        CorepKind::TypeB => "b",
+        CorepKind::TypeC { .. } => "c",
+    }
+}
+
+fn crystal_band_irreps_to_py<'py>(
+    py: Python<'py>,
+    out_data: &mandacaru_core::periodic::irreps::CrystalBandIrreps,
+) -> PyResult<Bound<'py, PyDict>> {
+    use pyo3::types::PyList;
+    let out = PyDict::new(py);
+    out.set_item("k_fractional", out_data.double_group.k_frac.to_vec())?;
+    out.set_item("n_unitary", out_data.double_group.unitary.len())?;
+    out.set_item("bar_e", out_data.double_group.bar_e)?;
+    out.set_item("max_unitarity_error", out_data.irreps.max_unitarity_error)?;
+    out.set_item("overlap_residual", out_data.overlap_residual)?;
+
+    let irreps_list = PyList::empty(py);
+    for irrep in &out_data.double_group.irreps {
+        let d = PyDict::new(py);
+        d.set_item("index", irrep.index)?;
+        d.set_item("dimension", irrep.dimension)?;
+        d.set_item("spinor", irrep.spinor)?;
+        d.set_item("corep", corep_label(irrep.corep))?;
+        d.set_item(
+            "characters",
+            irrep
+                .characters
+                .iter()
+                .map(|c| (c.re, c.im))
+                .collect::<Vec<_>>(),
+        )?;
+        irreps_list.append(d)?;
+    }
+    out.set_item("irreps", irreps_list)?;
+
+    let clusters_list = PyList::empty(py);
+    for cl in &out_data.irreps.clusters {
+        let d = PyDict::new(py);
+        d.set_item("lo", cl.lo)?;
+        d.set_item("hi", cl.hi)?;
+        d.set_item("energy", cl.energy)?;
+        d.set_item("dominant_irrep", cl.dominant_irrep)?;
+        d.set_item(
+            "spinor",
+            out_data.double_group.irreps[cl.dominant_irrep].spinor,
+        )?;
+        d.set_item("corep", corep_label(cl.corep))?;
+        d.set_item("irreps", cl.irreps.clone())?;
+        clusters_list.append(d)?;
+    }
+    out.set_item("clusters", clusters_list)?;
+    Ok(out)
+}
+
+fn crystal_band_irreps_from_parts<'py>(
+    py: Python<'py>,
+    dg: &mandacaru_core::periodic::space_group::double_group::DoubleGroup,
+    irreps: &mandacaru_core::periodic::irreps::BandIrreps,
+    overlap_residual: f64,
+) -> PyResult<Bound<'py, PyDict>> {
+    let wrapped = mandacaru_core::periodic::irreps::CrystalBandIrreps {
+        double_group: dg.clone(),
+        irreps: irreps.clone(),
+        overlap_residual,
+    };
+    crystal_band_irreps_to_py(py, &wrapped)
+}
+
+fn dipole_selection_to_py<'py>(
+    py: Python<'py>,
+    sel: &mandacaru_core::periodic::irreps::DipoleSelection,
+) -> PyResult<Bound<'py, PyDict>> {
+    let out =
+        crystal_band_irreps_from_parts(py, &sel.double_group, &sel.irreps, sel.overlap_residual)?;
+    out.set_item("n_valence", sel.n_valence)?;
+    out.set_item("n_conduction", sel.n_conduction)?;
+    out.set_item("allowed", sel.allowed.clone())?;
+    out.set_item(
+        "allowed_axes",
+        (
+            sel.allowed_axes[0].clone(),
+            sel.allowed_axes[1].clone(),
+            sel.allowed_axes[2].clone(),
+        ),
+    )?;
+    out.set_item("weights", sel.weights.clone())?;
+    Ok(out)
+}
+
 pub(super) fn input_arrays(
     ctx: &mandacaru_core::Context,
     values: &Bound<'_, PyDict>,
@@ -296,17 +393,38 @@ impl PyCrystal {
             inner: Arc::new(inner),
             crystal: self.inner.clone(),
             setup: self.setup.clone(),
+            rebuilt_setup: std::sync::OnceLock::new(),
             response: std::sync::OnceLock::new(),
         })
     }
-    #[pyo3(signature=(result, *,alphas=None))]
-    fn hubbard_response<'py>(
+    #[pyo3(signature=(result, *, alphas=None, self_consistent=false, damping=0.5, max_iterations=10, tolerance_ha=None, kernel="spin-summed", spread_tolerance_ha=None, energy_scale=1.0, unit="Ha"))]
+    #[allow(clippy::too_many_arguments)]
+    fn hubbard_response(
         &self,
-        py: Python<'py>,
+        py: Python<'_>,
         result: &PyPeriodicResult,
         alphas: Option<Vec<f64>>,
-    ) -> PyResult<Bound<'py, PyDict>> {
-        result.hubbard_response(py, alphas)
+        self_consistent: bool,
+        damping: f64,
+        max_iterations: usize,
+        tolerance_ha: Option<f64>,
+        kernel: &str,
+        spread_tolerance_ha: Option<f64>,
+        energy_scale: f64,
+        unit: &str,
+    ) -> PyResult<super::hubbard::PyHubbardResponse> {
+        result.hubbard_response(
+            py,
+            alphas,
+            self_consistent,
+            damping,
+            max_iterations,
+            tolerance_ha,
+            kernel,
+            spread_tolerance_ha,
+            energy_scale,
+            unit,
+        )
     }
 }
 #[pyclass(name = "PeriodicResult", module = "mandacaru._native", frozen)]
@@ -314,12 +432,30 @@ pub struct PyPeriodicResult {
     pub inner: Arc<PeriodicResult>,
     pub crystal: Arc<Crystal>,
     pub setup: Option<Arc<mandacaru_core::periodic::setup::PeriodicSetup>>,
+    rebuilt_setup: std::sync::OnceLock<Arc<mandacaru_core::periodic::setup::PeriodicSetup>>,
     /// The geometry, quadrature and frozen state a force and a stress of this result share, formed
     /// by the first of them.
     response: std::sync::OnceLock<mandacaru_core::periodic::response::Response>,
 }
 
 impl PyPeriodicResult {
+    pub(crate) fn resolve_setup(
+        &self,
+        py: Python<'_>,
+    ) -> PyResult<Arc<mandacaru_core::periodic::setup::PeriodicSetup>> {
+        if let Some(setup) = &self.setup {
+            return Ok(setup.clone());
+        }
+        if let Some(setup) = self.rebuilt_setup.get() {
+            return Ok(setup.clone());
+        }
+        let rebuilt = py
+            .detach(|| mandacaru_core::periodic::setup::PeriodicSetup::from_crystal(&self.crystal))
+            .map(Arc::new)
+            .map_err(error)?;
+        Ok(self.rebuilt_setup.get_or_init(|| rebuilt).clone())
+    }
+
     fn response(&self) -> mandacaru_core::Result<&mandacaru_core::periodic::response::Response> {
         if let Some(response) = self.response.get() {
             return Ok(response);
@@ -347,38 +483,65 @@ impl PyPeriodicResult {
         ))
     }
     /// Evaluates the linear-response Hubbard U parameters for this converged crystal.
-    /// Returns dictionary with `u_matrix`, `u_charge`, `chi0`, `chi`, `alphas`, and optionally `j_response`.
-    #[pyo3(signature=(*,alphas=None))]
-    fn hubbard_response<'py>(
+    /// Returns a native `HubbardResponse` view scaled by `energy_scale`.
+    #[pyo3(signature=(*, alphas=None, self_consistent=false, damping=0.5, max_iterations=10, tolerance_ha=None, kernel="spin-summed", spread_tolerance_ha=None, energy_scale=1.0, unit="Ha"))]
+    #[allow(clippy::too_many_arguments)]
+    fn hubbard_response(
         &self,
-        py: Python<'py>,
+        py: Python<'_>,
         alphas: Option<Vec<f64>>,
-    ) -> PyResult<Bound<'py, PyDict>> {
+        self_consistent: bool,
+        damping: f64,
+        max_iterations: usize,
+        tolerance_ha: Option<f64>,
+        kernel: &str,
+        spread_tolerance_ha: Option<f64>,
+        energy_scale: f64,
+        unit: &str,
+    ) -> PyResult<super::hubbard::PyHubbardResponse> {
         let alphas = alphas.unwrap_or_else(|| vec![0.001837466, 0.003674932]); // ~0.05, 0.1 eV in Ha
+        if self_consistent {
+            use mandacaru_core::models::hubbard::Form;
+            use mandacaru_core::periodic::response_scf::{converge_hubbard_u, Options};
+            let kern = super::hubbard::parse_kernel(kernel)?;
+            let form = self
+                .crystal
+                .hubbard
+                .as_ref()
+                .map_or(Form::Dudarev, |h| h.form);
+            let mut opts = Options {
+                max_iterations,
+                damping,
+                kernel: kern,
+                form,
+                alphas,
+                ..Options::default()
+            };
+            if let Some(t) = tolerance_ha {
+                opts.tolerance = t;
+            }
+            if let Some(st) = spread_tolerance_ha {
+                opts.spread_tolerance = st;
+            }
+            let out = py
+                .detach(|| converge_hubbard_u(&self.crystal, &self.inner, &opts))
+                .map_err(error)?;
+            return Ok(super::hubbard::PyHubbardResponse::from_periodic(
+                out.response,
+                energy_scale,
+                unit.to_string(),
+            ));
+        }
         let res = py
             .detach(|| {
                 mandacaru_core::periodic::hubbard_response(&self.crystal, &self.inner, &alphas)
             })
             .map_err(error)?;
-
-        let out = PyDict::new(py);
-        let dmatrix_to_py = |m: &nalgebra::DMatrix<f64>| -> PyResult<Array<'py, f64>> {
-            let rows = m.nrows();
-            let cols = m.ncols();
-            let data: Vec<f64> = (0..rows)
-                .flat_map(|r| (0..cols).map(move |c| m[(r, c)]))
-                .collect();
-            array(py, &[rows, cols], data)
-        };
-        out.set_item("u_matrix", dmatrix_to_py(&res.u_matrix)?)?;
-        out.set_item("u_charge", dmatrix_to_py(&res.u_charge)?)?;
-        out.set_item("chi0", dmatrix_to_py(&res.chi0)?)?;
-        out.set_item("chi", dmatrix_to_py(&res.chi)?)?;
-        out.set_item("alphas", res.alphas)?;
-        if let Some(j) = res.j_response {
-            out.set_item("j_response", j)?;
-        }
-        Ok(out)
+        Ok(super::hubbard::PyHubbardResponse::from_periodic(
+            res,
+            energy_scale,
+            unit.to_string(),
+        ))
     }
     /// Maximally localized Wannier functions of the converged crystal, as `request_json` asks
     /// (`size`, `trials`, `n_functions`, `windows` in Hartree, `bands`). The mesh frames, the
@@ -393,12 +556,7 @@ impl PyPeriodicResult {
         tolerance: f64,
         step: f64,
     ) -> PyResult<super::wannier::PyWannierResult> {
-        let setup = self.setup.clone().ok_or_else(|| {
-            pyo3::exceptions::PyNotImplementedError::new_err(
-                "Wannier functions need states on a full k mesh, which only the native periodic \
-                 setup makes; a crystal loaded from a snapshot has none",
-            )
-        })?;
+        let setup = self.resolve_setup(py)?;
         let options = mandacaru_core::periodic::wannier::Options {
             max_iterations,
             tolerance,
@@ -519,6 +677,55 @@ impl PyPeriodicResult {
     ) -> PyResult<Bound<'py, PyDict>> {
         super::berry::anomalous_hall(self, py, size)
     }
+    /// Born effective charges (`periodic::berry::perturbation::born_effective_charges`), e.
+    #[pyo3(signature=(size, displacement=0.01, richardson=false, impose_rule=false, atomic_units=false))]
+    fn born_charges<'py>(
+        &self,
+        py: Python<'py>,
+        size: [usize; 3],
+        displacement: f64,
+        richardson: bool,
+        impose_rule: bool,
+        atomic_units: bool,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        super::berry::born_charges(
+            self,
+            py,
+            size,
+            displacement,
+            richardson,
+            impose_rule,
+            atomic_units,
+        )
+    }
+    /// Clamped- or relaxed-ion proper piezoelectric tensor (`periodic::berry::perturbation::piezoelectric_tensor`), e/Bohr^2.
+    #[pyo3(signature=(size, strain=0.005, displacement=0.01, richardson=false, impose_rule=false, relaxed_ions=false, atomic_units=false, dispersion_xc=None))]
+    #[allow(clippy::too_many_arguments)]
+    fn piezoelectric<'py>(
+        &self,
+        py: Python<'py>,
+        size: [usize; 3],
+        strain: f64,
+        displacement: f64,
+        richardson: bool,
+        impose_rule: bool,
+        relaxed_ions: bool,
+        atomic_units: bool,
+        dispersion_xc: Option<String>,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        super::berry::piezoelectric(
+            self,
+            py,
+            size,
+            strain,
+            displacement,
+            richardson,
+            impose_rule,
+            relaxed_ions,
+            atomic_units,
+            dispersion_xc,
+        )
+    }
     #[getter]
     fn spin_orbit_energy(&self) -> Option<f64> {
         self.inner.spin_orbit_energy
@@ -619,7 +826,7 @@ impl PyPeriodicResult {
         if let Some(tau) = &r.kinetic_density {
             out.set_item(
                 "kinetic_density",
-                array(py, &[s, n], tau.as_slice().to_vec())?,
+                array(py, &[c.field_channels(), n], tau.as_slice().to_vec())?,
             )?;
             out.set_item(
                 "kinetic_residuals",
@@ -836,15 +1043,11 @@ impl PyPeriodicResult {
         py: Python<'py>,
         fractional_k: Vec<[f64; 3]>,
     ) -> PyResult<Bound<'py, PyDict>> {
-        let setup = self.setup.as_ref().ok_or_else(|| {
-            pyo3::exceptions::PyNotImplementedError::new_err(
-                "native off-mesh bands require a native setup recipe",
-            )
-        })?;
+        let setup = self.resolve_setup(py)?;
         let c = &self.crystal;
         let bands = py
             .detach(|| {
-                mandacaru_core::periodic::analysis::bands_at(c, setup, &self.inner, &fractional_k)
+                mandacaru_core::periodic::analysis::bands_at(c, &setup, &self.inner, &fractional_k)
             })
             .map_err(error)?;
         let nk = fractional_k.len();
@@ -858,5 +1061,207 @@ impl PyPeriodicResult {
             array(py, &[c.spins, nk, c.bands(), c.bands()], bands.projections)?,
         )?;
         Ok(out)
+    }
+
+    /// Double-group irreducible representation classification of converged Bloch bands at mesh
+    /// index `k_index`.
+    #[pyo3(signature=(k_index=0, *, spin=0, degeneracy_tol=1e-5))]
+    fn band_irreps<'py>(
+        &self,
+        py: Python<'py>,
+        k_index: usize,
+        spin: usize,
+        degeneracy_tol: f64,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let classified = py
+            .detach(|| {
+                mandacaru_core::periodic::irreps::classify_crystal_kpoint(
+                    &self.crystal,
+                    &self.inner,
+                    spin,
+                    k_index,
+                    degeneracy_tol,
+                )
+            })
+            .map_err(error)?;
+        crystal_band_irreps_to_py(py, &classified)
+    }
+
+    /// Double-group irreducible representation classification at arbitrary `fractional_k` using
+    /// the native periodic setup.
+    #[pyo3(signature=(fractional_k, *, spin=0, degeneracy_tol=1e-5))]
+    fn band_irreps_at<'py>(
+        &self,
+        py: Python<'py>,
+        fractional_k: [f64; 3],
+        spin: usize,
+        degeneracy_tol: f64,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let setup = self.resolve_setup(py)?;
+        let (classified, _, _) = py
+            .detach(|| {
+                mandacaru_core::periodic::irreps::classify_crystal_at(
+                    &self.crystal,
+                    &setup,
+                    &self.inner,
+                    spin,
+                    fractional_k,
+                    degeneracy_tol,
+                )
+            })
+            .map_err(error)?;
+        crystal_band_irreps_to_py(py, &classified)
+    }
+
+    /// Double-group Cartesian electric-dipole selection rules (`x`, `y`, `z`, combined) for
+    /// occupied -> virtual transitions at mesh `k_index`.
+    #[pyo3(signature=(k_index=0, *, spin=0, degeneracy_tol=1e-5))]
+    fn dipole_selection<'py>(
+        &self,
+        py: Python<'py>,
+        k_index: usize,
+        spin: usize,
+        degeneracy_tol: f64,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let sel = py
+            .detach(|| {
+                mandacaru_core::periodic::irreps::crystal_dipole_selection(
+                    &self.crystal,
+                    &self.inner,
+                    spin,
+                    k_index,
+                    degeneracy_tol,
+                )
+            })
+            .map_err(error)?;
+        dipole_selection_to_py(py, &sel)
+    }
+
+    /// Double-group Cartesian electric-dipole selection rules at arbitrary `fractional_k` using
+    /// the native periodic setup.
+    #[pyo3(signature=(fractional_k, *, spin=0, degeneracy_tol=1e-5))]
+    fn dipole_selection_at<'py>(
+        &self,
+        py: Python<'py>,
+        fractional_k: [f64; 3],
+        spin: usize,
+        degeneracy_tol: f64,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let setup = self.resolve_setup(py)?;
+        let sel = py
+            .detach(|| {
+                mandacaru_core::periodic::irreps::crystal_dipole_selection_at(
+                    &self.crystal,
+                    &setup,
+                    &self.inner,
+                    spin,
+                    fractional_k,
+                    degeneracy_tol,
+                )
+            })
+            .map_err(error)?;
+        dipole_selection_to_py(py, &sel)
+    }
+
+    /// Double-group irrep classification and step-by-step band connectivity along a path of
+    /// `fractional_k` coordinates using the native periodic setup.
+    #[pyo3(signature=(fractional_k, *, spin=0, degeneracy_tol=1e-5))]
+    fn band_path_irreps<'py>(
+        &self,
+        py: Python<'py>,
+        fractional_k: Vec<[f64; 3]>,
+        spin: usize,
+        degeneracy_tol: f64,
+    ) -> PyResult<Vec<Bound<'py, PyDict>>> {
+        let setup = self.resolve_setup(py)?;
+        let steps = py
+            .detach(|| {
+                mandacaru_core::periodic::irreps::classify_kpath(
+                    &self.crystal,
+                    &setup,
+                    &self.inner,
+                    spin,
+                    &fractional_k,
+                    degeneracy_tol,
+                )
+            })
+            .map_err(error)?;
+        let mut out = Vec::with_capacity(steps.len());
+        for step in steps {
+            let d = crystal_band_irreps_to_py(py, &step.classification)?;
+            d.set_item("energies", step.energies)?;
+            d.set_item("links_from_prev", step.links_from_prev)?;
+            out.push(d);
+        }
+        Ok(out)
+    }
+
+    #[pyo3(signature=(method="bader", *, numbers=None, positions=None, valence_charges=None, interpolate=true))]
+    fn partial_charges<'py>(
+        &self,
+        py: Python<'py>,
+        method: &str,
+        numbers: Option<Vec<i64>>,
+        positions: Option<Vec<[f64; 3]>>,
+        valence_charges: Option<Vec<f64>>,
+        interpolate: bool,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let resolved_setup =
+            if numbers.is_none() || valence_charges.is_none() || positions.is_none() {
+                self.resolve_setup(py).ok()
+            } else {
+                None
+            };
+        let numbers_u8: Vec<u8> = match numbers {
+            Some(nums) => nums
+                .into_iter()
+                .map(|z| {
+                    u8::try_from(z).map_err(|_| {
+                        pyo3::exceptions::PyValueError::new_err("atomic number out of range")
+                    })
+                })
+                .collect::<PyResult<_>>()?,
+            None => {
+                let setup = resolved_setup.as_ref().ok_or_else(|| {
+                    pyo3::exceptions::PyValueError::new_err(
+                        "periodic partial charges require atomic numbers without a native setup",
+                    )
+                })?;
+                setup
+                    .atoms_species
+                    .iter()
+                    .map(|&sp| {
+                        u8::try_from(setup.datasets[sp].atomic_number).map_err(|_| {
+                            pyo3::exceptions::PyValueError::new_err("atomic number out of range")
+                        })
+                    })
+                    .collect::<PyResult<_>>()?
+            }
+        };
+        let valence_charges = valence_charges.or_else(|| {
+            resolved_setup.as_ref().map(|setup| {
+                setup
+                    .atoms_species
+                    .iter()
+                    .map(|&sp| setup.datasets[sp].valence_charge)
+                    .collect()
+            })
+        });
+        let positions =
+            positions.or_else(|| resolved_setup.as_ref().map(|setup| setup.centers.clone()));
+        let out = py
+            .detach(|| {
+                mandacaru_core::periodic::analysis::partial_charges(
+                    &self.crystal,
+                    &self.inner,
+                    method,
+                    &numbers_u8,
+                    positions.as_deref(),
+                    valence_charges.as_deref(),
+                    interpolate,
+                )
+            })
+            .map_err(error)?;
+        crate::arrays::partial_charges_dict(py, out)
     }
 }

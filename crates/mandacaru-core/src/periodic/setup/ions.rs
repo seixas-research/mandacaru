@@ -158,21 +158,19 @@ impl LocalPotential {
     pub fn value(&self, radius: f64) -> f64 {
         let knots = self.spline.knots.as_slice();
         if radius <= knots[knots.len() - 1] {
-            self.spline.value_slope(radius.max(knots[0])).0
+            self.spline.value_slope_regular(radius, 0).0
         } else {
             -self.charge / radius.max(1e-12)
         }
     }
-    /// `d value / d radius`: the spline's slope inside the table (zero below its first knot, where
-    /// the potential is flat) and `Z / r^2` beyond it.
+    /// `d value / d radius`: the spline's slope inside the table, $C^1$ regular $a + b r^2$
+    /// continuation below its first knot, and `Z / r^2` beyond it.
     pub fn slope(&self, radius: f64) -> f64 {
         let knots = self.spline.knots.as_slice();
         if radius > knots[knots.len() - 1] {
             self.charge / radius.max(1e-12).powi(2)
-        } else if radius < knots[0] {
-            0.
         } else {
-            self.spline.value_slope(radius).1
+            self.spline.value_slope_regular(radius, 0).1
         }
     }
     /// Radius of the sphere that holds all of `v^sr`: 6.5 widths, never less

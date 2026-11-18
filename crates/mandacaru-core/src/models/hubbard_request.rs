@@ -3,11 +3,12 @@
 //! The option is a mapping from an element symbol to its correlated shell, written in eV:
 //!
 //! ```json
-//! {"Ni": {"l": "d", "U": 6.0, "J": 0.0, "form": "dudarev-fll"}}
+//! {"Ni": {"l": "d", "U": 6.0, "J": 0.0, "form": "dudarev"}}
 //! ```
 //!
-//! `l` (`"d"` or `"f"`) and `U` are required; `J` defaults to 0 and `form` to the one form
-//! the engine implements. [`Request::parse`] reads that mapping as JSON text and resolves it
+//! `l` (`"d"` or `"f"`) and `U` are required; `J` defaults to 0 and `form` to `"dudarev"`.
+//! Optional `"f4_f2"` and `"f6_f2"` (Slater integral ratios) are accepted when `form` is
+//! `"liechtenstein"` (`f6_f2` on `f` shells only). [`Request::parse`] reads that mapping as JSON text and resolves it
 //! into [`Entry`] values: the shell as an angular momentum, a [`Form`], and `U` and `J` in
 //! Hartree (the one place the unit changes, by division with
 //! [`HARTREE_TO_EV`](crate::units::HARTREE_TO_EV)). A new functional form is one new [`Form`]
@@ -22,6 +23,7 @@ use super::{
     elements::atomic_number,
     functional,
     hubbard::{shell_l, shell_letter, Form},
+    hubbard_slater::Ratios,
     invalid,
 };
 use crate::{units::HARTREE_TO_EV, Error, Result};
@@ -32,7 +34,7 @@ use std::borrow::Cow;
 const EXAMPLE: &str = "{'Ni': {'l': 'd', 'U': 6.0, 'J': 0.0}}";
 /// The keys a shell may carry.
 const REQUIRED: [&str; 2] = ["l", "U"];
-const OPTIONAL: [&str; 2] = ["J", "form"];
+const OPTIONAL: [&str; 4] = ["J", "form", "f4_f2", "f6_f2"];
 
 /// One element's correlated shell.
 #[derive(Debug, Clone, PartialEq)]
@@ -45,6 +47,8 @@ pub struct Entry {
     pub u: f64,
     /// Hartree.
     pub j: f64,
+    /// Slater integral ratios `F^4/F^2` and (for `f` shells) `F^6/F^2`.
+    pub ratios: Ratios,
 }
 
 impl Entry {
@@ -110,6 +114,15 @@ fn energy(symbol: &str, name: &str, value: &Value) -> Result<f64> {
         })
 }
 
+/// A finite JSON number for a dimensionless Slater integral ratio (validated by `Ratios::new`).
+fn ratio(symbol: &str, name: &str, value: &Value) -> Result<f64> {
+    value.as_f64().filter(|v| v.is_finite()).ok_or_else(|| {
+        invalid(format!(
+            "hubbard_u['{symbol}']: {name} must be a finite number, got {value}"
+        ))
+    })
+}
+
 impl Entry {
     fn parse(symbol: &str, value: &Value) -> Result<Self> {
         if atomic_number(symbol).is_none() {
@@ -125,8 +138,8 @@ impl Entry {
         });
         let Some(shell) = keys else {
             return Err(invalid(format!(
-                "hubbard_u['{symbol}'] needs the keys 'l' and 'U' and may have 'J' and 'form', \
-                 got {value}"
+                "hubbard_u['{symbol}'] needs the keys 'l' and 'U' and may have 'J', 'form', \
+                 'f4_f2', and 'f6_f2', got {value}"
             )));
         };
         let l = shell["l"].as_str().and_then(shell_l).ok_or_else(|| {
@@ -158,12 +171,29 @@ impl Entry {
                  negative)"
             )));
         }
+        let f4_f2 = shell
+            .get("f4_f2")
+            .map(|v| ratio(symbol, "f4_f2", v))
+            .transpose()?;
+        let f6_f2 = shell
+            .get("f6_f2")
+            .map(|v| ratio(symbol, "f6_f2", v))
+            .transpose()?;
+        if form != Form::Liechtenstein && (f4_f2.is_some() || f6_f2.is_some()) {
+            return Err(invalid(format!(
+                "hubbard_u['{symbol}']: 'f4_f2' and 'f6_f2' are only valid with form='{}'",
+                Form::Liechtenstein.name()
+            )));
+        }
+        let ratios = Ratios::new(l, f4_f2, f6_f2)
+            .map_err(|e| invalid(format!("hubbard_u['{symbol}']: {e}")))?;
         Ok(Self {
             symbol: symbol.to_string(),
             l,
             form,
             u: u / HARTREE_TO_EV,
             j: j / HARTREE_TO_EV,
+            ratios,
         })
     }
 }
@@ -200,18 +230,7 @@ impl Request {
     /// (the on-site correction has no exchange operator to share with it) and a precision other
     /// than float64 (unvalidated).
     pub fn require_scope(&self, xc: &str, precision: &str) -> Result<()> {
-        if functional(xc).is_ok_and(|f| f.screened_exchange.is_some()) {
-            return Err(Error::Unsupported(format!(
-                "hubbard_u with the hybrid functional '{xc}': DFT+U is implemented for \
-                 semilocal functionals only"
-            )));
-        }
-        if precision != "float64" {
-            return Err(invalid(
-                "hubbard_u needs precision='float64' (single precision is unvalidated)",
-            ));
-        }
-        Ok(())
+        check_scope(xc, precision)
     }
 
     /// The form of the calculation (the entries agree).
@@ -223,4 +242,21 @@ impl Request {
     pub fn entry(&self, symbol: &str) -> Option<&Entry> {
         self.entries.iter().find(|e| e.symbol == symbol)
     }
+}
+
+/// Refuses DFT+U combinations outside the engine's supported scope (a screened hybrid functional
+/// or a precision other than `float64`).
+pub fn check_scope(xc: &str, precision: &str) -> Result<()> {
+    if functional(xc).is_ok_and(|f| f.screened_exchange.is_some()) {
+        return Err(Error::Unsupported(format!(
+            "hubbard_u with the hybrid functional '{xc}': DFT+U is implemented for \
+             semilocal functionals only"
+        )));
+    }
+    if precision != "float64" {
+        return Err(invalid(
+            "hubbard_u needs precision='float64' (single precision is unvalidated)",
+        ));
+    }
+    Ok(())
 }

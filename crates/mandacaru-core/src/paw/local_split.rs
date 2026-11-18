@@ -213,6 +213,19 @@ pub fn invariant_angular_rule(
             "an invariant rule needs the identity as its first operation",
         ));
     }
+    if polar == 0 || azimuthal == 0 {
+        return angular_rule(polar, azimuthal);
+    }
+    if let Some(frame) = super::lebedev::octahedral_frame(operations) {
+        // Match the product rule's angular degree; for production short-range cubic spheres
+        // (`polar >= 16`, originally 16x36 x 3 = 1728 pts) promote to degree 47 (770 pts) so
+        // non-spherical neighbor tails stay invariant under shear-induced frame rotations.
+        let min_degree = if polar >= 16 { 47 } else { 1 };
+        let degree = (2 * polar - 1).min(azimuthal - 1).max(min_degree);
+        if let Some(rule) = super::lebedev::octahedral_rule(degree, &frame) {
+            return Ok(rule);
+        }
+    }
     let (base, weights) = angular_rule(polar, azimuthal)?;
     let points: Vec<Vector3<f64>> = (0..weights.len())
         .map(|j| Vector3::new(base[0][j], base[1][j], base[2][j]))

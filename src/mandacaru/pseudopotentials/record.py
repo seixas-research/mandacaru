@@ -122,7 +122,7 @@ def dataset_from_record(payload: str, tables: dict, *, warn: bool = True):
         semicore_subshells=tuple(tuple(int(x) for x in o)
                                  for o in meta["semicore_subshells"]),
         nlcc=dict(meta["nlcc"]), spin_orbit=spin_orbit,
-        defects=read_defects(meta["defects"]), core_states=[dict(s, orbital=np.asarray(tables[s["table"]])) for s in meta.get("core_states", [])])
+        defects=read_defects(meta["defects"]), core_states=[dict(s, orbital=np.asarray(tables[s["table"]])) for s in meta.get("core_states", [])], provenance=meta.get("provenance"))
     if warn:
         warn_defects(dataset, dataset.family)
     return dataset
@@ -189,7 +189,7 @@ def record_of(pp) -> tuple[str, dict]:
         "extra_l": int(pp.extra_l), "nlcc": dict(pp.nlcc or {}),
         "frozen_subshells": [list(o) for o in pp.frozen_subshells],
         "semicore_subshells": [list(o) for o in pp.semicore_subshells],
-        "core_states": [{k: s[k] for k in ("n", "l", "occupation", "energy", "table")} for s in pp.core_states],
+        "core_states": [{k: s[k] for k in ("n", "l", "occupation", "energy", "table")} for s in pp.core_states], **({"provenance": dict(pp.provenance)} if getattr(pp, "provenance", None) is not None else {}),
         "defects": {
             "ghosts": {str(l): float(e) for l, e in defects.get("ghosts", {}).items()},
             "phases": {str(l): [float(a), float(b)]

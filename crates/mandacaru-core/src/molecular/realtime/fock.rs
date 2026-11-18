@@ -19,7 +19,7 @@
 //! current `dE_xc / dA` ([`MolecularMap::xc_current`]).
 use crate::math::fft::Poisson;
 use crate::math::propagator::{Evaluation, FockMap};
-use crate::molecular::{dft, integrals::Eri, MolecularIntegrals};
+use crate::molecular::{dft, integrals::Eri, spinor_dft, MolecularIntegrals};
 use crate::{quantum::C64, Buffer, Result};
 use nalgebra::DMatrix;
 use std::sync::Arc;
@@ -35,6 +35,11 @@ enum Theory {
         scratch: (Buffer<C64>, Buffer<C64>),
         /// The orbital gradients of a meta-GGA (its kinetic density and current), built once.
         gradients: Option<crate::math::storage::RealSamples>,
+    },
+    SpinorKohnSham {
+        name: String,
+        spin_orbit: Option<Matrix>,
+        shared: spinor_dft::Shared,
     },
     HartreeFock {
         core: Matrix,
@@ -59,6 +64,23 @@ pub(super) struct MolecularMap<'a> {
 }
 
 impl<'a> MolecularMap<'a> {
+    pub(super) fn new_spinor(integrals: &'a MolecularIntegrals, name: &str) -> Result<Self> {
+        let spin_orbit = spinor_dft::spin_orbit_term(integrals)?;
+        let shared = spinor_dft::Shared::new(integrals, name)?;
+        Ok(Self {
+            integrals,
+            theory: Theory::SpinorKohnSham {
+                name: name.to_string(),
+                spin_orbit,
+                shared,
+            },
+            field: None,
+            potential: None,
+            evaluations: 0,
+            xc_current: [[0.; 3]; 2],
+        })
+    }
+
     pub(super) fn new(integrals: &'a MolecularIntegrals, functional: Option<&str>) -> Result<Self> {
         let m = integrals.m();
         let theory = match functional {
@@ -142,6 +164,16 @@ impl<'a> MolecularMap<'a> {
                 self.xc_current = current;
                 Ok((focks, energy))
             }
+            Theory::SpinorKohnSham {
+                name,
+                spin_orbit,
+                shared,
+            } => {
+                let eval =
+                    spinor_dft::spinor_parts(integrals, &densities[0], name, spin_orbit.as_ref(), shared)?.0;
+                self.xc_current = [[0.; 3]; 2];
+                Ok((vec![eval.fock], eval.energy))
+            }
             Theory::HartreeFock { core, eri } => {
                 let parts: Vec<_> = densities
                     .iter()
@@ -171,9 +203,10 @@ impl<'a> MolecularMap<'a> {
 
 impl FockMap for MolecularMap<'_> {
     fn evaluate(&mut self, _time: f64, densities: &[Matrix]) -> Result<Evaluation> {
+        let spinor = matches!(self.theory, Theory::SpinorKohnSham { .. });
         let (mut matrices, mut energy) = self.bare(densities)?;
         if let Some((momentum, strength)) = &self.field {
-            let g = if densities.len() == 1 { 2. } else { 1. };
+            let g = if spinor || densities.len() > 1 { 1. } else { 2. };
             let m = momentum.nrows();
             let shift = Matrix::identity(m, m) * C64::new(0.5 * strength * strength, 0.);
             for (f, d) in matrices.iter_mut().zip(densities) {

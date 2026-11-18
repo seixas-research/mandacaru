@@ -81,6 +81,7 @@ pub fn build(
                 l: entry.l,
                 u: entry.u,
                 j: entry.j,
+                ratios: entry.ratios,
                 weights: weights.clone(),
                 q: q_ao.clone(),
                 q_ao,

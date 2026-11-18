@@ -50,14 +50,22 @@ pub struct Pairs {
     pub charges: Vec<C64>,
     /// `sums[(c * cells + u) * n * n + p * n + q]`: `sum_T Q^{cT}_{pq} e^{-2 pi i u.T / size}`.
     pub sums: Vec<C64>,
-    /// `coefficients[(p * cells + t) * P + j]`: `<p_{jT}|w_p>` of the fragment's mode `p`.
+    /// `coefficients[((p * components + comp) * cells + t) * P + j]`: `<p_{jT}|w_{p,comp}>`.
     pub coefficients: Vec<C64>,
     pub channels: usize,
     pub projectors: usize,
     pub cells: usize,
+    pub components: usize,
 }
 
 impl Pairs {
+    /// `<p_{proj, cell_idx}|w_{mode, comp}>`.
+    #[inline]
+    pub fn coeff(&self, mode: usize, comp: usize, cell_idx: usize, proj: usize) -> C64 {
+        self.coefficients
+            [((mode * self.components + comp) * self.cells + cell_idx) * self.projectors + proj]
+    }
+
     /// The pair densities of `modes` (of `functions`), with the charges of every channel.
     pub(in crate::periodic) fn new(
         crystal: &Crystal,
@@ -85,6 +93,7 @@ impl Pairs {
             channels,
             projectors: p,
             cells: cell.cells,
+            components: functions.components,
         };
         let _scratch = ctx.reserve(product(&[channels.max(1), cell.cells, n * n, 16, 2])?)?;
         // The projector coefficients of every mode, moved to its cell.
@@ -124,6 +133,7 @@ impl Pairs {
             channels: crystal.channels,
             projectors: crystal.p,
             cells: cell.cells,
+            components: functions.components,
         };
         let _scratch = ctx.reserve(product(&[
             crystal.channels.max(1),
@@ -163,18 +173,23 @@ impl Pairs {
         let sources: Vec<[Vec<usize>; 3]> =
             modes.iter().map(|m| axis_sources(cell, m.cell)).collect();
         for p in 0..n {
-            let left = functions.values[modes[p].at].as_slice();
             for q in 0..n {
-                let right = functions.values[modes[q].at].as_slice();
                 let (sp, sq) = (&sources[p], &sources[q]);
                 let out = work.as_mut_slice();
-                for x0 in 0..total[0] {
-                    for x1 in 0..total[1] {
-                        let row = (x0 * total[1] + x1) * total[2];
-                        let bp = (sp[0][x0] * total[1] + sp[1][x1]) * total[2];
-                        let bq = (sq[0][x0] * total[1] + sq[1][x1]) * total[2];
-                        for x2 in 0..total[2] {
-                            out[row + x2] = left[bp + sp[2][x2]].conj() * right[bq + sq[2][x2]];
+                out.fill(C64::default());
+                for comp in 0..self.components {
+                    let offset = comp * points;
+                    let left = &functions.values[modes[p].at].as_slice()[offset..offset + points];
+                    let right = &functions.values[modes[q].at].as_slice()[offset..offset + points];
+                    for x0 in 0..total[0] {
+                        for x1 in 0..total[1] {
+                            let row = (x0 * total[1] + x1) * total[2];
+                            let bp = (sp[0][x0] * total[1] + sp[1][x1]) * total[2];
+                            let bq = (sq[0][x0] * total[1] + sq[1][x1]) * total[2];
+                            for x2 in 0..total[2] {
+                                out[row + x2] +=
+                                    left[bp + sp[2][x2]].conj() * right[bq + sq[2][x2]];
+                            }
                         }
                     }
                 }
@@ -189,7 +204,13 @@ impl Pairs {
     }
 
     fn fill_charges(&mut self, crystal: &Crystal, setup: &Setup, cell: &Cell) -> Result<()> {
-        let (n, cells, p, channels) = (self.n, self.cells, self.projectors, self.channels);
+        let (n, cells, p, channels, components) = (
+            self.n,
+            self.cells,
+            self.projectors,
+            self.channels,
+            self.components,
+        );
         let owners = setup.projector_atoms();
         let sites = setup.sites();
         self.charges = vec![C64::default(); channels * cells * n * n];
@@ -214,11 +235,12 @@ impl Pairs {
                 for a in 0..n {
                     for b in 0..n {
                         let mut sum = C64::default();
-                        for &i in &own {
-                            let left = self.coefficients[(a * cells + t) * p + i].conj();
-                            for &j in &own {
-                                sum +=
-                                    left * block(i, j) * self.coefficients[(b * cells + t) * p + j];
+                        for comp in 0..components {
+                            for &i in &own {
+                                let left = self.coeff(a, comp, t, i).conj();
+                                for &j in &own {
+                                    sum += left * block(i, j) * self.coeff(b, comp, t, j);
+                                }
                             }
                         }
                         self.charges[((c * cells) + t) * n * n + a * n + b] = sum;
@@ -274,19 +296,19 @@ impl Pairs {
         setup: &Setup,
         smooth_overlap: impl Fn(usize, usize) -> C64,
     ) -> DMatrix<C64> {
-        let (n, cells, p) = (self.n, self.cells, self.projectors);
+        let (n, cells, p, components) = (self.n, self.cells, self.projectors, self.components);
         let correction = setup.overlap_correction();
         let mut metric = DMatrix::<C64>::zeros(n, n);
         for a in 0..n {
             for b in 0..n {
                 let mut sum = smooth_overlap(a, b);
-                for t in 0..cells {
-                    for i in 0..p {
-                        let left = self.coefficients[(a * cells + t) * p + i].conj();
-                        for j in 0..p {
-                            sum += left
-                                * correction[(i, j)]
-                                * self.coefficients[(b * cells + t) * p + j];
+                for comp in 0..components {
+                    for t in 0..cells {
+                        for i in 0..p {
+                            let left = self.coeff(a, comp, t, i).conj();
+                            for j in 0..p {
+                                sum += left * correction[(i, j)] * self.coeff(b, comp, t, j);
+                            }
                         }
                     }
                 }
@@ -749,15 +771,15 @@ fn onsite(
             // left[pq][c][d] = sum_ab conj(a_p,a) a_q,b DeltaW[abcd]
             let mut left = vec![C64::default(); a * m * m];
             for (row, &pq) in rows.iter().enumerate() {
-                {
-                    let (pp, qq) = (pq / n1, pq % n1);
+                let (pp, qq) = (pq / n1, pq % n1);
+                for comp in 0..first.components {
                     for (ia, &ja) in own.iter().enumerate() {
-                        let ca = first.coefficients[(pp * cell.cells + t) * p + ja].conj();
+                        let ca = first.coeff(pp, comp, t, ja).conj();
                         if ca.norm_sqr() == 0. {
                             continue;
                         }
                         for (ib, &jb) in own.iter().enumerate() {
-                            let cb = first.coefficients[(qq * cell.cells + t) * p + jb];
+                            let cb = first.coeff(qq, comp, t, jb);
                             let w = ca * cb;
                             if w.norm_sqr() == 0. {
                                 continue;
@@ -773,11 +795,12 @@ fn onsite(
             }
             let right_of = |r: usize, s: usize| {
                 let mut right = vec![C64::default(); m * m];
-                for (ic, &jc) in own.iter().enumerate() {
-                    let cc = second.coefficients[(r * cell.cells + t) * p + jc].conj();
-                    for (id, &jd) in own.iter().enumerate() {
-                        right[ic * m + id] =
-                            cc * second.coefficients[(s * cell.cells + t) * p + jd];
+                for comp in 0..second.components {
+                    for (ic, &jc) in own.iter().enumerate() {
+                        let cc = second.coeff(r, comp, t, jc).conj();
+                        for (id, &jd) in own.iter().enumerate() {
+                            right[ic * m + id] += cc * second.coeff(s, comp, t, jd);
+                        }
                     }
                 }
                 right
@@ -930,11 +953,15 @@ pub(in crate::periodic) fn onsite_factors(
             .filter(|&j| eigen.eigenvalues[j].abs() > 1e-14 * largest)
             .collect();
         for t in 0..cell.cells {
-            let c = |q: usize, j: usize| pairs.coefficients[(q * cell.cells + t) * p + own[j]];
             // y[(row, p * n + q)]: the real and imaginary parts of the projector pairs.
             let y = DMatrix::from_fn(2 * d, n * n, |row, pq| {
                 let (a, b) = ((row % d) / m, (row % d) % m);
-                let x = c(pq / n, a).conj() * c(pq % n, b);
+                let x: C64 = (0..pairs.components)
+                    .map(|comp| {
+                        pairs.coeff(pq / n, comp, t, own[a]).conj()
+                            * pairs.coeff(pq % n, comp, t, own[b])
+                    })
+                    .sum();
                 if row < d {
                     x.re
                 } else {

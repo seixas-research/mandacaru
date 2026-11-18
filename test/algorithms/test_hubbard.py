@@ -133,7 +133,7 @@ def test_a_molecule_calculates_dft_plus_u():
     assert np.allclose(shell["trace"], [4.850], atol=1e-2)
 
 
-def frozen_cuh(spec, shift=0.0, *, spin=False):
+def frozen_cuh(spec, shift=0.0, *, spin=False, basis=SZ):
     """CuH on a frozen 6 A grid, the H atom displaced by ``shift`` along z (A), for the
     force against its energy."""
     atoms = Atoms("CuH", positions=[[3.013, 2.979, 3.007], [3.013, 2.979, 4.467 + shift]], cell=[6.0] * 3)
@@ -142,7 +142,7 @@ def frozen_cuh(spec, shift=0.0, *, spin=False):
     if spin:
         atoms.set_initial_magnetic_moments([2.0, 0.0])
     atoms.calc = Mandacaru(
-        method="dft", xc="lda", basis=SZ, grid=grid, grid_spacing=0.3, hubbard_u=spec,
+        method="dft", xc="lda", basis=basis, grid=grid, grid_spacing=0.3, hubbard_u=spec,
         project_translation=False, scf_options={"tolerance": 1e-10}, trace=False,
         parallelization={"threads": 2}, **options,
     )
@@ -152,11 +152,11 @@ def frozen_cuh(spec, shift=0.0, *, spin=False):
 @pytest.mark.parametrize(
     "spec, spin",
     [
-        pytest.param({"Cu": {"l": "d", "U": 4.0, "form": "dudarev-fll"}}, False, id="dudarev"),
-        pytest.param({"Cu": {"l": "d", "U": 4.0, "J": 1.0, "form": "liechtenstein-fll"}}, False, id="liechtenstein"),
-        pytest.param({"Cu": {"l": "d", "U": 4.0, "form": "dudarev-fll"}}, True, id="dudarev-spin-polarized"),
+        pytest.param({"Cu": {"l": "d", "U": 4.0, "form": "dudarev"}}, False, id="dudarev"),
+        pytest.param({"Cu": {"l": "d", "U": 4.0, "J": 1.0, "form": "liechtenstein"}}, False, id="liechtenstein"),
+        pytest.param({"Cu": {"l": "d", "U": 4.0, "form": "dudarev"}}, True, id="dudarev-spin-polarized"),
         pytest.param(
-            {"Cu": {"l": "d", "U": 4.0, "J": 1.0, "form": "liechtenstein-fll"}}, True, id="liechtenstein-spin-polarized"
+            {"Cu": {"l": "d", "U": 4.0, "J": 1.0, "form": "liechtenstein"}}, True, id="liechtenstein-spin-polarized"
         ),
     ],
 )
@@ -193,15 +193,29 @@ def test_a_molecule_whose_dataset_lacks_the_shell_raises_instead_of_running_with
         molecule.get_potential_energy()
 
 
-def test_a_molecule_on_a_spin_orbit_dataset_refuses_hubbard_u():
-    """The fully relativistic datasets run spinor Kohn-Sham, which has no +U."""
-    molecule = Atoms("CuH", positions=[[3.0, 3.0, 3.0], [3.0, 3.0, 4.46]], cell=[6.0] * 3)
-    molecule.calc = Mandacaru(
-        method="dft", xc="lda", hubbard_u=CU_D, trace=False, grid_spacing=0.3,
-        basis={**SZ, "paw_dataset": "lda-fr"},
-    )
-    with pytest.raises(NotImplementedError, match="spinor molecular Kohn-Sham is not available for DFT\\+U"):
-        molecule.get_potential_energy()
+@pytest.mark.parametrize(
+    "spec",
+    [
+        pytest.param({"Cu": {"l": "d", "U": 4.0, "J": 0.5, "form": "dudarev"}}, id="dudarev"),
+        pytest.param(
+            {"Cu": {"l": "d", "U": 4.0, "J": 0.5, "form": "liechtenstein", "f4_f2": 0.7}},
+            id="liechtenstein-custom-ratios",
+        ),
+    ],
+)
+def test_a_molecule_on_a_spin_orbit_dataset_runs_spinor_hubbard_u_and_analytic_forces(spec):
+    """Fully relativistic datasets run spinor Kohn-Sham with DFT+U (SCF and analytic force)."""
+    h = 0.005
+    atoms = frozen_cuh(spec, basis={**SZ, "paw_dataset": "lda-fr"})
+    force = atoms.get_forces()[1, 2]
+    assert atoms.calc.result.hubbard_energy is not None
+    assert atoms.calc.result.force_details["scheme"] == "analytic"
+    energies = [
+        frozen_cuh(spec, shift, basis={**SZ, "paw_dataset": "lda-fr"}).get_potential_energy()
+        for shift in (h, -h)
+    ]
+    numerical = -(energies[0] - energies[1]) / (2 * h)
+    assert force == pytest.approx(numerical, abs=5e-4)
 
 
 GEOMETRY_REFUSALS = [
@@ -220,14 +234,6 @@ GEOMETRY_REFUSALS = [
         ValueError,
         "Ni dataset has no 'f' channel",
         id="no-shell",
-    ),
-    pytest.param(
-        lambda: single("Ni", 2.0),
-        NI_D,
-        {"spin": True, "basis": {**SZ, "paw_dataset": "lda-fr"}},
-        NotImplementedError,
-        "spin-orbit",
-        id="spin-orbit",
     ),
     pytest.param(
         lambda: single("Ba"),
@@ -428,3 +434,64 @@ def test_the_option_against_a_loaded_crystal_follows_the_mismatch_rule(saved):
             Mandacaru(load_crystal=saved / "four.json", hubbard_u=option, **short).run()
     with pytest.raises(ValueError, match="disagrees with the crystal file"):
         Mandacaru(load_crystal=saved / "plain.json", hubbard_u=CU_D, **short).run()
+
+
+@pytest.mark.parametrize("form", ["dudarev", "liechtenstein"])
+def test_spinor_crystal_dft_plus_u_scf_forces_and_stress(form):
+    atoms = cuh()
+    atoms.calc = Mandacaru(
+        method="dft",
+        xc="lda",
+        grid_spacing=0.35,
+        trace=False,
+        basis={**SZ, "paw_dataset": "lda-fr"},
+        hubbard_u={"Cu": {"l": "d", "U": 4.0, "J": 0.5, "form": form}},
+        smearing={"method": "fermi-dirac", "width": 0.01},
+    )
+    energy = atoms.get_potential_energy()
+    assert np.isfinite(energy)
+    result = atoms.calc.result
+    assert result.hubbard_energy is not None
+    assert len(result.hubbard) == 1
+    occ = result.hubbard[0]["n"]
+    assert occ.shape == (1, 10, 10)
+    np.testing.assert_allclose(occ[0], occ[0].conj().T, atol=1e-12)
+    forces = atoms.get_forces()
+    assert forces.shape == (2, 3) and np.isfinite(forces).all()
+    np.testing.assert_allclose(forces[:, :2], 0.0, atol=1e-10)
+    stress = atoms.get_stress(voigt=False)
+    assert stress.shape == (3, 3) and np.isfinite(stress).all()
+    np.testing.assert_allclose(stress, stress.T, atol=1e-12)
+
+
+def test_hubbard_response_structured_view_logging_and_molecular_cuh(tmp_path):
+    import json
+    from ase import Atoms
+
+    log_path = tmp_path / "cuh_lr.log"
+    mol = Atoms(
+        "CuH",
+        positions=[[4.0, 4.0, 3.25], [4.0, 4.0, 4.75]],
+        cell=[8.0, 8.0, 8.0],
+        pbc=False,
+    )
+    mol.calc = Mandacaru(
+        method="dft",
+        xc="lda",
+        basis=SZ,
+        grid_spacing=0.35,
+        hubbard_u={"Cu": {"l": "d", "U": 0.0}},
+        trace=False,
+        txt=str(log_path),
+    )
+    mol.get_potential_energy()
+    resp = mol.calc.hubbard_response(alphas=(0.05,))
+    assert resp.shells == 1 and resp.channels == 1
+    assert resp.u_charge[0, 0] > 0.0
+    assert np.allclose(resp["u_matrix"], resp.u_matrix)
+    parsed_json = json.loads(resp.to_json())
+    assert parsed_json["symbols"] == ["Cu"]
+    grouped = resp.hubbard_u(form="dudarev", tolerance=0.5)
+    assert grouped["Cu"]["U"] > 0.0 and grouped["Cu"]["spread"] == 0.0
+    log_text = log_path.read_text(encoding="utf-8")
+    assert "[HUBBARD RESPONSE]" in log_text

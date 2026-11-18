@@ -96,21 +96,40 @@ fn check(pair: &Pair<'_>) -> Result<usize> {
     Ok(pair.r.partition_point(|&x| x <= pair.r_cut))
 }
 
+/// `Delta^(L)_ij = int (R_i R_j - R~_i R~_j) r^(L+2) dr` over `r <= r_cut` for one partial-wave pair.
+pub fn radial_moment(
+    r: &[f64],
+    r_cut: f64,
+    ae: [&[f64]; 2],
+    smooth: [&[f64]; 2],
+    l: usize,
+) -> Result<f64> {
+    let n = r.len();
+    if n < 4 || ae.iter().chain(&smooth).any(|w| w.len() != n) || !r_cut.is_finite() {
+        return Err(invalid("inconsistent partial-wave pair"));
+    }
+    let inside = r.partition_point(|&x| x <= r_cut);
+    let integrand: Vec<f64> = (0..inside)
+        .map(|k| (ae[0][k] * ae[1][k] - smooth[0][k] * smooth[1][k]) * r[k].powi(l as i32 + 2))
+        .collect();
+    simpson(&r[..inside], &integrand)
+}
+
 /// `Delta^(L)_ij = int (R_i R_j - R~_i R~_j) r^(L+2) dr` over `r <= r_cut`.
 pub fn radial_moments(pair: &Pair<'_>, l: usize) -> Result<Vec<f64>> {
     let inside = check(pair)?;
-    let weight = pair.r[..inside]
+    let weight: Vec<f64> = pair.r[..inside]
         .iter()
         .map(|r| r.powi(l as i32 + 2))
-        .collect::<Vec<_>>();
+        .collect();
     let mut out = Vec::with_capacity(pair.waves[0] * pair.waves[1]);
     for i in 0..pair.waves[0] {
         for j in 0..pair.waves[1] {
-            let integrand = density(pair, i, j, inside)
+            let integrand: Vec<f64> = density(pair, i, j, inside)
                 .iter()
                 .zip(&weight)
                 .map(|(d, w)| d * w)
-                .collect::<Vec<_>>();
+                .collect();
             out.push(simpson(&pair.r[..inside], &integrand)?);
         }
     }

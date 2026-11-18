@@ -8,8 +8,9 @@ from __future__ import annotations
 
 import operator
 
-from ..analysis.berry import (AnomalousHall, BerryCurvature, BerryPhase, Polarization,
-                              WannierChargeCenterFlow, Z2Invariant)
+from ..analysis.berry import (AnomalousHall, BerryCurvature, BerryPhase, BornCharges,
+                              PiezoelectricTensor, Polarization, WannierChargeCenterFlow,
+                              Z2Invariant)
 
 
 def _integer(value):
@@ -189,3 +190,56 @@ def z2_invariant(calculation, kpts=None, plane=None, offset=0.0, direction=None,
     return Z2Invariant(method="flow", indices=(flow.z2,), strong=None, weak=None,
                        planes={(normal, half): flow.z2}, flows=(flow,),
                        spin_degenerate=flow.spin_degenerate, strings=size)
+
+
+_ASR_MODES = ("report", "impose")
+_PIEZO_IONS = ("clamped", "relaxed")
+
+
+def _positive_step(value, name):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{name} must be a positive real number; got {value!r}")
+    return float(value)
+
+
+def born_effective_charges(calculation, displacement=0.01, kpts=None, richardson=False,
+                           acoustic_sum_rule="report"):
+    if not isinstance(richardson, bool):
+        raise ValueError(f"richardson must be a bool; got {richardson!r}")
+    if acoustic_sum_rule not in _ASR_MODES:
+        raise ValueError(
+            f"acoustic_sum_rule must be one of {_ASR_MODES}; got {acoustic_sum_rule!r}"
+        )
+    step = _positive_step(displacement, "displacement")
+    size = _size(calculation, kpts)
+    raw = _crystal(calculation).born_charges(
+        list(size),
+        displacement=step,
+        richardson=richardson,
+        impose_rule=(acoustic_sum_rule == "impose"),
+        atomic_units=calculation._atomic_units,
+    )
+    return BornCharges.from_native(raw, calculation._atomic_units, stacklevel=3)
+
+
+def piezoelectric_tensor(calculation, strain=0.005, kpts=None, ions="clamped",
+                       richardson=False, displacement=0.01):
+    if not isinstance(richardson, bool):
+        raise ValueError(f"richardson must be a bool; got {richardson!r}")
+    if ions not in _PIEZO_IONS:
+        raise ValueError(f"ions must be one of {_PIEZO_IONS}; got {ions!r}")
+    eta = _positive_step(strain, "strain")
+    disp = _positive_step(displacement, "displacement")
+    size = _size(calculation, kpts)
+    dispersion_xc = calculation.xc if getattr(calculation, "_vdw", None) == "ts" else None
+    raw = _crystal(calculation).piezoelectric(
+        list(size),
+        strain=eta,
+        displacement=disp,
+        richardson=richardson,
+        impose_rule=False,
+        relaxed_ions=(ions == "relaxed"),
+        atomic_units=calculation._atomic_units,
+        dispersion_xc=dispersion_xc,
+    )
+    return PiezoelectricTensor.from_native(raw, calculation._atomic_units, stacklevel=3)

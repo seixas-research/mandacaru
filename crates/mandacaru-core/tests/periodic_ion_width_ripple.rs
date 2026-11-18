@@ -27,12 +27,14 @@ use mandacaru_core::{
         record::PawDataset,
     },
     periodic::{
+        response,
         setup::{
             ions::LocalPotential,
             parse::{create_setup, AtomSpec, SetupInput},
             spheres::{Sphere, SHORT_RANGE_AZIMUTHAL, SHORT_RANGE_POLAR},
         },
         solver::Options,
+        Crystal, PeriodicResult,
     },
     units::ANGSTROM_TO_BOHR,
     Context,
@@ -155,15 +157,21 @@ fn the_short_range_quadrature_has_no_ripple_in_the_ion_width() {
     }
 }
 
-/// The free energy (eV) of the diamond cell of `pbe-sr/Si` (a = 5.43 A, Gamma, SZ, 11^3 nodes,
-/// filter 200 eV, the ion width `sigma`) with the potential `adjust` hands back.
-fn cell_energy(ctx: &Context, sigma: f64, adjust: &dyn Fn(&mut LocalPotential)) -> f64 {
+/// Build and converge the diamond cell of `pbe-sr/Si` (a = 5.43 A * `scale`, Gamma, SZ, 11^3 nodes,
+/// filter 200 eV, ion width `sigma`, net cell `charge`).
+fn cell_solve(
+    ctx: &Context,
+    sigma: f64,
+    charge: Option<f64>,
+    scale: f64,
+    adjust: &dyn Fn(&mut LocalPotential),
+) -> (Crystal, PeriodicResult) {
     let path = library().join("Si.parquet");
     let files = vec![(
         path.to_string_lossy().into_owned(),
         dataset_content_sha256(ctx, &path).unwrap(),
     )];
-    let a = 5.43 * ANGSTROM_TO_BOHR;
+    let a = 5.43 * ANGSTROM_TO_BOHR * scale;
     let h = 0.5 * a;
     let input = SetupInput {
         mesh: None,
@@ -191,13 +199,12 @@ fn cell_energy(ctx: &Context, sigma: f64, adjust: &dyn Fn(&mut LocalPotential)) 
         sigma: Some(sigma),
         dataset_files: Some(files),
         hubbard_u: None,
-        charge: None,
+        charge,
     };
     let mut setup = create_setup(ctx, input, vec![Arc::new(dataset(ctx, "Si"))]).unwrap();
     setup.potentials.iter_mut().for_each(adjust);
-    let result = setup
-        .build(ctx)
-        .unwrap()
+    let crystal = setup.build(ctx).unwrap();
+    let result = crystal
         .solve(&Options {
             max_iterations: 400,
             tolerance: 1e-11,
@@ -210,7 +217,11 @@ fn cell_energy(ctx: &Context, sigma: f64, adjust: &dyn Fn(&mut LocalPotential)) 
         result.converged,
         "the SCF at sigma {sigma} did not converge"
     );
-    result.free_energy * HA_TO_EV
+    (crystal, result)
+}
+
+fn cell_energy(ctx: &Context, sigma: f64, adjust: &dyn Fn(&mut LocalPotential)) -> f64 {
+    cell_solve(ctx, sigma, None, 1.0, adjust).1.free_energy * HA_TO_EV
 }
 
 /// rms `dE/d sigma` (eV/Bohr) of the cell over `sigma` 0.80-1.36 Bohr in steps of 0.02, where the
@@ -245,5 +256,37 @@ fn the_energy_of_the_silicon_cell_has_no_ripple_in_the_ion_width() {
     assert!(
         old > CONTROL_FACTOR * RIPPLE_GATE,
         "the control (the old layout) does not ripple: {old:e} eV/Bohr"
+    );
+}
+
+#[test]
+fn charged_periodic_cell_energy_is_invariant_to_ion_width_and_stress_matches_finite_differences() {
+    let ctx = Context::new(Some(3), 2 << 30).unwrap();
+    // 1) Neutralizing jellium correction `-reference * Q_net` eliminates the ~1 eV/Bohr
+    //    artificial sigma dependence on charged periodic cells (test +1 and -1).
+    for charge in [1.0, -1.0] {
+        let (_, r_lo) = cell_solve(&ctx, 0.88, Some(charge), 1.0, &|_| {});
+        let (_, r_hi) = cell_solve(&ctx, 1.18, Some(charge), 1.0, &|_| {});
+        let slope_ev_per_bohr = ((r_hi.free_energy - r_lo.free_energy) * HA_TO_EV / 0.30).abs();
+        assert!(
+            slope_ev_per_bohr < 1e-3,
+            "charged crystal (charge={charge:+.1}) energy depends on ion width sigma: \
+             |dE/d sigma| = {slope_ev_per_bohr:.3e} eV/Bohr"
+        );
+    }
+
+    // 2) Analytic stress on charged cell (including `+reference * net_charge delta_ab`) matches
+    //    central finite difference of free energy under hydrostatic strain at fixed pins.
+    let (crystal, result) = cell_solve(&ctx, 1.0, Some(1.0), 1.0, &|_| {});
+    let stress = response::stress(&crystal, &result).unwrap();
+    let tr_analytic = stress.gradient[0][0] + stress.gradient[1][1] + stress.gradient[2][2];
+    let eps = 1e-4;
+    let (_, r_plus) = cell_solve(&ctx, 1.0, Some(1.0), 1.0 + eps, &|_| {});
+    let (_, r_minus) = cell_solve(&ctx, 1.0, Some(1.0), 1.0 - eps, &|_| {});
+    let tr_fd = (r_plus.free_energy - r_minus.free_energy) / (2.0 * eps);
+    let err = (tr_analytic - tr_fd).abs();
+    assert!(
+        err < 1e-5,
+        "charged cell analytic stress trace {tr_analytic} disagrees with FD {tr_fd} (err={err:.3e})"
     );
 }

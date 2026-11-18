@@ -6,14 +6,14 @@
 mod paw_search_support;
 
 use mandacaru_core::models::relativity::Treatment;
-use mandacaru_core::models::xc_scheme::AtomSolver;
+use mandacaru_core::models::xc_scheme::Variational;
 use mandacaru_core::paw::diagnose::Diagnosis;
 use mandacaru_core::paw::diagnose::{ghosts::GHOST_TOLERANCE, reference::AeLogs};
 use mandacaru_core::paw::generate::{
     generate_with_atom,
     ranking::Badness,
     recipe::Recipe,
-    reference::solve_reference_with,
+    reference::solve_reference,
     search::{
         examine, general, search, search_reviewed, search_with_atom, Attempt, Error, Faithful,
         Mode, Options, Pinned, Review, Searched, Why,
@@ -43,8 +43,8 @@ fn free(mode: Mode) -> Options {
 
 fn run(recipe: &Recipe, options: &Options) -> Result<Searched, Error> {
     let ctx = context();
-    let atom = solve_reference_with(&ctx, recipe, &AtomSolver).unwrap();
-    search_with_atom(&ctx, recipe, options, &atom, &AtomSolver)
+    let atom = solve_reference(&ctx, recipe).unwrap();
+    search_with_atom(&ctx, recipe, options, &atom, &Variational)
 }
 
 fn texts(searched: &Searched) -> Vec<String> {
@@ -55,8 +55,8 @@ fn texts(searched: &Searched) -> Vec<String> {
 fn keep_returns_the_ghosted_first_construction_unexamined() {
     let recipe = ghosted_oxygen();
     let ctx = context();
-    let atom = solve_reference_with(&ctx, &recipe, &AtomSolver).unwrap();
-    let kept = search_with_atom(&ctx, &recipe, &free(Mode::Keep), &atom, &AtomSolver).unwrap();
+    let atom = solve_reference(&ctx, &recipe).unwrap();
+    let kept = search_with_atom(&ctx, &recipe, &free(Mode::Keep), &atom, &Variational).unwrap();
     assert_eq!((kept.index, kept.label.as_str()), (0, "first construction"));
     assert!(kept.diagnosis.is_none() && kept.tried.is_empty() && !kept.flagged);
     let d = examine(&ctx, &kept.generated, &atom, &mut AeLogs::new()).unwrap();
@@ -223,13 +223,13 @@ fn hopeless_silicon() -> Recipe {
 fn when_no_remedy_works_repair_raises_naming_the_ghost_and_every_attempt() {
     let recipe = hopeless_silicon();
     let ctx = context();
-    let atom = solve_reference_with(&ctx, &recipe, &AtomSolver).unwrap();
-    let first = generate_with_atom(&ctx, &recipe, &atom, &AtomSolver).unwrap();
+    let atom = solve_reference(&ctx, &recipe).unwrap();
+    let first = generate_with_atom(&ctx, &recipe, &atom, &Variational).unwrap();
     let depth = examine(&ctx, &first, &atom, &mut AeLogs::new())
         .unwrap()
         .ghosts[&0];
     drop(first);
-    let error = search_with_atom(&ctx, &recipe, &free(Mode::Repair), &atom, &AtomSolver)
+    let error = search_with_atom(&ctx, &recipe, &free(Mode::Repair), &atom, &Variational)
         .err()
         .expect("no remedy removes the ghost");
     let text = error.to_string();
@@ -253,13 +253,13 @@ fn when_no_remedy_works_repair_raises_naming_the_ghost_and_every_attempt() {
 fn flag_returns_the_attempt_with_the_shallowest_deepest_ghost_and_records_it() {
     let recipe = hopeless_silicon();
     let ctx = context();
-    let atom = solve_reference_with(&ctx, &recipe, &AtomSolver).unwrap();
-    let first = generate_with_atom(&ctx, &recipe, &atom, &AtomSolver).unwrap();
+    let atom = solve_reference(&ctx, &recipe).unwrap();
+    let first = generate_with_atom(&ctx, &recipe, &atom, &Variational).unwrap();
     let first_depth = examine(&ctx, &first, &atom, &mut AeLogs::new())
         .unwrap()
         .ghosts[&0];
     drop(first);
-    let searched = search_with_atom(&ctx, &recipe, &free(Mode::Flag), &atom, &AtomSolver).unwrap();
+    let searched = search_with_atom(&ctx, &recipe, &free(Mode::Flag), &atom, &Variational).unwrap();
     assert!(searched.flagged);
     let recorded = searched.generated.dataset.defects.clone();
     assert!(
@@ -333,8 +333,8 @@ fn an_attempt_equal_to_an_earlier_one_is_not_built_again() {
     }
     let ctx = context();
     let recipe = duplicated_silicon();
-    let atom = solve_reference_with(&ctx, &recipe, &AtomSolver).unwrap();
-    let first = generate_with_atom(&ctx, &recipe, &atom, &AtomSolver).unwrap();
+    let atom = solve_reference(&ctx, &recipe).unwrap();
+    let first = generate_with_atom(&ctx, &recipe, &atom, &Variational).unwrap();
     let d = examine(&ctx, &first, &atom, &mut AeLogs::new()).unwrap();
     let depth = d.ghosts[&0];
     drop(first);
@@ -344,7 +344,7 @@ fn an_attempt_equal_to_an_earlier_one_is_not_built_again() {
             &recipe,
             &free(Mode::Repair),
             &atom,
-            &AtomSolver,
+            &Variational,
             review,
         )
         .unwrap()
@@ -419,14 +419,14 @@ fn a_flagged_dataset_always_carries_what_is_wrong_with_it() {
     }
     let ctx = context();
     let recipe = Recipe::for_dataset("O", "lda", Treatment::Scalar).unwrap();
-    let atom = solve_reference_with(&ctx, &recipe, &AtomSolver).unwrap();
+    let atom = solve_reference(&ctx, &recipe).unwrap();
     let go = |mode: Mode| {
         search_reviewed(
             &ctx,
             &recipe,
             &free(mode),
             &atom,
-            &AtomSolver,
+            &Variational,
             &MissingState,
         )
     };
@@ -451,7 +451,7 @@ fn a_flagged_dataset_always_carries_what_is_wrong_with_it() {
     }
     // The control: the faithful search finds no missing state in the same construction, so the
     // answer above is the injected state's, and the flag is not an artifact of the loop.
-    let clean = search_with_atom(&ctx, &recipe, &free(Mode::Flag), &atom, &AtomSolver).unwrap();
+    let clean = search_with_atom(&ctx, &recipe, &free(Mode::Flag), &atom, &Variational).unwrap();
     assert!(!clean.flagged && clean.generated.dataset.defects.missing.is_empty());
     // The ranking prefers the nearer missing level among otherwise equal attempts.
     let (near, far) = (

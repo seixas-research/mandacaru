@@ -7,7 +7,8 @@ pub(super) mod onecenter;
 mod response_terms;
 mod screened;
 use super::invalid;
-use crate::paw::pair_tables::{angular_rule, harmonic, potential, shape};
+use crate::paw::multipole::{shape_at, shape_potential_at};
+use crate::paw::pair_tables::{angular_rule, harmonic};
 use crate::paw::{local_split::radial_rule_panels, screened_atom::ScreenedAtom};
 use crate::{
     basis::{Basis, Orbital, Radial},
@@ -441,6 +442,23 @@ impl Setup {
     /// `dC[mu, p] / dR_X = (delta_{X, atom(p)} - delta_{X, atom(mu)}) G[mu, p]`,
     /// `G = <grad chi_mu | p>`, so `d tr(D h) = 2 Re tr(D dC K C^+)`. The change of the orthonormal
     /// frame (the overlap) is the overlap term's, with `W` built from the Fock that holds `h^SO`.
+    /// Per-atom PAW on-site augmentation electron count $\Delta Q_A = \operatorname{Tr}(C_A D_{\text{raw}} C_A^T q_A)$.
+    pub fn atom_augmentation_charges(
+        &self,
+        projections: &[DMatrix<f64>],
+        raw_density: &DMatrix<f64>,
+    ) -> Vec<f64> {
+        self.atoms
+            .iter()
+            .enumerate()
+            .map(|(atom, &species_index)| {
+                let c = &projections[atom];
+                let q = &self.species_terms[species_index].overlap;
+                let projected = c.transpose() * raw_density * c;
+                projected.component_mul(q).sum()
+            })
+            .collect()
+    }
     pub fn spin_orbit_gradient(
         &self,
         ctx: &Context,
@@ -1076,6 +1094,12 @@ impl Setup {
         // to the integrals below; the projector and its field scratch end with
         // this block.
         let samples = basis.sample(ctx, &grid, precision)?;
+        // Cross-term `ws[a] = int phi_i phi_j V_a(r - R_A) dr`: evaluated on the spatial grid
+        // rather than atom-centered quadratures because `phi_i phi_j` spans two-center products
+        // against long-range multipole potentials `V_a` (`~1/r^(L+1)`). It carries ~1-2% (H2) to
+        // ~15-26% (O2, H2O, CO) of the fixed-grid egg-box ripple, converges monotonically with grid
+        // spacing, and is differentiated consistently in `compensation_center` + `compensation_basis`
+        // (`crates/mandacaru-core/tests/paw_audit.rs`).
         let mut ws = vec![DMatrix::zeros(m, m); nch];
         crate::math::storage::with_rows!(samples.rows(), |stored| {
             let mut projector = if m >= 16 {
@@ -1096,10 +1120,12 @@ impl Setup {
                 if workers <= 1 {
                     for k in 0..g {
                         let offset = std::array::from_fn(|i| grid.point(k)[i] - ch_atom_pos[i]);
-                        field_slice[k] =
-                            potential(distance(offset, [0.; 3]), sp.compensation_radius, ch.l)
-                                * harmonic(ch.l, ch.m, offset)
-                                * dv;
+                        field_slice[k] = shape_potential_at(
+                            distance(offset, [0.; 3]),
+                            sp.compensation_radius,
+                            ch.l,
+                        ) * harmonic(ch.l, ch.m, offset)
+                            * dv;
                     }
                 } else {
                     let grid_ref = &grid;
@@ -1113,7 +1139,7 @@ impl Setup {
                                         let offset = std::array::from_fn(|dim| {
                                             grid_ref.point(k)[dim] - ch_atom_pos[dim]
                                         });
-                                        *val = potential(
+                                        *val = shape_potential_at(
                                             distance(offset, [0.; 3]),
                                             sp.compensation_radius,
                                             ch.l,
@@ -1162,7 +1188,7 @@ impl Setup {
                     for (i, ci) in multipoles.iter().enumerate() {
                         let delta =
                             std::array::from_fn(|k| point[k] - geometry.positions()[ci.atom][k]);
-                        potentials[i] = potential(
+                        potentials[i] = shape_potential_at(
                             distance(delta, [0.; 3]),
                             species[atoms[ci.atom]].compensation_radius,
                             ci.l,
@@ -1170,7 +1196,7 @@ impl Setup {
                     }
                     densities.fill(0.);
                     for (j, cj) in multipoles.iter().enumerate().filter(|(_, ch)| ch.atom == b) {
-                        densities[j] = shape(r, sp.compensation_radius, cj.l)
+                        densities[j] = shape_at(r, sp.compensation_radius, cj.l)
                             * harmonic(cj.l, cj.m, offset)
                             * weight;
                     }
@@ -1194,7 +1220,7 @@ impl Setup {
                     for (i, ch) in multipoles.iter().enumerate().filter(|(_, ch)| ch.atom == b) {
                         ionic[i] += weight
                             * value
-                            * shape(r, sp.compensation_radius, ch.l)
+                            * shape_at(r, sp.compensation_radius, ch.l)
                             * harmonic(ch.l, ch.m, offset);
                     }
                     Ok(())
@@ -1338,10 +1364,8 @@ impl Setup {
                                     let k = base + iz;
                                     let r = distance(grid.point(k), center);
                                     if r <= r_cut {
-                                        core.as_mut_slice()[k] += radial
-                                            .value_slope(r.max(radial.knots.as_slice()[0]))
-                                            .0
-                                            .max(0.);
+                                        core.as_mut_slice()[k] +=
+                                            radial.value_slope_regular(r, 0).0.max(0.);
                                     }
                                 }
                             }
@@ -1410,10 +1434,8 @@ impl Setup {
                                     let k = base + iz;
                                     let r = distance(grid.point(k), center);
                                     if r <= r_cut {
-                                        tau.as_mut_slice()[k] += radial
-                                            .value_slope(r.max(radial.knots.as_slice()[0]))
-                                            .0
-                                            .max(0.);
+                                        tau.as_mut_slice()[k] +=
+                                            radial.value_slope_regular(r, 0).0.max(0.);
                                     }
                                 }
                             }

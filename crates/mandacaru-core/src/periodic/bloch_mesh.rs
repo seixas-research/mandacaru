@@ -175,6 +175,16 @@ impl<'a> Sampler<'a> {
         bands: &[Vec<usize>],
         mut visit: impl FnMut(usize, Frame) -> Result<()>,
     ) -> Result<()> {
+        self.visit_points(mesh, bands, |s, frame, _| visit(s, frame))
+    }
+
+    /// Like [`Self::visit`], also passing the [`super::KPoint`] at each mesh point.
+    pub fn visit_points(
+        &self,
+        mesh: &MeshIndex,
+        bands: &[Vec<usize>],
+        mut visit: impl FnMut(usize, Frame, &super::KPoint) -> Result<()>,
+    ) -> Result<()> {
         if bands.len() != self.channels() {
             return Err(invalid("a k mesh needs a band list for every spin channel"));
         }
@@ -206,6 +216,7 @@ impl<'a> Sampler<'a> {
                         visit(
                             s,
                             Frame::from_point(self.crystal, self.state, &point, s, selection)?,
+                            &point,
                         )?;
                     }
                 }

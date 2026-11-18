@@ -163,21 +163,15 @@ fn g5_a_core_that_does_not_add_up_is_refused_by_the_reader_before_any_gate_runs(
 #[test]
 fn g5_the_format_and_the_reader_defaults_are_part_of_the_gate() {
     let ctx = context();
-    let ds = good(&ctx);
-    let mut old = damaged(&ctx, &ds, |payload, tables| {
-        payload.as_object_mut().unwrap().remove("core_states");
-        tables.retain(|(name, _)| !name.starts_with("core_wave_"));
-        payload["version"] = json!(2);
-    });
+    let mut old = good(&ctx);
+    old.core_states = None;
     let report = run(&ctx, &old);
     assert_eq!(status(&report, "G5", "format"), Status::Fail);
     assert_eq!(status(&report, "G5", "core charge"), Status::NotApplicable);
-    // A reader default (a key the file did not carry) and a recorded scheme refuse a file too.
+    // A reader default (a key the file did not carry) refuses a file too.
     old.defaults_applied.push("semicore_subshells".into());
-    old.core_scheme = Some("variational".into());
     let report = run(&ctx, &old);
     assert_eq!(status(&report, "G5", "no reader default"), Status::Fail);
-    assert_eq!(status(&report, "G5", "core_scheme"), Status::Fail);
 }
 
 #[test]

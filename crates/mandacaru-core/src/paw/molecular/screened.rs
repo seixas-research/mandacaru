@@ -13,8 +13,12 @@
 //! is the one-body matrix `C V C^T` and the constant `X0 - V . D0`; the hybrid
 //! adds `-fraction` times both.
 use super::{onecenter::view, *};
-use crate::paw::screened_atom::{screened as species_terms, ScreenedAtom};
-use crate::{math::storage::with_rows, paw::onecenter_radial::long_range_shape_potential};
+use crate::math::storage::with_rows;
+use crate::paw::{
+    multipole::{shape_at, shape_potential_at},
+    onecenter_radial::long_range_shape_potential,
+    screened_atom::{screened as species_terms, ScreenedAtom},
+};
 
 /// What a screened hybrid adds to the Kohn-Sham model of a PAW-LCAO molecule,
 /// in the Loewdin-orthonormal frame of the integrals it was built from.
@@ -164,7 +168,7 @@ impl SpinTerms {
             let atom = &self.atoms[*species];
             let (p_up, p_down) = (c.transpose() * up * c, c.transpose() * down * c);
             exact += atom.polarization.evaluate(ctx, &p_up, &p_down)?.unpolarized;
-            frozen += atom.constant + (&atom.v * (&p_up + &p_down)).trace();
+            frozen += atom.constant + ((&atom.v + &atom.core_exchange) * (&p_up + &p_down)).trace();
         }
         Ok((exact, frozen))
     }
@@ -183,7 +187,7 @@ fn short_range_potential(
     Ok(distances
         .iter()
         .zip(long)
-        .map(|(r, long)| potential(*r, radius, l) - long)
+        .map(|(r, long)| shape_potential_at(*r, radius, l) - long)
         .collect())
 }
 
@@ -368,7 +372,7 @@ impl Setup {
                 }
                 densities.fill(0.);
                 for (j, cj) in multipoles.iter().enumerate().filter(|(_, ch)| ch.atom == b) {
-                    densities[j] = shape(*r, sp.compensation_radius, cj.l)
+                    densities[j] = shape_at(*r, sp.compensation_radius, cj.l)
                         * harmonic(cj.l, cj.m, *offset)
                         * weight;
                 }
